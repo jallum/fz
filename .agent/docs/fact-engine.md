@@ -636,6 +636,10 @@ batch across independent product pulls or fact settlements. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
+Each successful group receives a fresh session-local settlement handle. Causal
+replay joins those settlement handles within their session and compares the
+canonical member multiset of each publication. Numeric allocation order is not
+group identity; actual membership and publication multiplicity are.
 Large product answers are single-threaded `Rc` values: the producer, memo entry,
 downstream product, direct consumer, and cache hit retain one immutable
 allocation. `PullSession` and `World` already contain

@@ -698,6 +698,16 @@ fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, Observ
         if report.recursive_search.searches == 0 {
             return Err(fail("recursive-search population is empty".to_string()));
         }
+        if report.recursive_groups.is_empty() {
+            return Err(fail("successful recursive publication population is empty".to_string()));
+        }
+        let settled_members = report.recursive_groups.values().map(Vec::len).sum::<usize>();
+        let published_members = report.product_totals().recursive_members as usize;
+        if settled_members != published_members {
+            return Err(fail(format!(
+                "recursive settlement membership ({settled_members}) differs from publication membership ({published_members})"
+            )));
+        }
         if let Some(gap) = report.undefined_first_uses.first() {
             return Err(fail(format!("public trace used an undefined raw id first: {gap:?}")));
         }

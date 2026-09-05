@@ -207,8 +207,14 @@ per candidate. Displaced dependency history cannot participate in the search.
 Causal replay compares both these totals and the exact current-graph
 publisher/member identities. Search events are query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
-After `fz-kdt.4` changes the RuntimeDemand graph, `fz-tfn.2` re-establishes this
-same exact membership contract on that new graph.
+Settlement group handles join actual members within their retained session.
+The canonical report renders each publication as its sorted canonical member
+multiset, preserving equivalent-member and repeated-publication multiplicity.
+Session and group numbers do not enter that comparand: renumbering a group is
+irrelevant, while splitting it, merging it, or replacing a singleton group with
+an ordinary settlement changes the report. The cross-process fixture bundle
+checks this partition alongside exact publisher/member edges without another
+compiler invocation.
 
 ## In tests
 

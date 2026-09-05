@@ -445,6 +445,93 @@ fn raw_product_rows_remain_distinct_while_canonical_multisets_fold_them() {
 }
 
 #[test]
+fn canonical_recursive_groups_preserve_partitions_not_session_local_numbers() {
+    let report = |sessions: [u64; 2], groups: [Option<u64>; 4], nested| {
+        let mut events = ReplayEvents::default();
+        events.session("started", sessions[0]);
+        for (index, group) in groups.into_iter().enumerate() {
+            if index == 2 && nested {
+                events.session("started", sessions[1]);
+            }
+            events.push(
+                &["pull", "product", "settled"],
+                serde_json::json!({
+                    "product": {"kind": "synthetic", "member": index},
+                    "settlement": {"generation": 1, "changed": true, "group": group},
+                }),
+            );
+        }
+        if nested {
+            events.session("finished", sessions[1]);
+        }
+        events.session("finished", sessions[0]);
+        CausalReport::derive(&events.0).canonical_multiset()
+    };
+
+    let paired = report([1, 2], [Some(1); 4], true);
+    assert_eq!(
+        paired,
+        report([8, 9], [Some(42), Some(42), Some(7), Some(7)], true),
+        "group and session allocation order is not identity"
+    );
+    assert_ne!(
+        paired,
+        report([1, 2], [Some(1), Some(2), Some(1), Some(1)], true),
+        "equal product counts must not hide a split publication group"
+    );
+    assert_ne!(
+        report([1, 2], [Some(1), Some(2), Some(1), Some(1)], true),
+        report([1, 2], [None, Some(2), Some(1), Some(1)], true),
+        "a singleton recursive publication is not an ordinary settlement"
+    );
+    assert_ne!(
+        report([1, 2], [Some(1), Some(1), Some(2), Some(2)], false),
+        report([1, 2], [Some(1), Some(2), Some(1), Some(2)], false),
+        "AB/CD and AC/BD have equal group sizes but different exact membership"
+    );
+}
+
+#[test]
+fn canonical_recursive_groups_retain_equal_member_and_publication_multiplicity() {
+    let mut events = ReplayEvents::default();
+    for arrow in [1, 2] {
+        events.push(
+            &["canon", "type"],
+            serde_json::json!({"type_id": arrow, "canon": "int"}),
+        );
+    }
+    for group in [1, 2] {
+        events.session("started", 1);
+        for arrow in [1, 2] {
+            events.push(
+                &["pull", "product", "settled"],
+                serde_json::json!({
+                    "product": {"kind": "synthetic", "arrow": arrow},
+                    "settlement": {"generation": 1, "changed": group == 1, "group": group},
+                }),
+            );
+        }
+        events.session("finished", 1);
+    }
+    let report = CausalReport::derive(&events.0);
+    assert_eq!(
+        report.recursive_groups.len(),
+        2,
+        "retained session reactivation keeps distinct publications"
+    );
+    let groups = report
+        .canonical_multiset()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("recursive_group\u{1}"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        groups,
+        vec![("recursive_group\u{1}[0,0]".to_string(), 2)],
+        "equivalent raw members and repeated groups both retain multiplicity"
+    );
+}
+
+#[test]
 fn canonical_product_causality_distinguishes_live_fact_use_modes() {
     let report = |fact_use| {
         let product = serde_json::json!({"kind": "synthetic", "root_id": 1});

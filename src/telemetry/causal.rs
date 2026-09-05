@@ -497,6 +497,9 @@ pub struct CausalReport {
     pub products: HashMap<RawProductKey, ProductWork>,
     pub product_evaluations: Vec<ProductEvaluationRecord>,
     pub product_publications: Vec<ProductPublicationRecord>,
+    /// Actual settlement members joined by session-local publication identity.
+    /// Numeric handles never participate in canonical comparison.
+    pub recursive_groups: HashMap<(u64, u64), Vec<RawProductKey>>,
     pub recursive_search: RecursiveSearchWork,
     pub recursive_searches: Vec<RecursiveSearchRecord>,
     pub sessions: SessionWork,
@@ -626,6 +629,18 @@ impl CausalReport {
             put_count(
                 &mut multiset,
                 format!("product_publication\u{1}{}", render_identity(&signature)),
+                1,
+            );
+        }
+        for members in self.recursive_groups.values() {
+            let mut members = members
+                .iter()
+                .map(|member| product_identity(member, &product_names, &identities))
+                .collect::<Vec<_>>();
+            members.sort_unstable();
+            put_count(
+                &mut multiset,
+                format!("recursive_group\u{1}{}", render_identity(&serde_json::json!(members))),
                 1,
             );
         }
@@ -784,6 +799,9 @@ fn canonical_identities(
     for publication in &report.product_publications {
         remember_product(&publication.publisher);
         remember_product(&publication.peer);
+    }
+    for member in report.recursive_groups.values().flatten() {
+        remember_product(member);
     }
     for search in &report.recursive_searches {
         remember_product(&search.product);
@@ -1388,6 +1406,14 @@ impl Replay {
             return;
         };
         let key = RawProductKey::new(product);
+        if let Some(group) = event.metadata["settlement"]["group"].as_u64() {
+            let session = self.sessions.last().expect("group settlement outside a session").id;
+            self.report
+                .recursive_groups
+                .entry((session, group))
+                .or_default()
+                .push(key.clone());
+        }
         let cross_request = self.has_completed_request
             && generation == Some(1)
             && changed
