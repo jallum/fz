@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.34",
+    "fz-tfn.12",
     "fz-tfn.26",
     "fz-tfn.30"
   ],
@@ -31,5 +32,5 @@
   "status": "in_progress",
   "title": "Make blocked-wait expansion and settled arbitration edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-05T17:08:25Z"
+  "updated_at": "2026-09-05T17:08:26Z"
 }

@@ -5,6 +5,7 @@
     "fz-tfn.30"
   ],
   "blocks": [
+    "fz-kdt.46",
     "fz-tfn.13",
     "fz-tfn.39",
     "fz-tfn.40"
@@ -18,5 +19,5 @@
   "status": "in_progress",
   "title": "Delete the BackendProgram scheduler bridge after macro roots join persistent products",
   "type": "task",
-  "updated_at": "2026-09-05T17:06:42Z"
+  "updated_at": "2026-09-05T17:08:26Z"
 }
