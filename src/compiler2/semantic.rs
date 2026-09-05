@@ -1751,7 +1751,12 @@ mod tests {
                 ..JobEffects::default()
             },
         );
-        assert!(first.changed.iter().any(|change| change.key == input_fact));
+        assert!(
+            first
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(input_fact.clone()))
+        );
         assert!(first.wakes.iter().any(|wake| wake.job == reader));
         let input_revision = world.fact_revision(&input_fact);
 
@@ -1900,8 +1905,18 @@ mod tests {
         assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
 
         let retracted = world.complete_job(writer.clone(), JobEffects::default());
-        assert!(retracted.changed.iter().any(|change| change.key == fact));
-        assert!(retracted.changed.iter().any(|change| change.key == inputs_fact));
+        assert!(
+            retracted
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
+        );
+        assert!(
+            retracted
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
+        );
         assert!(world.runtime_demand(&executable).is_none());
         assert!(world.runtime_demand_inputs(&executable).is_none());
 
@@ -1931,8 +1946,18 @@ mod tests {
                 ..JobEffects::default()
             },
         );
-        assert!(reappeared.changed.iter().any(|change| change.key == fact));
-        assert!(reappeared.changed.iter().any(|change| change.key == inputs_fact));
+        assert!(
+            reappeared
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
+        );
+        assert!(
+            reappeared
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
+        );
         assert!(reappeared.wakes.iter().any(|wake| wake.job == full_reader));
         assert!(reappeared.wakes.iter().any(|wake| wake.job == input_reader));
         assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));

@@ -122,7 +122,7 @@ fn run_contract(case: ContractCase<'_>) {
     let drive_start = Rc::clone(&drive_span_id);
     let drive_outcome = Rc::new(RefCell::new(None));
     let outcome_sink = Rc::clone(&drive_outcome);
-    tel.attach_raw_span0_1::<DriveOutcome<Job, super::FactKey>, _, _, _>(
+    tel.attach_raw_span0_1::<DriveOutcome<Job, super::drive::DependencyKey>, _, _, _>(
         &["fz", "compiler2", "drive"],
         move |_, span_id, _| drive_start.set(span_id),
         move |_, _, _, _, outcome| *outcome_sink.borrow_mut() = Some(outcome.clone()),
@@ -830,7 +830,7 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
         .drive_root_backend_work_starts(root)
         .unwrap_or_else(|error| panic!("{name} should drive to its backend product: {error}"));
     assert!(
-        !compiler.world().backend_program(root).executables.is_empty(),
+        !compiler.retained_backend_program(root).executables.is_empty(),
         "{name} should settle a backend product with executable functions",
     );
 

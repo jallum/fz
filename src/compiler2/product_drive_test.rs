@@ -29,19 +29,55 @@
 //! calls the same inner loop with the real 50,000-job budgets.
 
 use super::World;
-use super::drive::FactKey;
 use super::drive::Job;
+use super::drive::{DependencyKey, FactKey};
 use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
 use super::pull::{
-    ProductFailure, ProductKey, ProductProducers, ProductProjection, ProductSettlement, ProductValue, PullOutcome,
-    PullSession, PullWait, WorldProductProducers,
+    ProductFailure, ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
+    WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+fn drive_retained_backend_fatal(
+    world: &mut World,
+    tel: &ConfiguredTelemetry,
+    root: RootId,
+) -> Result<std::rc::Rc<super::BackendProgram>, FatalError> {
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::with_retained_root_request(
+        world,
+        tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, _| {
+            super::product_drive::drive_active_root_backend_product(world, tel, sessions, root, driver)
+        },
+    )
+}
+
+fn apply_world_fact_movements(
+    driver: &mut super::pull::ProductDriver<'_, ConfiguredTelemetry>,
+    movements: &[super::FactMovement<DependencyKey>],
+) {
+    let facts = movements
+        .iter()
+        .map(|movement| {
+            let DependencyKey::Fact(key) = &movement.key else {
+                panic!("this semantic completion must move only World facts");
+            };
+            super::FactMovement {
+                key: key.clone(),
+                state: movement.state,
+            }
+        })
+        .collect::<Vec<_>>();
+    driver.apply_fact_movements(&facts);
+}
 
 fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
     event
@@ -52,7 +88,7 @@ fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
 }
 
 fn some_fact() -> FactUse<FactKey> {
-    FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
+    FactUse::settled(FactKey::RootEntry(RootId::for_test(7)))
 }
 
 struct FailingNativeProducers {
@@ -71,9 +107,9 @@ impl ProductProducers for FailingNativeProducers {
         let telemetry = ConfiguredTelemetry::new();
         match key {
             ProductKey::RootBackendProduct(_) => PullOutcome::Produced(ProductValue::RootBackendProduct(
-                std::rc::Rc::new(super::artifact::RootBackendProductAnswer {
+                super::artifact::RootBackendProductAnswer {
                     program: std::rc::Rc::clone(&self.backend),
-                    transport: super::artifact::MaterializedTransportPlan {
+                    transport: std::rc::Rc::new(super::artifact::MaterializedTransportPlan {
                         entry: self.entry.clone(),
                         executable_membership: Box::default(),
                         position_layouts: Vec::new(),
@@ -83,8 +119,8 @@ impl ProductProducers for FailingNativeProducers {
                         callable_owners: Box::default(),
                         callable_facts: std::collections::HashMap::new(),
                         boundary_facts: std::collections::HashMap::new(),
-                    },
-                }),
+                    }),
+                },
             )),
             ProductKey::RootBackendContent(root) => {
                 let dependency = ProductKey::RootBackendProduct(*root);
@@ -122,7 +158,7 @@ impl ProductProducers for FailingNativeProducers {
 }
 
 #[test]
-fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry() {
+fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry() {
     let root = RootId::for_test(0);
     let tel = ConfiguredTelemetry::new();
     let backend_requests = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -133,14 +169,6 @@ fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry
             if key == &ProductKey::RootBackendProduct(root) {
                 observed_backend_requests.set(observed_backend_requests.get() + 1);
             }
-        },
-    );
-    let projections = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let projected = std::rc::Rc::clone(&projections);
-    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
-        &["fz", "compiler2", "pull", "product", "projected"],
-        move |_, _, _, key, projection, step| {
-            projected.borrow_mut().push((key.clone(), *projection, step.clone()));
         },
     );
     let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -174,7 +202,6 @@ fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry
         entry,
         fail_once: true,
     };
-    assert!(world.demand(Job::BuildBackendProduct(root)));
     let failed = super::product_drive::with_retained_root_request(
         &mut world,
         &tel,
@@ -200,18 +227,12 @@ fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry
     let session_id = session.id().expect("observed retained session identity");
     assert_eq!(finished.borrow().as_slice(), [Some(session_id)]);
     assert_eq!(session.memo().get(&ProductKey::NativeProgram(root)), None);
-    assert!(std::rc::Rc::ptr_eq(&world.backend_program(root), &backend));
-    let projection_events = projections.borrow();
-    let [(product, projection, step)] = projection_events.as_slice() else {
-        panic!("failed native request must publish one exact backend projection: {projection_events:?}");
+    let Some(ProductValue::RootBackendProduct(answer)) = session.memo().get(&ProductKey::RootBackendProduct(root))
+    else {
+        panic!("failed native production must retain its completed backend prerequisite");
     };
-    assert_eq!(product, &ProductKey::RootBackendProduct(root));
-    assert_eq!(projection.session(), session_id);
-    assert_eq!(projection.generation(), 1);
-    assert_eq!(step.movements.len(), 1);
-    assert_eq!(step.movements[0].key, FactKey::BackendProgram(root));
-    drop(projection_events);
-    assert!(!world.work_graph.pending(&Job::BuildBackendProduct(root)));
+    assert!(std::rc::Rc::ptr_eq(&answer.program, &backend));
+    drop(session);
 
     let retry = super::product_drive::with_retained_root_request(
         &mut world,
@@ -234,13 +255,8 @@ fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry
     );
     assert_eq!(retry, Ok(()));
     assert_eq!(sessions.counts().0, 1);
-    assert_eq!(sessions.get(root).and_then(PullSession::id), Some(session_id));
+    assert_eq!(sessions.get(root).and_then(|session| session.id()), Some(session_id));
     assert_eq!(finished.borrow().as_slice(), [Some(session_id), Some(session_id)]);
-    assert_eq!(
-        projections.borrow().len(),
-        1,
-        "retry must reuse the published backend projection"
-    );
     assert_eq!(
         backend_requests.get(),
         1,
@@ -296,12 +312,12 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             ignition: 0,
             changed_revision_wake: 20,
             activation_frontier: 2,
-            blocked_waiter_expansion: 25,
+            blocked_waiter_expansion: 24,
             unclassified: 0,
             root_scans: 0,
             drain_discovery_sweeps: 0,
         },
-        "cold native production must preserve its exact sanctioned work-start census",
+        "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
     );
     let native_key = ProductKey::NativeProgram(root);
     let cold = compiler.retained_native_program(root);
@@ -311,8 +327,17 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        79,
-        "cold native production must preserve its exact product-evaluation trace census",
+        81,
+        "cold native production includes the definition macro's direct backend-content demand",
+    );
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, _)| { matches!(key, ProductKey::RootBackendContent(owner) if *owner != root) })
+            .count(),
+        2,
+        "the definition macro evaluates its content dependency once to wait and once to consume the backend answer",
     );
     assert_eq!(
         evaluations
@@ -473,38 +498,6 @@ fn jit_and_aot_share_one_retained_native_product() {
 }
 
 #[test]
-fn native_request_completes_the_existing_backend_projection_job_from_the_same_pull() {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("native_with_queued_backend_projection.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert!(compiler.demand(Job::BuildBackendProduct(root)));
-    compiler
-        .compile_root_jit(root)
-        .expect("native product with queued backend projection");
-
-    assert!(compiler.world().has_fact(&FactKey::BackendProgram(root)));
-    assert!(!compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
-    assert_eq!(
-        compiler.retained_product_generation(root, &ProductKey::RootBackendProduct(root)),
-        Some(1)
-    );
-    assert_eq!(
-        compiler.retained_product_generation(root, &ProductKey::NativeProgram(root)),
-        Some(1)
-    );
-}
-
-#[test]
 fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_retirement() {
     let tel = ConfiguredTelemetry::new();
     let product_settlements = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, ProductSettlement)>::new()));
@@ -519,9 +512,10 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     );
     let runtime_demand_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::ExecutableKey>::new()));
     let observed_runtime_demand_runs = std::rc::Rc::clone(&runtime_demand_runs);
-    let runtime_demand_wakes = std::rc::Rc::new(std::cell::RefCell::new(
-        Vec::<(super::ExecutableKey, FactUse<FactKey>)>::new(),
-    ));
+    let runtime_demand_wakes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
+        super::ExecutableKey,
+        FactUse<DependencyKey>,
+    )>::new()));
     let observed_runtime_demand_wakes = std::rc::Rc::clone(&runtime_demand_wakes);
     tel.attach_raw_event2::<World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
@@ -661,7 +655,13 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     for (executable, cause) in runtime_demand_wakes.borrow().iter() {
         let final_reads = compiler
             .world()
-            .job_reads(&Job::DeriveRuntimeDemand(executable.clone()));
+            .job_reads(&Job::DeriveRuntimeDemand(executable.clone()))
+            .into_iter()
+            .map(|read| match read {
+                FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
+                FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
+            })
+            .collect::<std::collections::HashSet<_>>();
         let same_fact_after_presence = match cause {
             FactUse::Settled(fact) => final_reads.contains(&FactUse::current(fact.clone())),
             FactUse::Current(_) => false,
@@ -845,10 +845,10 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     assert!(!compiler.retire_root_products(main));
     assert_eq!(compiler.run_root_interp(main), Ok(3));
     assert_eq!(compiler.retained_product_counts().0, sessions_before_retirement);
-    assert!(std::rc::Rc::ptr_eq(
-        &compiler.retained_backend_program(main),
-        &compiler.world().backend_program(main),
-    ));
+    assert_eq!(
+        compiler.retained_product_generation(main, &ProductKey::RootBackendProduct(main)),
+        Some(1)
+    );
 }
 
 #[test]
@@ -997,21 +997,33 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_before_nested_product.fz".to_string()),
-        text: "fn unrelated(), do: 9\n".to_string(),
+        text: "defmacro define_answer() do\n  {:fn, %{}, [{:answer, %{}, []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
+            .to_string(),
     });
-    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    let before_drive = compiler.world().work_start_tally();
     assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
-    assert_eq!(finished.borrow().len(), cold_events + 1);
-    assert_eq!(
-        finished.borrow()[cold_events],
-        (root, super::WorkStartTally::default()),
-        "a root session nested in standalone drive must not inherit its owner's prefix"
+    let nested_events = finished.borrow().len();
+    assert!(
+        nested_events > cold_events,
+        "the item macro must enter a nested retained product session"
+    );
+    let mut nested_work = super::WorkStartTally::default();
+    for (nested_root, work) in &finished.borrow()[cold_events..] {
+        assert_ne!(*nested_root, root, "the unrelated runtime root must stay cold");
+        nested_work.add(*work);
+    }
+    let total_work = compiler.world().work_start_tally().delta_since(before_drive);
+    assert_ne!(nested_work, super::WorkStartTally::default());
+    assert_ne!(
+        total_work.delta_since(nested_work),
+        super::WorkStartTally::default(),
+        "standalone source work before macro demand must remain outside nested session attribution"
     );
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
-    assert_eq!(finished.borrow().len(), cold_events + 2);
+    assert_eq!(finished.borrow().len(), nested_events + 1);
     assert_eq!(
-        finished.borrow()[cold_events + 1],
+        finished.borrow()[nested_events],
         (root, super::WorkStartTally::default()),
         "the next direct cache hit must not inherit completed standalone work"
     );
@@ -1045,7 +1057,6 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     let cold_events = finished.borrow().len();
     let before_failure = compiler.world().work_start_tally();
-    assert!(compiler.demand(Job::BuildBackendProduct(root)));
     compiler.submit_code(CodeSubmission {
         name: Some("fatal_reconcile_edit.fz".to_string()),
         text: "fn broken(\n".to_string(),
@@ -1057,7 +1068,6 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     assert_eq!(after_failure_events, cold_events + 1);
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
     assert_ne!(failed_delta, super::WorkStartTally::default());
-    assert!(compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert_eq!(finished.borrow().len(), after_failure_events + 1);
@@ -1216,8 +1226,8 @@ fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
     assert_eq!(compiler.run_root_interp(main), Ok(7));
     let fresh = compiler.retained_backend_program(main);
     assert!(
-        std::rc::Rc::ptr_eq(&retained, &fresh),
-        "retirement must not split the canonical root handle when its reachable schema inventory is equal"
+        !std::rc::Rc::ptr_eq(&retained, &fresh),
+        "retirement releases memo ownership; a new session builds a fresh canonical handle"
     );
     assert_eq!(
         retained.struct_schemas, fresh.struct_schemas,
@@ -1294,8 +1304,8 @@ fn root_backend_memo_depends_on_exactly_its_packaged_struct_facts() {
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the exact struct dependency fixture should settle");
-    let dependencies = driver
-        .session()
+    let session = driver.session();
+    let dependencies = session
         .memo()
         .fact_dependencies(&ProductKey::RootBackendProduct(root))
         .expect("the root product should retain its fact dependencies");
@@ -1468,85 +1478,6 @@ fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mir
 }
 
 #[test]
-fn product_projection_only_telemetry_still_carries_exact_session_request_and_generation() {
-    let tel = ConfiguredTelemetry::new();
-    let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let sink = std::rc::Rc::clone(&observed);
-    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
-        &["fz", "compiler2", "pull", "product", "projected"],
-        move |_, _, _, product, projection, step| {
-            sink.borrow_mut().push((product.clone(), *projection, step.clone()));
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("projection_identity.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    compiler
-        .drive_root_to_dump_stage(root, DumpStage::Native)
-        .expect("native request");
-
-    let observed = observed.borrow();
-    assert!(!observed.is_empty());
-    for (product, projection, step) in observed.iter() {
-        let ProductKey::RootBackendProduct(projected_root) = product else {
-            panic!("only root backend products may be projected: {product:?}");
-        };
-        assert!(projection.session().get() > 0);
-        assert!(projection.request().get() > 0);
-        assert_eq!(projection.generation(), 1);
-        assert_eq!(step.movements.len(), 1);
-        assert_eq!(step.movements[0].key, FactKey::BackendProgram(*projected_root));
-    }
-    let (_, projection, _) = observed
-        .iter()
-        .find(|(product, _, _)| product == &ProductKey::RootBackendProduct(root))
-        .expect("requested root projection");
-    assert!(projection.session().get() > 0);
-    assert!(projection.request().get() > 0);
-}
-
-#[test]
-fn retained_projection_is_not_reported_as_formula_work_when_only_applied_is_observed() {
-    let tel = ConfiguredTelemetry::new();
-    let applied_backend_products = std::rc::Rc::new(std::cell::Cell::new(0));
-    let sink = std::rc::Rc::clone(&applied_backend_products);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
-        &["fz", "compiler2", "work_graph", "applied"],
-        move |_, _, _, _, completion| {
-            if matches!(completion.job, Job::BuildBackendProduct(_)) {
-                sink.set(sink.get() + 1);
-            }
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("projection_classification.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    compiler
-        .drive_root_to_dump_stage(root, DumpStage::Native)
-        .expect("native request");
-
-    assert_eq!(applied_backend_products.get(), 0);
-}
-
-#[test]
 fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
     let order = |non_empty_first: bool| {
         let mut world = World::new();
@@ -1675,7 +1606,7 @@ fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::BackendProgr
     compiler
         .compile_root_jit(root)
         .unwrap_or_else(|error| panic!("expected the fixture to compile, got {error}"));
-    let program = compiler.world().backend_program(root);
+    let program = compiler.retained_backend_program(root);
     (jobs.take(), program)
 }
 
@@ -1982,11 +1913,10 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let mut world = World::new();
     let root = world.submit_root(None, "totally_undefined_entry".to_string(), 0, ExecutableNeed::Value);
 
-    world.demand(Job::BuildBackendProduct(root));
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
+    let outcome = drive_retained_backend_fatal(&mut world, &tel, root);
     assert!(
-        matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
-        "the backend product job should fail fatally when its entry is never defined, got: {outcome:?}"
+        matches!(&outcome, Err(FatalError)),
+        "the retained backend product should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
     let fact = FactUse::settled(FactKey::RootEntry(root));
@@ -2041,7 +1971,7 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     let tel = ConfiguredTelemetry::new();
     let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&steps);
-    tel.attach_raw_event1::<super::AppliedStep<Job, FactKey>, _>(
+    tel.attach_raw_event1::<super::AppliedStep<Job, DependencyKey>, _>(
         &["fz", "compiler2", "work_graph", "quiesced"],
         move |_, _, _, step| observed.borrow_mut().push(step.clone()),
     );
@@ -2109,7 +2039,7 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
             .iter()
             .map(|change| change.key.clone())
             .collect::<std::collections::HashSet<_>>(),
-        std::collections::HashSet::from([left, right]),
+        std::collections::HashSet::from([DependencyKey::Fact(left), DependencyKey::Fact(right)]),
         "the atomic step must retain both typed readiness changes"
     );
 }
@@ -2257,11 +2187,10 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     );
     let root = world.submit_root(None, "inc".to_string(), 1, ExecutableNeed::Value);
 
-    world.demand(Job::BuildBackendProduct(root));
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
+    let outcome = drive_retained_backend_fatal(&mut world, &tel, root);
     assert!(
-        matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
-        "the backend product job should fail fatally when its root targets a macro, got: {outcome:?}"
+        matches!(&outcome, Err(FatalError)),
+        "the retained backend product should fail fatally when its root targets a macro, got: {outcome:?}"
     );
 
     // `job_failed` forwards the failed job's own `FatalError` unchanged, so
@@ -2341,7 +2270,8 @@ fn settled_products_depend_only_on_settled_products() {
 
     let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the reducer root should settle");
-    let memo = driver.session().memo();
+    let session = driver.session();
+    let memo = session.memo();
 
     let unsettled = memo
         .dependency_edges()
@@ -2397,7 +2327,8 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the executable-fact consumer fixture should settle");
-    let memo = driver.session().memo();
+    let session = driver.session();
+    let memo = session.memo();
 
     let mut observed = std::collections::BTreeSet::new();
     for key in memo.produced_keys() {
@@ -2438,9 +2369,9 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
         Job,
         bool,
-        Vec<super::FactChange<FactKey>>,
-        Vec<super::FactMovement<FactKey>>,
-        Vec<FactUse<FactKey>>,
+        Vec<super::FactChange<DependencyKey>>,
+        Vec<super::FactMovement<DependencyKey>>,
+        Vec<FactUse<DependencyKey>>,
     )>::new()));
     let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
     tel.attach_raw_event2::<World, super::JobCompletion, _>(
@@ -2492,7 +2423,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         .fact_revision(&prerequisite)
         .expect("the lowered body prerequisite should already be published");
     let prerequisite_job = Job::LowerFunction(executable.activation.function);
-    let observer = Job::BuildBackendProduct(RootId::for_test(u32::MAX));
+    let observer = Job::DefineFunction(super::FunctionId::for_test(u32::MAX));
     let observer_completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         observer.clone(),
         super::drive::JobEffects {
@@ -2517,7 +2448,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let executable_fact_dirtied = dirtied
         .movements
         .iter()
-        .find(|movement| movement.key == fact)
+        .find(|movement| movement.key == DependencyKey::Fact(fact.clone()))
         .unwrap_or_else(|| {
             panic!(
                 "dirtying a settled prerequisite must make its executable-fact reader unready: {:?}",
@@ -2536,7 +2467,8 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         dirtied
             .wakes
             .iter()
-            .any(|wake| wake.job == producer && wake.cause == FactUse::settled(prerequisite.clone())),
+            .any(|wake| wake.job == producer
+                && wake.cause == FactUse::settled(DependencyKey::Fact(prerequisite.clone()))),
         "the moved settled prerequisite must wake its exact executable-fact producer: {:?}",
         dirtied.wakes,
     );
@@ -2544,7 +2476,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         dirtied
             .wakes
             .iter()
-            .all(|wake| wake.cause != FactUse::current(prerequisite.clone())),
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(prerequisite.clone()))),
         "the readiness-only prerequisite movement must not wake a Current reader: {:?}",
         dirtied.wakes,
     );
@@ -2552,7 +2484,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         dirtied
             .wakes
             .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(fact.clone())),
+            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
         "the downstream executable-fact readiness movement must wake its Settled reader: {:?}",
         dirtied.wakes,
     );
@@ -2560,7 +2492,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         dirtied
             .wakes
             .iter()
-            .all(|wake| wake.cause != FactUse::current(fact.clone())),
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
         "the downstream executable-fact readiness movement must not wake its Current reader: {:?}",
         dirtied.wakes,
     );
@@ -2571,7 +2503,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
 
     let stable_probe = ProductKey::OutgoingEdgeFrontier(RootId::for_test(u32::MAX));
     assert_eq!(driver.session().memo().generation(&stable_probe), None);
-    driver.apply_fact_movements(&dirtied.movements);
+    apply_world_fact_movements(&mut driver, &dirtied.movements);
     assert!(matches!(
         driver.pull(&mut WorldProductProducers::new(&mut world, &tel), stable_probe.clone()),
         PullOutcome::Produced(_)
@@ -2600,7 +2532,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         !world.fact_is_settled(&fact),
         "the executable fact must remain dirty until its own producer concludes"
     );
-    driver.apply_fact_movements(&prerequisite_settled.movements);
+    apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
 
     let mut settled = None;
     while let Some(ready) = world.next_ready_job(None) {
@@ -2610,12 +2542,12 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         let effects = super::jobs::run(&mut super::drive::ExecutionContext::new(&mut world, &tel), &ready)
             .expect("the unchanged prerequisite cone should reproduce");
         let completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
-        driver.apply_fact_movements(&completion.movements);
+        apply_world_fact_movements(&mut driver, &completion.movements);
         if ready == producer
             && completion
                 .changed
                 .iter()
-                .any(|change| change.key == fact && change.new_settled)
+                .any(|change| change.key == DependencyKey::Fact(fact.clone()) && change.new_settled)
         {
             settled = Some(completion);
         }
@@ -2624,7 +2556,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let executable_fact_settled = settled
         .changed
         .iter()
-        .find(|change| change.key == fact)
+        .find(|change| change.key == DependencyKey::Fact(fact.clone()))
         .unwrap_or_else(|| {
             panic!(
                 "the equal conclusion must restore executable-fact readiness: changed={:?}, movements={:?}",
@@ -2647,7 +2579,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         settled
             .wakes
             .iter()
-            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(fact.clone())),
+            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
         "equal settlement must trace the downstream Settled executable-fact wake: {:?}",
         settled.wakes,
     );
@@ -2655,7 +2587,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         settled
             .wakes
             .iter()
-            .all(|wake| wake.cause != FactUse::current(fact.clone())),
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
         "equal settlement must not trace a downstream Current executable-fact wake: {:?}",
         settled.wakes,
     );
@@ -2684,22 +2616,30 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     assert!(
         trace.iter().any(|(job, _, _, _, blocked)| {
             job == &producer
-                && blocked
-                    .iter()
-                    .any(|fact| matches!(fact, FactUse::Settled(FactKey::ActivationAnalyzed(_))))
+                && blocked.iter().any(|fact| {
+                    matches!(
+                        fact,
+                        FactUse::Settled(DependencyKey::Fact(FactKey::ActivationAnalyzed(_)))
+                    )
+                })
         }),
         "the moved prerequisite cone must trace a non-initial executable-fact run blocked on its exact unsettled input: {trace:?}",
     );
     let (traced_job, rebased, changes, movements, blocked) = trace
         .iter()
-        .find(|(job, _, changes, _, _)| job == &producer && changes.iter().any(|change| change.key == fact))
+        .find(|(job, _, changes, _, _)| {
+            job == &producer
+                && changes
+                    .iter()
+                    .any(|change| change.key == DependencyKey::Fact(fact.clone()))
+        })
         .expect("the trace must carry the equal executable-fact conclusion");
     assert_eq!(traced_job, &producer);
     assert!(!rebased, "a readiness-only input movement is not a ground shift");
     assert!(blocked.is_empty(), "the equal executable-fact conclusion must be final");
     assert!(
         changes.iter().any(|change| {
-            change.key == fact
+            change.key == DependencyKey::Fact(fact.clone())
                 && change.old_revision == Some(revision)
                 && change.new_revision == Some(revision)
                 && !change.old_settled
@@ -2708,9 +2648,11 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         "the work-graph trace must retain the equal readiness change: {changes:?}",
     );
     assert!(
-        movements.iter().any(|movement| movement.key == fact
-            && movement.state.revision == Some(revision)
-            && movement.state.settled),
+        movements
+            .iter()
+            .any(|movement| movement.key == DependencyKey::Fact(fact.clone())
+                && movement.state.revision == Some(revision)
+                && movement.state.settled),
         "the work-graph trace must retain the fact's restored settled state: {movements:?}",
     );
 }
@@ -2820,7 +2762,7 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
     let moved_readers = movement
         .wakes
         .iter()
-        .filter(|wake| wake.cause == FactUse::settled(callsite_fact.clone()))
+        .filter(|wake| wake.cause == FactUse::settled(DependencyKey::Fact(callsite_fact.clone())))
         .filter_map(|wake| match &wake.job {
             Job::DeriveExecutableFacts(executable) => Some(executable.clone()),
             _ => None,

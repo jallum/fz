@@ -282,9 +282,7 @@
 
     activations: ActivationMap,
     callsites: CallSiteMap,
-    backend: BackendProgramMap,
-
-    work_graph: Scheduler&lt;Job, FactKey&gt;,
+    work_graph: Scheduler&lt;Job, DependencyKey&gt;,
 }</code></pre>
       <div class="grid">
         <div class="card">
@@ -320,7 +318,13 @@
         <code>CallableConstruction(position)</code> pulled only when a demanded executable names
         them. The final
         <code>RootBackendProduct(root)</code> follows exact reachable backend product values and
-        owns their symbolic plan beside one dense <code>BackendProgram</code>.
+        owns their symbolic plan beside one shared dense <code>BackendProgram</code>.
+        <code>Compiler2</code> retains user and macro root sessions in
+        <code>ProductSessions</code>; each session's <code>ProductMemo</code> owns these
+        artifact answers. <code>RootBackendContent(root)</code> exposes the backend
+        allocation independently of transport metadata. Source jobs read that product
+        directly when invoking macros, through the same scheduler dependency mechanism
+        used for World facts.
       </p>
     </section>
 
@@ -343,8 +347,6 @@
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     AnalyzeActivation(ActivationKey),
-    BuildMacroExecutable(FunctionId),
-    LowerNativeProgram(RootId),
 }</code></pre>
       <p>
         These jobs publish semantic facts. Backend artifacts are pulled separately by
@@ -819,7 +821,7 @@ MaterializedExecutable(E)
         </div>
       </div>
       <p>
-        Durable Compiler2 artifact facts are:
+        Durable Compiler2 artifact answers carry:
       </p>
       <ul>
         <li>selected call edges</li>
@@ -830,7 +832,7 @@ MaterializedExecutable(E)
         <li>settled clause-entry dispatch</li>
         <li>stable emission inventory</li>
         <li>backend-ready structured bodies with settled executable targets</li>
-        <li>native-codegen handoff facts derived from <code>BackendProgram</code></li>
+        <li>the memo-owned <code>NativeProgram</code> derived from <code>RootBackendContent</code></li>
       </ul>
       <p>
         Rejected baggage stays out of Compiler2 facts:
@@ -1177,8 +1179,9 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
         The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
         state-defining events such as <code>function.defined</code>,
-        <code>callsite.defined</code>, <code>backend_program.defined</code>,
-        <code>native_program.defined</code>, and <code>pull.session.finished</code>. Tests
+        <code>callsite.defined</code>, retained artifact settlements through
+        <code>pull.product.settled</code>, product dependency movements through
+        <code>work_graph.dependencies_moved</code>, and <code>pull.session.finished</code>. Tests
         observe those events instead of poking through world internals.
       </p>
       <div class="grid">

@@ -1905,16 +1905,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // The two retained backend projections are product completions,
-            // not scheduler-formula evaluations.
-            evaluations: 363,
-            initial: 176,
+            // Macro consumers read their retained content products directly.
+            evaluations: 361,
+            initial: 174,
             content_caused: 169,
             readiness_caused: 18,
             uncaused: 0,
-            changed_outputs: 213,
+            changed_outputs: 211,
             unchanged_outputs: 150,
-            wakes: 181,
+            wakes: 179,
             blocked_completions: 168,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
@@ -1960,7 +1959,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        (396, 396, 396, 0, 16, 0),
+        // Each macro owns one retained RootBackendContent view.
+        (398, 398, 398, 0, 16, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(

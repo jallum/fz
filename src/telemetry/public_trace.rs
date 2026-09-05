@@ -22,7 +22,7 @@
 //! the `Compiler2` — and with it the `ConfiguredTelemetry` and the backend's
 //! last `Rc` — drop, and only then parses the shared buffer.
 
-use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FactKey, Job, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, DependencyKey, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 
 use super::ConfiguredTelemetry;
 use super::capture::vec_writer;
@@ -46,7 +46,7 @@ pub struct PublicSpan {
 /// order. Mirrors `ExUnit.CaptureLog.with_log`: the action's result
 /// (`outcome`) and the artifact it produced travel together.
 pub struct PublicTrace {
-    pub outcome: DriveOutcome<Job, FactKey>,
+    pub outcome: DriveOutcome<Job, DependencyKey>,
     events: Vec<PublicEvent>,
 }
 

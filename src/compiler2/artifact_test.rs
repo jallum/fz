@@ -1,13 +1,11 @@
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
 use crate::compiler2::artifact::{
-    BackendCallableReturn, BackendExecutable, BackendProgram, BackendProgramMap, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendValueLayout, EffectSummary, MacroExecutable, MacroExecutableMap, NativeBody,
-    NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi,
-    NativeExecutableEntry, NativeProgram,
+    BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
+    BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -65,52 +63,6 @@ fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     }
 
     let _ = assert_closed as fn(BackendProgram);
-}
-
-#[test]
-fn backend_program_map_retains_canonical_handle_without_moving_equal_state() {
-    let root = RootId::for_test(0);
-    let program = || BackendProgram {
-        entry: 0,
-        atom_names: Vec::new(),
-        struct_schemas: Default::default(),
-        executables: Vec::new(),
-        construction_wrappers: Vec::new(),
-    };
-    let shared = Rc::new(program());
-    let equal_but_distinct = Rc::new(program());
-    let mut programs = BackendProgramMap::new();
-
-    assert!(programs.define(root, Rc::clone(&shared)));
-    assert!(!programs.define(root, Rc::clone(&shared)));
-    assert!(!programs.define(root, Rc::clone(&equal_but_distinct)));
-    assert!(Rc::ptr_eq(programs.get(root).unwrap(), &shared));
-}
-
-#[test]
-fn macro_executable_map_retains_canonical_handle_without_moving_equal_state() {
-    let root = RootId::for_test(0);
-    let function = FunctionId::for_test(0);
-    let program = || BackendProgram {
-        entry: 0,
-        atom_names: Vec::new(),
-        struct_schemas: Default::default(),
-        executables: Vec::new(),
-        construction_wrappers: Vec::new(),
-    };
-    let shared = Rc::new(program());
-    let mut executables = MacroExecutableMap::new();
-    let macro_executable = |program| MacroExecutable {
-        root,
-        backend_revision: 1,
-        program,
-    };
-
-    assert!(executables.define(function, macro_executable(Rc::clone(&shared))));
-    assert!(!executables.define(function, macro_executable(Rc::clone(&shared))));
-    let equal_but_distinct = Rc::new(program());
-    assert!(!executables.define(function, macro_executable(Rc::clone(&equal_but_distinct))));
-    assert!(Rc::ptr_eq(&executables.get(function).unwrap().program, &shared));
 }
 
 impl TestTransportShapes {

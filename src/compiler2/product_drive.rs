@@ -3,18 +3,18 @@
 //! Backend and native front doors use one session lifecycle and one stack-based
 //! pull to the same fixed point: pop a product key, pull it, and expand its
 //! exact product/fact waits until the requested root product settles or the
-//! budget runs out. A native pull publishes the backend product it discovers
+//! budget runs out. A native pull retains the backend product it discovers
 //! before lowering continues. The test-only bounded runner returns its fresh
 //! driver so failure-contract tests can inspect it. `ProductDriveError` keeps
 //! the production `String` and scheduler `FatalError` surfaces distinct without
 //! duplicating the loop.
 use std::rc::Rc;
 
-use super::drive::{ExecutionContext, FactKey};
+use super::drive::{ExecutionContext, FactKey, ProductAddress};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::pull::{
-    ProductDriver, ProductFailure, ProductKey, ProductProjection, ProductSessions, ProductValue, PullOutcome, PullWait,
+    ProductDriver, ProductFailure, ProductKey, ProductSessions, ProductValue, PullOutcome, PullWait,
     WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
@@ -27,6 +27,57 @@ use crate::telemetry::RawSpanGuard as _;
 /// pull and the inner fact-wait job drive, matching the pre-unification
 /// budgets in both call sites.
 pub(super) const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
+
+pub(crate) fn drive_retained_product<T: crate::telemetry::RawSpanTelemetry>(
+    world: &mut World,
+    tel: &T,
+    sessions: &mut ProductSessions,
+    address: ProductAddress,
+) -> Result<ProductValue, FatalError> {
+    with_retained_root_request(world, tel, sessions, address.root, |world, tel, sessions, driver, _| {
+        drive_root_product_with_driver(
+            world,
+            tel,
+            address.root,
+            address.key,
+            driver,
+            Some(sessions),
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+        )
+    })
+}
+
+impl<T: crate::telemetry::RawSpanTelemetry> ExecutionContext<'_, T> {
+    pub(crate) fn drive_product_requests(&mut self) -> Result<bool, (ProductAddress, FatalError)> {
+        let Some(sessions) = self.product_sessions.as_deref_mut() else {
+            return Ok(false);
+        };
+        let mut drove = false;
+        while let Some(address) = sessions.next_request() {
+            if let Err(error) = drive_retained_product(self.world, self.telemetry, sessions, address.clone()) {
+                sessions.retry_request(address.clone());
+                return Err((address, error));
+            }
+            drove = true;
+        }
+        Ok(drove)
+    }
+}
+
+fn delivered_facts(
+    movements: &[super::facts::FactMovement<super::drive::DependencyKey>],
+) -> Vec<super::facts::FactMovement<FactKey>> {
+    movements
+        .iter()
+        .filter_map(|movement| {
+            movement.key.fact().map(|fact| super::facts::FactMovement {
+                key: fact.clone(),
+                state: movement.state,
+            })
+        })
+        .collect()
+}
 
 /// Reports the ways a root-product pull-drive can fail.
 ///
@@ -76,6 +127,12 @@ pub(crate) trait ProductDriveError: Sized {
         product: &ProductKey,
         failure: ProductFailure,
     ) -> Self;
+    fn dependency_failed<T: crate::telemetry::Telemetry>(
+        world: &World,
+        tel: &T,
+        address: ProductAddress,
+        source: FatalError,
+    ) -> Self;
 }
 
 /// Test-only fresh-session drive used by the bounded failure-contract tests.
@@ -108,26 +165,32 @@ pub(super) fn drive_root_backend_product_with_budgets<
     product_stack_budget: u64,
     fact_wait_budget: u64,
 ) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), E> {
-    let mut driver = ProductDriver::new(tel, root);
-    let program = drive_root_backend_product_with_driver(
+    let mut sessions = ProductSessions::default();
+    let (session, _) = sessions.take(root, world.work_start_tally());
+    let mut driver = ProductDriver::with_shared_session(tel, Rc::clone(&session));
+    let result = drive_root_backend_product_with_driver(
         world,
         tel,
         root,
         &mut driver,
-        None,
+        Some(&mut sessions),
         product_stack_budget,
         fact_wait_budget,
-    )?;
+    );
+    sessions.finish_activation(root, &mut driver.session_mut(), world.work_start_tally());
+    sessions.restore(session);
+    let program = result?;
     Ok((program, driver))
 }
 
-pub(crate) fn drive_retained_root_backend_product<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+pub(crate) fn drive_retained_root_backend_product<T: crate::telemetry::RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
     sessions: &mut ProductSessions,
     root: RootId,
-) -> Result<(Rc<BackendProgram>, Option<ProductProjection>), E> {
-    with_retained_root_request(world, tel, sessions, root, |world, tel, sessions, driver, _| {
+    timeout: Option<std::time::Duration>,
+) -> Result<Rc<BackendProgram>, String> {
+    with_reconciled_root_request(world, tel, sessions, root, timeout, |world, tel, sessions, driver| {
         drive_active_root_backend_product(world, tel, sessions, root, driver)
     })
 }
@@ -141,7 +204,7 @@ pub(crate) fn drive_retained_root_native_program<T: crate::telemetry::RawSpanTel
 ) -> Result<Rc<super::NativeProgram>, String> {
     with_reconciled_root_request(world, tel, sessions, root, timeout, |world, tel, sessions, driver| {
         let key = ProductKey::NativeProgram(root);
-        let (value, _) = drive_root_product_with_driver::<T, String>(
+        let value = drive_root_product_with_driver::<T, String>(
             world,
             tel,
             root,
@@ -173,7 +236,6 @@ where
     with_retained_root_request(world, tel, sessions, root, |world, tel, sessions, driver, retained| {
         reconcile_request(world, tel, sessions, root, timeout, retained)?;
         let result = run(world, tel, sessions, driver)?;
-        world.unpark_root_artifact_jobs(root);
         let mut context = ExecutionContext::with_product_sessions(world, tel, sessions);
         drain_request_context(&mut context, root, timeout)?;
         Ok(result)
@@ -191,10 +253,9 @@ where
     T: crate::telemetry::RawSpanTelemetry,
 {
     let (session, retained) = sessions.take(root, world.work_start_tally());
-    let mut driver = ProductDriver::with_session(tel, session);
+    let mut driver = ProductDriver::with_shared_session(tel, session);
     let result = run(world, tel, sessions, &mut driver, retained);
-    world.unpark_root_artifact_jobs(root);
-    sessions.finish_activation(root, driver.session_mut(), world.work_start_tally());
+    sessions.finish_activation(root, &mut driver.session_mut(), world.work_start_tally());
     let session = driver.into_session();
     sessions.restore(session);
     result
@@ -206,7 +267,7 @@ pub(crate) fn drive_active_root_backend_product<T: crate::telemetry::RawSpanTele
     sessions: &mut ProductSessions,
     root: RootId,
     driver: &mut ProductDriver<'_, T>,
-) -> Result<(Rc<BackendProgram>, Option<ProductProjection>), E> {
+) -> Result<Rc<BackendProgram>, E> {
     let program = drive_root_backend_product_with_driver(
         world,
         tel,
@@ -216,8 +277,7 @@ pub(crate) fn drive_active_root_backend_product<T: crate::telemetry::RawSpanTele
         PRODUCT_DRIVE_BUDGET,
         PRODUCT_DRIVE_BUDGET,
     )?;
-    let projection = driver.projection(&ProductKey::RootBackendProduct(root));
-    Ok((program, projection))
+    Ok(program)
 }
 
 fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
@@ -230,7 +290,7 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
     fact_wait_budget: u64,
 ) -> Result<Rc<BackendProgram>, E> {
     let root_key = ProductKey::RootBackendProduct(root);
-    let (value, _) = drive_root_product_with_driver(
+    let value = drive_root_product_with_driver(
         world,
         tel,
         root,
@@ -255,7 +315,7 @@ fn drive_root_product_with_driver<T: crate::telemetry::RawSpanTelemetry, E: Prod
     sessions: Option<&mut ProductSessions>,
     product_stack_budget: u64,
     fact_wait_budget: u64,
-) -> Result<(ProductValue, Option<ProductProjection>), E> {
+) -> Result<ProductValue, E> {
     drive_root_product_with(
         world,
         tel,
@@ -281,7 +341,7 @@ pub(super) fn drive_root_product_with_producers<T: crate::telemetry::RawSpanTele
     driver: &mut ProductDriver<'_, T>,
     sessions: Option<&mut ProductSessions>,
     producers: &mut impl super::pull::ProductProducers,
-) -> Result<(ProductValue, Option<ProductProjection>), E> {
+) -> Result<ProductValue, E> {
     drive_root_product_with(
         world,
         tel,
@@ -305,44 +365,27 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     product_stack_budget: u64,
     fact_wait_budget: u64,
     mut pull: impl FnMut(&mut World, &mut ProductDriver<'_, T>, ProductKey) -> PullOutcome,
-) -> Result<(ProductValue, Option<ProductProjection>), E> {
+) -> Result<ProductValue, E> {
     // `Vec::new` is allocation-free: a retained root hit returns before the
     // first wait pushes anything onto the expansion stack.
     let mut stack = Vec::new();
     let mut current = root_key.clone();
     let mut last_wait = None;
-    let mut backend_projection = None;
     for _ in 0..product_stack_budget {
         if let Some(sessions) = sessions.as_deref_mut() {
-            sessions.drain_active_movements(root, driver.session_mut());
+            sessions.drain_active_movements(root, &mut driver.session_mut());
         }
         let outcome = pull(world, driver, current.clone());
         if let Some(sessions) = sessions.as_deref_mut() {
-            sessions.sync_subscriptions(root, driver.session_mut());
+            sessions.sync_subscriptions(root, &mut driver.session_mut());
+            let changes = sessions.take_product_changes(root, world.types());
+            ExecutionContext::with_product_sessions(world, tel, sessions).apply_product_changes(changes);
         }
         match outcome {
             PullOutcome::Produced(value) => {
-                let requested = current == root_key;
-                if let (ProductKey::RootBackendProduct(backend_root), ProductValue::RootBackendProduct(answer)) =
-                    (&current, &value)
-                {
-                    let projection = driver.projection(&current);
-                    if requested {
-                        backend_projection = projection;
-                    } else if let Some(sessions) = sessions.as_deref_mut() {
-                        super::jobs::backend::publish_backend_product_projection(
-                            world,
-                            tel,
-                            sessions,
-                            *backend_root,
-                            Rc::clone(&answer.program),
-                            projection,
-                        );
-                    }
-                }
-                if requested {
+                if current == root_key {
                     ExecutionContext::new(world, tel).flush_reported_warnings();
-                    return Ok((value, backend_projection));
+                    return Ok(value);
                 }
                 current = stack.pop().unwrap_or_else(|| root_key.clone());
             }
@@ -449,7 +492,18 @@ fn drive_product_fact_waits_with_sessions<T: crate::telemetry::RawSpanTelemetry,
     for fact in facts {
         let mut jobs_ran = 0_u64;
         while !product_fact_wait_is_satisfied(world, fact) {
-            let job = match world.next_ready_job(sessions.as_ref().map(|_| root)) {
+            if world.work_graph.pending_jobs() == 0
+                && let Some(sessions) = sessions.as_deref_mut()
+            {
+                let mut context = ExecutionContext::with_product_sessions(world, tel, sessions);
+                if context
+                    .drive_product_requests()
+                    .map_err(|(address, source)| E::dependency_failed(context.world, tel, address, source))?
+                {
+                    continue;
+                }
+            }
+            let job = match world.next_ready_job(sessions.as_deref()) {
                 Some(job) => {
                     apply_quiescence(world, tel, driver, sessions.as_deref_mut());
                     job
@@ -458,16 +512,12 @@ fn drive_product_fact_waits_with_sessions<T: crate::telemetry::RawSpanTelemetry,
                     // One producer evaluation owns one exact prerequisite set.
                     // At a drain, arbitrate all of its settled questions in one
                     // scheduler step so their typed movements stay atomic.
-                    world.settle_quiescent(&settled_facts);
+                    world.settle_quiescent_with_sessions(&settled_facts, sessions.as_deref());
                     if apply_quiescence(world, tel, driver, sessions.as_deref_mut()) {
                         continue;
                     }
                     producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                    let job = if sessions.is_some() {
-                        world.pop_root_request_job(root)
-                    } else {
-                        world.work_graph.pop()
-                    };
+                    let job = world.work_graph.pop();
                     let Some(job) = job else {
                         return Err(E::no_ready_producer(world, tel, root, fact));
                     };
@@ -493,7 +543,7 @@ fn drive_product_fact_waits_with_sessions<T: crate::telemetry::RawSpanTelemetry,
                     )
                     .complete_job(job, effects);
                     if sessions.is_none() {
-                        driver.apply_fact_movements(&completion.step.movements);
+                        driver.apply_fact_movements(&delivered_facts(&completion.step.movements));
                     }
                     super::drive::stop_job_span(job_span);
                 }
@@ -523,11 +573,11 @@ fn apply_quiescence<T: crate::telemetry::RawSpanTelemetry>(
     let steps = super::drive::flush_quiescence(world, tel);
     if let Some(sessions) = sessions {
         for step in &steps {
-            sessions.publish(&step.movements);
+            ExecutionContext::with_product_sessions(world, tel, sessions).publish_dependency_movements(&step.movements);
         }
     } else {
         for step in &steps {
-            driver.apply_fact_movements(&step.movements);
+            driver.apply_fact_movements(&delivered_facts(&step.movements));
         }
     }
     !steps.is_empty()
@@ -549,8 +599,7 @@ fn reconcile_request<T: crate::telemetry::RawSpanTelemetry>(
     retained: bool,
 ) -> Result<(), String> {
     if timeout == Some(std::time::Duration::ZERO) {
-        let outcome =
-            ExecutionContext::with_product_sessions(world, telemetry, sessions).drain_pending_for_root(root, timeout);
+        let outcome = ExecutionContext::with_product_sessions(world, telemetry, sessions).drain_pending_for(timeout);
         if let DriveOutcome::TimedOut { jobs_ran, pending_jobs } = outcome {
             return Err(format!(
                 "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
@@ -560,12 +609,10 @@ fn reconcile_request<T: crate::telemetry::RawSpanTelemetry>(
             ));
         }
     }
-    if world.work_graph.runnable_jobs() == 0 || !retained && !world.work_graph.pending(&Job::BuildBackendProduct(root))
-    {
+    if world.work_graph.pending_jobs() == 0 || !retained {
         return Ok(());
     }
-    let outcome =
-        ExecutionContext::with_product_sessions(world, telemetry, sessions).drain_pending_for_root(root, timeout);
+    let outcome = ExecutionContext::with_product_sessions(world, telemetry, sessions).drain_pending_for(timeout);
     interpret_request_drain(root, outcome)
 }
 
@@ -574,16 +621,23 @@ fn drain_request_context<T: crate::telemetry::RawSpanTelemetry>(
     root: RootId,
     timeout: Option<std::time::Duration>,
 ) -> Result<(), String> {
-    if context.world.work_graph.runnable_jobs() == 0 {
+    if context.world.work_graph.pending_jobs() == 0 {
         return Ok(());
     }
     let outcome = context.drain_pending_for(timeout);
     interpret_request_drain(root, outcome)
 }
 
-fn interpret_request_drain(root: RootId, outcome: DriveOutcome<Job, FactKey>) -> Result<(), String> {
+fn interpret_request_drain(
+    root: RootId,
+    outcome: DriveOutcome<Job, super::drive::DependencyKey>,
+) -> Result<(), String> {
     match outcome {
         DriveOutcome::Resolved => Ok(()),
+        DriveOutcome::DependencyFailed { dependency } => Err(format!(
+            "compiler2 root {} failed while producing {dependency:?}",
+            root.as_u32()
+        )),
         DriveOutcome::Fatal { job } => Err(format!(
             "compiler2 root {} failed while applying queued work at {job:?}",
             root.as_u32()

@@ -162,43 +162,55 @@ fn nested_product_session_restores_outer_exact_evaluation_history() {
 }
 
 #[test]
-fn product_projection_replay_requires_its_exact_request_and_generation() {
-    let product = serde_json::json!({"kind": "root_backend_product", "root_id": 1});
-    let mut events = ReplayEvents::default();
-    events.session("started", 7);
-    let request = events.request(&product);
-    events.evaluate(&product, &[]);
-    events.settle(&product, 3, true);
-    events.session("finished", 7);
-    events.push(
-        &["pull", "product", "projected"],
+fn product_dependency_movement_attributes_only_its_exact_consumer() {
+    let dependency = |owner, kind| {
         serde_json::json!({
-            "product": product,
-            "projection": {"session_id": 7, "request_id": request, "generation": 3},
-            "step": {
-                "changed": [{
-                    "kind": "backend_program",
-                    "root_id": 1,
-                    "old_revision": null,
-                    "new_revision": 1,
-                    "old_settled": false,
-                    "new_settled": true
-                }],
-                "movements": [{
-                    "kind": "backend_program",
-                    "root_id": 1,
-                    "revision": 1,
-                    "settled": true
-                }],
-                "wakes": [],
-                "blocked": []
-            }
-        }),
-    );
-
-    let report = CausalReport::derive(&events.0);
-    assert_eq!(report.formula_totals().evaluations, 0);
-    assert_eq!(report.lifecycles["backend_program"].first_appearances, 1);
+            "kind": "Product", "root_id": owner,
+            "product": {"kind": kind, "root_id": 9}
+        })
+    };
+    let wanted = dependency(7, "root_backend_product");
+    for (moved, expected) in [
+        (wanted.clone(), 1),
+        (dependency(8, "root_backend_product"), 0),
+        (dependency(7, "native_program"), 0),
+    ] {
+        let mut events = ReplayEvents::default();
+        events.applied(serde_json::json!({
+            "kind": "ScopeCode", "code_id": 1, "blocked": [wanted]
+        }));
+        let mut change = moved.clone();
+        change["old_revision"] = serde_json::json!(3);
+        change["new_revision"] = serde_json::json!(3);
+        change["old_settled"] = serde_json::json!(false);
+        change["new_settled"] = serde_json::json!(true);
+        let mut wake = moved.clone();
+        wake["use"] = serde_json::json!("settled");
+        events.push(
+            &["work_graph", "dependencies_moved"],
+            serde_json::json!({
+                "step": {
+                    "changed": [change], "movements": [moved],
+                    "wakes": [{"cause": wake, "job": {"kind": "ScopeCode", "code_id": 1},
+                        "disposition": "enqueued", "shift": false}], "blocked": []
+                }
+            }),
+        );
+        events.applied(serde_json::json!({"kind": "ScopeCode", "code_id": 1}));
+        let report = CausalReport::derive(&events.0);
+        let work = report.formula_totals();
+        assert_eq!(
+            work.evaluations, 2,
+            "the dependency movement is not a formula evaluation"
+        );
+        assert_eq!(work.readiness_caused, expected);
+        assert_eq!(
+            work.uncaused,
+            1 - expected,
+            "owner and product are both required for attribution"
+        );
+        assert!(report.readiness_without_settled_wake.is_empty());
+    }
 }
 
 #[test]
@@ -463,13 +475,13 @@ fn named(ev: &PublicEvent, name: &[&str]) -> bool {
 }
 
 /// The public trace tells the causal story of a compile: code is indexed,
-/// jobs run to close the root, and a settled root product is projected with
-/// its exact session/request/generation identity. This test proves
+/// jobs supply semantic facts, products compose the backend, and the exact
+/// root product settles before its request finishes. This test proves
 /// that story is readable from the *public* stream alone — the same stream
 /// `fz2 --log-telemetry` writes in production.
 #[test]
 fn compile_reports_resolved_and_an_ordered_causal_chain() {
-    let trace = PublicTrace::compile(TWO_FORMULA_SOURCE);
+    let trace = PublicTrace::compile_requests(TWO_FORMULA_SOURCE, &[]);
 
     assert!(
         matches!(trace.outcome, DriveOutcome::Resolved),
@@ -490,24 +502,28 @@ fn compile_reports_resolved_and_an_ordered_causal_chain() {
         .position(|ev| ev.kind == EventKind::SpanStart && named(ev, &["fz", "compiler2", "job"]))
         .expect("expected at least one fz.compiler2.job span_start");
     let first_product_settled = first_index(&["fz", "compiler2", "pull", "product", "settled"]);
-    let first_backend_program_defined = first_index(&["fz", "compiler2", "backend_program", "defined"]);
-    let first_product_projected = first_index(&["fz", "compiler2", "pull", "product", "projected"]);
+    let root_settled = trace
+        .events()
+        .iter()
+        .position(|event| {
+            named(event, &["fz", "compiler2", "pull", "product", "settled"])
+                && event.metadata["product"]["kind"] == "root_backend_product"
+        })
+        .expect("the requested backend root must settle");
+    let first_completion = first_index(&["fz", "compiler2", "work_graph", "applied"]);
+    let request_finished = first_index(&["fz", "compiler2", "backend_request", "finished"]);
 
-    // The causal shape the public stream must preserve: the drive opens a
-    // job before it can settle any product, and the root's backend program is
-    // defined only once the product graph is settled and before its exact
-    // projection movement is published.
     assert!(
-        first_job_start < first_product_settled,
-        "a job must start before any product settles"
+        first_job_start < first_completion && first_completion < first_product_settled,
+        "semantic jobs must supply facts before artifact production can settle"
     );
     assert!(
-        first_product_settled < first_backend_program_defined,
-        "products must settle before the backend program they compose is defined"
+        first_product_settled < root_settled,
+        "backend prerequisites must settle before the composed root product"
     );
     assert!(
-        first_backend_program_defined < first_product_projected,
-        "the backend program must be defined before its projection movement"
+        root_settled < request_finished,
+        "the requested root must settle before the request reports success"
     );
     let report = CausalReport::derive(trace.events());
     assert_eq!(report.formula_totals().uncaused, 0);
@@ -1899,12 +1915,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // final facts, artifacts, and runtime stay flat.
         analyze_evaluations: 235,
         analyze_zero_change: 17,
-        // fz-kdt.199: 1009 -> 1013, the four extra analyses above and nothing
-        // else. fz-kdt.45 adds the two exact-executable fact producers.
-        // fz-tfn.26 adds the one reproduced analysis above. fz-tfn.1 then
-        // classifies the two retained backend projections as product work,
-        // not scheduler formulas.
-        total_evaluations: 1014,
+        // Macro readiness is a retained content dependency.
+        total_evaluations: 1013,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1972,9 +1984,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fact producers.
         // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
         // above; no other formula family moves.
-        // fz-tfn.1 removes the two retained backend projections that were
-        // previously misclassified as scheduler formulas.
-        total_evaluations: 1380,
+        // Macro readiness is a retained content dependency.
+        total_evaluations: 1378,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2142,9 +2153,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
-        // fz-tfn.1 removes the two retained backend projections that were
-        // previously misclassified as scheduler formulas.
-        total_evaluations: 2441,
+        // Macro readiness is a retained content dependency.
+        total_evaluations: 2440,
     },
 ];
 
@@ -2227,7 +2237,7 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
         assert_eq!(
             report.formula_totals().evaluations - runtime_demand_work.evaluations,
             total_evaluations,
-            "{fixture}: making RuntimeDemand explicit must not move any pre-existing formula work"
+            "{fixture}: semantic formula work must remain at its measured count"
         );
         assert_eq!(
             runtime_demand_work.uncaused, 0,

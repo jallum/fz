@@ -31,7 +31,7 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, ModuleId, RootId};
+use super::identity::{ExecutableKey, FunctionId, ModuleId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
     BoundaryFacts, BoundaryId, CallableConstructionOwner, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
@@ -285,18 +285,10 @@ pub struct BackendProgram {
     pub construction_wrappers: Vec<BackendConstructionWrapper>,
 }
 
-#[cfg_attr(test, derive(Clone))]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RootBackendProductAnswer {
     pub program: Rc<BackendProgram>,
-    pub transport: MaterializedTransportPlan,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MacroExecutable {
-    pub root: RootId,
-    pub backend_revision: u64,
-    pub program: Rc<BackendProgram>,
+    pub transport: Rc<MaterializedTransportPlan>,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -1409,111 +1401,6 @@ impl EffectSummary {
         self.calls_opaque |= other.calls_opaque;
         *self != before
     }
-}
-
-#[derive(Debug, Clone)]
-enum ProjectionState<T> {
-    Placeholder,
-    Defined(T),
-}
-
-#[derive(Debug, Clone)]
-struct ProjectionSlot<T> {
-    state: ProjectionState<T>,
-    revision: u64,
-}
-
-#[derive(Debug, Default)]
-pub struct BackendProgramMap {
-    slots: Vec<Option<Rc<BackendProgram>>>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MacroExecutableMap {
-    slots: Vec<ProjectionSlot<MacroExecutable>>,
-}
-
-impl BackendProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: Rc<BackendProgram>) -> bool {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || None);
-        }
-        let slot = &mut self.slots[root.as_u32() as usize];
-        if slot.as_ref().is_some_and(|previous| shared_eq(previous, &program)) {
-            return false;
-        }
-        *slot = Some(program);
-        true
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&Rc<BackendProgram>> {
-        self.slots.get(root.as_u32() as usize)?.as_ref()
-    }
-
-    pub fn retain_equal(&self, root: RootId, program: Rc<BackendProgram>) -> Rc<BackendProgram> {
-        self.get(root)
-            .filter(|existing| shared_eq(existing, &program))
-            .map_or(program, Rc::clone)
-    }
-}
-
-impl MacroExecutableMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, function: FunctionId, executable: MacroExecutable) -> bool {
-        self.ensure(function);
-        let slot = &mut self.slots[function.as_u32() as usize];
-        let next = ProjectionState::Defined(executable);
-        let changed = !macro_executable_same_state(&slot.state, &next);
-        if changed {
-            slot.state = next;
-            slot.revision += 1;
-        }
-        changed
-    }
-
-    pub fn get(&self, function: FunctionId) -> Option<&MacroExecutable> {
-        match &self.slots.get(function.as_u32() as usize)?.state {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, function: FunctionId) {
-        let needed = function.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionSlot {
-                state: ProjectionState::Placeholder,
-                revision: 0,
-            });
-        }
-    }
-}
-
-fn macro_executable_same_state(
-    left: &ProjectionState<MacroExecutable>,
-    right: &ProjectionState<MacroExecutable>,
-) -> bool {
-    match (left, right) {
-        (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
-        (ProjectionState::Defined(left), ProjectionState::Defined(right)) => {
-            left.root == right.root
-                && left.backend_revision == right.backend_revision
-                && shared_eq(&left.program, &right.program)
-        }
-        _ => false,
-    }
-}
-
-fn shared_eq<T: PartialEq>(left: &Rc<T>, right: &Rc<T>) -> bool {
-    Rc::ptr_eq(left, right) || left == right
 }
 
 pub(crate) fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {

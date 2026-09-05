@@ -55,6 +55,17 @@ pub(super) fn seed_root(
             ),
         ));
     }
+    if root.kind == RootKind::Macro && !surface.is_macro {
+        return Err(emit_root_error(
+            tel,
+            surface.span,
+            format!(
+                "compiler2 macro root target `{}/{}` is not a macro",
+                surface.name,
+                surface.arity()
+            ),
+        ));
+    }
     if !world.require_activation_key_facts(root.function, &mut reads, &mut waits) {
         return Ok(JobEffects {
             reads: settled_uses(reads),

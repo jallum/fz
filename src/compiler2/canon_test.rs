@@ -29,7 +29,7 @@ const TARGETS: [(&str, &str); 2] = [
     ),
 ];
 
-/// Drives one fixture to its published `BackendProgram` — the same stage the
+/// Drives one fixture to its retained `BackendProgram` — the same stage the
 /// `--dump backend` path reaches — and renders it.
 fn canon_of(name: &str, text: &str) -> String {
     let (mut compiler, root) = submit(name, text);
@@ -37,7 +37,7 @@ fn canon_of(name: &str, text: &str) -> String {
         .drive_root_to_dump_stage(root, DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
     let world = compiler.world();
-    canon_backend_program(world, &world.backend_program(root))
+    canon_backend_program(world, &compiler.retained_backend_program(root))
 }
 
 fn submit(name: &str, text: &str) -> (Compiler2<ConfiguredTelemetry>, RootId) {
@@ -427,9 +427,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         compiler
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-        let world = compiler.world();
         assert_eq!(
-            world.backend_program(root).executables.len(),
+            compiler.retained_backend_program(root).executables.len(),
             executables,
             "{name}: the emitted executable inventory moved off its fz-kdt.63 pin; \
              re-measure, name the cause, and re-pin"
@@ -461,7 +460,7 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
         let world = compiler.world();
-        let program = world.backend_program(root);
+        let program = compiler.retained_backend_program(root);
         let unordered = program
             .executables
             .iter()
@@ -519,7 +518,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
         let world = compiler.world();
         let types = world.types();
-        let program = world.backend_program(root);
+        let program = compiler.retained_backend_program(root);
         let descents = program
             .executables
             .windows(2)

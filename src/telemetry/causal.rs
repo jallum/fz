@@ -179,7 +179,7 @@ const PRODUCT_DISPLACED: &[&str] = &["fz", "compiler2", "pull", "product", "disp
 const PRODUCT_REQUESTED: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 const PRODUCT_EVALUATED: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
 const PRODUCT_COPUBLISHED: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
-const PRODUCT_PROJECTED: &[&str] = &["fz", "compiler2", "pull", "product", "projected"];
+const DEPENDENCIES_MOVED: &[&str] = &["fz", "compiler2", "work_graph", "dependencies_moved"];
 const SESSION_STARTED: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
 const SESSION_FINISHED: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
 const BACKEND_REQUEST_STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
@@ -933,8 +933,7 @@ struct Replay {
     history: HashMap<RawIdentity, FormulaHistory>,
     formula_work: HashMap<RawIdentity, FormulaWork>,
     sessions: Vec<SessionReplay>,
-    product_requests: HashMap<(u64, u64), RawProductKey>,
-    product_generations: HashMap<(u64, RawProductKey), u64>,
+    product_requests: HashSet<(u64, u64)>,
     request_open: bool,
     has_completed_request: bool,
     prior_request_products: HashSet<RawProductKey>,
@@ -954,8 +953,7 @@ impl Replay {
             history: HashMap::new(),
             formula_work: HashMap::new(),
             sessions: Vec::new(),
-            product_requests: HashMap::new(),
-            product_generations: HashMap::new(),
+            product_requests: HashSet::new(),
             request_open: false,
             has_completed_request: false,
             prior_request_products: HashSet::new(),
@@ -1014,10 +1012,8 @@ impl Replay {
             self.sessions.push(SessionReplay::new(session));
         } else if event.named(APPLIED) {
             self.apply(position, event);
-        } else if event.named(QUIESCED) {
+        } else if event.named(QUIESCED) || event.named(DEPENDENCIES_MOVED) {
             self.record_non_formula_step(position, event);
-        } else if event.named(PRODUCT_PROJECTED) {
-            self.project_product(position, event);
         } else if event.named(PRODUCT_SETTLED) {
             self.settle_product(position, event);
         } else if event.named(PRODUCT_CACHE_HIT) {
@@ -1160,7 +1156,7 @@ impl Replay {
         history.blocked = blocked;
     }
 
-    /// A drain-arbiter or product-projection step. No scheduler formula ran,
+    /// A drain-arbiter or external dependency step. No scheduler formula ran,
     /// so there is nothing to classify, but its movements and wakes are exact
     /// evidence for later formula evaluations.
     fn record_non_formula_step(&mut self, position: usize, event: &PublicEvent) {
@@ -1170,26 +1166,6 @@ impl Replay {
         self.record_movements(position, step);
         self.record_wakes(position, step);
         self.record_ground_shifts(step);
-    }
-
-    fn project_product(&mut self, position: usize, event: &PublicEvent) {
-        let product = RawProductKey::new(event.metadata.get("product").expect("projected product identity"));
-        assert_eq!(product.kind(), Some("root_backend_product"));
-        let projection = event.metadata.get("projection").expect("product projection identity");
-        let session = projection["session_id"].as_u64().expect("projection session id");
-        let request = projection["request_id"].as_u64().expect("projection request id");
-        let generation = projection["generation"].as_u64().expect("projection generation");
-        assert_eq!(
-            self.product_requests.get(&(session, request)),
-            Some(&product),
-            "projection must name the exact request that returned its root product"
-        );
-        assert_eq!(
-            self.product_generations.get(&(session, product)),
-            Some(&generation),
-            "projection must name the root product's current settled generation"
-        );
-        self.record_non_formula_step(position, event);
     }
 
     /// The step's own ground-shift accounting: what each `changed` entry did
@@ -1390,9 +1366,7 @@ impl Replay {
             session.id
         );
         assert!(
-            self.product_requests
-                .insert((session_id, request), key.clone())
-                .is_none(),
+            self.product_requests.insert((session_id, request)),
             "session {session_id} reused product request {request} across activations"
         );
         self.report.products.entry(key).or_default().requests += 1;
@@ -1414,10 +1388,6 @@ impl Replay {
             return;
         };
         let key = RawProductKey::new(product);
-        let session = self.sessions.last().expect("product settlement outside a session").id;
-        if let Some(generation) = generation {
-            self.product_generations.insert((session, key.clone()), generation);
-        }
         let cross_request = self.has_completed_request
             && generation == Some(1)
             && changed
@@ -1732,6 +1702,7 @@ fn identity_value(value: &Json, canon: Option<&CanonTables>) -> Json {
 
 fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json {
     match (canon, key, field) {
+        (canon, "product", _) => canon.map_or_else(|| field.clone(), |canon| canonical_product_value(field, canon)),
         (Some(canon), "arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
         (Some(canon), "function_id", Json::Number(id)) => Json::String(canon.function(id.as_u64().unwrap_or_default())),
         (Some(canon), "input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
@@ -1751,6 +1722,21 @@ fn render_identity(identity: &Json) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dependency_identity_preserves_the_complete_nested_product_key() {
+        let raw = serde_json::json!({
+            "kind": "Product", "root_id": 7, "use": "settled", "revision": 3,
+            "product": {"kind": "test_product", "revision": 2, "nested": {"changed": true}}
+        });
+        assert_eq!(
+            RawIdentity::new(&raw).0,
+            serde_json::json!({
+                "kind": "Product", "root_id": 7,
+                "product": {"kind": "test_product", "revision": 2, "nested": {"changed": true}}
+            })
+        );
+    }
 
     #[test]
     fn construction_target_surfaces_use_the_trace_type_dictionary() {

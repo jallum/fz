@@ -131,7 +131,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         self.world.demand(job)
     }
 
-    pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
+    pub fn drive(&mut self) -> DriveOutcome<Job, super::DependencyKey> {
         self.product_sessions
             .begin_standalone_drive(self.world.work_start_tally());
         let outcome = super::drive::ExecutionContext::with_product_sessions(
@@ -193,9 +193,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
                 let backend = match self
                     .product_sessions
                     .get(root)
-                    .and_then(|session| session.memo().get(&ProductKey::RootBackendContent(root)))
+                    .and_then(|session| session.memo().get(&ProductKey::RootBackendContent(root)).cloned())
                 {
-                    Some(super::pull::ProductValue::RootBackendContent(backend)) => Rc::clone(backend),
+                    Some(super::pull::ProductValue::RootBackendContent(backend)) => backend,
                     _ => panic!("native product must retain its exact backend content dependency"),
                 };
                 Ok((backend, Some(native)))
@@ -321,11 +321,12 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         result
     }
 
-    /// Drives one root to its retained `BackendProgram` and publishes the
-    /// settled projection consumed by fact-driven front doors.
+    /// Drives one root to its memo-owned, shared `BackendProgram`.
     fn drive_root_backend_product(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
-        super::jobs::backend::complete_backend_product_for_request(
-            &mut ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions),
+        super::product_drive::drive_retained_root_backend_product(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
             root,
             self.drive_timeout,
         )
@@ -335,7 +336,11 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// subscription that routes movements to it. Requesting the known root
     /// again begins a fresh product calculation over the same semantic World.
     pub fn retire_root_products(&mut self, root: RootId) -> bool {
-        self.product_sessions.retire(root)
+        let changes = self.product_sessions.retirement_changes(root);
+        let retired = self.product_sessions.retire(root, self.world.types());
+        ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions)
+            .apply_product_changes(changes);
+        retired
     }
 
     #[cfg(test)]
@@ -348,7 +353,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         match self
             .product_sessions
             .get(root)
-            .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)))
+            .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
         {
             Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer.program),
             _ => panic!("root product must be retained after a successful request"),
@@ -360,9 +365,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         match self
             .product_sessions
             .get(root)
-            .and_then(|session| session.memo().get(&ProductKey::NativeProgram(root)))
+            .and_then(|session| session.memo().get(&ProductKey::NativeProgram(root)).cloned())
         {
-            Some(super::pull::ProductValue::NativeProgram(program)) => Rc::clone(program),
+            Some(super::pull::ProductValue::NativeProgram(program)) => program,
             _ => panic!("native product must be retained after a successful request"),
         }
     }
@@ -370,6 +375,16 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     #[cfg(test)]
     pub(crate) fn retained_product_generation(&self, root: RootId, key: &ProductKey) -> Option<u64> {
         self.product_sessions.get(root)?.memo().generation(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reproduce_job_for_test(&mut self, job: Job, changed: Vec<FactKey>) -> super::JobCompletion {
+        let mut context =
+            ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions);
+        let mut effects =
+            super::jobs::run(&mut context, &job).expect("test producer must reproduce its existing answer");
+        effects.changed.extend(changed);
+        context.complete_job(job, effects)
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the
@@ -424,7 +439,26 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         caller: fz_runtime::any_value::AnyValueRef,
         args: &[fz_runtime::any_value::AnyValueRef],
     ) -> Result<super::QuotedSourceRoot, String> {
-        ExecutionContext::new(&mut self.world, &self.telemetry).run_macro_on_source(function, source, caller, args)
+        if self.world.function_defined_revision(function).is_none() {
+            self.world.demand_fact_producer(
+                &FactKey::FunctionDefined(function),
+                super::scheduler::WorkStartReason::BlockedWaiterExpansion,
+            );
+            let outcome = self.drive();
+            if !matches!(outcome, DriveOutcome::Resolved) || self.world.function_defined_revision(function).is_none() {
+                return Err(format!(
+                    "compiler2 macro {} could not resolve its definition: {outcome:?}",
+                    function.as_u32()
+                ));
+            }
+        }
+        if !self.world.function_definition(function).1.is_macro {
+            return Err(format!("compiler2 function {} is not a macro", function.as_u32()));
+        }
+        let root = self.world.macro_root(function);
+        let program = self.product_backend_program_for_root(root)?;
+        ExecutionContext::new(&mut self.world, &self.telemetry)
+            .run_macro_on_source(function, &program, source, caller, args)
     }
 
     #[cfg(test)]
@@ -478,6 +512,14 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 /// this path does not emit a diagnostic — it never has, and the drive-loop
 /// unification is not the place to change that.
 impl super::product_drive::ProductDriveError for String {
+    fn dependency_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        address: super::drive::ProductAddress,
+        _source: super::scheduler::FatalError,
+    ) -> Self {
+        format!("compiler2 product dependency {address:?} failed")
+    }
     fn product_failed<T: Telemetry>(
         _world: &World,
         _tel: &T,

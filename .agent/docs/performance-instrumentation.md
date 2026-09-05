@@ -36,8 +36,8 @@ a new counter that appears empty in the JSONL is usually missing one of them.
 **Job spans** — `fz.compiler2.job`, `span_start`/`span_stop`, carrying the job's
 full identity (kind plus `root_id`/`function_id`/`arrow`/... as applicable) on
 start and elapsed time on a payload-free stop. Pair them by `span_id` for a
-per-formula time census. This covers the drive loop only, and only two of the
-five completion sites; a product settled during a pull is not a job. The span
+per-formula time census. Both job-pop loops open these spans; product
+evaluations have their own pull telemetry. The span
 is the clock — `work_graph.applied` owns the completion payload and causal
 record exactly once, and it fires on every completion.
 
@@ -87,30 +87,25 @@ deltas. `ProductSessions` partitions the World's monotone work-start counters
 across its nested activation stack and gives standalone `Compiler2::drive` its
 own balanced owner boundary, so nested sessions neither overlap the standalone
 prefix nor charge a later cache hit for work performed outside its request.
-When a root backend settles for an interp, macro, or native request,
-`pull.product.projected` carries the exact structured root product, retained
-session id, product request id, settled generation, and fact movement. A
-native pull emits this projection from its first
-`RootBackendProduct(root)` dependency settlement, before lowering, rather than
-through a second backend request or cache hit. Causal replay matches all three
-identities before accepting that movement. This is a product projection, not
-another scheduler-formula evaluation; the three cold fixture totals
-consequently contain two fewer formula evaluations than the pre-retention
-baseline (1215, 1885, and 3169).
-That classification travels with `JobEffects`, so an explicitly queued
-`BuildBackendProduct` cannot silently become formula work at the shared
-completion boundary.
-Same-root artifact jobs stay in the agenda while the retained request
-reconciles edits. The agenda's root-scoped pop parks only matching jobs it
-encounters on the FIFO walk; it does not rescan the whole queue after every
-completion. Parked jobs still coalesce duplicate demand, are excluded from the
-runnable length, and are restored on every request exit. Total pending-job
-counts still include them, so timeout diagnostics do not hide queued work. The
-projection takes the one parked backend job directly, so an equal retained hit
-adds neither a producer evaluation nor an artifact retraction/republication.
-The agenda has no native-lowering job: successful native production is
-measured by one `NativeProgram(root)` product settlement and one
-`native_program.reusable_cons` event.
+Root backend and native artifacts live in retained product memos. Their
+`pull.product.settled` records identify the product, generation, and whether
+its value changed. Scheduler consumers read the product through
+`DependencyKey::Product(ProductAddress { root, key })`; the address identifies
+both its retained root session and its product. Fact dependencies retain their
+flat typed JSON identity; product dependencies carry the owning `root_id` and
+a nested `product` identity.
+
+`work_graph.dependencies_moved` carries the one causal `AppliedStep` for
+external product changes or readiness propagation. Its changes, movements,
+wakes, and blocked dependencies use the same renderer as job completions and
+quiescence. Equal product reproduction retains its allocation and generation,
+so consumers see no value movement. Macro expansion reads
+`RootBackendContent(macro_root)` directly. Successful native production is measured by
+`NativeProgram(root)` settlement and `native_program.reusable_cons`.
+
+A failed direct product request returns `DriveOutcome::DependencyFailed`.
+The drive stop identifies that exact dependency; it attributes no scheduler
+job to a producer that never ran as a job.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
 `WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
@@ -141,14 +136,15 @@ causal work multiset across legal arrival orders and retained requests, and
 pair it with the canonical backend and runtime output so less work cannot hide
 a changed result. `RuntimeDemandInputs(E)` is an independently revisioned view
 of the input vector in the one stored demand value. On
-`00420_enum_take_drop_split`, deleting the root/function callable-row aggregate
-removed its 434 refolds and 273 signals; exact target/sub-fact reads reduced
-changed-revision starts from 2,870 to 2,769. The resulting split is 1,730
-unchanged non-demand starts plus 1,039 exact demand changed-revision starts;
-1,278 RuntimeDemand formula evaluations occur across all start causes. Blocked expansion is
-1,140 unchanged non-demand work plus 311 exact demand/construction formula
-keys. Compare those explicit counts with the removed cone's 6,250 hidden member
-derivations; none is a wall-clock claim.
+`00420_enum_take_drop_split`, changed-revision starts split into 1,731
+non-demand starts and 1,039 demand starts. Its three macro consumers each
+resume on their function definition and their retained content product.
+The trace contains 4,489 total formula evaluations, including 11 scope,
+21 module, and 1,278 RuntimeDemand evaluations. Blocked expansion is 1,138
+non-demand work plus 311 exact demand/construction formula keys.
+`work_start_reason_test` pairs these counts with the exact macro consumer
+sets and the activation frontier; no wall-clock estimate substitutes for
+those dependency records.
 
 The pre-deletion full-matrix census at exact old HEAD `7f2bcc2de` drove all 515
 non-deferred fixture paths through run/interp/build serially. Its 1,708
@@ -292,7 +288,7 @@ causality exception.
 The retained unchanged request does zero scheduler-formula evaluations, zero
 product evaluations, zero settlements, and zero cross-request recomputations.
 It makes one request for `RootBackendProduct`, records one retained cache hit,
-and does not enter the scheduler drive or move `BackendProgram`. An unreachable
+and does not enter the scheduler drive or move the retained backend product. An unreachable
 edit has the same product profile and zero displacements; only its two
 source-processing formula evaluations run. Once that exact agenda drains, an
 O(1) check of the activation-frontier and waiter indexes avoids cloning or

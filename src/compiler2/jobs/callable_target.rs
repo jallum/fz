@@ -108,11 +108,15 @@ mod tests {
             "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        world.demand(Job::BuildBackendProduct(root));
-        assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
-            DriveOutcome::Resolved
-        ));
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("construction target fixture should settle its backend product");
 
         let keys = observed.borrow().iter().cloned().collect::<HashSet<_>>();
         let key = keys
@@ -166,11 +170,15 @@ mod tests {
             Some("construction_target_removal.fz".to_string()),
             "fn main(), do: 0\n".to_string(),
         );
-        world.demand(Job::BuildBackendProduct(root));
-        assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
-            DriveOutcome::Resolved
-        ));
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("construction target fixture should settle its backend product");
         assert!(world.callable_construction_target(&key).is_none());
         assert!(world.fact_revision(&fact).is_none());
         assert!(
@@ -191,7 +199,7 @@ mod tests {
         );
         world.demand(Job::DeriveRuntimeDemand(key.owner.clone()));
         assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ));
         assert_eq!(world.callable_construction_target(&key), Some(&target));
@@ -213,11 +221,15 @@ mod tests {
             "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        world.demand(Job::BuildBackendProduct(root));
-        assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
-            DriveOutcome::Resolved
-        ));
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("construction target fixture should settle its backend product");
 
         let keys = world
             .runtime_demand_facts()
@@ -269,7 +281,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
+            ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ));
 
@@ -329,11 +341,15 @@ mod tests {
             "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        world.demand(Job::BuildBackendProduct(root));
-        assert!(matches!(
-            ExecutionContext::new(&mut world, &tel).drive(),
-            DriveOutcome::Resolved
-        ));
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("construction target fixture should settle its backend product");
 
         let existing = observed
             .borrow()

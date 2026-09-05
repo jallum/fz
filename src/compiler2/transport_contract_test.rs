@@ -281,13 +281,13 @@ fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
 
     assert!(pull_events.produced_kind("transport_shape"));
+    let session = driver.session();
     let _ = plan
         .position_layouts
         .iter()
         .map(|(position, _)| position)
         .filter_map(|position| {
-            driver
-                .session()
+            session
                 .memo()
                 .product_dependencies(&ProductKey::TransportShape(position.clone()))
         })
@@ -314,7 +314,7 @@ fn main(), do: inc(1.0)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let transport_shapes = plan_shapes(&plan);
     let main = executable_for(&world, session, "main", 0);
     let inc = executable_for(&world, session, "inc", 1);
@@ -568,7 +568,7 @@ fn main(), do: fz_any_id(1.0)
     world.submit_code(Some("transport_extern_any_scalar.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let executable = executable_for(&world, driver.session(), "fz_any_id", 1);
+    let executable = executable_for(&world, &driver.session(), "fz_any_id", 1);
     let input = plan
         .layout_at(&TransportPosition::ExecutableInput {
             executable: executable.clone(),
@@ -604,7 +604,7 @@ fn main(), do: spawn(child)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let spawn = executable_for(&world, session, "spawn", 1);
     let spawn_input = TransportPosition::ExecutableInput {
         executable: spawn.clone(),
@@ -642,7 +642,7 @@ fn main(), do: dbg({:zero, :pos, :other})
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let dbg_wrapper = executable_for(&world, session, "dbg", 1);
     let dbg = executable_for(&world, session, "fz_dbg", 1);
     let wrapper_input = plan
@@ -699,7 +699,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let pair = executable_for(&world, session, "pair", 2);
     let pair_return = plan_shape_at(
         &plan,
@@ -772,7 +772,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let id_int = executable_for(&world, session, "id_int", 1);
     let id_atom = executable_for(&world, session, "id_atom", 1);
 
@@ -829,7 +829,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let id_box = executable_for(&world, session, "id_box", 1);
     let id_box_return = plan_shape_at(
         &plan,
@@ -896,7 +896,7 @@ fn main(), do: fz_binary_id("hello")
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let extern_id = executable_for(&world, session, "fz_binary_id", 1);
     let extern_return = plan_shape_at(
         &plan,
@@ -946,7 +946,7 @@ end
     world.submit_code(Some("transport_ignore.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let ping = executable_for(&world, session, "ping", 1);
     let ping_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: ping });
     assert!(
@@ -972,7 +972,7 @@ end
     world.submit_code(Some("transport_direct_callable.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let apply1 = executable_for(&world, session, "apply1", 2);
     let make_adder = executable_for(&world, session, "make_adder", 1);
     let main = executable_for(&world, session, "main", 0);
@@ -1063,7 +1063,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     assert_plan_executable_references_are_root_scoped(&world, &plan, session);
 
     let pair = executable_for(&world, session, "pair", 1);
@@ -1207,7 +1207,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (_, boundaries) = callable_owner_facts_for_test(session);
     assert_eq!(
         boundaries.len(),
@@ -1231,7 +1231,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let callable_shapes = plan
         .position_layouts
@@ -1291,7 +1291,7 @@ fn main(), do: make()
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
     let returned = plan_shape_at(
         &plan,
@@ -1337,7 +1337,7 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 1);
     let input_shape = plan_shape_at(
         &plan,
@@ -1387,7 +1387,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let demanded_lambda_inputs = session
         .demanded_executables()
         .iter()
@@ -1440,7 +1440,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 2, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 2);
     // Both opaque inputs are boxed callables, so their VALUE shapes are pure
     // layout (one boxed value lane) and may coincide. The surface contract is
@@ -1496,7 +1496,7 @@ fn main(), do: {make1(1), make2(1, 2)}
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
     let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
@@ -1535,7 +1535,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let boundary = boundary_with_callable_arg(&world, session);
     let [arg_layout] = boundary.surface_arg_layouts.as_ref() else {
         panic!("f/1 boundary should publish one surface argument layout")
@@ -1572,7 +1572,7 @@ fn main(), do: make()
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
     let outer = callable_return_for_executable(&world, &plan, make);
     let (callables, _) = callable_owner_facts_for_test(session);
@@ -1621,7 +1621,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
     let outer = callable_return_for_executable(&world, &plan, make);
     let (callables, _) = callable_owner_facts_for_test(session);
@@ -1722,7 +1722,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let (resume_position, resume_layout) = plan
         .position_layouts
@@ -1842,7 +1842,7 @@ fn main(), do: make(fn x -> x + 1 end)
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let captured_demand = upstream_input_demand_for_function(&world, session, "run", 2, 1);
     assert!(
@@ -1887,7 +1887,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
@@ -1967,7 +1967,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     let captured_callable = callables
         .iter()
@@ -2027,7 +2027,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 1);
     let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
@@ -2059,7 +2059,7 @@ fn main(), do: make(1, 2)
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 2);
     let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
@@ -2101,7 +2101,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (_, boundary_facts) = callable_owner_facts_for_test(session);
     assert_eq!(
         boundary_facts.len(),
@@ -2134,7 +2134,7 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (_, boundaries) = callable_owner_facts_for_test(session);
     let dead_return_boundaries = boundaries
         .iter()
@@ -2178,7 +2178,7 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     assert!(
         executable_membership(&world, session)
             .iter()
@@ -2211,7 +2211,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let pair_down = executable_for(&world, session, "pair_down", 1);
     let returned = plan_shape_at(
         &plan,
@@ -2243,8 +2243,8 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_runtime_enum_reduce_operator_refs.fz");
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let executables = driver
-        .session()
+    let session = driver.session();
+    let executables = session
         .memo()
         .materialized_executables()
         .map(|(executable, _)| executable)
@@ -2272,7 +2272,7 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
             .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
         "operator refs used only as Enum.reduce reducers should not become first-class demand: {plus_flows:?}"
     );
-    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, driver.session());
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, &driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product path should emit finished produced outcomes"
@@ -2301,7 +2301,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let demand = runtime_demand_fact_for_function(&world, session, "ignore", 1);
     assert_eq!(
@@ -2334,7 +2334,7 @@ fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let (executable, materialized) = session
         .memo()
         .materialized_executables()
@@ -2435,7 +2435,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let demands = runtime_demands_for_frontier(&world, driver.session());
+    let demands = runtime_demands_for_frontier(&world, &driver.session());
 
     let direct_callable_flows = demands
         .values()
@@ -2479,7 +2479,7 @@ fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
         let _ = &plan;
-        let session = driver.session();
+        let session = &*driver.session();
         let demands = runtime_demands_for_frontier(&world, session);
         // The callable-flow fact names the function it constructs; that is the
         // lambda whose own return the discarded call may or may not reach.
@@ -2549,7 +2549,7 @@ fn main(), do: make()
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let demand = runtime_demand_fact_for_function(&world, session, "make", 0);
     assert!(
@@ -2599,7 +2599,7 @@ fn main(), do: apply(make_adder(1))
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = runtime_demand_fact_for_function(&world, driver.session(), "make_adder", 1);
+    let demand = runtime_demand_fact_for_function(&world, &driver.session(), "make_adder", 1);
     assert!(
         has_callable_flow(&demand, |flow| {
             !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty()
@@ -2626,7 +2626,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let demand = runtime_demand_fact_for_function(&world, session, "main", 1);
     assert!(
@@ -2671,7 +2671,7 @@ end
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = runtime_demand_fact_for_function(&world, driver.session(), "main", 1);
+    let demand = runtime_demand_fact_for_function(&world, &driver.session(), "main", 1);
     assert!(
         demand.call_arg_demands.values().any(|demands| {
             matches!(
@@ -2692,8 +2692,9 @@ end
         }),
         "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
     );
-    let main = executable_for(&world, driver.session(), "main", 1);
-    let constructions = root_backend_answer_for_test(driver.session())
+    let main = executable_for(&world, &driver.session(), "main", 1);
+    let session = driver.session();
+    let constructions = root_backend_answer_for_test(&session)
         .transport
         .callable_owners
         .iter()
@@ -2724,7 +2725,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let demands = runtime_demands_for_frontier(&world, session);
     let (main_executable, demand) = demands
@@ -2803,7 +2804,7 @@ fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_befo
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demands = runtime_demands_for_frontier(&world, driver.session());
+    let demands = runtime_demands_for_frontier(&world, &driver.session());
     let first_class_flows = demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -2836,7 +2837,7 @@ fn main(), do: make_pairer()
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let runtime_demands = runtime_demands_for_frontier(&world, driver.session());
+    let runtime_demands = runtime_demands_for_frontier(&world, &driver.session());
     let tuple_return_demands = runtime_demands
         .iter()
         .filter_map(|(executable, demand)| {
@@ -2896,7 +2897,7 @@ end
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let resume_demands = runtime_demands_for_frontier(&world, driver.session())
+    let resume_demands = runtime_demands_for_frontier(&world, &driver.session())
         .iter()
         .filter_map(|(executable, demand)| {
             function_is(&world, executable.activation.function, "pair_down", 1).then_some(demand.value_demands.clone())
@@ -2935,7 +2936,7 @@ fn main(), do: make()
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let reducer_executables = session
         .demanded_executables()
@@ -3005,7 +3006,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     // The per-executable product makes every dbg/1 activation individually
     // observable; the store-era test asserted one map entry — every activation
@@ -3048,7 +3049,7 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, _) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let owners = callable_owners_for_test(driver.session());
+    let owners = callable_owners_for_test(&driver.session());
     let constructions = owners
         .iter()
         .filter_map(|owner| owner.construction.as_ref())
@@ -3123,7 +3124,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
             .collect::<Vec<_>>()
     );
 
-    let (owner_callables, _) = callable_owner_facts_for_test(driver.session());
+    let (owner_callables, _) = callable_owner_facts_for_test(&driver.session());
     let plus_callables = owner_callables
         .iter()
         .filter_map(|(callable, facts)| {
@@ -3145,8 +3146,8 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
         plus_callables.iter().all(|(_, facts)| facts.boundary_ids.is_empty()),
         "product transport should not publish first-class boundaries for operator-ref reducers: {plus_callables:?}"
     );
-    let zero_capture_plus_input = driver
-        .session()
+    let session = driver.session();
+    let zero_capture_plus_input = session
         .demanded_executables()
         .iter()
         .find_map(|executable| {
@@ -3180,7 +3181,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
     assert!(callable_capture_lanes(&world, *plus_callable).is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
-    assert_materialized_executable_fact_authority(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, &driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product transport path should emit finished produced outcomes"
@@ -3268,7 +3269,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             }
         }
     }
-    assert_materialized_executable_fact_authority(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, &driver.session());
 }
 
 #[test]
@@ -3318,7 +3319,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
         );
         assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
     }
-    assert_materialized_executable_fact_authority(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, &driver.session());
 }
 
 #[test]
@@ -3372,7 +3373,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "direct operator refs should not fabricate first-class construction wrappers",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
-    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, driver.session());
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, &driver.session());
     driver.finish_session();
     assert!(
         product_jobs.total_stops() > 0,
@@ -3477,7 +3478,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     assert!(
         executable_membership(&world, session)
@@ -3532,7 +3533,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let add_a = executable_for(&world, session, "add_a", 2).activation.function;
     let add_b = executable_for(&world, session, "add_b", 2).activation.function;
@@ -3588,7 +3589,7 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     let lambda_capturing_published_callable = callables.keys().find_map(|callable| {
         let descr = world.callable(*callable);
@@ -3635,7 +3636,7 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (executable, semantic_index, target) = session
         .demanded_executables()
         .iter()
@@ -3751,7 +3752,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     let captured_callable = callables.iter().find_map(|(outer, facts)| {
         let outer_descr = world.callable(*outer);
@@ -3841,7 +3842,7 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let reducers = owners
         .iter()
@@ -3917,7 +3918,7 @@ fn main(), do: make(41).(1)
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let constructions = owners
         .iter()
@@ -4015,7 +4016,7 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let mut checked = 0;
     for wrapper in &program.construction_wrappers {
@@ -4212,7 +4213,7 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
 
     let mut published = 0;
     let mut foreign = Vec::new();
-    for positioned in root_backend_answer_for_test(driver.session())
+    for positioned in root_backend_answer_for_test(&driver.session())
         .transport
         .callable_owners
         .iter()
@@ -4259,16 +4260,11 @@ fn world_facts_and_product_memo_share_their_immutable_payloads() {
 
     let root_key = ProductKey::RootBackendProduct(root);
     let root_answer = match driver.session().memo().get(&root_key) {
-        Some(ProductValue::RootBackendProduct(answer)) => Rc::clone(answer),
+        Some(ProductValue::RootBackendProduct(answer)) => answer.clone(),
         other => panic!("expected shared root backend answer, got {other:?}"),
     };
-    let world_program = world.backend_program(root);
-    assert!(
-        Rc::ptr_eq(&root_answer.program, &world_program),
-        "the root answer and World projection must retain the producer's BackendProgram allocation",
-    );
-
-    let memo = driver.session().memo();
+    let session = driver.session();
+    let memo = session.memo();
     for (executable, materialized) in memo.materialized_executables() {
         let runtime_demand = world
             .runtime_demand(executable)
@@ -4322,27 +4318,17 @@ fn world_facts_and_product_memo_share_their_immutable_payloads() {
         );
     }
 
-    let cached = driver.pull(&mut WorldProductProducers::new(&mut world, &tel), root_key.clone());
+    drop(session);
+    let cached = driver.pull(&mut WorldProductProducers::new(&mut world, &tel), root_key);
     match cached {
         PullOutcome::Produced(ProductValue::RootBackendProduct(answer)) => {
-            assert!(Rc::ptr_eq(&answer, &root_answer));
-            assert!(Rc::ptr_eq(&answer.program, &world_program));
+            assert!(Rc::ptr_eq(&answer.transport, &root_answer.transport));
+            assert!(Rc::ptr_eq(&answer.program, &root_answer.program));
         }
         other => panic!("settled root product should be a cache hit, got {other:?}"),
     }
 
     driver.finish_session();
-
-    let second_driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let second_answer = match second_driver.session().memo().get(&root_key) {
-        Some(ProductValue::RootBackendProduct(answer)) => answer,
-        other => panic!("expected second root backend answer, got {other:?}"),
-    };
-    assert!(
-        Rc::ptr_eq(&second_answer.program, &world_program),
-        "a fresh product calculation must retain World's equal BackendProgram allocation"
-    );
-    second_driver.finish_session();
 }
 
 /// One recursion component publishes ONE return contract.
@@ -4513,7 +4499,7 @@ fn main(), do: make(41).(1)
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let construction = owners
         .iter()
@@ -4564,7 +4550,7 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, boundaries) = callable_owner_facts_for_test(session);
     let reducer_input_boundaries = plan
         .position_layouts
@@ -4620,7 +4606,7 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, boundaries) = callable_owner_facts_for_test(session);
     let unpublished = plan
         .position_layouts
@@ -4672,7 +4658,7 @@ fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let answers = root_backend_answer_for_test(session)
         .transport
         .callable_owners
@@ -4721,7 +4707,7 @@ fn compiler2_callable_construction_owners_preserve_shared_boundary_publications(
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let answers = ["left", "right"].map(|name| {
         let position = TransportPosition::ExecutableReturn {
             executable: executable_for(&world, session, name, 0),
@@ -4796,7 +4782,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     let reducer = callables
         .iter()
@@ -4872,7 +4858,7 @@ end
     world.submit_code(Some("escaped_branded_capture.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let owner = super::jobs::backend::executable_key_for_symbol(root, &plan.entry);
     let owner_demand = world.runtime_demand(&owner).expect("main demand");
     let (value, flow) = owner_demand
@@ -4935,7 +4921,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
     let runtime_demands = runtime_demands_for_frontier(&world, session);
     let direct_flows = runtime_demands
@@ -4997,7 +4983,7 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     // The Range-specific recursion is monomorphic over integer ranges; no input
     // may carry `float` (only the generic Enum/dbg entry points legitimately
     // accept the whole element domain).
@@ -5067,8 +5053,8 @@ fn assert_entry_dispatch_control(
     world.submit_code(Some(source_name.to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let (executable, materialized) = driver
-        .session()
+    let session = driver.session();
+    let (executable, materialized) = session
         .memo()
         .materialized_executables()
         .find(|(executable, _)| function_is(&world, executable.activation.function, function_name, 1))
@@ -5139,7 +5125,7 @@ fn pull_transport_plan_for_test<'a>(
     root: super::RootId,
 ) -> (ProductDriver<'a, ConfiguredTelemetry>, MaterializedTransportPlan) {
     let driver = pull_root_backend_driver_for_test(tel, world, root);
-    let plan = root_backend_answer_for_test(driver.session()).transport.clone();
+    let plan = (*root_backend_answer_for_test(&driver.session()).transport).clone();
     (driver, plan)
 }
 
@@ -5177,21 +5163,28 @@ fn pull_root_backend_driver_for_test<'a>(
     world: &mut World,
     root: super::RootId,
 ) -> ProductDriver<'a, ConfiguredTelemetry> {
-    let (program, driver) =
-        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
-            .expect("panic-based ProductDriveError never returns Err");
+    let (_, driver) = super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
+        .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program);
     driver
 }
 
-/// Panics on all four `ProductDriveError` hooks instead of returning a value,
+/// Panics on each `ProductDriveError` hook instead of returning a value,
 /// so this file keeps its old fail-loudly ergonomics while sharing the one
 /// production pull-drive loop. No test asserts on the panic text.
 #[derive(Debug)]
 struct PanicProductDriveError;
 
 impl super::product_drive::ProductDriveError for PanicProductDriveError {
+    fn dependency_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        address: super::drive::ProductAddress,
+        source: super::scheduler::FatalError,
+    ) -> Self {
+        panic!("product dependency {address:?} failed: {source:?}");
+    }
+
     fn product_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
@@ -5249,9 +5242,8 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
 
 /// Pulls an arbitrary `ProductKey` to a settled `ProductValue`, expanding any
 /// `PullWait::Fact` through the shared `product_drive::drive_product_fact_wait`.
-/// Production only ever drives one fixed key (`RootBackendProduct`); these
-/// tests need transport shapes, runtime demands, and materialized executables
-/// too, so only the inner fact-wait loop is shared.
+/// These tests also request transport shapes, runtime demands, and
+/// materialized executables, so only the inner fact-wait loop is shared.
 fn pull_product_until_produced_with_fact_waits(
     driver: &mut ProductDriver<'_, ConfiguredTelemetry>,
     world: &mut World,

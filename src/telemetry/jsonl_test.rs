@@ -373,6 +373,7 @@ fn pull_product_settled_renders_the_value_authority() {
 
 #[test]
 fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
+    use crate::compiler2::DependencyKey;
     use crate::compiler2::SemanticOrd as _;
     use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
 
@@ -423,7 +424,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             (list, non_empty)
         };
         let raw_order = list.arrow < non_empty.arrow;
-        let mut keys = if non_empty_first {
+        let keys = if non_empty_first {
             vec![
                 FactKey::ReturnType(non_empty.clone()),
                 FactKey::ReturnType(list.clone()),
@@ -434,6 +435,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
                 FactKey::ReturnType(non_empty.clone()),
             ]
         };
+        let mut keys = keys.into_iter().map(DependencyKey::Fact).collect::<Vec<_>>();
         keys.sort_by(|left, right| left.semantic_cmp(right, &types));
         let step = crate::compiler2::AppliedStep {
             changed: keys
@@ -458,7 +460,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
                     },
                 })
                 .collect(),
-            wakes: Vec::<crate::compiler2::Wake<crate::compiler2::Job, FactKey>>::new(),
+            wakes: Vec::<crate::compiler2::Wake<crate::compiler2::Job, DependencyKey>>::new(),
             blocked: keys.into_iter().map(FactUse::settled).collect(),
         };
         let mut body = String::new();
@@ -488,6 +490,136 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
         list_first.1, non_empty_first.1,
         "renderer must preserve the typed owner sequence across opposite mint and insertion histories"
     );
+}
+
+#[test]
+fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
+    use crate::compiler2::DependencyKey;
+    use crate::compiler2::{
+        AppliedStep, FactChange, FactKey, FactMovement, FactState, FactUse, Job, RootId, Wake, WakeDisposition,
+    };
+
+    let root = RootId::for_test(7);
+    let key = DependencyKey::Fact(FactKey::RootEntry(root));
+    let step = AppliedStep {
+        changed: vec![FactChange {
+            key: key.clone(),
+            old_revision: None,
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        wakes: vec![Wake {
+            cause: FactUse::settled(key.clone()),
+            job: Job::SeedRoot(root),
+            disposition: WakeDisposition::Enqueued,
+            shift: true,
+        }],
+        movements: vec![FactMovement {
+            key: key.clone(),
+            state: FactState {
+                revision: Some(1),
+                settled: true,
+            },
+        }],
+        blocked: vec![FactUse::settled(key)],
+    };
+    let mut body = String::new();
+    write_applied_step_body(&mut body, &step);
+    assert_eq!(
+        body,
+        concat!(
+            ",\"changed\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"old_revision\":null,\"new_revision\":1,\"old_settled\":false,\"new_settled\":true}]",
+            ",\"wakes\":[{\"cause\":{\"use\":\"settled\",\"kind\":\"RootEntry\",\"root_id\":7},\"job\":{\"kind\":\"SeedRoot\",\"root_id\":7},\"disposition\":\"enqueued\",\"shift\":true}]",
+            ",\"movements\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"revision\":1,\"settled\":true}]",
+            ",\"blocked\":[{\"kind\":\"RootEntry\",\"root_id\":7}]",
+        )
+    );
+}
+
+#[test]
+fn product_dependency_reads_identify_both_the_owner_and_the_product() {
+    use crate::compiler2::{DependencyKey, ProductAddress};
+    use crate::compiler2::{FactUse, ProductKey, RootId};
+
+    for owner in [7, 8] {
+        let dependency = FactUse::settled(DependencyKey::Product(ProductAddress {
+            root: RootId::for_test(owner),
+            key: ProductKey::RootBackendContent(RootId::for_test(9)),
+        }));
+        let mut body = String::new();
+        write_dependency_use_identity(&mut body, &dependency);
+        assert_eq!(
+            body,
+            format!(
+                "{{\"use\":\"settled\",\"kind\":\"Product\",\"root_id\":{owner},\"product\":{{\"kind\":\"root_backend_content\",\"root_id\":9}}}}"
+            )
+        );
+    }
+}
+
+#[test]
+fn product_movements_are_public_causal_events() {
+    use crate::compiler2::{AppliedStep, FactMovement, FactState, Job, ProductKey, RootId};
+    use crate::compiler2::{DependencyKey, ProductAddress};
+
+    let telemetry = ConfiguredTelemetry::new();
+    let (buf, writer) = vec_writer();
+    JsonlBackend::new_public_writer(writer).install(&telemetry);
+    let step = AppliedStep::<Job, DependencyKey> {
+        changed: vec![],
+        wakes: vec![],
+        blocked: vec![],
+        movements: vec![FactMovement {
+            key: DependencyKey::Product(ProductAddress {
+                root: RootId::for_test(7),
+                key: ProductKey::RootBackendContent(RootId::for_test(7)),
+            }),
+            state: FactState {
+                revision: Some(3),
+                settled: true,
+            },
+        }],
+    };
+    telemetry.raw_event1(&["fz", "compiler2", "work_graph", "dependencies_moved"], &step);
+    drop(telemetry);
+    let log = String::from_utf8(buf.borrow().clone()).unwrap();
+    let events = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "each product movement has one causal record");
+    assert_eq!(
+        events[0]["metadata"]["step"]["movements"][0]["product"]["kind"],
+        "root_backend_content"
+    );
+    assert_eq!(events[0]["metadata"]["step"]["movements"][0]["revision"], 3);
+}
+
+#[test]
+fn failed_product_requests_report_the_dependency_that_failed() {
+    use crate::compiler2::{DependencyKey, DriveOutcome, Job, ProductAddress, ProductKey, RootId};
+
+    let outcome = DriveOutcome::<Job, DependencyKey>::DependencyFailed {
+        dependency: DependencyKey::Product(ProductAddress {
+            root: RootId::for_test(7),
+            key: ProductKey::NativeProgram(RootId::for_test(7)),
+        }),
+    };
+    let measurements = Measurements::new();
+    let metadata = crate::metadata! { outcome: crate::telemetry::opaque(&outcome) };
+    let event = make_event(
+        &["fz", "compiler2", "drive"],
+        EventKind::SpanStop,
+        &measurements,
+        &metadata,
+    );
+    let rendered: serde_json::Value = serde_json::from_str(&capture_jsonl(&event)).unwrap();
+    let outcome = &rendered["metadata"]["outcome"];
+    assert_eq!(outcome["status"], "dependency_failed");
+    assert_eq!(outcome["dependency"]["root_id"], 7);
+    assert_eq!(outcome["dependency"]["product"]["kind"], "native_program");
+    assert!(outcome.get("job_kind").is_none());
 }
 
 #[test]

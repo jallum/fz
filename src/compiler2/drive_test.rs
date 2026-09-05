@@ -3,8 +3,8 @@ use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendRet
 use crate::compiler2::artifact::{
     NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
 };
-use crate::compiler2::drive::JobEffects;
-use crate::compiler2::pull::{ProductSettlement, ProductValue, TransportCarrier};
+use crate::compiler2::drive::{DependencyKey, JobEffects};
+use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
-type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
+type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
@@ -270,10 +270,27 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
 }
 
 fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id: crate::compiler2::RootId) {
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "backend product should be explicitly demandable for {root_id:?}",
-    );
+    compiler
+        .drive_root_to_dump_stage(root_id, super::dump::DumpStage::Backend)
+        .expect("the requested backend product should settle");
+}
+
+fn drive_world_backend_product(
+    world: &mut super::World,
+    telemetry: &ConfiguredTelemetry,
+    sessions: &mut super::pull::ProductSessions,
+    root: super::RootId,
+) {
+    super::product_drive::drive_retained_product(
+        world,
+        telemetry,
+        sessions,
+        super::drive::ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        },
+    )
+    .expect("the retained backend product should settle");
 }
 
 #[test]
@@ -705,6 +722,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code_id = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
@@ -724,7 +742,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     );
 
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "source should index protocol and owner modules",
     );
     assert!(
@@ -732,7 +750,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "top-level scope should be demandable"
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "top-level scope should prepare module definitions",
     );
 
@@ -742,7 +760,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "protocol definition should be demandable"
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "protocol definition should publish callback facts first",
     );
 
@@ -752,7 +770,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "owner module definition should be demandable",
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "owner-module remote calls inside defimpl callbacks should use the live source namespace, not wait on ModuleDefined(owner)",
     );
 }
@@ -761,13 +779,14 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code_id = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
 
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
@@ -775,14 +794,14 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "top-level scoping should bind nested definition macros before root demand",
     );
 
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -3124,20 +3143,6 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
 #[test]
 fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    outputs.install(&tel);
-    let macro_defs = Capture::new();
-    macro_defs.install(&tel, &["fz", "compiler2", "macro_executable"]);
-    let macro_revisions = Rc::new(RefCell::new(Vec::new()));
-    let macro_revision_sink = Rc::clone(&macro_revisions);
-    tel.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-        &["fz", "compiler2", "macro_executable", "defined"],
-        move |_, _, _, world, function| {
-            if let Some(executable) = world.macro_executable(*function) {
-                macro_revision_sink.borrow_mut().push(executable.backend_revision);
-            }
-        },
-    );
     let functions = FunctionCapture::new();
     functions.install(&tel);
 
@@ -3154,26 +3159,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
 
     let inc = function_id(&functions, "inc", 1);
-    assert!(compiler.demand(Job::BuildMacroExecutable(inc)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should drive the shared backend product",
-    );
-    let macro_outputs = outputs
-        .take(Job::BuildMacroExecutable(inc))
-        .expect("BuildMacroExecutable job effects");
-    assert!(
-        macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), true)),
-        "macro readiness should publish a first-class macro executable fact"
-    );
-    let macro_defined = macro_defs
-        .last(&["fz", "compiler2", "macro_executable", "defined"])
-        .expect("macro readiness should define a backend-backed macro executable");
-    assert!(
-        macro_revisions.borrow().last().is_some_and(|revision| *revision > 0),
-        "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
-    );
-    assert!(macro_defined.measurements.get("backend_revision").is_none());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let arg = builder.int(41);
@@ -3201,11 +3186,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     assert_eq!(args[1].int_value().expect("literal increment"), 1);
 
     let quoted_var = function_id(&functions, "quoted_var", 0);
-    assert!(compiler.demand(Job::BuildMacroExecutable(quoted_var)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should also handle quoted variables",
-    );
     let quoted = compiler
         .run_macro_on_source(quoted_var, &carrier, caller, &[])
         .expect("macro should return the quoted variable");
@@ -3227,11 +3207,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
 
     let forward_define = function_id(&functions, "forward_define", 1);
-    assert!(compiler.demand(Job::BuildMacroExecutable(forward_define)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should lower quoted remote compiler-service calls",
-    );
     let forwarded_source = builder
         .call(
             "fn",
@@ -3390,11 +3365,11 @@ end
 #[test]
 fn compiler2_runtime_roots_reject_macro_entries() {
     let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    outputs.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
     let exceptions = Rc::new(RefCell::new(Vec::new()));
     let exception_sink = Rc::clone(&exceptions);
-    tel.attach_raw_span0_1::<DriveOutcome<Job, FactKey>, _, _, _>(
+    tel.attach_raw_span0_1::<DriveOutcome<Job, DependencyKey>, _, _, _>(
         &["fz", "compiler2", "drive"],
         |_, _, _| {},
         |_, _, _, _, _| {},
@@ -3424,10 +3399,8 @@ fn compiler2_runtime_roots_reject_macro_entries() {
         "runtime root seeding should reject macro entries before backend/native execution can gain compiler authority"
     );
     assert!(
-        outputs
-            .stops_matching(|job| matches!(job, Job::BuildBackendProduct(id) if *id == root),)
-            .is_empty(),
-        "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
+        backend.records(root).is_empty(),
+        "rejected runtime roots must not produce backend content"
     );
     assert_eq!(exceptions.borrow().len(), 1);
     assert_ne!(exceptions.borrow()[0].1, 0);
@@ -4194,12 +4167,11 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
         "backend lowering should not wake the legacy planner or codegen pipelines",
     );
+    let settlements = capture.find(&["fz", "compiler2", "pull", "product", "settled"]);
+    assert!(!settlements.is_empty(), "backend compilation must settle products");
     assert!(
-        capture
-            .find(&["fz", "compiler2", "backend_program", "defined"])
-            .into_iter()
-            .all(|event| event.metadata.len() == 0),
-        "generic capture should not durable-copy opaque backend-program metadata",
+        settlements.into_iter().all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy opaque product payloads",
     );
 }
 
@@ -7448,10 +7420,7 @@ end
         need: ExecutableNeed::Value,
     });
 
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "the backend product should be demandable for the Enum.find root",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "Enum.find semantic analysis should converge with runtime library activations",
@@ -8655,7 +8624,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
     );
 
     let exact_result = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
-    let backend_program = compiler.world().backend_program(root_id);
+    let backend_program = compiler.retained_backend_program(root_id);
     let count_result = backend_program
         .executables
         .iter()
@@ -9355,7 +9324,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
 }
 
 #[test]
-fn compiler2_identical_backend_recompute_emits_no_definition() {
+fn compiler2_unchanged_backend_request_emits_no_content_movement() {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -9372,15 +9341,9 @@ fn compiler2_identical_backend_recompute_emits_no_definition() {
         need: ExecutableNeed::Value,
     });
 
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "backend product should be explicitly demandable"
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "initial backend product should settle for quicksort");
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "explicitly re-demanding unchanged backend product should enqueue one fresh derivation",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "rebuilding unchanged backend state should resolve without redefining it",
@@ -9390,11 +9353,11 @@ fn compiler2_identical_backend_recompute_emits_no_definition() {
     assert_eq!(
         records.len(),
         1,
-        "an unchanged backend re-derivation must not emit another definition event",
+        "an unchanged backend request must not emit another changed settlement",
     );
     assert!(
         records[0].changed,
-        "a backend-program definition event represents actual state movement",
+        "a changed backend settlement represents actual state movement",
     );
 }
 
@@ -9566,10 +9529,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "closed-union protocol fixture should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
@@ -9948,10 +9908,7 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "{fixture} should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert!(
         matches!(compiler.drive(), DriveOutcome::Resolved),
         "{fixture} should drive to a settled backend product",
@@ -11394,7 +11351,7 @@ fn backend_canon(fixture: &str) -> String {
         .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
     let world = compiler.world();
-    crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
+    crate::compiler2::canon::canon_backend_program(world, &compiler.retained_backend_program(root))
 }
 
 #[test]
@@ -11542,7 +11499,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             .collect::<Vec<_>>();
         facts.sort();
         (
-            crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root)),
+            crate::compiler2::canon::canon_backend_program(world, &compiler.retained_backend_program(root)),
             dbg.lines(),
             order,
             work,
@@ -11596,8 +11553,7 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
     assert_eq!(compiler.run_root_interp(root), Ok(2));
 
     let main = compiler
-        .world()
-        .backend_program(root)
+        .retained_backend_program(root)
         .executables
         .iter()
         .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
@@ -11916,8 +11872,7 @@ fn compiler2_construction_target_precedes_seated_wrapper_selection() {
     compiler
         .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
-    let world = compiler.world();
-    let program = world.backend_program(root);
+    let program = compiler.retained_backend_program(root);
 
     let multi_member_wrappers = program
         .construction_wrappers
@@ -12088,10 +12043,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "membership operator fixture should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
@@ -12146,14 +12098,15 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "quicksort root should settle to a finite semantic frontier",
     );
 
@@ -12299,14 +12252,15 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "initial quicksort root should settle",
     );
 
@@ -12339,7 +12293,7 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     }
     if demanded_missing_fact {
         assert_resolved(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             "the rooted executable-fact frontier should settle before the unrelated edit",
         );
     }
@@ -12359,9 +12313,9 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
         Some("quicksort_plus_foo_v2.fz".to_string()),
         include_str!("../../fixtures2/00027_foo_99.fz").to_string(),
     );
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "redefining uncalled foo/0 should not reopen the quicksort root",
     );
 
@@ -12385,26 +12339,22 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     // the old recursive frontier: the rooted reachable frontier must become
     // exactly {main, foo} and no longer reach qsort/partition/append.
     //
-    // The retraction is observed by re-walking the settled call graph from the
-    // entry, NOT by re-reading the raw `activation_analysis` snapshot. The activation store
-    // is a monotone GLOBAL cache: qsort/partition/append are still defined (00008
-    // only redefines `main`+`foo`), so their first-drive analysis facts stay live
-    // and un-pruned there — and the backend product is not rebuilt on this
-    // redefinition. Reachability from the (re-analyzed) entry is what prunes the
-    // live frontier.
+    // Observe the root's reached activation frontier after replacing main's
+    // body, independently of retained definitions for the former callees.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "initial quicksort root should settle",
     );
 
@@ -12430,9 +12380,9 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
         Some("quicksort_plus_foo_v2.fz".to_string()),
         include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
     );
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "redefining main/0 should retract the old quicksort root frontier",
     );
 
@@ -12476,15 +12426,20 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         DriveOutcome::Unresolved { waits } => {
             assert!(
                 waits.iter().any(|wait| {
-                    wait.fact == settled_fact(FactKey::FunctionDefined(function_id))
+                    wait.fact == super::drive::fact_dependency(settled_fact(FactKey::FunctionDefined(function_id)))
                         && wait.jobs.contains(&Job::SeedRoot(root_id))
                 }),
                 "unresolved drive should report SeedRoot waiting on the entry definition"
             );
             assert!(
-                work_graph.all().into_iter().any(|step| step
-                    .blocked
-                    .contains(&settled_fact(FactKey::FunctionDefined(function_id)))),
+                work_graph
+                    .all()
+                    .into_iter()
+                    .any(
+                        |step| step.blocked.contains(&super::drive::fact_dependency(settled_fact(
+                            FactKey::FunctionDefined(function_id)
+                        )))
+                    ),
                 "work-graph telemetry should carry the exact fact that blocked the seed job"
             );
         }
@@ -15935,11 +15890,16 @@ impl OutputCapture {
                     .changed
                     .iter()
                     .filter(|change| change.content_changed())
-                    .map(|change| change.key.clone())
+                    .filter_map(|change| change.key.fact().cloned())
                     .collect();
                 let effects = JobEffects {
                     reads: world.job_reads(&job).into_iter().collect(),
-                    waits: completion.blocked.clone(),
+                    waits: completion
+                        .blocked
+                        .iter()
+                        .cloned()
+                        .filter_map(super::drive::as_fact_use)
+                        .collect(),
                     outputs: world.job_outputs(&job),
                     changed,
                     ..JobEffects::default()
@@ -16009,7 +15969,7 @@ impl WorkGraphCapture {
         );
     }
 
-    fn all(&self) -> Vec<AppliedStep<Job, FactKey>> {
+    fn all(&self) -> Vec<AppliedStep<Job, DependencyKey>> {
         self.steps.borrow().clone()
     }
 }
@@ -16304,14 +16264,18 @@ impl BackendProgramCapture {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
-            &["fz", "compiler2", "backend_program", "defined"],
-            move |_, _, _, world, root| {
-                defs.borrow_mut().push(BackendProgramRecord {
-                    root_id: *root,
-                    changed: true,
-                    program: world.backend_program(*root),
-                });
+        telemetry.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |_, _, _, key, value, settlement| {
+                if let (ProductKey::RootBackendProduct(root), ProductValue::RootBackendProduct(answer)) = (key, value)
+                    && settlement.changed
+                {
+                    defs.borrow_mut().push(BackendProgramRecord {
+                        root_id: *root,
+                        changed: settlement.changed,
+                        program: Rc::clone(&answer.program),
+                    });
+                }
             },
         );
     }
@@ -16323,7 +16287,7 @@ impl BackendProgramCapture {
             .rev()
             .find(|record| record.root_id == root_id)
             .cloned()
-            .unwrap_or_else(|| panic!("backend_program.defined for {root_id:?}"))
+            .unwrap_or_else(|| panic!("RootBackendProduct settlement for {root_id:?}"))
     }
 
     fn records(&self, root_id: crate::compiler2::RootId) -> Vec<BackendProgramRecord> {
@@ -17019,7 +16983,7 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     }
 }
 
-pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
+pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
@@ -17227,14 +17191,15 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("forever.fz".to_string()),
         concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "a never-returning program still quiesces",
     );
 
@@ -17478,14 +17443,15 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
 
         let mut world = crate::compiler2::World::new();
+        let mut sessions = super::pull::ProductSessions::default();
         world.submit_code(
             Some("quicksort.fz".to_string()),
             include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-        world.demand(Job::BuildBackendProduct(root));
+        drive_world_backend_product(&mut world, &tel, &mut sessions, root);
         assert_resolved(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             "every schedule converges",
         );
         let entry = world.root_function(root);

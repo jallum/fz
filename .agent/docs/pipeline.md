@@ -31,9 +31,8 @@ body      LowerFunction
             survive only as interface-backed FunctionId expectations
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
-macro     BuildMacroExecutable
-            one demanded defmacro -> hidden macro root
-            -> BackendProgram -> MacroExecutable
+macro     source expansion reads RootBackendContent(hidden macro root)
+            exact product waits drive the retained RootBackendProduct
 keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
@@ -133,9 +132,9 @@ durable source of truth for the pull artifact path as built.
   entry arity, rejects macro entry functions, and the interpreter front door
   pulls `RootBackendProduct(root)`.
 - `RootKind::Macro` is a hidden compile-time entry request created only by
-  `BuildMacroExecutable`. It uses the macro ABI input vector
+  source expansion. It uses the macro ABI input vector
   `__CALLER__ + captures + quoted args`, uses the same retained backend product path,
-  and publishes `MacroExecutable(function)` for the macro expander.
+  and supplies the retained content handle directly to the macro expander.
 
 ## A root's journey
 
@@ -177,21 +176,21 @@ Macro executable readiness uses a hidden macro root and pulls the backend
 product:
 
 ```text
-demand BuildMacroExecutable(inc/1)
+expand inc(41)
   waits for FunctionDefined(inc/1)
   creates macro root input [Any(__CALLER__), Any(x)]
-  produces BackendProgram(macro_root) through RootBackendProduct(macro_root)
-  publishes MacroExecutable(inc/1)
+  waits on RootBackendContent(macro_root)
+  the shared product driver pulls RootBackendProduct(macro_root)
+  the source job resumes and executes the memo-owned backend handle
 ```
 
-The macro root requests only `RootBackendProduct(macro_root)`; compile-time
+The macro root requests `RootBackendContent(macro_root)`; compile-time
 macro execution uses the backend interpreter over the quoted source heap.
 Typed product telemetry asserts that no `NativeProgram(macro_root)` is
 evaluated.
-`BuildMacroExecutable` does not wait with a producer list. If the macro root's
-`BackendProgram` fact is missing, it directly invokes the backend product
-producer and completes that exact product job's effects so the fact table sees
-the published backend program.
+The source job records a typed product dependency. Its generation and readiness
+come directly from the retained memo; scheduler product reads and waits share
+the ordinary dependency index and finality propagation with World fact reads.
 
 `Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
 for definitions. It receives compiler-shaped quoted AST on the active source
@@ -213,8 +212,8 @@ demands that function, `ExpandFunctionSource(function)` recursively expands
 body-local macros and normalizes source-only sugar on the same quoted heap
 before `DefineFunction(function)` decodes the body. Function heads establish
 identity and are not expression positions. Local macros, imported macros, and
-required remote macros all converge on the same `MacroExecutable(function)`
-fact. Exact `import/require ... only:` forms do not wait during scoping: they
+required remote macros all converge on the same retained macro-root content
+product. Exact `import/require ... only:` forms do not wait during scoping: they
 reserve callable identity lazily by recording a module-interface expectation and
 binding a `Callable` placeholder into the namespace immediately. `require`
 also binds module-path visibility for the required name, but remote macro
@@ -238,7 +237,7 @@ The recursive quoted-tree rewrite itself is single-sourced in
 post-expansion handling, but they do not carry separate walkers anymore.
 
 Item macro calls are source-order work, not body-lowering work. The macro call
-expands through `MacroExecutable(function)`, the returned compiler-shaped root
+expands through the retained macro-root content, the returned compiler-shaped root
 is read as a source fragment, and any function source inside that fragment is
 published through `Fz.Compiler.define` with a projected `__ENV__`. Literal functions,
 protocol callbacks, synthesized module-info functions, and explicit compiler
@@ -657,26 +656,22 @@ The next products narrow the contract:
   native body return contracts, and extern-marshal facts instead of rebuilt
   `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
-The root answer and World retain the same immutable `Rc<BackendProgram>`; macro
-packaging and interpreter reads clone that handle rather than the program tree.
-The native projection is stored only in the retained product memo and returned
-as `Rc<NativeProgram>` for the same reason; World has no native-program mirror.
-These handles are deliberately `Rc`, not `Arc`: compiler2's World, product
-driver, interpreter handoff, and native lowering are single-thread owned, and
-the World already is not `Send`.
+The retained root answer is a pair of shared immutable backend and transport
+handles, without another shared wrapper. Runtime consumers and macro expansion
+clone the Rc<BackendProgram>, not the program tree. Transport metadata has a
+distinct lifetime: equal backend reproduction keeps the backend allocation
+when transport changes. RootBackendContent projects that
+handle with pointer-only equality. NativeProgram also lives only in the memo
+and returns an Rc<NativeProgram>; World owns no backend, macro, or native
+artifact mirror.
 
 An external backend/native request owns one retained root-session activation.
-While it reconciles queued edits, the agenda parks same-root backend and
-already-mapped macro artifact jobs without removing them from agenda ownership;
-duplicate demands still coalesce and runnable FIFO order is unchanged. A
-native request asks for `NativeProgram(root)` directly. When that pull first
-settles its `RootBackendProduct(root)` dependency, it publishes the exact World
-backend projection before native lowering can continue or fail; it does not
-open a second backend request or manufacture a cache hit to do so. The
-projection consumes a parked backend job exactly once, including an equal
-answer, then the shared request lifecycle unparks the remaining consumers for
-the ordinary post-projection drive. Scoped cleanup unparks on every failure
-before the same session is restored for retry.
+It applies queued edits before reading products. Native requests pull
+NativeProgram directly through RootBackendContent and RootBackendProduct. The
+same retained product driver handles exact product waits from source jobs,
+including hidden macro roots. Active sessions remain addressable through short
+checked borrows that end before scheduler jobs run. Every failure restores the
+same session, and failed native lowering installs no cached native answer.
 
 `ProductMemo` is the only settled inventory for materialized, ABI, and symbolic
 backend executables. Typed iterators project those entries without collecting

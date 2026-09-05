@@ -461,27 +461,6 @@ impl JsonlBackend {
                 );
             },
         );
-        let projected_product_backend = Rc::clone(&backend);
-        telemetry.attach_raw_event3::<
-            crate::compiler2::pull::ProductKey,
-            crate::compiler2::pull::ProductProjection,
-            crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
-            _,
-        >(
-            &["fz", "compiler2", "pull", "product", "projected"],
-            move |name, span_id, parent_span_id, product, projection, step| {
-                projected_product_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
-                        product: crate::telemetry::opaque(product),
-                        projection: crate::telemetry::opaque(projection),
-                        step: crate::telemetry::opaque(step),
-                    },
-                );
-            },
-        );
         let product_backend = Rc::clone(&backend);
         telemetry.attach_raw_event3::<
             crate::compiler2::pull::ProductKey,
@@ -602,7 +581,7 @@ impl JsonlBackend {
         let drive_start = Rc::clone(backend);
         let drive_stop = Rc::clone(backend);
         let drive_exception = Rc::clone(backend);
-        telemetry.attach_raw_span0_1::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::FactKey>, _, _, _>(
+        telemetry.attach_raw_span0_1::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>, _, _, _>(
             &["fz", "compiler2", "drive"],
             move |name, span_id, parent_span_id| {
                 drive_start.handle_raw_span(
@@ -675,16 +654,13 @@ impl JsonlBackend {
 
     fn install_remaining_raw_boundaries(telemetry: &ConfiguredTelemetry, backend: &Rc<Self>) {
         Self::install_raw_value::<crate::diag::Diagnostic>(telemetry, backend, &["fz", "diag"], "diagnostic");
-        // The drain arbiter's readiness step (fz-kdt.44). It is the one graph
-        // movement with no job completion behind it, so it carries a bare
-        // `AppliedStep` rather than a `JobCompletion` — same body, no formula
-        // identity, because no formula ran.
-        Self::install_raw_value::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>(
-            telemetry,
-            backend,
-            &["fz", "compiler2", "work_graph", "quiesced"],
-            "step",
-        );
+        // Readiness and externally owned product movements have no job
+        // completion. Each carries its one causal graph step directly.
+        for name in ["quiesced", "dependencies_moved"] {
+            Self::install_raw_value::<
+                crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
+            >(telemetry, backend, &["fz", "compiler2", "work_graph", name], "step");
+        }
         Self::install_raw_value::<std::time::Duration>(
             telemetry,
             backend,
@@ -1213,7 +1189,6 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "requested"]
             | ["fz", "compiler2", "pull", "product", "evaluated"]
             | ["fz", "compiler2", "pull", "product", "copublished"]
-            | ["fz", "compiler2", "pull", "product", "projected"]
             | ["fz", "compiler2", "pull", "recursive_group", "published"]
             | ["fz", "compiler2", "backend_request", ..]
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
@@ -1225,7 +1200,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
             | ["fz", "compiler2", "work_graph", "quiesced"]
-            | ["fz", "compiler2", "backend_program", "defined"]
+            | ["fz", "compiler2", "work_graph", "dependencies_moved"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
             | ["fz", "compiler2", "native_backend", ..]
             | ["fz", "compiler2", "aot", ..]
@@ -1343,7 +1318,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             if index > 0 {
                 out.push(',');
             }
-            write_fact_use_identity(out, entry);
+            write_dependency_use_identity(out, entry);
         }
         out.push_str("]}");
         return;
@@ -1538,7 +1513,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, job_kind(job));
         write_job_identity(out, job);
     } else if let Some(outcome) =
-        opaque.downcast_ref::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::FactKey>>()
+        opaque.downcast_ref::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         out.push(',');
         write_str_lit(out, "status");
@@ -1559,6 +1534,12 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 out.push(':');
                 write_str_lit(out, job_kind(job));
                 write_job_identity(out, job);
+            }
+            crate::compiler2::DriveOutcome::DependencyFailed { dependency } => {
+                write_str_lit(out, "dependency_failed");
+                out.push_str(",\"dependency\":{\"kind\":");
+                write_dependency_identity(out, dependency);
+                out.push('}');
             }
             crate::compiler2::DriveOutcome::TimedOut { jobs_ran, pending_jobs } => {
                 write_str_lit(out, "timed_out");
@@ -1707,7 +1688,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         push_u64(out, tokens.len() as u64);
     } else if let Some(step) =
-        opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>()
+        opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>>()
     {
         write_applied_step_body(out, step);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
@@ -1751,13 +1732,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             Some(group) => push_u64(out, group),
             None => out.push_str("null"),
         }
-    } else if let Some(projection) = opaque.downcast_ref::<crate::compiler2::pull::ProductProjection>() {
-        out.push_str(",\"session_id\":");
-        push_u64(out, projection.session().get());
-        out.push_str(",\"request_id\":");
-        push_u64(out, projection.request().get());
-        out.push_str(",\"generation\":");
-        push_u64(out, projection.generation());
     } else if let Some(search) = opaque.downcast_ref::<crate::compiler2::pull::RecursiveGroupSearch>() {
         for (name, value) in [
             ("candidate_inventory", search.candidate_inventory),
@@ -2188,12 +2162,11 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::LowerFunction(function)
         | Job::ReifyGuardDispatch(function)
         | Job::PlanEntryDispatch(function)
-        | Job::BuildMacroExecutable(function)
         | Job::DeriveStaticCallees(function)
         | Job::DeriveCallGraphComponent(function)
         | Job::DeriveInputDemand(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
-        Job::SeedRoot(root) | Job::BuildBackendProduct(root) => write_root_id(out, *root),
+        Job::SeedRoot(root) => write_root_id(out, *root),
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
         Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
@@ -2221,13 +2194,12 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::LoweredBody(function)
         | FactKey::GuardDispatch(function)
         | FactKey::EntryDispatch(function)
-        | FactKey::MacroExecutable(function)
         | FactKey::StaticCallees(function)
         | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
-        FactKey::RootEntry(root) | FactKey::BackendProgram(root) => write_root_id(out, *root),
+        FactKey::RootEntry(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
         | FactKey::ActivationAnalyzed(key)
@@ -2242,15 +2214,32 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
     }
 }
 
-fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::FactKey>]) {
+fn write_dependency_identity(out: &mut String, dependency: &crate::compiler2::DependencyKey) {
+    use crate::compiler2::DependencyKey;
+    match dependency {
+        DependencyKey::Fact(fact) => {
+            write_str_lit(out, fact_kind(fact));
+            write_fact_identity(out, fact);
+        }
+        DependencyKey::Product(address) => {
+            write_str_lit(out, "Product");
+            write_root_id(out, address.root);
+            out.push_str(",\"product\":{\"kind\":");
+            write_str_lit(out, address.key.kind());
+            write_product_key_identity(out, &address.key);
+            out.push('}');
+        }
+    }
+}
+
+fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::DependencyKey>]) {
     out.push_str(",\"blocked\":[");
     for (index, wait) in blocked.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
         out.push_str("{\"kind\":");
-        write_str_lit(out, fact_kind(wait.fact()));
-        write_fact_identity(out, wait.fact());
+        write_dependency_identity(out, wait.fact());
         out.push('}');
     }
     out.push(']');
@@ -2279,6 +2268,17 @@ fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUs
     out.push('}');
 }
 
+fn write_dependency_use_identity(
+    out: &mut String,
+    dependency: &crate::compiler2::FactUse<crate::compiler2::DependencyKey>,
+) {
+    out.push_str("{\"use\":");
+    write_str_lit(out, fact_use_marker(dependency));
+    out.push_str(",\"kind\":");
+    write_dependency_identity(out, dependency.fact());
+    out.push('}');
+}
+
 fn write_optional_u64(out: &mut String, value: Option<u64>) {
     match value {
         Some(n) => push_u64(out, n),
@@ -2286,10 +2286,12 @@ fn write_optional_u64(out: &mut String, value: Option<u64>) {
     }
 }
 
-fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
+fn write_fact_change_identity(
+    out: &mut String,
+    change: &crate::compiler2::FactChange<crate::compiler2::DependencyKey>,
+) {
     out.push_str("{\"kind\":");
-    write_str_lit(out, fact_kind(&change.key));
-    write_fact_identity(out, &change.key);
+    write_dependency_identity(out, &change.key);
     out.push_str(",\"old_revision\":");
     write_optional_u64(out, change.old_revision);
     out.push_str(",\"new_revision\":");
@@ -2301,14 +2303,14 @@ fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactC
     out.push('}');
 }
 
-/// One `Wake<Job, FactKey>`: the cause fact use, the woken job's identity,
+/// One dependency wake: the cause use, the woken job's identity,
 /// its disposition (new work start vs. already-pending), and the
 /// ground-shift classification `complete` computed for the cause.
-fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::Job, crate::compiler2::FactKey>) {
+fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::Job, crate::compiler2::DependencyKey>) {
     use crate::compiler2::WakeDisposition;
 
     out.push_str("{\"cause\":");
-    write_fact_use_identity(out, &wake.cause);
+    write_dependency_use_identity(out, &wake.cause);
     out.push_str(",\"job\":{\"kind\":");
     write_str_lit(out, job_kind(&wake.job));
     write_job_identity(out, &wake.job);
@@ -2326,10 +2328,9 @@ fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::
     out.push('}');
 }
 
-fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<crate::compiler2::FactKey>) {
+fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<crate::compiler2::DependencyKey>) {
     out.push_str("{\"kind\":");
-    write_str_lit(out, fact_kind(&movement.key));
-    write_fact_identity(out, &movement.key);
+    write_dependency_identity(out, &movement.key);
     out.push_str(",\"revision\":");
     write_optional_u64(out, movement.state.revision);
     out.push_str(",\"settled\":");
@@ -2344,7 +2345,7 @@ fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<cr
 /// drift apart.
 fn write_applied_step_body(
     out: &mut String,
-    step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
+    step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::DependencyKey>,
 ) {
     out.push_str(",\"changed\":[");
     for (index, change) in step.changed.iter().enumerate() {
@@ -2421,7 +2422,6 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::LoweredBody(_) => "LoweredBody",
         FactKey::GuardDispatch(_) => "GuardDispatch",
         FactKey::EntryDispatch(_) => "EntryDispatch",
-        FactKey::MacroExecutable(_) => "MacroExecutable",
         FactKey::StaticCallees(_) => "StaticCallees",
         FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
@@ -2439,7 +2439,6 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::RuntimeDemandInput(_) => "RuntimeDemandInput",
         FactKey::RuntimeDemand(_) => "RuntimeDemand",
         FactKey::RuntimeDemandInputs(_) => "RuntimeDemandInputs",
-        FactKey::BackendProgram(_) => "BackendProgram",
     }
 }
 
@@ -2459,7 +2458,6 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::LowerFunction(_) => "LowerFunction",
         Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
-        Job::BuildMacroExecutable(_) => "BuildMacroExecutable",
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
@@ -2469,7 +2467,6 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
         Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
         Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
-        Job::BuildBackendProduct(_) => "BuildBackendProduct",
     }
 }
 

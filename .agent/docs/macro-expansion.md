@@ -74,10 +74,10 @@ It does four macro-relevant jobs:
    scope can resolve.
 
 2. Process `require`.
-   `ScopeSession::apply_require` waits for the provider module's
-   `ModuleDefined(module)` fact, selects the requested macro exports, waits for
-   their `MacroExecutable(function)` facts, and records those exact
-   `FunctionId`s in `required_remote_macros`.
+   `ScopeSession::apply_require` selects macro exports from the provider's
+   `ModuleInterface`, or reserves exact macro identities from `only:` while
+   that interface is pending. It records those `FunctionId`s in
+   `required_remote_macros`. An invocation demands the macro's backend content.
 
 3. Publish raw function source.
    `define_source_function(...)` writes `FunctionSource { source,
@@ -92,7 +92,7 @@ For compiler-owned definition macros, the returned fragment is expected to cross
 back into the compiler through `Fz.Compiler.define(source, __CALLER__)`. That
 callback is the single source-publication authority for top-level definitions.
 
-For module/protocol/impl fragments, nested indexing now advances through the
+For module/protocol/impl fragments, nested indexing advances through the
 same callback path:
 
 - `ScopeCode` indexes the outer fragment when its definition macro expands
@@ -131,7 +131,8 @@ The shared recursive walk does three things:
    calls through module exports.
 
 3. Run the macro and recurse on its result.
-   `expand_macro_invocation(...)` waits on `MacroExecutable(function)`, projects
+   `expand_macro_invocation(...)` reads `FunctionDefined(function)` and the
+   hidden root's retained `RootBackendContent(root)`, projects
    `__CALLER__` from the current `ScopeSnapshot`, runs the macro, emits
    telemetry, and then immediately re-enters expansion on the returned root.
 
@@ -167,13 +168,9 @@ __CALLER__)`, the Elixir-aligned def-site env seam.
 
 Remote macros are not available just because a module exports them.
 
-`require Helpers` does two separate things:
-
-- it proves the provider module surface exists
-- it proves the selected exported macros are executable
-
-Only after that does the current scope record those `FunctionId`s in
-`required_remote_macros`.
+`require Helpers` records the selected exported macro identities in
+`required_remote_macros`. An exact `only:` list can reserve those identities
+before the provider interface is ready. Macro code is demanded when invoked.
 
 Later, when expansion sees `Helpers.twice(...)`, it:
 
@@ -186,25 +183,21 @@ Later, when expansion sees `Helpers.twice(...)`, it:
 That is why an unrequired remote macro fails during source expansion instead of
 silently reaching body lowering.
 
-## What A Macro Executable Is
+## What Owns Macro Code
 
-`Job::BuildMacroExecutable(function)` in `src/compiler2/jobs/macro_runtime.rs`
-turns a defined macro function into an interpreter-ready backend artifact.
+`World::macro_root(function)` names a hidden compile-time root.
+`Compiler2` retains its `PullSession` in `ProductSessions`; the session's
+`ProductMemo` owns `RootBackendProduct(root)` and its shared backend program.
+`RootBackendContent(root)` exposes that same allocation to the macro caller.
 
-It does not invent a second macro-only lowering path.
+Source jobs record exact product reads and waits through `DependencyKey`.
+The scheduler reads product readiness and generations from the retained memo,
+and a named wait drives the ordinary product loop. Equal backend reproduction
+preserves its allocation and generation, including when transport metadata
+changes. An unchanged content value therefore leaves source consumers quiet.
 
-The job:
-
-1. waits for `FunctionDefined(function)`
-2. checks that the function surface is actually `is_macro`
-3. asks `World::macro_root(function)` for the hidden compile-time root
-4. produces `BackendProgram(root)` through the backend product producer when
-   that fact is not already present
-5. publishes `MacroExecutable(function)`
-
-This path does not carry a producer list and does not schedule native lowering.
-The macro executable is a backend-interpreter artifact for one hidden macro
-root.
+Macro execution consumes this interpreter-ready content directly. Native
+lowering is requested only by native front doors.
 
 `World::macro_root(function)` builds a `RootEntry` with:
 
@@ -228,7 +221,7 @@ and quoted `unquote` into `Expr::Unquote(...)`.
 - if `surface.is_macro`, `lower_clause(...)` prepends a `__CALLER__` parameter
   before captures and user parameters
 
-The body lowerer now keeps quote-specific work behind the dedicated
+The body lowerer keeps quote-specific work behind the dedicated
 `QuoteLowerer` helper in `jobs/body.rs`, so the ordinary body lowerer only
 hands off `Expr::Quote(...)` instead of owning the quoted-AST construction
 logic inline.
@@ -248,16 +241,17 @@ Two important guardrails fall out of this:
 
 - `resolve_direct_callee(...)` rejects any macro call that survives into body
   lowering; if a macro call reaches lowering, source expansion failed
-- `seed_root(...)` rejects runtime roots targeting macro functions; macros are
-  compile-time entries only
+- `seed_root(...)` checks the root kind against the current function definition:
+  runtime roots reject macros, and macro roots reject ordinary functions. A
+  captured macro binding cannot execute an ordinary replacement using the macro ABI.
 
 ## How The Macro Actually Runs
 
-`World::run_macro_on_source(...)` is the final handoff.
+`ExecutionContext::run_macro_on_source(...)` is the final handoff.
 
 It:
 
-1. fetches the cached `MacroExecutable`
+1. receives the retained backend handle from the recorded product read
 2. builds the runtime argument vector as
    `[__CALLER__, arg1, arg2, ...]`
 3. borrows the quoted source heap's process with `source.lend_process(...)`
@@ -309,7 +303,7 @@ fn main(), do: answer()
 1. reserves `make_answer/0`
 2. publishes its raw `FunctionSource`
 3. hits `make_answer()`
-4. waits for `MacroExecutable(make_answer)` if needed
+4. waits for the hidden macro root's `RootBackendContent` if needed
 5. runs the macro and gets quoted `fn answer(), do: 42`
 6. applies that fragment as source
 7. publishes `answer/0`, then `main/0`
@@ -328,7 +322,7 @@ fn main(), do: inc(41)
 Later, `DefineFunction(main)` triggers `ExpandFunctionSource(main)`:
 
 1. find `inc(41)` in the `do:` body
-2. wait for `MacroExecutable(inc)` if needed
+2. wait for the hidden macro root's `RootBackendContent` if needed
 3. run the macro with `__CALLER__` and quoted arg `41`
 4. get quoted `41 + 1`
 5. recurse on the result until stable
@@ -343,8 +337,9 @@ These events are the main observability surface:
 
 - `[fz, compiler2, compiler_service, define]`
   raw function-source publication
-- `[fz, compiler2, macro_executable, defined]`
-  macro backend readiness
+- `[fz, compiler2, pull, product, evaluated]` and
+  `[fz, compiler2, pull, product, cache_hit]`
+  retained product evaluation and reuse
 - `[fz, compiler2, macro, expanded]`
   one macro invocation over quoted source
 - `[fz, compiler2, function, source, expanded]`

@@ -73,13 +73,11 @@ supplies the activation's inputs (`World::seed_activation_producer`), because
 a key a caller discovered is that caller's to publish and to withdraw. A fact
 whose producer publishes it only as a co-output of a broader
 job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
-`ProtocolImplProviders`, `Executable`, `BackendProgram`) has
+`ProtocolImplProviders`, `Executable`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
 it. Every fact with one sole-producing job gets an arm — including
 `FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
-(`Job::ExpandFunctionSource`), `EntryDispatch` (`Job::PlanEntryDispatch`), and
-`MacroExecutable` (`Job::BuildMacroExecutable`), whose sole producers used to
-be named directly by the blocked wait instead of through this map. A fact is
+(`Job::ExpandFunctionSource`), and `EntryDispatch` (`Job::PlanEntryDispatch`). A fact is
 a co-output exception only when no single job is its sole producer, never
 because a caller already knows which job to name.
 Blocked work is not an error; exact waits are how ordering emerges without a
@@ -632,7 +630,7 @@ carries its immutable value, generation, exact product generations, and exact
 fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
 Large product answers are single-threaded `Rc` values: the producer, memo entry,
-downstream product, World projection, and cache hit retain one immutable
+downstream product, direct consumer, and cache hit retain one immutable
 allocation. `PullSession` and `World` already contain
 `Rc`-owned facts and never cross a `Send` boundary, so `Arc` would add atomic
 traffic without adding a valid ownership path. Recursive-group members also
@@ -640,7 +638,7 @@ retain one `Rc<ProductDependencies>` because their validated external snapshot
 is one value. Equality remains structural at both seams: a separately allocated
 equal answer preserves its product generation, while changed content advances
 it. Same-handle comparisons short-circuit on typed pointer identity before the
-structural fallback, so ordinary memo and World handoffs do not rescan payloads.
+structural fallback, so ordinary memo handoffs do not rescan payloads.
 When a producer reconstructs equal content, settlement retains the memo's
 existing allocation, so the direct pull result cannot replace it with an
 equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
@@ -720,80 +718,51 @@ Repeated movements of one fact coalesce to the final `FactState` before the
 next pull. This path scans neither roots, facts, products, nor dependencies,
 and equal final state leaves readers settled.
 
-Before reconciling queued movements, an empty agenda returns in O(1). A root
-request parks its own queued backend and mapped macro artifact jobs in
-the existing agenda: they still coalesce duplicate demands, but are not
-runnable until the one retained product request has projected its answer.
-Parking preserves FIFO position, nests by active `RootId`, and is always undone
-before the request restores its session, including every error exit. When other
-work is queued, the request applies only that runnable agenda and its exact wakes;
-it does not expand another root's standing activation or wait frontier. An
-unrelated unresolved root therefore cannot poison a retained cache hit. Fatal
-or timed-out work still rejects the request because the agenda did not drain
-and edit visibility is incomplete. Quiescent questions remain exactly indexed;
-if the requested product needs settled readiness, its fact wait arbitrates and
-publishes that exact movement. The ordinary full drive checks the exact
-activation-frontier and waiter indexes for emptiness before constructing either
-ordered discovery inventory.
+Root requests reconcile queued source work before reading retained products. An
+empty agenda costs O(1); queued work follows ordinary FIFO execution and exact
+wakes. A request does not expand unrelated standing activation demand. Fatal or
+timed-out reconciliation rejects the request because edit visibility is incomplete.
 
-`backend_request.started` / `finished` bracket one external request. The
-balanced `pull.session.started` / `finished` pair brackets a retained session's
-activation for that request: later activations carry the same session id, while
-their product-pull ids continue increasing and never alias. Nested macro-root
-activations use their own retained session ids. An unchanged or irrelevant-edit
-request therefore reports one retained root cache hit, zero product producer
-evaluations, zero settlements, and zero cross-request recomputations.
-Reconciliation, projection, and post-projection artifact consumption all live
-inside that one activation, including fatal and timed-out exits. Producer-poke
-and work-start tallies are activation-local: the retained-session store
-partitions monotone World counters across nested activations, while each
-standalone `Compiler2::drive` owns the scheduler delta across its balanced
-boundary. Finished sessions therefore reproduce product-request work without
-inheriting standalone work or
-replaying an earlier snapshot.
-`Compiler2::retire_root_products` consumes that root's forward subscription set
-to remove its reverse edges without scanning either index. Dropping the
-compiler drops both indexes and all remaining sessions together.
+Scheduler dependencies have two typed identities: World facts and root-owned
+products. The dependency index owns reads, waits, and finality for both. Fact
+slots store only World fact revisions; an external state provider reads product
+generations and readiness directly from the retained ProductMemo. A product has
+no scheduler publisher, fact slot, or synthetic job.
 
-`RootBackendProduct(root)` construction never mutates the World's backend
-projection. It first constructs the complete candidate; if that candidate is
-equal to the existing projection it retains the projection's immutable handle,
-so a retired-and-recreated session does not split ownership. One
-`BuildBackendProduct` boundary drives the retained product, defines
-`World::BackendProgram(root)`, and completes the matching fact claim only when
-that projection changed (or the claim is first established).
-Interp and macro requests publish that boundary directly. A native request
-pulls `NativeProgram(root)` first; its
-`RootBackendContent(root) -> RootBackendProduct(root)` dependency publishes the
-same exact boundary as soon as the root backend settles, before native lowering
-can continue or fail. It never opens a second backend request or asks for a
-second cache hit to obtain that projection. A retained hit cannot republish or
-move the backend fact, while a changed artifact publishes one product-owned
-movement before consumers proceed.
-The completion carries its product authority through the ordinary completion
-boundary; the public `pull.product.projected` step therefore carries that
-movement even when `BuildBackendProduct` entered through the agenda, without
-inventing a scheduler-formula evaluation. If artifact jobs for the same root
-are already queued, agenda parking leaves them under their original scheduler
-ownership while the product is active. The projection consumes the exact
-parked `BuildBackendProduct(root)` job even when the retained answer is equal,
-then unparks macro consumers for the ordinary post-projection drive. They
-consume the authoritative World handle without recursively opening a second
-session.
+A source job expanding a macro reads RootBackendContent of its hidden macro
+root. Missing content becomes an exact product wait. Fact movement reaches only
+subscribed root sessions. When it dirties a product with scheduler consumers,
+the product movement makes those consumers unfinal through the ordinary
+scheduler. The shared drive validates named product requests before fact
+quiescence. Equal reproduction restores readiness without executing a Current
+reader; changed generation reruns its exact source readers. The scheduler is
+the sole owner of these read/wait edges; the product demand queue contains only
+addresses to validate.
 
-`RootBackendContent(root)` retains the exact immutable `Rc<BackendProgram>`
-from the root answer. Its equality is pointer-only O(1): equal backend content
-already reuses that handle, while moved content necessarily supplies another.
-`NativeProgram(root)` records this product as its sole backend dependency and
-lives only in the retained memo. A failed native production publishes no
-native value, restores the same retained session, and can retry against the
-already-published backend projection.
+Retained sessions remain reachable while active. Short checked borrows end
+before scheduler execution, so a nested macro root can read the same product
+state authority without copying it or recursively borrowing an active drive.
+Session activation identities persist across requests, while product request
+ids advance. Each activation owns its work-start delta; nested roots and
+standalone drives have separate balanced accounting boundaries.
 
-Freshness stays on those owners: the fact slot revision records published
-`BackendProgram(root)` movement, and product generations reject stale pull
-results. Neither artifact embeds a second revision field.
-`MacroExecutable.backend_revision` is deliberately different: it snapshots the
-live backend fact revision used to build a compile-time executable.
+RootBackendProductAnswer owns transport metadata and a shared BackendProgram.
+ProductMemo retains the existing inner program allocation when backend content
+reproduces equal, including when transport changes independently. This makes
+RootBackendContent equality an O(1) pointer comparison. NativeProgram and macro
+execution consume that same content handle. A native failure installs no native
+answer and restores the same retained session for retry.
+
+Compiler2::retire_root_products removes the root-owned fact subscription edges
+and drops its memo. For products with scheduler consumers it also publishes the
+exact dependency withdrawal through the scheduler. Existing consumer demand
+survives even when a never-produced product has no withdrawal movement: the
+next drive re-observes the exact requested address in a fresh memo. Retirement
+allocates no replacement session, and removing the consumer cancels its demand.
+Pending product requests reuse the scheduler's deduplicating FIFO `Agenda`;
+renewed demand cannot revive a duplicate stale queue entry.
+World holds no backend or macro artifact
+payload that could retain the allocation or substitute a second authority.
 
 ### Root-local struct schemas
 

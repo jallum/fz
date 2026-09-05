@@ -24,6 +24,255 @@ impl SemanticOrd<TestOrder> for &'static str {
 type TestScheduler = Scheduler<u32, &'static str>;
 type TestStep = AppliedStep<u32, &'static str>;
 
+struct ExternalProduct(crate::compiler2::facts::FactState);
+
+#[test]
+#[should_panic(expected = "external dependencies cannot be published as scheduler facts")]
+fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
+    let mut scheduler = TestScheduler::new();
+    let product = ExternalProduct(crate::compiler2::facts::FactState {
+        revision: None,
+        settled: false,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::new(),
+            vec!["product"],
+            vec!["product"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+}
+
+impl super::scheduler::ExternalDependencyStates<&'static str> for ExternalProduct {
+    fn external_state(&self, key: &&'static str) -> Option<crate::compiler2::facts::FactState> {
+        (*key == "product").then_some(self.0)
+    }
+}
+
+#[test]
+fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: false,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::from([FactUse::settled("product"), FactUse::current("input")]),
+        Vec::new(),
+        &product,
+        &TestOrder,
+    );
+    scheduler.complete_ordered_with_external(
+        &2,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::new(),
+            vec!["input"],
+            vec!["input"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(scheduler.pop(), None, "the remaining product wait is still unsettled");
+    product.0.settled = true;
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1], "all named waits are now satisfied");
+    assert_eq!(scheduler.facts().revision(&"product"), None);
+}
+
+#[test]
+fn replacing_external_reads_detaches_the_old_dependency() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    for reads in [HashSet::from([FactUse::current("product")]), HashSet::new()] {
+        scheduler.complete_ordered_with_external(
+            &1,
+            HashSet::new(),
+            vec![DerivationEffects::sole(reads, vec!["answer"], Vec::new(), true)],
+            &product,
+            &TestOrder,
+        );
+    }
+    product.0.revision = Some(2);
+    product.0.settled = false;
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(2),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert!(step.wakes.is_empty());
+    assert!(scheduler.facts().is_settled(&"answer"));
+    assert_eq!(scheduler.unfinal_reads(&1), 0);
+}
+
+#[test]
+fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    for (job, input, output) in [(1, "product", "answer"), (2, "answer", "downstream")] {
+        scheduler.complete_ordered_with_external(
+            &job,
+            HashSet::new(),
+            vec![DerivationEffects::sole(
+                HashSet::from([FactUse::current(input)]),
+                vec![output],
+                vec![output],
+                true,
+            )],
+            &product,
+            &TestOrder,
+        );
+    }
+    product.0.settled = false;
+    scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    scheduler.complete_ordered_with_external(
+        &3,
+        HashSet::from([FactUse::settled("downstream")]),
+        Vec::new(),
+        &product,
+        &TestOrder,
+    );
+    let step = scheduler.settle_quiescent_ordered_with_external(&["downstream"], &product, &TestOrder);
+    assert!(
+        !scheduler.facts().is_settled(&"downstream") && step.wakes.is_empty(),
+        "an empty job queue cannot certify the unsettled product's transitive consumers"
+    );
+    assert_eq!(scheduler.pop(), None);
+}
+
+#[test]
+fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
+    let mut scheduler = chain_a_b_c();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    while scheduler.pop().is_some() {}
+    let product = ExternalProduct(crate::compiler2::facts::FactState {
+        revision: Some(1),
+        settled: false,
+    });
+    assert!(!scheduler.facts().is_settled(&"c"));
+    scheduler.settle_quiescent_ordered_with_external(&["c"], &product, &TestOrder);
+    assert!(
+        scheduler.facts().is_settled(&"c"),
+        "only exact upstream product dependencies can prevent fact quiescence"
+    );
+}
+
+#[test]
+fn external_product_equal_validation_restores_finality_without_running_its_reader() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::from([FactUse::current("product")]),
+            vec!["answer"],
+            vec!["answer"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    assert!(scheduler.facts().is_settled(&"answer"));
+    assert_eq!(
+        scheduler.facts().revision(&"product"),
+        None,
+        "the product has no scheduler-owned slot"
+    );
+    for (before, after) in [(true, false), (false, true)] {
+        product.0.settled = after;
+        let step = scheduler.apply_external_changes_ordered(
+            vec![FactChange {
+                key: "product",
+                old_revision: Some(1),
+                new_revision: Some(1),
+                old_settled: before,
+                new_settled: after,
+            }],
+            &product,
+            &TestOrder,
+        );
+        assert!(
+            step.wakes.is_empty(),
+            "readiness alone must not evaluate a content reader"
+        );
+        assert_eq!(scheduler.facts().is_settled(&"answer"), after);
+        assert_eq!(scheduler.pop(), None);
+    }
+    product.0.revision = Some(2);
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(2),
+            old_settled: true,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert!(
+        scheduler.rebased(&1),
+        "changed replacing content rebases its exact reader"
+    );
+    assert!(!scheduler.facts().is_settled(&"answer"));
+    assert_eq!(scheduler.facts().revision(&"product"), None);
+}
+
 /// The jobs `step` newly started (`WakeDisposition::Enqueued`), in wake
 /// order, standing in for the retired `AppliedStep::enqueued` field: same
 /// intent (a job's own new work start), read off `wakes` instead.

@@ -50,7 +50,7 @@ pub use agenda::Agenda;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap, BackendReceive, BackendReturnLayout,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
     BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
     DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
@@ -69,7 +69,9 @@ pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
-pub use drive::{FactKey, Job, WorkGraph};
+#[cfg(test)]
+mod macro_product_test;
+pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 #[cfg(test)]
 pub use fixture_metadata::fixture_frontmatter_prefix_bytes;

@@ -249,6 +249,10 @@ where
         self.slots.get(key).and_then(FactSlot::revision)
     }
 
+    pub(crate) fn publishers(&self, key: &F) -> impl Iterator<Item = &P> {
+        self.slots.get(key).into_iter().flat_map(|slot| &slot.publishers)
+    }
+
     /// Transitive finality: present, no publisher queued to re-run, and no
     /// publisher reading a fact that can still move. This is the ONE meaning
     /// of settled — `FactUse::Settled` projects it, telemetry renders it, and

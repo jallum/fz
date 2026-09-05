@@ -5,7 +5,7 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
-use std::cell::Cell;
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::rc::Rc;
@@ -20,9 +20,9 @@ use super::artifact::{
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
 };
-use super::drive::FactKey;
+use super::drive::{DependencyKey, FactKey, ProductAddress};
 use super::executable_facts::ExecutableFacts;
-use super::facts::{FactMovement, FactState, FactUse};
+use super::facts::{FactChange, FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
@@ -40,7 +40,6 @@ const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", 
 const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
 const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
-const PRODUCT_PROJECTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "projected"];
 const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
 
 fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
@@ -69,27 +68,6 @@ pub struct ProductRequestId(NonZeroU64);
 impl ProductRequestId {
     pub(crate) fn get(self) -> u64 {
         self.0.get()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProductProjection {
-    session: PullSessionId,
-    request: ProductRequestId,
-    generation: u64,
-}
-
-impl ProductProjection {
-    pub(crate) fn session(self) -> PullSessionId {
-        self.session
-    }
-
-    pub(crate) fn request(self) -> ProductRequestId {
-        self.request
-    }
-
-    pub(crate) fn generation(self) -> u64 {
-        self.generation
     }
 }
 
@@ -237,7 +215,7 @@ pub enum TransportShapeFact {
 pub enum ProductValue {
     #[cfg(test)]
     Unit,
-    RootBackendProduct(Rc<RootBackendProductAnswer>),
+    RootBackendProduct(RootBackendProductAnswer),
     RootBackendContent(Rc<BackendProgram>),
     NativeProgram(Rc<NativeProgram>),
     BackendExecutable(Rc<SymbolicBackendExecutable>),
@@ -255,7 +233,8 @@ pub enum ProductValue {
 fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
     match (left, right) {
         (ProductValue::RootBackendProduct(left), ProductValue::RootBackendProduct(right)) => {
-            Rc::ptr_eq(left, right) || left == right
+            (Rc::ptr_eq(&left.program, &right.program) || left.program == right.program)
+                && (Rc::ptr_eq(&left.transport, &right.transport) || left.transport == right.transport)
         }
         (ProductValue::RootBackendContent(left), ProductValue::RootBackendContent(right)) => Rc::ptr_eq(left, right),
         (ProductValue::NativeProgram(left), ProductValue::NativeProgram(right)) => {
@@ -452,6 +431,8 @@ pub struct ProductMemo {
     /// first group settled gets id 1 (the field itself starts at the
     /// `Default` zero and is pre-incremented before use).
     next_group_id: u64,
+    observed_products: HashSet<ProductKey>,
+    external_changes: Vec<FactChange<ProductKey>>,
 }
 
 type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies);
@@ -634,6 +615,33 @@ struct ProductDependencies {
 }
 
 impl ProductMemo {
+    fn external_state(&self, key: &ProductKey) -> FactState {
+        FactState {
+            revision: self
+                .produced
+                .get(key)
+                .or_else(|| self.displaced.get(key))
+                .map(|entry| entry.generation),
+            settled: self.produced.contains_key(key)
+                && !self.fact_stale_dependencies.contains_key(key)
+                && !self.dirty_descendants.contains(key),
+        }
+    }
+
+    fn record_external_change(&mut self, key: &ProductKey, before: FactState) {
+        if self.observed_products.contains(key) {
+            let after = self.external_state(key);
+            if before != after {
+                self.external_changes.push(FactChange {
+                    key: key.clone(),
+                    old_revision: before.revision,
+                    new_revision: after.revision,
+                    old_settled: before.settled,
+                    new_settled: after.settled,
+                });
+            }
+        }
+    }
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
         self.produced.get(key).map(|entry| &entry.value)
     }
@@ -881,9 +889,25 @@ impl ProductMemo {
         types: &super::types::Types,
     ) {
         let mut prepared = Vec::with_capacity(members.len());
-        for (key, value, dependencies) in members {
+        let mut external_before = Vec::new();
+        for (key, mut value, dependencies) in members {
+            if self.observed_products.contains(&key) {
+                external_before.push((key.clone(), self.external_state(&key)));
+            }
             self.in_progress.remove(&key);
             let previous = self.produced.remove(&key).or_else(|| self.displaced.remove(&key));
+            if let (
+                Some(ProductEntry {
+                    value: ProductValue::RootBackendProduct(previous),
+                    ..
+                }),
+                ProductValue::RootBackendProduct(answer),
+            ) = (&previous, &mut value)
+                && !Rc::ptr_eq(&previous.program, &answer.program)
+                && previous.program == answer.program
+            {
+                answer.program = Rc::clone(&previous.program);
+            }
             self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| entry.dependencies.as_ref()));
             self.take_pending_dependencies(&key);
             let changed = previous
@@ -938,6 +962,9 @@ impl ProductMemo {
             } else if emit_causal && key != requested {
                 tel.raw_event2(PRODUCT_COPUBLISHED_EVENT, requested, key);
             }
+        }
+        for (key, before) in external_before {
+            self.record_external_change(&key, before);
         }
         let mutations = prepared.iter().flat_map(|(key, _, _, _, changed)| {
             self.reader_mutations(
@@ -1117,6 +1144,10 @@ impl ProductMemo {
             if !seen.insert((mutation, reader.clone())) {
                 continue;
             }
+            let external_before = self
+                .observed_products
+                .contains(&reader)
+                .then(|| (reader.clone(), self.external_state(&reader)));
             match mutation {
                 ReaderMutation::Invalidate => {
                     let (was_pending, was_produced) = self.displace_for_reproduction_shallow(tel, &reader);
@@ -1176,6 +1207,9 @@ impl ProductMemo {
                     }
                 }
             }
+            if let Some((observed, before)) = external_before {
+                self.record_external_change(&observed, before);
+            }
         }
     }
 
@@ -1188,10 +1222,16 @@ impl ProductMemo {
         let mut facts = pending.iter().collect::<Vec<_>>();
         facts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
         let mut prior_stale = HashMap::<ProductKey, bool>::new();
+        let mut external_before = HashMap::new();
         let mut mutations = Vec::new();
         for (fact_key, final_state) in facts {
             let readers = self.fact_readers.get(fact_key).cloned().unwrap_or_default();
             for reader in readers {
+                if self.observed_products.contains(&reader) {
+                    external_before
+                        .entry(reader.clone())
+                        .or_insert_with(|| self.external_state(&reader));
+                }
                 let pending_stale = self.pending_dependencies.get(&reader).is_some_and(|dependencies| {
                     dependencies
                         .facts
@@ -1234,6 +1274,9 @@ impl ProductMemo {
             }
         }));
         self.mutate_product_wave(tel, mutations, types);
+        for (key, before) in external_before {
+            self.record_external_change(&key, before);
+        }
     }
 
     fn stale_dependency(&self, key: &ProductKey, types: &super::types::Types) -> Option<ProductKey> {
@@ -1443,18 +1486,20 @@ impl PullSession {
 /// sessions that currently read it.
 #[derive(Debug, Default)]
 pub(crate) struct ProductSessions {
-    sessions: HashMap<RootId, PullSession>,
+    sessions: HashMap<RootId, Rc<RefCell<PullSession>>>,
     subscriptions_by_root: HashMap<RootId, HashSet<FactKey>>,
     roots_by_fact: HashMap<FactKey, HashSet<RootId>>,
     active_roots: HashMap<RootId, ActiveRootProduct>,
     work_start_cursor: WorkStartTally,
     active_work_starts: Vec<WorkStartOwner>,
+    pending_requests: super::agenda::Agenda<ProductAddress>,
+    requested: HashSet<ProductAddress>,
 }
 
 #[derive(Debug, Default)]
 struct ActiveRootProduct {
     movements: HashMap<FactKey, FactState>,
-    backend_projected: bool,
+    parked_requests: Vec<ProductAddress>,
 }
 
 #[derive(Debug)]
@@ -1464,6 +1509,110 @@ enum WorkStartOwner {
 }
 
 impl ProductSessions {
+    pub(crate) fn observe(&mut self, address: &ProductAddress) {
+        self.sessions
+            .entry(address.root)
+            .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(address.root))))
+            .borrow_mut()
+            .memo
+            .observed_products
+            .insert(address.key.clone());
+        if !self
+            .get(address.root)
+            .expect("observed root exists")
+            .memo
+            .external_state(&address.key)
+            .settled
+        {
+            self.request(address.clone());
+        }
+    }
+
+    pub(crate) fn unobserve(&mut self, address: &ProductAddress) {
+        if let Some(session) = self.sessions.get(&address.root) {
+            session.borrow_mut().memo.observed_products.remove(&address.key);
+        }
+        self.requested.remove(address);
+    }
+
+    fn request(&mut self, address: ProductAddress) {
+        if self.requested.insert(address.clone()) {
+            self.pending_requests.enqueue(address);
+        }
+    }
+
+    pub(crate) fn next_request(&mut self) -> Option<ProductAddress> {
+        while let Some(address) = self.pending_requests.pop() {
+            if !self.requested.contains(&address) {
+                continue;
+            }
+            if let Some(active) = self.active_roots.get_mut(&address.root) {
+                active.parked_requests.push(address);
+            } else {
+                self.observe(&address);
+                return Some(address);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn retry_request(&mut self, address: ProductAddress) {
+        self.pending_requests.enqueue(address);
+    }
+
+    pub(crate) fn product(&self, address: &ProductAddress) -> Option<ProductValue> {
+        let session = self.get(address.root)?;
+        session
+            .memo
+            .external_state(&address.key)
+            .settled
+            .then(|| session.memo.get(&address.key).cloned())
+            .flatten()
+    }
+
+    pub(crate) fn take_product_changes(
+        &mut self,
+        root: RootId,
+        types: &super::types::Types,
+    ) -> Vec<FactChange<DependencyKey>> {
+        let Some(session) = self.sessions.get(&root) else {
+            return Vec::new();
+        };
+        let changes = std::mem::take(&mut session.borrow_mut().memo.external_changes);
+        let mut coalesced = HashMap::<ProductKey, FactChange<ProductKey>>::new();
+        for change in changes {
+            coalesced
+                .entry(change.key.clone())
+                .and_modify(|prior| {
+                    prior.new_revision = change.new_revision;
+                    prior.new_settled = change.new_settled;
+                })
+                .or_insert(change);
+        }
+        let mut changes = coalesced
+            .into_values()
+            .filter(|change| change.content_changed() || change.readiness_changed())
+            .map(|change| FactChange {
+                key: DependencyKey::Product(ProductAddress { root, key: change.key }),
+                old_revision: change.old_revision,
+                new_revision: change.new_revision,
+                old_settled: change.old_settled,
+                new_settled: change.new_settled,
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by(|left, right| left.key.semantic_cmp(&right.key, types));
+        for change in &changes {
+            let DependencyKey::Product(address) = &change.key else {
+                unreachable!()
+            };
+            if change.new_settled {
+                self.requested.remove(address);
+            } else {
+                self.request(address.clone());
+            }
+        }
+        changes
+    }
     pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkStartTally) {
         assert!(
             self.active_work_starts.is_empty() && self.active_roots.is_empty(),
@@ -1486,24 +1635,7 @@ impl ProductSessions {
         );
     }
 
-    pub(crate) fn is_active(&self, root: RootId) -> bool {
-        self.active_roots.contains_key(&root)
-    }
-
-    pub(crate) fn backend_is_projected(&self, root: RootId) -> bool {
-        self.active_roots
-            .get(&root)
-            .is_some_and(|active| active.backend_projected)
-    }
-
-    pub(crate) fn mark_backend_projected(&mut self, root: RootId) {
-        self.active_roots
-            .get_mut(&root)
-            .expect("projecting a backend outside its root request")
-            .backend_projected = true;
-    }
-
-    pub(crate) fn take(&mut self, root: RootId, work_starts: WorkStartTally) -> (PullSession, bool) {
+    pub(crate) fn take(&mut self, root: RootId, work_starts: WorkStartTally) -> (Rc<RefCell<PullSession>>, bool) {
         assert!(
             self.active_roots.insert(root, ActiveRootProduct::default()).is_none(),
             "one root product session cannot be driven recursively"
@@ -1519,8 +1651,12 @@ impl ProductSessions {
         };
         self.active_work_starts.push(WorkStartOwner::Root(root, initial));
         let retained = self.sessions.contains_key(&root);
-        let mut session = self.sessions.remove(&root).unwrap_or_else(|| PullSession::new(root));
-        session.begin_activation();
+        let session = Rc::clone(
+            self.sessions
+                .entry(root)
+                .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(root)))),
+        );
+        session.borrow_mut().begin_activation();
         (session, retained)
     }
 
@@ -1572,24 +1708,44 @@ impl ProductSessions {
         }
     }
 
-    pub(crate) fn publish(&mut self, movements: &[FactMovement<FactKey>]) {
+    pub(crate) fn publish(
+        &mut self,
+        tel: &impl Telemetry,
+        types: &super::types::Types,
+        movements: &[FactMovement<FactKey>],
+    ) -> Vec<FactChange<DependencyKey>> {
         let Self {
             sessions,
             roots_by_fact,
             active_roots,
             ..
         } = self;
+        let mut observed_roots = HashSet::new();
         for movement in movements {
             for root in roots_by_fact.get(&movement.key).into_iter().flatten() {
-                if let Some(session) = sessions.get_mut(root) {
-                    session.apply_fact_movements(std::slice::from_ref(movement));
+                let session = sessions.get(root).expect("subscribed root retains its session");
+                if !session.borrow().memo.observed_products.is_empty() {
+                    session
+                        .borrow_mut()
+                        .apply_fact_movements(std::slice::from_ref(movement));
+                    observed_roots.insert(*root);
                 } else if let Some(active) = active_roots.get_mut(root) {
                     active.movements.insert(movement.key.clone(), movement.state);
                 } else {
-                    panic!("fact subscription names neither a retained nor active root session");
+                    session
+                        .borrow_mut()
+                        .apply_fact_movements(std::slice::from_ref(movement));
                 }
             }
         }
+        let mut changes = Vec::new();
+        let mut observed_roots = observed_roots.into_iter().collect::<Vec<_>>();
+        observed_roots.sort_unstable();
+        for root in observed_roots {
+            self.sessions[&root].borrow_mut().reconcile_fact_movements(tel, types);
+            changes.extend(self.take_product_changes(root, types));
+        }
+        changes
     }
 
     pub(crate) fn drain_active_movements(&mut self, root: RootId, session: &mut PullSession) {
@@ -1603,31 +1759,46 @@ impl ProductSessions {
         }
     }
 
-    pub(crate) fn restore(&mut self, mut session: PullSession) {
-        let root = session.root();
-        self.drain_active_movements(root, &mut session);
-        self.sync_subscriptions(root, &mut session);
-        self.active_roots
+    pub(crate) fn restore(&mut self, session: Rc<RefCell<PullSession>>) {
+        let root = session.borrow().root();
+        self.drain_active_movements(root, &mut session.borrow_mut());
+        self.sync_subscriptions(root, &mut session.borrow_mut());
+        let active = self
+            .active_roots
             .remove(&root)
             .expect("restoring a root that is not active");
-        assert!(
-            self.sessions.insert(root, session).is_none(),
-            "root session restored twice"
-        );
+        for address in active.parked_requests {
+            self.pending_requests.enqueue(address);
+        }
+        assert!(Rc::ptr_eq(
+            self.sessions.get(&root).expect("active root retains its session"),
+            &session
+        ));
     }
 
-    pub(crate) fn get(&self, root: RootId) -> Option<&PullSession> {
-        self.sessions.get(&root)
+    pub(crate) fn get(&self, root: RootId) -> Option<Ref<'_, PullSession>> {
+        self.sessions.get(&root).map(|session| session.borrow())
     }
 
-    pub(crate) fn retire(&mut self, root: RootId) -> bool {
+    pub(crate) fn retire(&mut self, root: RootId, types: &super::types::Types) -> bool {
         assert!(
             !self.active_roots.contains_key(&root),
             "cannot retire an active root session"
         );
-        let Some(_session) = self.sessions.remove(&root) else {
+        let Some(session) = self.sessions.remove(&root) else {
             return false;
         };
+        let mut observed = session
+            .borrow()
+            .memo
+            .observed_products
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        observed.sort_by(|left, right| left.semantic_cmp(right, types));
+        for key in observed {
+            self.request(ProductAddress { root, key });
+        }
         for fact in self.subscriptions_by_root.remove(&root).unwrap_or_default() {
             let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
                 roots.remove(&root);
@@ -1640,12 +1811,51 @@ impl ProductSessions {
         true
     }
 
+    pub(crate) fn retirement_changes(&self, root: RootId) -> Vec<FactChange<DependencyKey>> {
+        let Some(session) = self.get(root) else {
+            return Vec::new();
+        };
+        session
+            .memo
+            .observed_products
+            .iter()
+            .map(|key| {
+                let before = session.memo.external_state(key);
+                FactChange {
+                    key: DependencyKey::Product(ProductAddress { root, key: key.clone() }),
+                    old_revision: before.revision,
+                    new_revision: None,
+                    old_settled: before.settled,
+                    new_settled: false,
+                }
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
         (
             self.sessions.len(),
             self.subscriptions_by_root.values().map(HashSet::len).sum(),
         )
+    }
+}
+
+impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessions {
+    fn has_unsettled_dependencies(&self) -> bool {
+        !self.requested.is_empty()
+    }
+    fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
+        match key {
+            DependencyKey::Fact(_) => None,
+            DependencyKey::Product(address) => Some(self.get(address.root).map_or(
+                FactState {
+                    revision: None,
+                    settled: false,
+                },
+                |session| session.memo.external_state(&address.key),
+            )),
+        }
     }
 }
 
@@ -2041,10 +2251,9 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
 
 pub struct ProductDriver<'a, T: Telemetry> {
     tel: &'a T,
-    session: Option<PullSession>,
+    session: Option<Rc<RefCell<PullSession>>>,
     emit_causal_products: bool,
     emit_session_lifecycle: bool,
-    last_request: Option<(ProductKey, ProductRequestId)>,
     finished: Cell<bool>,
 }
 
@@ -2059,18 +2268,32 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.tel
     }
 
+    #[cfg(test)]
     pub fn with_session(tel: &'a T, session: PullSession) -> Self {
         Self::with_session_id_source(tel, session, || allocate_pull_session_id(&NEXT_PULL_SESSION_ID))
     }
 
+    pub(crate) fn with_shared_session(tel: &'a T, session: Rc<RefCell<PullSession>>) -> Self {
+        Self::with_shared_session_id_source(tel, session, || allocate_pull_session_id(&NEXT_PULL_SESSION_ID))
+    }
+
+    #[cfg(test)]
     fn with_session_id_source(
         tel: &'a T,
-        mut session: PullSession,
+        session: PullSession,
         allocate_session_id: impl FnOnce() -> PullSessionId,
     ) -> Self {
-        let emit_session_lifecycle = tel.is_raw_event_enabled(SESSION_STARTED_EVENT)
-            || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT)
-            || tel.is_raw_event_enabled(PRODUCT_PROJECTED_EVENT);
+        Self::with_shared_session_id_source(tel, Rc::new(RefCell::new(session)), allocate_session_id)
+    }
+
+    fn with_shared_session_id_source(
+        tel: &'a T,
+        shared: Rc<RefCell<PullSession>>,
+        allocate_session_id: impl FnOnce() -> PullSessionId,
+    ) -> Self {
+        let mut session = shared.borrow_mut();
+        let emit_session_lifecycle =
+            tel.is_raw_event_enabled(SESSION_STARTED_EVENT) || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT);
         if session.id.is_none() && emit_session_lifecycle {
             session.id = Some(allocate_session_id());
         }
@@ -2080,39 +2303,33 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 &session.id.expect("enabled session telemetry requires an identity"),
             );
         }
+        drop(session);
         Self {
             tel,
-            session: Some(session),
+            session: Some(shared),
             emit_causal_products: causal_product_events_enabled(tel),
             emit_session_lifecycle,
-            last_request: None,
             finished: Cell::new(false),
         }
     }
 
-    pub fn session(&self) -> &PullSession {
-        self.session.as_ref().expect("product driver session already retained")
+    pub fn session(&self) -> Ref<'_, PullSession> {
+        self.session
+            .as_ref()
+            .expect("product driver session already retained")
+            .borrow()
     }
 
-    pub fn session_mut(&mut self) -> &mut PullSession {
-        self.session.as_mut().expect("product driver session already retained")
+    pub fn session_mut(&mut self) -> RefMut<'_, PullSession> {
+        self.session
+            .as_ref()
+            .expect("product driver session already retained")
+            .borrow_mut()
     }
 
-    pub(crate) fn into_session(mut self) -> PullSession {
+    pub(crate) fn into_session(mut self) -> Rc<RefCell<PullSession>> {
         self.emit_finished_once();
         self.session.take().expect("product driver session already retained")
-    }
-
-    pub(crate) fn projection(&self, key: &ProductKey) -> Option<ProductProjection> {
-        let (requested, request) = self.last_request.as_ref()?;
-        if requested != key {
-            return None;
-        }
-        Some(ProductProjection {
-            session: self.session().id()?,
-            request: *request,
-            generation: self.session().memo.generation(key)?,
-        })
     }
 
     #[cfg(test)]
@@ -2132,7 +2349,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
         let request = self.session_mut().request_ids.allocate();
-        self.last_request = Some((key.clone(), request));
         if self.emit_causal_products {
             tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
         }
@@ -2140,7 +2356,8 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             .reconcile_fact_movements(tel, producers.product_types());
         self.session_mut()
             .note_product_request(tel, &key, producers.product_types());
-        if let Some(stale) = self.session().memo.stale_dependency(&key, producers.product_types()) {
+        let stale = self.session().memo.stale_dependency(&key, producers.product_types());
+        if let Some(stale) = stale {
             self.session_mut()
                 .memo
                 .prepare_stale_for_reproduction(tel, &stale, producers.product_types());
@@ -2157,9 +2374,13 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
 
-        let mut context = ProductReadContext::new(self.session_mut());
-        let outcome = producers.produce(&mut context, &key);
-        let (dependencies, mut staged, recursive_group) = context.into_completion();
+        let (outcome, dependencies, mut staged, recursive_group) = {
+            let mut session = self.session_mut();
+            let mut context = ProductReadContext::new(&mut session);
+            let outcome = producers.produce(&mut context, &key);
+            let (dependencies, staged, recursive_group) = context.into_completion();
+            (outcome, dependencies, staged, recursive_group)
+        };
         if self.emit_causal_products {
             tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
         }
@@ -2334,6 +2555,85 @@ mod tests {
     }
 
     #[test]
+    fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
+        use super::super::scheduler::Scheduler;
+
+        let types = fake_types();
+        let root = RootId::for_test(1);
+        let address = ProductAddress {
+            root,
+            key: ProductKey::RootBackendContent(root),
+        };
+        let mut sessions = ProductSessions::default();
+        sessions.observe(&address);
+        let mut scheduler = Scheduler::new();
+        scheduler.complete_ordered_with_external(
+            &super::super::Job::SeedRoot(root),
+            HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+            Vec::new(),
+            &sessions,
+            &types,
+        );
+        assert_eq!(sessions.next_request(), Some(address.clone()));
+        sessions.retry_request(address.clone());
+        let withdrawal = sessions.retirement_changes(root);
+        assert!(sessions.retire(root, &types));
+        scheduler.apply_external_changes_ordered(withdrawal, &sessions, &types);
+        assert_eq!(
+            scheduler.pending_jobs(),
+            0,
+            "missing-to-missing withdrawal does not wake the standing waiter"
+        );
+        assert!(scheduler.has_dependency_consumers(&DependencyKey::Product(address.clone())));
+        assert!(
+            sessions.get(root).is_none(),
+            "retirement must release the memo before any later drive"
+        );
+        assert_eq!(
+            sessions.next_request(),
+            Some(address.clone()),
+            "an unchanged missing state cannot wake the standing scheduler waiter; its original demand must survive"
+        );
+        assert!(
+            sessions
+                .get(root)
+                .unwrap()
+                .memo
+                .observed_products
+                .contains(&address.key)
+        );
+        assert!(
+            sessions.next_request().is_none(),
+            "retirement must not duplicate the already queued failed demand"
+        );
+        sessions.unobserve(&address);
+        sessions.retry_request(address);
+        assert!(
+            sessions.next_request().is_none(),
+            "detaching the actual scheduler consumer cancels demand"
+        );
+    }
+
+    #[test]
+    fn renewed_product_demand_does_not_revive_duplicate_stale_queue_entries() {
+        let root = RootId::for_test(1);
+        let address = ProductAddress {
+            root,
+            key: ProductKey::RootBackendContent(root),
+        };
+        let mut sessions = ProductSessions::default();
+        sessions.observe(&address);
+        sessions.unobserve(&address);
+        sessions.observe(&address);
+        assert!(sessions.retire(root, &fake_types()));
+        assert_eq!(sessions.next_request(), Some(address));
+        assert!(
+            sessions.next_request().is_none(),
+            "renewed demand must not turn stale queue entries into duplicate validations"
+        );
+    }
+
+    #[test]
     fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_active_roots_once() {
         let types = fake_types();
         let fact = FactKey::RuntimeDemand(fake_executable_with_function(RootId::for_test(99), 99));
@@ -2348,50 +2648,61 @@ mod tests {
         ] {
             let root = session.root();
             sessions.active_roots.insert(root, ActiveRootProduct::default());
+            let session = Rc::new(RefCell::new(session));
+            sessions.sessions.insert(root, Rc::clone(&session));
             sessions.restore(session);
         }
         assert_eq!(sessions.counts(), (3, 3));
 
-        let (mut active_left, _) = sessions.take(left, WorkStartTally::default());
-        let (mut active_right, _) = sessions.take(right, WorkStartTally::default());
-        sessions.publish(&[FactMovement {
-            key: fact.clone(),
-            state: FactState {
-                revision: Some(2),
-                settled: false,
-            },
-        }]);
-        sessions.publish(&[FactMovement {
-            key: fact.clone(),
-            state: FactState {
-                revision: Some(2),
-                settled: true,
-            },
-        }]);
-        sessions.drain_active_movements(left, &mut active_left);
-        sessions.drain_active_movements(right, &mut active_right);
+        let (active_left, _) = sessions.take(left, WorkStartTally::default());
+        let (active_right, _) = sessions.take(right, WorkStartTally::default());
+        let tel = ConfiguredTelemetry::new();
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact.clone(),
+                state: FactState {
+                    revision: Some(2),
+                    settled: false,
+                },
+            }],
+        );
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact.clone(),
+                state: FactState {
+                    revision: Some(2),
+                    settled: true,
+                },
+            }],
+        );
+        sessions.drain_active_movements(left, &mut active_left.borrow_mut());
+        sessions.drain_active_movements(right, &mut active_right.borrow_mut());
         let final_state = FactState {
             revision: Some(2),
             settled: true,
         };
         assert_eq!(
-            active_left.pending_fact_states,
+            active_left.borrow().pending_fact_states,
             HashMap::from([(fact.clone(), final_state)])
         );
         assert_eq!(
-            active_right.pending_fact_states,
+            active_right.borrow().pending_fact_states,
             HashMap::from([(fact.clone(), final_state)])
         );
         assert_eq!(
-            sessions.sessions[&dormant].pending_fact_states,
+            sessions.sessions[&dormant].borrow().pending_fact_states,
             HashMap::from([(fact.clone(), final_state)])
         );
-        sessions.finish_activation(right, &mut active_right, WorkStartTally::default());
+        sessions.finish_activation(right, &mut active_right.borrow_mut(), WorkStartTally::default());
         sessions.restore(active_right);
-        sessions.finish_activation(left, &mut active_left, WorkStartTally::default());
+        sessions.finish_activation(left, &mut active_left.borrow_mut(), WorkStartTally::default());
         sessions.restore(active_left);
 
-        assert!(sessions.retire(left));
+        assert!(sessions.retire(left, &types));
         assert_eq!(sessions.counts(), (2, 2));
         assert_eq!(sessions.roots_by_fact[&fact], HashSet::from([right, dormant]));
     }
@@ -2400,23 +2711,29 @@ mod tests {
     fn equal_fact_delivery_keeps_both_retained_root_products_settled() {
         let types = fake_types();
         let tel = ConfiguredTelemetry::new();
-        let fact = FactKey::BackendProgram(RootId::for_test(99));
+        let fact = FactKey::RootEntry(RootId::for_test(99));
         let roots = [RootId::for_test(1), RootId::for_test(2)];
         let mut sessions = ProductSessions::default();
         for root in roots {
             let session = retained_test_session(root, &fact, &types);
             sessions.active_roots.insert(root, ActiveRootProduct::default());
+            let session = Rc::new(RefCell::new(session));
+            sessions.sessions.insert(root, Rc::clone(&session));
             sessions.restore(session);
         }
-        sessions.publish(&[FactMovement {
-            key: fact,
-            state: FactState {
-                revision: Some(1),
-                settled: true,
-            },
-        }]);
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact,
+                state: FactState {
+                    revision: Some(1),
+                    settled: true,
+                },
+            }],
+        );
         for root in roots {
-            let session = sessions.sessions.get_mut(&root).expect("retained root");
+            let mut session = sessions.sessions.get(&root).expect("retained root").borrow_mut();
             session.reconcile_fact_movements(&tel, &types);
             assert!(session.memo.get(&ProductKey::RootBackendProduct(root)).is_some());
         }
@@ -3186,10 +3503,10 @@ mod tests {
             executables: Vec::new(),
             construction_wrappers: Vec::new(),
         });
-        let answer = |entry| {
-            ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
-                program: Rc::clone(&backend),
-                transport: super::super::artifact::MaterializedTransportPlan {
+        let answer = |entry, program| {
+            ProductValue::RootBackendProduct(RootBackendProductAnswer {
+                program,
+                transport: Rc::new(super::super::artifact::MaterializedTransportPlan {
                     entry,
                     executable_membership: Box::default(),
                     position_layouts: Vec::new(),
@@ -3199,15 +3516,18 @@ mod tests {
                     callable_owners: Box::default(),
                     callable_facts: HashMap::new(),
                     boundary_facts: HashMap::new(),
-                },
-            }))
+                }),
+            })
         };
         let mut memo = ProductMemo::default();
 
         finish_test_product(
             &mut memo,
             &root_key,
-            answer(executable_symbol_for_test(&fake_executable_with_function(root, 1))),
+            answer(
+                executable_symbol_for_test(&fake_executable_with_function(root, 1)),
+                Rc::clone(&backend),
+            ),
             [],
         );
         finish_test_product(
@@ -3223,13 +3543,24 @@ mod tests {
         finish_test_product(
             &mut memo,
             &root_key,
-            answer(executable_symbol_for_test(&fake_executable_with_function(root, 2))),
+            answer(
+                executable_symbol_for_test(&fake_executable_with_function(root, 2)),
+                Rc::new((*backend).clone()),
+            ),
             [],
         );
+        let Some(ProductValue::RootBackendProduct(reproduced)) = memo.get(&root_key) else {
+            panic!("root reproduction must retain its answer");
+        };
+        assert!(
+            Rc::ptr_eq(&backend, &reproduced.program),
+            "the memo owns equal backend retention even when transport moves"
+        );
+        let reproduced_program = Rc::clone(&reproduced.program);
         finish_test_product(
             &mut memo,
             &content_key,
-            ProductValue::RootBackendContent(Rc::clone(&backend)),
+            ProductValue::RootBackendContent(reproduced_program),
             [root_key],
         );
 
@@ -3970,9 +4301,9 @@ mod tests {
         let callee = fake_executable_with_function(root, 791);
         let leaf = fake_executable_with_function(root, 792);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &caller, &[&callee], false);
-        record_effect_product(driver.session_mut(), &callee, &[&leaf], false);
-        record_effect_product(driver.session_mut(), &leaf, &[], true);
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
+        record_effect_product(&mut driver.session_mut(), &callee, &[&leaf], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
         let mut world = World::new();
         let caller_effects = ProductKey::ExecutableEffects(caller.clone());
         let callee_effects = ProductKey::ExecutableEffects(callee);
@@ -4002,14 +4333,14 @@ mod tests {
         let second = fake_executable_with_function(root, 81);
         let leaf = fake_executable_with_function(root, 82);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &first, &[&second], false);
-        record_effect_product(driver.session_mut(), &second, &[&first, &leaf], false);
-        record_effect_product(driver.session_mut(), &leaf, &[], true);
+        record_effect_product(&mut driver.session_mut(), &first, &[&second], false);
+        record_effect_product(&mut driver.session_mut(), &second, &[&first, &leaf], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
         let mut world = World::new();
         let effects = pull_effects_until_produced(&mut driver, &mut world, &second);
         assert!(effects.allocates, "effects should propagate through mutual recursion");
-        assert!(memo_effects(driver.session(), &first).is_some_and(|effects| effects.allocates));
-        assert!(memo_effects(driver.session(), &second).is_some_and(|effects| effects.allocates));
+        assert!(memo_effects(&driver.session(), &first).is_some_and(|effects| effects.allocates));
+        assert!(memo_effects(&driver.session(), &second).is_some_and(|effects| effects.allocates));
         let expected_dependencies = HashSet::from([
             ProductKey::MaterializedExecutable(first.clone()),
             ProductKey::MaterializedExecutable(second.clone()),
@@ -4040,9 +4371,9 @@ mod tests {
         let first = fake_executable_with_function(root, 881);
         let second = fake_executable_with_function(root, 882);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &anchor, &[&first, &second], false);
-        record_effect_product(driver.session_mut(), &first, &[&anchor], false);
-        record_effect_product(driver.session_mut(), &second, &[&anchor], true);
+        record_effect_product(&mut driver.session_mut(), &anchor, &[&first, &second], false);
+        record_effect_product(&mut driver.session_mut(), &first, &[&anchor], false);
+        record_effect_product(&mut driver.session_mut(), &second, &[&anchor], true);
         let mut world = World::new();
         for member in [&first, &second] {
             let outcome = {
@@ -4075,7 +4406,7 @@ mod tests {
                     .collect::<HashSet<_>>(),
                 expected_dependencies
             );
-            assert!(memo_effects(driver.session(), member).is_some_and(|effects| effects.allocates));
+            assert!(memo_effects(&driver.session(), member).is_some_and(|effects| effects.allocates));
         }
     }
 
@@ -4085,7 +4416,7 @@ mod tests {
         let root = RootId::for_test(89);
         let executable = fake_executable_with_function(root, 890);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &executable, &[&executable], true);
+        record_effect_product(&mut driver.session_mut(), &executable, &[&executable], true);
         let mut world = World::new();
 
         assert_eq!(
@@ -4116,9 +4447,9 @@ mod tests {
         let caller = fake_executable_with_function(root, 90);
         let callee = fake_executable_with_function(root, 91);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &caller, &[&callee], false);
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
         let callee_materialized = fake_effect_materialized(&callee, &[], false);
-        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
+        record_materialized_product(&mut driver.session_mut(), callee.clone(), callee_materialized.clone());
         let mut world = World::new();
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &caller),
@@ -4136,7 +4467,7 @@ mod tests {
 
         let mut changed_materialized = callee_materialized;
         changed_materialized.original_entry_ids = vec![ControlEntryId::from_u32(17)];
-        record_materialized_product(driver.session_mut(), callee.clone(), changed_materialized);
+        record_materialized_product(&mut driver.session_mut(), callee.clone(), changed_materialized);
 
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &caller),
@@ -4174,10 +4505,10 @@ mod tests {
         let callee = fake_executable_with_function(root, 95);
         let unreachable = fake_executable_with_function(root, 96);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &grand, &[&caller], false);
-        record_effect_product(driver.session_mut(), &caller, &[], false);
-        record_effect_product(driver.session_mut(), &callee, &[], false);
-        record_effect_product(driver.session_mut(), &unreachable, &[], false);
+        record_effect_product(&mut driver.session_mut(), &grand, &[&caller], false);
+        record_effect_product(&mut driver.session_mut(), &caller, &[], false);
+        record_effect_product(&mut driver.session_mut(), &callee, &[], false);
+        record_effect_product(&mut driver.session_mut(), &unreachable, &[], false);
         let mut world = World::new();
         for executable in [&grand, &callee, &unreachable] {
             assert_eq!(
@@ -4187,7 +4518,7 @@ mod tests {
         }
 
         evaluations.borrow_mut().clear();
-        record_effect_product(driver.session_mut(), &caller, &[&callee], false);
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &grand),
             EffectSummary::default()
@@ -4199,7 +4530,7 @@ mod tests {
         );
 
         evaluations.borrow_mut().clear();
-        record_effect_product(driver.session_mut(), &callee, &[], true);
+        record_effect_product(&mut driver.session_mut(), &callee, &[], true);
         let allocating = EffectSummary {
             allocates: true,
             ..EffectSummary::default()
@@ -4216,7 +4547,7 @@ mod tests {
         );
 
         evaluations.borrow_mut().clear();
-        record_effect_product(driver.session_mut(), &caller, &[], false);
+        record_effect_product(&mut driver.session_mut(), &caller, &[], false);
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &grand),
             EffectSummary::default()
@@ -4231,7 +4562,7 @@ mod tests {
         );
 
         evaluations.borrow_mut().clear();
-        record_effect_product(driver.session_mut(), &callee, &[], false);
+        record_effect_product(&mut driver.session_mut(), &callee, &[], false);
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &callee),
             EffectSummary::default()
@@ -4258,17 +4589,17 @@ mod tests {
         let first = fake_executable_with_function(root, 970);
         let second = fake_executable_with_function(root, 971);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &first, &[], true);
-        record_effect_product(driver.session_mut(), &second, &[&first], false);
+        record_effect_product(&mut driver.session_mut(), &first, &[], true);
+        record_effect_product(&mut driver.session_mut(), &second, &[&first], false);
         let mut world = World::new();
         assert!(pull_effects_until_produced(&mut driver, &mut world, &second).allocates);
 
-        record_effect_product(driver.session_mut(), &first, &[&second], true);
-        record_effect_product(driver.session_mut(), &second, &[], false);
+        record_effect_product(&mut driver.session_mut(), &first, &[&second], true);
+        record_effect_product(&mut driver.session_mut(), &second, &[], false);
 
         assert!(pull_effects_until_produced(&mut driver, &mut world, &first).allocates);
         assert_eq!(
-            memo_effects(driver.session(), &second),
+            memo_effects(&driver.session(), &second),
             Some(EffectSummary::default()),
             "the displaced second formula's retired edge must not make it a member of the reversed dependency"
         );
@@ -4308,10 +4639,10 @@ mod tests {
         let anchor = fake_executable_with_function(root, 982);
         let peer = fake_executable_with_function(root, 983);
         let mut driver = ProductDriver::new(&tel, root);
-        record_effect_product(driver.session_mut(), &leaf, &[], true);
-        record_effect_product(driver.session_mut(), &external, &[&leaf], false);
-        record_effect_product(driver.session_mut(), &anchor, &[&peer], false);
-        record_effect_product(driver.session_mut(), &peer, &[&external, &anchor], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
+        record_effect_product(&mut driver.session_mut(), &external, &[&leaf], false);
+        record_effect_product(&mut driver.session_mut(), &anchor, &[&peer], false);
+        record_effect_product(&mut driver.session_mut(), &peer, &[&external, &anchor], false);
         let mut world = World::new();
         assert!(pull_effects_until_produced(&mut driver, &mut world, &external).allocates);
         let pending = {
@@ -4323,7 +4654,7 @@ mod tests {
             PullOutcome::wait_on_product(ProductKey::ExecutableEffects(anchor.clone()))
         );
 
-        record_effect_product(driver.session_mut(), &leaf, &[], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], false);
 
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, &anchor),
@@ -4344,8 +4675,8 @@ mod tests {
                 .generation(&ProductKey::ExecutableEffects(external.clone())),
             Some(2)
         );
-        let group_dependencies = driver
-            .session()
+        let session = driver.session();
+        let group_dependencies = session
             .memo()
             .product_dependencies(&ProductKey::ExecutableEffects(anchor.clone()))
             .expect("the refreshed group must settle");
@@ -4897,7 +5228,7 @@ mod tests {
         finish_test_product(
             &mut memo,
             &root_key,
-            ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
+            ProductValue::RootBackendProduct(RootBackendProductAnswer {
                 program: Rc::new(super::super::artifact::BackendProgram {
                     entry: 0,
                     atom_names: Vec::new(),
@@ -4905,7 +5236,7 @@ mod tests {
                     executables: Vec::new(),
                     construction_wrappers: Vec::new(),
                 }),
-                transport: super::super::artifact::MaterializedTransportPlan {
+                transport: Rc::new(super::super::artifact::MaterializedTransportPlan {
                     entry: left_resolution.clone(),
                     executable_membership: Box::default(),
                     position_layouts: Vec::new(),
@@ -4915,8 +5246,8 @@ mod tests {
                     callable_owners: Box::default(),
                     callable_facts: HashMap::new(),
                     boundary_facts: HashMap::new(),
-                },
-            })),
+                }),
+            }),
             [left_abi.clone(), right_abi.clone()],
         );
 

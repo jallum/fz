@@ -226,6 +226,7 @@ fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefin
 
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
 
     // A same-shaped plain-map probe remains disjoint before and after the
     // struct definition. This guards the atomic tag+fields representation while
@@ -253,7 +254,7 @@ fn main(x), do: Peek.first(x)
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "drive 1: the protocol and caller settle even though Boxy's defstruct has not landed",
     );
 
@@ -290,7 +291,7 @@ fn probe(), do: Boxy.ident(1)
     );
     world.submit_root(None, "probe".to_string(), 0, ExecutableNeed::Value);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "drive 2: defining Boxy publishes StructDefined(Boxy), which must re-wake main's classifier",
     );
 
@@ -451,8 +452,9 @@ fn main(), do: 1
 /// product. A resolved drive proves every reachable analysis converged before
 /// packaging.
 fn drive_until_semantic_closure(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
-    world.demand(Job::BuildBackendProduct(root));
-    assert_resolved(super::drive::ExecutionContext::new(world, tel).drive(), message);
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::drive_retained_root_backend_product(world, tel, &mut sessions, root, None)
+        .unwrap_or_else(|error| panic!("{message}: {error}"));
 }
 
 fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool {
@@ -764,7 +766,7 @@ fn a_published_call_edge_names_every_activation_the_walk_took_evidence_from() {
             .facts()
             .keys()
             .filter_map(|key| match key {
-                FactKey::ActivationAnalyzed(activation) => Some(activation.clone()),
+                super::drive::DependencyKey::Fact(FactKey::ActivationAnalyzed(activation)) => Some(activation.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();

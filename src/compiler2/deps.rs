@@ -56,6 +56,15 @@ where
         Self::default()
     }
 
+    pub(crate) fn has_consumers(&self, key: &F) -> bool {
+        [FactUse::current(key.clone()), FactUse::settled(key.clone())]
+            .iter()
+            .any(|usage| {
+                self.subscribers.get(usage).is_some_and(|readers| !readers.is_empty())
+                    || self.waiters.get(usage).is_some_and(|waiters| !waiters.is_empty())
+            })
+    }
+
     pub fn reads(&self, publisher: &Publisher<J>) -> Option<&HashSet<FactUse<F>>> {
         self.reads.get(publisher)
     }
@@ -64,12 +73,20 @@ where
     /// job-granular projection: telemetry attributes reads to the job that ran,
     /// because the job is what ran.
     pub fn job_reads(&self, job: &J) -> HashSet<FactUse<F>> {
-        self.publishers(job)
+        self.job_read_uses(job).cloned().collect()
+    }
+
+    fn job_read_uses(&self, job: &J) -> impl Iterator<Item = &FactUse<F>> {
+        self.derivations
+            .get(job)
             .into_iter()
-            .filter_map(|publisher| self.reads.get(&publisher))
+            .flat_map(|ids| ids.iter())
+            .filter_map(move |id| self.reads.get(&Publisher::new(job.clone(), *id)))
             .flatten()
-            .cloned()
-            .collect()
+    }
+
+    pub(crate) fn job_dependency_uses(&self, job: &J) -> impl Iterator<Item = &FactUse<F>> {
+        self.job_read_uses(job).chain(self.waits.get(job).into_iter().flatten())
     }
 
     /// Records the derivations `job` published under this run. Idempotent, and
