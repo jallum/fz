@@ -325,7 +325,7 @@ semantic targets.
 
 The product path consumes settled facts directly. For one executable `E`,
 `MaterializedExecutable(E)` waits on settled `ExecutableFacts(E)`, settled
-`ReturnType(E.activation)`, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and the
+`ReturnType(E.activation)`, `RuntimeDemand(E)`, the
 transport positions required by the local body. The shared fact already carries
 the analysis, lowered body, entry dispatch, and exact callsite summaries, so
 materialization neither rereads nor reconstructs that projection.

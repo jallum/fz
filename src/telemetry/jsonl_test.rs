@@ -559,6 +559,47 @@ fn product_dependency_reads_identify_both_the_owner_and_the_product() {
 }
 
 #[test]
+fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
+    use crate::compiler2::incoming_inputs::InputSlot;
+    use crate::compiler2::{
+        ActivationKey, DependencyKey, ExecutableKey, ExecutableNeed, FactKey, FactUse, FunctionId, RootId, Types,
+    };
+
+    let mut types = Types::new();
+    let int = types.int();
+    let mut identities = std::collections::HashSet::new();
+    for root in [7, 8] {
+        for index in [0, 1] {
+            let activation =
+                ActivationKey::from_inputs(RootId::for_test(root), FunctionId::for_test(9), &[int, int], &mut types);
+            let arrow = activation.arrow.as_u32();
+            let slot = InputSlot {
+                executable: ExecutableKey {
+                    activation,
+                    need: ExecutableNeed::Value,
+                },
+                semantic_index: index,
+            };
+            let dependency = FactUse::settled(DependencyKey::Fact(FactKey::IncomingInputSlot(slot)));
+            let mut body = String::new();
+            write_dependency_use_identity(&mut body, &dependency);
+            let identity: serde_json::Value = serde_json::from_str(&body).expect("typed slot dependency JSON");
+            assert_eq!(
+                identity,
+                serde_json::json!({
+                    "use": "settled", "kind": "IncomingInputSlot", "root_id": root,
+                    "function_id": 9, "arrow": arrow, "need": "value", "semantic_index": index,
+                })
+            );
+            assert!(
+                identities.insert(body),
+                "different root/input slots must not collapse in causal replay"
+            );
+        }
+    }
+}
+
+#[test]
 fn product_movements_are_public_causal_events() {
     use crate::compiler2::{AppliedStep, FactMovement, FactState, Job, ProductKey, RootId};
     use crate::compiler2::{DependencyKey, ProductAddress};

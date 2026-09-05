@@ -62,8 +62,6 @@ product   RootBackendProduct(root)
             transport positions
           ExecutableEffects(E)
             local materialized effects joined with exact callee effect products
-          OutgoingInputEdges(E), IncomingInputSlot(slot)
-            root-local input-source accounting
           TransportShape(position), CallableConstruction(position)
             position-owned transport layouts and callable construction facts
 ```
@@ -78,7 +76,7 @@ BackendExecutable(E)
      <- MaterializedExecutable(E)
      <- ExecutableEffects(E)
      <- TransportShape/CallableConstruction positions named by E
-     <- Settled(RuntimeDemand(E)), OutgoingInputEdges(E), IncomingInputSlot(slot)
+     <- Settled(RuntimeDemand(E)), Settled(IncomingInputSlot(slot))
 ```
 
 `RuntimeDemand(E)` is a World fact produced by `DeriveRuntimeDemand(E)`.
@@ -98,7 +96,7 @@ Tuple-field demand may stop at its highest observed index. Transport applies
 that prefix to the exact tuple type and emits `Nothing` for omitted trailing
 positions, so a partial four-tuple remains a four-field structural layout
 instead of being mistaken for a different tuple shape and boxed.
-`OutgoingInputEdges(E)`, `TransportShape(...)`, `CallableConstruction(...)`,
+`TransportShape(...)`, `CallableConstruction(...)`,
 and `MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly.
 World fact values are not copied into `ProductMemo` and therefore have no
 product settlement, displacement, cache-hit, or re-entry lifecycle.
@@ -149,7 +147,7 @@ submit_root(main/0)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
           waits on settled ExecutableFacts(E) and ReturnType(E.activation)
-          waits on settled RuntimeDemand(E), then pulls OutgoingInputEdges(E) and local TransportShape products
+          waits on settled RuntimeDemand(E), then pulls local TransportShape products
         pulls ExecutableEffects(E)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
       lowers one symbolic backend executable
@@ -326,8 +324,8 @@ resumes cannot silently reclassify the join seam.
 ## The artifact boundary is product-keyed
 
 `MaterializedExecutable(E)` is the first backend-owned product. It waits on
-settled local semantic facts for `E.activation`, `RuntimeDemand(E)`,
-`OutgoingInputEdges(E)`, and the transport shapes required by that local body.
+settled local semantic facts for `E.activation`, `RuntimeDemand(E)`, and
+the transport shapes required by that local body.
 It clones and prunes one body, freezes that executable's live callsites to
 selected call edges, and records symbolic callee edges for later product pulls.
 It cannot ask a new type question or discover a callee except through the
@@ -350,14 +348,18 @@ record dependencies at the read site; waits name those reads without restamping
 or rereading the world. Scheduler movements are reconciled to their final exact
 states before the next pull.
 
-Outgoing input publication is root-local and order-free.
-`OutgoingEdgeFrontier(root)` is the immutable set of executables whose
-`OutgoingInputEdges(E)` product has actually been requested. Each outgoing
-product is an immutable `InputSlot -> Set<IncomingInputSource>` contribution.
-`IncomingInputRelations(root)` derives the immutable request-relative relation
-for the exact current frontier generation. `IncomingInputSlot(slot)`
-projects one exact value from it. Replacement, withdrawal, and equal reproduction use the
-ordinary product-generation rules; there is no append-only call-edge inventory.
+Input-source ownership is exact and root-local. `DeriveRuntimeDemand(E)`
+contributes each call argument or callable capture to its destination
+`IncomingInputSlot(slot)` fact through the ordinary contribution ledger.
+The executable identity includes the root. Each target formula also claims
+its own empty input slots, so an input with no sources has a settled answer.
+The scheduler owns the publisher frontier: waiting preserves unrefuted
+contributions; concluding replacement withdraws only that publisher's obsolete
+edges. Callable construction reads the exact settled slot fact directly,
+alongside its named shape prerequisite, and consumes the fact's typed-sorted
+source allocation. Equal publication preserves allocation and revision;
+unrelated edges cannot invalidate the slot. There is no relation product or
+root-wide relation inventory.
 
 Each `TransportShape(position)` producer owns one exact answer. It reads the
 position owner's `ExecutableFacts`, settled `RuntimeDemand`, and only the
@@ -759,7 +761,7 @@ Backend-facing product work has one hard rule after
 requested product.
 
 - `MaterializedExecutable(E)` may consume only settled local semantic facts for
-  `E`, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and local transport shape
+  `E`, `RuntimeDemand(E)`, and local transport shape
   products.
 - `ExecutableEffects(E)` may consume only `MaterializedExecutable(E)` and the
   exact `ExecutableEffects(callee)` products its local symbolic call edges name.

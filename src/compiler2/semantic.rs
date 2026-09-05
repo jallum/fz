@@ -1399,7 +1399,9 @@ where
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
-            slot.joined = joined;
+            if moved {
+                slot.joined = joined;
+            }
             self.slots.insert(key.clone(), slot);
         }
         moved

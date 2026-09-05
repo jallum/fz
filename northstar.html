@@ -667,7 +667,7 @@ AbiExecutable(E)
 MaterializedExecutable(E)
   waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
   waits on settled RuntimeDemand(E)
-  pulls OutgoingInputEdges(E), TransportShape(ExecutableReturn(E))</code></pre>
+  pulls TransportShape(ExecutableReturn(E))</code></pre>
       <p>
         Product materialization clones one executable body, enters a sole reachable clause directly
         only when failure is unreachable, prunes unreachable clauses, rewrites
@@ -685,12 +685,14 @@ MaterializedExecutable(E)
         roots and roots suspended around a nested macro drive. The memo's reader index emits
         subscription changes as its first or last reader appears, so delivery scans neither roots
         nor dependencies. Reconciliation therefore relies on neither transition order nor a World
-        scan. Outgoing input publication is root-local and
-        order-free: an immutable publisher frontier names requested executables, each publisher owns
-        an immutable map from input slots to source sets, and
-        <code>IncomingInputRelations(root)</code> derives the immutable request-relative relation
-        for the exact current frontier generation. <code>IncomingInputSlot(slot)</code> projects one exact value from that relation.
-        Equal reproduction preserves generations.
+        scan. Input-source ownership is root-local and exact:
+        each runtime-demand formula contributes its call arguments and captures
+        to the destination <code>IncomingInputSlot(slot)</code> fact. The scheduler
+        owns replacement and withdrawal; the target formula claims its empty own
+        slots so no incoming edges is a readable answer. Callable construction
+        names the exact settled slot and shape prerequisites together, then
+        consumes the fact's typed-sorted source allocation directly.
+        Equal reproduction preserves allocations and revisions.
       </p>
       <p>
         Position-owned tuple layouts may retain different fields of the same
@@ -741,7 +743,7 @@ MaterializedExecutable(E)
         publishes provisional demand and caller-local return contributions while peer-dependent
         capture/input contributions wait only for absent non-self targets. The input sub-fact owns a
         revision, not another value: it addresses the input vector of the one stored runtime demand.
-        <code>RuntimeDemand</code>, <code>OutgoingInputEdges</code>, <code>TransportShape</code>,
+        <code>RuntimeDemand</code>, <code>TransportShape</code>,
         <code>CallableConstruction</code>, and <code>MaterializedExecutable</code> record that fact as an
         ordinary dependency; materialization additionally waits on its activation's <code>ReturnType</code>.
         There is no product, producer bridge, reader, driver branch, or memo identity for executable facts

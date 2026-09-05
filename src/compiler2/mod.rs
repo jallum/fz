@@ -17,6 +17,7 @@ mod facts;
 mod fixture_metadata;
 mod frontdoor;
 mod identity;
+pub(crate) mod incoming_inputs;
 mod jobs;
 mod keying;
 mod module_interface;
@@ -41,6 +42,8 @@ mod source_sugar;
 mod structdef;
 mod token_payload;
 pub mod transport;
+#[cfg(test)]
+mod transport_relation_incremental_test;
 mod type_expr;
 mod typedef;
 mod types;

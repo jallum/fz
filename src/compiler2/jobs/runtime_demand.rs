@@ -12,9 +12,7 @@ use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, Run
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
-use super::super::pull::{
-    IncomingInputRole, IncomingInputSource, InputSlot, ProductReadContext, ProductValue, PullOutcome, PullWait,
-};
+use super::super::incoming_inputs::{IncomingInputRole, IncomingInputSource, IncomingInputSources, InputSlot};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     CallSiteSummary, CallableConstructionTargetKey, CallableDemand, CallableFlowEdge, CallableFlowFact,
@@ -287,6 +285,23 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     } else {
         provisional_contributions.into_iter().collect()
     };
+    let mut incoming = HashMap::new();
+    if has_owner {
+        collect_callsite_input_sources(world, executable, &facts, &mut incoming);
+        collect_callable_capture_input_sources(executable, &demand, &mut incoming);
+    }
+    for semantic_index in 0..executable.activation.input_len(world.types()) {
+        incoming
+            .entry(InputSlot {
+                executable: executable.clone(),
+                semantic_index,
+            })
+            .or_default();
+    }
+    let incoming_input_contributions = incoming
+        .into_iter()
+        .map(|(slot, sources)| (slot, IncomingInputSources::new(sources, world.types())))
+        .collect();
     let demand = Rc::new(demand);
     let (changed, inputs_changed) = world.define_runtime_demand(executable.clone(), demand);
     Ok(JobEffects {
@@ -299,6 +314,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             .collect(),
         waits: peer_waits,
         runtime_demand_input_contributions,
+        incoming_input_contributions,
         ..JobEffects::default()
     })
 }
@@ -512,43 +528,6 @@ impl RuntimeDemandFormulaSnapshot {
             construction_targets: HashMap::new(),
         }
     }
-}
-
-pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
-    world: &mut World,
-    _tel: &T,
-    context: &mut ProductReadContext<'_>,
-    executable: &ExecutableKey,
-) -> PullOutcome {
-    let facts = context.read_executable_facts(world, executable);
-    let runtime_demand = context.read_runtime_demand_fact(world, executable);
-    let mut waits = HashSet::new();
-    if facts.is_none() {
-        waits.insert(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
-            executable.clone(),
-        ))));
-    }
-    if runtime_demand.is_none() {
-        waits.insert(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
-            executable.clone(),
-        ))));
-    }
-    if !waits.is_empty() {
-        return product_waits(waits);
-    }
-    let facts = facts.expect("executable-facts wait should have been satisfied");
-    let runtime_demand = runtime_demand.expect("runtime-demand wait should have been satisfied");
-
-    let mut contribution = HashMap::new();
-    collect_callsite_input_sources(world, executable, &facts, &mut contribution);
-    collect_callable_capture_input_sources(executable, &runtime_demand, &mut contribution);
-    PullOutcome::Produced(ProductValue::OutgoingInputEdges(Rc::new(
-        super::super::pull::OrderedIncomingInputs::from_unordered(contribution, world.types()),
-    )))
-}
-
-fn product_waits(waits: HashSet<PullWait>) -> PullOutcome {
-    PullOutcome::Waiting(waits.into_iter().collect())
 }
 
 fn construction_flow_edge(

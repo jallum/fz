@@ -153,6 +153,15 @@ command and result live in
 `.agent/measurements/fz-kdt.4-external-members-census.txt`. The removed
 external/displacement path therefore had no observed owner to preserve.
 
+**Input-source relations** — `IncomingInputSlot(slot)` is a World fact,
+not a product projection. `DeriveRuntimeDemand` completions name its exact
+publisher, content revision, readiness movements, and changed source ownership.
+Callable-construction product evaluations record the exact settled slot read.
+Pair those records with the retained source allocation and the consumer's
+generation: an equal publication preserves the fact allocation and revision,
+while an unrelated edge names neither that slot nor its reader closure. There
+is no root relation settlement count hiding a repeated inventory scan.
+
 **Recursive-group searches** —
 `fz.compiler2.pull.recursive_group.searched` carries the current product, the
 prospective dependency, and one `RecursiveGroupSearch`. `candidate_inventory`

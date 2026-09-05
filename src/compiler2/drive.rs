@@ -294,6 +294,7 @@ pub enum FactKey {
     RuntimeDemandInput(ExecutableKey),
     RuntimeDemand(ExecutableKey),
     RuntimeDemandInputs(ExecutableKey),
+    IncomingInputSlot(super::incoming_inputs::InputSlot),
 }
 
 impl SemanticOrd<Types> for FactKey {
@@ -328,6 +329,7 @@ impl FactKey {
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
             (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
+            (FactKey::IncomingInputSlot(left), FactKey::IncomingInputSlot(right)) => left.semantic_cmp(right, types),
             (FactKey::RootEntry(left), FactKey::RootEntry(right)) => left.cmp(right),
             (FactKey::Activation(left), FactKey::Activation(right))
             | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
@@ -386,6 +388,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemand(_) => 32,
         FactKey::RuntimeDemandInput(_) => 33,
         FactKey::RuntimeDemandInputs(_) => 34,
+        FactKey::IncomingInputSlot(_) => 37,
     }
 }
 
@@ -397,7 +400,10 @@ impl ClaimShape for FactKey {
     fn is_cumulative(&self) -> bool {
         matches!(
             self,
-            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::RuntimeDemandInput(_)
+            FactKey::ReturnType(_)
+                | FactKey::ActivationInputs(_)
+                | FactKey::RuntimeDemandInput(_)
+                | FactKey::IncomingInputSlot(_)
         )
     }
 }
@@ -490,6 +496,8 @@ pub(crate) struct JobEffects {
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
+    pub(crate) incoming_input_contributions:
+        std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
     pub(crate) derivations: Vec<JobDerivation>,
 }
 
@@ -593,6 +601,7 @@ impl World {
             FactKey::RuntimeDemand(executable) | FactKey::RuntimeDemandInputs(executable) => {
                 Some(Job::DeriveRuntimeDemand(executable.clone()))
             }
+            FactKey::IncomingInputSlot(slot) => Some(Job::DeriveRuntimeDemand(slot.executable.clone())),
             _ => None,
         };
         job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)

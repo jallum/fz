@@ -5,6 +5,7 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+use super::world::World;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
@@ -32,8 +33,6 @@ use super::transport::LaneId;
 use super::transport::ShapeId;
 use super::transport::{CallableConstructionOwner, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
-use super::world::World;
-
 static NEXT_PULL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
 const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
@@ -100,12 +99,6 @@ fn allocate_pull_session_id(counter: &AtomicU64) -> PullSessionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct InputSlot {
-    pub executable: ExecutableKey,
-    pub semantic_index: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProductKey {
     RootBackendProduct(RootId),
     RootBackendContent(RootId),
@@ -114,10 +107,6 @@ pub enum ProductKey {
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
-    OutgoingEdgeFrontier(RootId),
-    OutgoingInputEdges(ExecutableKey),
-    IncomingInputRelations(RootId),
-    IncomingInputSlot(InputSlot),
     TransportShape(TransportPosition),
     CallableConstruction(TransportPosition),
 }
@@ -130,17 +119,10 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 (Self::AbiExecutable(left), Self::AbiExecutable(right))
                 | (Self::BackendExecutable(left), Self::BackendExecutable(right))
                 | (Self::MaterializedExecutable(left), Self::MaterializedExecutable(right))
-                | (Self::ExecutableEffects(left), Self::ExecutableEffects(right))
-                | (Self::OutgoingInputEdges(left), Self::OutgoingInputEdges(right)) => left.semantic_cmp(right, types),
+                | (Self::ExecutableEffects(left), Self::ExecutableEffects(right)) => left.semantic_cmp(right, types),
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
                 | (Self::RootBackendContent(left), Self::RootBackendContent(right))
-                | (Self::NativeProgram(left), Self::NativeProgram(right))
-                | (Self::OutgoingEdgeFrontier(left), Self::OutgoingEdgeFrontier(right))
-                | (Self::IncomingInputRelations(left), Self::IncomingInputRelations(right)) => left.cmp(right),
-                (Self::IncomingInputSlot(left), Self::IncomingInputSlot(right)) => left
-                    .executable
-                    .semantic_cmp(&right.executable, types)
-                    .then_with(|| left.semantic_index.cmp(&right.semantic_index)),
+                | (Self::NativeProgram(left), Self::NativeProgram(right)) => left.cmp(right),
                 (Self::TransportShape(left), Self::TransportShape(right))
                 | (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
                     left.semantic_cmp(right, types)
@@ -156,11 +138,7 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::BackendExecutable(_) => 1,
         ProductKey::CallableConstruction(_) => 2,
         ProductKey::ExecutableEffects(_) => 3,
-        ProductKey::IncomingInputRelations(_) => 4,
-        ProductKey::IncomingInputSlot(_) => 5,
         ProductKey::MaterializedExecutable(_) => 6,
-        ProductKey::OutgoingEdgeFrontier(_) => 7,
-        ProductKey::OutgoingInputEdges(_) => 8,
         ProductKey::RootBackendProduct(_) => 9,
         ProductKey::RootBackendContent(_) => 10,
         ProductKey::NativeProgram(_) => 11,
@@ -178,10 +156,6 @@ impl ProductKey {
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
-            Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
-            Self::OutgoingInputEdges(_) => "outgoing_input_edges",
-            Self::IncomingInputRelations(_) => "incoming_input_relations",
-            Self::IncomingInputSlot(_) => "incoming_input_slot",
             Self::TransportShape(_) => "transport_shape",
             Self::CallableConstruction(_) => "callable_construction",
         }
@@ -192,14 +166,10 @@ impl ProductKey {
             Self::BackendExecutable(executable)
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
-            | Self::ExecutableEffects(executable)
-            | Self::OutgoingInputEdges(executable) => Some(executable),
-            Self::IncomingInputSlot(slot) => Some(&slot.executable),
+            | Self::ExecutableEffects(executable) => Some(executable),
             Self::RootBackendProduct(_)
             | Self::RootBackendContent(_)
             | Self::NativeProgram(_)
-            | Self::OutgoingEdgeFrontier(_)
-            | Self::IncomingInputRelations(_)
             | Self::TransportShape(_)
             | Self::CallableConstruction(_) => None,
         }
@@ -222,10 +192,6 @@ pub enum ProductValue {
     AbiExecutable(Rc<AbiReadyExecutable>),
     MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    OutgoingEdgeFrontier(Rc<[ExecutableKey]>),
-    OutgoingInputEdges(Rc<OrderedIncomingInputs>),
-    IncomingInputRelations(Rc<OrderedIncomingInputs>),
-    IncomingInputSlot(Rc<[IncomingInputSource]>),
     TransportShape(TransportShapeFact),
     CallableConstruction(Rc<CallableConstructionOwner>),
 }
@@ -252,48 +218,7 @@ fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
         (ProductValue::CallableConstruction(left), ProductValue::CallableConstruction(right)) => {
             Rc::ptr_eq(left, right) || left == right
         }
-        (ProductValue::OutgoingEdgeFrontier(left), ProductValue::OutgoingEdgeFrontier(right)) => {
-            Rc::ptr_eq(left, right) || left == right
-        }
-        (ProductValue::OutgoingInputEdges(left), ProductValue::OutgoingInputEdges(right))
-        | (ProductValue::IncomingInputRelations(left), ProductValue::IncomingInputRelations(right)) => {
-            Rc::ptr_eq(left, right) || left == right
-        }
-        (ProductValue::IncomingInputSlot(left), ProductValue::IncomingInputSlot(right)) => {
-            Rc::ptr_eq(left, right) || left == right
-        }
         _ => left == right,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct OrderedIncomingInputs(Box<[(InputSlot, Rc<[IncomingInputSource]>)]>);
-
-impl OrderedIncomingInputs {
-    pub(crate) fn from_unordered(
-        inputs: HashMap<InputSlot, HashSet<IncomingInputSource>>,
-        types: &super::types::Types,
-    ) -> Self {
-        let mut inputs = inputs
-            .into_iter()
-            .map(|(slot, sources)| {
-                let mut sources = sources.into_iter().collect::<Vec<_>>();
-                sources.sort_by(|left, right| compare_incoming_input_sources(left, right, types));
-                (slot, Rc::from(sources))
-            })
-            .collect::<Vec<_>>();
-        inputs.sort_by(|(left, _), (right, _)| compare_input_slots(left, right, types));
-        Self(inputs.into_boxed_slice())
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&InputSlot, &[IncomingInputSource])> {
-        self.0.iter().map(|(slot, sources)| (slot, sources.as_ref()))
-    }
-
-    fn get(&self, slot: &InputSlot) -> Option<Rc<[IncomingInputSource]>> {
-        self.0
-            .iter()
-            .find_map(|(candidate, sources)| (candidate == slot).then(|| Rc::clone(sources)))
     }
 }
 
@@ -1017,6 +942,7 @@ impl ProductMemo {
         self.take_pending_dependencies(key);
     }
 
+    #[cfg(test)]
     fn remove(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
         self.invalidate_products(tel, [key.clone()], types);
     }
@@ -1326,65 +1252,12 @@ impl ProductMemo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct IncomingInputSource {
-    pub producer: ExecutableKey,
-    pub value: ValueId,
-    pub role: IncomingInputRole,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IncomingInputRole {
-    CallArgument,
-    CallableCapture {
-        construction: ValueId,
-        capture_index: usize,
-    },
-}
-
-fn compare_input_slots(left: &InputSlot, right: &InputSlot, types: &super::types::Types) -> std::cmp::Ordering {
-    left.executable
-        .semantic_cmp(&right.executable, types)
-        .then_with(|| left.semantic_index.cmp(&right.semantic_index))
-}
-
-fn compare_incoming_input_sources(
-    left: &IncomingInputSource,
-    right: &IncomingInputSource,
-    types: &super::types::Types,
-) -> std::cmp::Ordering {
-    left.producer
-        .semantic_cmp(&right.producer, types)
-        .then_with(|| left.value.as_u32().cmp(&right.value.as_u32()))
-        .then_with(|| incoming_input_role_key(left.role).cmp(&incoming_input_role_key(right.role)))
-}
-
-fn ordered_executable_frontier(
-    executables: &HashSet<ExecutableKey>,
-    types: &super::types::Types,
-) -> Rc<[ExecutableKey]> {
-    let mut executables = executables.iter().cloned().collect::<Vec<_>>();
-    executables.sort_by(|left, right| left.semantic_cmp(right, types));
-    Rc::from(executables)
-}
-
-fn incoming_input_role_key(role: IncomingInputRole) -> (u8, u32, usize) {
-    match role {
-        IncomingInputRole::CallArgument => (0, 0, 0),
-        IncomingInputRole::CallableCapture {
-            construction,
-            capture_index,
-        } => (1, construction.as_u32(), capture_index),
-    }
-}
-
 #[derive(Debug)]
 pub struct PullSession {
     id: Option<PullSessionId>,
     request_ids: ProductRequestIds,
     root: RootId,
     memo: ProductMemo,
-    outgoing_edge_request_set: HashSet<ExecutableKey>,
     demanded_executables: HashSet<ExecutableKey>,
     // Request-local counters reset whenever this retained session is
     // reactivated. The memo and dependency indexes above remain durable.
@@ -1400,7 +1273,6 @@ impl PullSession {
             request_ids: ProductRequestIds::new(),
             root,
             memo: ProductMemo::default(),
-            outgoing_edge_request_set: HashSet::new(),
             demanded_executables: HashSet::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
@@ -1414,10 +1286,6 @@ impl PullSession {
 
     pub fn id(&self) -> Option<PullSessionId> {
         self.id
-    }
-
-    fn outgoing_edge_requests(&self) -> &HashSet<ExecutableKey> {
-        &self.outgoing_edge_request_set
     }
 
     pub fn memo(&self) -> &ProductMemo {
@@ -1463,13 +1331,7 @@ impl PullSession {
         self.memo.reconcile_fact_movements(tel, &pending, types);
     }
 
-    fn note_product_request(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
-        if let ProductKey::OutgoingInputEdges(executable) = key
-            && self.outgoing_edge_request_set.insert(executable.clone())
-        {
-            self.memo
-                .remove(tel, &ProductKey::OutgoingEdgeFrontier(self.root), types);
-        }
+    fn note_product_request(&mut self, key: &ProductKey) {
         if let Some(executable) = key.executable() {
             self.demanded_executables.insert(executable.clone());
         }
@@ -2139,47 +2001,6 @@ impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
     pub fn new(world: &'w mut World, telemetry: &'a T) -> Self {
         Self { world, telemetry }
     }
-
-    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
-        let publishers = match context.read_product(self.telemetry, frontier_key.clone(), self.world.types()) {
-            Some(ProductValue::OutgoingEdgeFrontier(publishers)) => Rc::clone(publishers),
-            Some(value) => panic!("outgoing edge frontier produced unexpected value {value:?}"),
-            None => return PullOutcome::wait_on_product(frontier_key),
-        };
-        let mut slots: HashMap<InputSlot, HashSet<IncomingInputSource>> = HashMap::new();
-        let mut waits = Vec::new();
-        for publisher in publishers.iter() {
-            let key = ProductKey::OutgoingInputEdges(publisher.clone());
-            match context.read_product(self.telemetry, key.clone(), self.world.types()) {
-                Some(ProductValue::OutgoingInputEdges(contribution)) => {
-                    for (slot, published) in contribution.iter() {
-                        slots.entry(slot.clone()).or_default().extend(published.iter().cloned());
-                    }
-                }
-                Some(value) => panic!("outgoing input product produced unexpected value {value:?}"),
-                None => waits.push(PullWait::Product(key)),
-            }
-        }
-        if waits.is_empty() {
-            PullOutcome::Produced(ProductValue::IncomingInputRelations(Rc::new(
-                OrderedIncomingInputs::from_unordered(slots, self.world.types()),
-            )))
-        } else {
-            PullOutcome::Waiting(waits)
-        }
-    }
-
-    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome {
-        let relations_key = ProductKey::IncomingInputRelations(context.session().root());
-        match context.read_product(self.telemetry, relations_key.clone(), self.world.types()) {
-            Some(ProductValue::IncomingInputRelations(relations)) => PullOutcome::Produced(
-                ProductValue::IncomingInputSlot(relations.get(slot).unwrap_or_else(|| Rc::from([]))),
-            ),
-            Some(value) => panic!("incoming input relations produced unexpected value {value:?}"),
-            None => PullOutcome::wait_on_product(relations_key),
-        }
-    }
 }
 
 impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
@@ -2221,19 +2042,6 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
                 executable,
                 self.world.types(),
             ),
-            ProductKey::OutgoingEdgeFrontier(_) => PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(
-                ordered_executable_frontier(context.session().outgoing_edge_requests(), self.world.types()),
-            )),
-            ProductKey::OutgoingInputEdges(executable) => {
-                super::jobs::runtime_demand::produce_outgoing_input_edges_product(
-                    self.world,
-                    self.telemetry,
-                    context,
-                    executable,
-                )
-            }
-            ProductKey::IncomingInputRelations(root) => self.produce_incoming_input_relations(context, *root),
-            ProductKey::IncomingInputSlot(slot) => self.produce_incoming_input_slot(context, slot),
             ProductKey::TransportShape(position) => {
                 super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
             }
@@ -2354,8 +2162,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         }
         self.session_mut()
             .reconcile_fact_movements(tel, producers.product_types());
-        self.session_mut()
-            .note_product_request(tel, &key, producers.product_types());
+        self.session_mut().note_product_request(&key);
         let stale = self.session().memo.stale_dependency(&key, producers.product_types());
         if let Some(stale) = stale {
             self.session_mut()
@@ -2811,9 +2618,9 @@ mod tests {
     fn recursive_group_search_matches_pending_graph_boundaries() {
         let types = fake_types();
         let root = RootId::for_test(84);
-        let current = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 840));
-        let dependency = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 841));
-        let peer = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 842));
+        let current = ProductKey::AbiExecutable(fake_executable_with_function(root, 840));
+        let dependency = ProductKey::AbiExecutable(fake_executable_with_function(root, 841));
+        let peer = ProductKey::AbiExecutable(fake_executable_with_function(root, 842));
         let bridge = ProductKey::RootBackendProduct(root);
         let missing = ProductMemo::default();
         assert_eq!(
@@ -2931,10 +2738,10 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(85);
-        let current = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 850));
-        let missing = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 851));
-        let ready = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 852));
-        let cyclic = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 853));
+        let current = ProductKey::AbiExecutable(fake_executable_with_function(root, 850));
+        let missing = ProductKey::AbiExecutable(fake_executable_with_function(root, 851));
+        let ready = ProductKey::AbiExecutable(fake_executable_with_function(root, 852));
+        let cyclic = ProductKey::AbiExecutable(fake_executable_with_function(root, 853));
         let mut session = PullSession::new(root);
 
         {
@@ -3027,8 +2834,8 @@ mod tests {
     fn completion_batch_commits_one_semantic_sequence_for_every_requested_anchor() {
         let root = RootId::for_test(86);
         let mut types = super::super::Types::new();
-        let keys = [860, 861, 862]
-            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
+        let keys =
+            [860, 861, 862].map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
         let mut expected = keys.to_vec();
         sort_product_keys(&mut expected, &types);
 
@@ -3062,8 +2869,8 @@ mod tests {
     fn recursive_group_commits_one_semantic_sequence_for_every_requested_anchor() {
         let root = RootId::for_test(88);
         let mut types = super::super::Types::new();
-        let keys = [880, 881, 882]
-            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
+        let keys =
+            [880, 881, 882].map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
         let mut expected = keys.to_vec();
         sort_product_keys(&mut expected, &types);
 
@@ -3106,7 +2913,7 @@ mod tests {
         let root = RootId::for_test(87);
         let mut types = super::super::Types::new();
         let keys = [870, 871, 872, 873, 874, 875, 876]
-            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
+            .map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
         let [left, right, left_reader, right_reader, join, pending, pending_child] = &keys;
         let mut expected_displaced = vec![left_reader.clone(), right_reader.clone()];
         sort_product_keys(&mut expected_displaced, &types);
@@ -3153,7 +2960,7 @@ mod tests {
                 &["fz", "compiler2", "pull", "product", "displaced"],
                 move |_, _, _, key| sink.borrow_mut().push(key.clone()),
             );
-            let replacement = ProductValue::OutgoingEdgeFrontier(ordered_frontier([]));
+            let replacement = ProductValue::ExecutableEffects(EffectSummary::default());
             let entries = sources
                 .iter()
                 .cloned()
@@ -3174,10 +2981,10 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(99);
-        let source = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 990));
-        let intermediate = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 991));
-        let pending = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 992));
-        let settled = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 993));
+        let source = ProductKey::AbiExecutable(fake_executable_with_function(root, 990));
+        let intermediate = ProductKey::AbiExecutable(fake_executable_with_function(root, 991));
+        let pending = ProductKey::AbiExecutable(fake_executable_with_function(root, 992));
+        let settled = ProductKey::AbiExecutable(fake_executable_with_function(root, 993));
         let mut memo = ProductMemo::default();
         finish_test_product(&mut memo, &source, ProductValue::Unit, []);
         finish_test_product(&mut memo, &intermediate, ProductValue::Unit, [source.clone()]);
@@ -3196,99 +3003,6 @@ mod tests {
         assert!(memo.get(&settled).is_some());
         assert!(memo.dirty_descendants.contains(&intermediate));
         assert!(memo.dirty_descendants.contains(&settled));
-    }
-
-    #[test]
-    fn incoming_input_relations_and_slot_projection_share_one_ordered_source_allocation() {
-        let root = RootId::for_test(90);
-        let mut types = super::super::Types::new();
-        let [producer_a, producer_b, callee_a, callee_b] =
-            [900, 901, 902, 903].map(|function| fake_executable_in(&mut types, root, function));
-        let slot_a = InputSlot {
-            executable: callee_a,
-            semantic_index: 1,
-        };
-        let slot_b = InputSlot {
-            executable: callee_b,
-            semantic_index: 0,
-        };
-        let source_a = IncomingInputSource {
-            producer: producer_a.clone(),
-            value: ValueId::from_u32(2),
-            role: IncomingInputRole::CallArgument,
-        };
-        let source_b = IncomingInputSource {
-            producer: producer_b.clone(),
-            value: ValueId::from_u32(1),
-            role: IncomingInputRole::CallableCapture {
-                construction: ValueId::from_u32(3),
-                capture_index: 0,
-            },
-        };
-
-        let forward_frontier = HashSet::from([producer_a.clone(), producer_b.clone()]);
-        let reverse_frontier = [producer_b, producer_a].into_iter().collect();
-        assert_eq!(
-            ordered_executable_frontier(&forward_frontier, &types),
-            ordered_executable_frontier(&reverse_frontier, &types)
-        );
-
-        let forward = OrderedIncomingInputs::from_unordered(
-            HashMap::from([
-                (slot_a.clone(), HashSet::from([source_a.clone(), source_b.clone()])),
-                (slot_b.clone(), HashSet::from([source_b.clone(), source_a.clone()])),
-            ]),
-            &types,
-        );
-        let reverse = OrderedIncomingInputs::from_unordered(
-            [
-                (slot_b, [source_a.clone(), source_b.clone()].into_iter().collect()),
-                (
-                    slot_a.clone(),
-                    [source_b.clone(), source_a.clone()].into_iter().collect(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            &types,
-        );
-        assert_eq!(forward, reverse);
-        let relations = Rc::new(forward);
-        let slot_projection = relations.get(&slot_a).expect("independent slot projection a");
-        let mut memo = ProductMemo::default();
-        let tel = ConfiguredTelemetry::new();
-        finish_test_entry(
-            &mut memo,
-            &tel,
-            &ProductKey::IncomingInputRelations(root),
-            ProductValue::IncomingInputRelations(Rc::clone(&relations)),
-            ProductDependencies::default(),
-            &types,
-        );
-        finish_test_entry(
-            &mut memo,
-            &tel,
-            &ProductKey::IncomingInputSlot(slot_a.clone()),
-            ProductValue::IncomingInputSlot(Rc::clone(&slot_projection)),
-            ProductDependencies::default(),
-            &types,
-        );
-        let relation_sources = match memo.get(&ProductKey::IncomingInputRelations(root)) {
-            Some(ProductValue::IncomingInputRelations(relations)) => relations.get(&slot_a).expect("relation slot a"),
-            other => panic!("expected memoized input relations, got {other:?}"),
-        };
-        let slot_sources = match memo.get(&ProductKey::IncomingInputSlot(slot_a.clone())) {
-            Some(ProductValue::IncomingInputSlot(sources)) => sources,
-            other => panic!("expected memoized input slot, got {other:?}"),
-        };
-        assert!(
-            Rc::ptr_eq(&relation_sources, slot_sources),
-            "the aggregate relation and independently retained slot product must share one ordered source allocation"
-        );
-        assert_eq!(Some(&relation_sources), reverse.get(&slot_a).as_ref());
-        let mut expected_sources = vec![source_a, source_b];
-        expected_sources.sort_by(|left, right| compare_incoming_input_sources(left, right, &types));
-        assert_eq!(relation_sources.as_ref(), expected_sources);
     }
 
     #[derive(Default)]
@@ -3370,7 +3084,7 @@ mod tests {
                         return PullOutcome::Waiting(waits);
                     }
                     let prerequisite =
-                        ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
+                        ProductKey::AbiExecutable(self.root_entry.clone().expect("fake root entry should be set"));
                     if context
                         .read_product_entry(&tel, prerequisite.clone(), &self.types)
                         .is_some()
@@ -3421,7 +3135,7 @@ mod tests {
                     self.produced.insert(key.clone());
                     PullOutcome::Produced(self.materialized_value.clone().unwrap_or(ProductValue::Unit))
                 }
-                ProductKey::OutgoingInputEdges(_) => {
+                ProductKey::AbiExecutable(_) => {
                     self.calls.push(key.clone());
                     if let Some(fact) = self.runtime_fact.clone() {
                         let state = self.fact_state(&fact);
@@ -3601,7 +3315,7 @@ mod tests {
         let root = RootId::for_test(0);
         let executable = fake_executable(root);
         let root_key = ProductKey::RootBackendProduct(root);
-        let prerequisite = ProductKey::OutgoingInputEdges(executable.clone());
+        let prerequisite = ProductKey::AbiExecutable(executable.clone());
         let mut producers = FakeProducers {
             root_entry: Some(executable),
             ..FakeProducers::default()
@@ -3635,12 +3349,12 @@ mod tests {
         JsonlBackend::new_writer(writer).install(tel.as_ref());
         let root = RootId::for_test(90);
         let root_key = ProductKey::RootBackendProduct(root);
-        let dependency = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 901));
-        let dependency_child = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 902));
-        let moved = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 903));
+        let dependency = ProductKey::AbiExecutable(fake_executable_with_function(root, 901));
+        let dependency_child = ProductKey::AbiExecutable(fake_executable_with_function(root, 902));
+        let moved = ProductKey::AbiExecutable(fake_executable_with_function(root, 903));
         let mut producers = FakeProducers {
             root_entry: match &dependency {
-                ProductKey::OutgoingInputEdges(executable) => Some(executable.clone()),
+                ProductKey::AbiExecutable(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
             root_prerequisites: vec![moved.clone()],
@@ -3797,7 +3511,7 @@ mod tests {
         let root = RootId::for_test(7);
         let executable = fake_executable(root);
         let parent = ProductKey::RootBackendProduct(root);
-        let child = ProductKey::OutgoingInputEdges(executable.clone());
+        let child = ProductKey::AbiExecutable(executable.clone());
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: Some(executable),
@@ -3891,7 +3605,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(70);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -3936,7 +3650,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(71);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -3976,7 +3690,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(72);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -4011,12 +3725,12 @@ mod tests {
         let root = RootId::for_test(17);
         let executable = fake_executable(root);
         let grandparent = ProductKey::RootBackendProduct(root);
-        let parent = ProductKey::OutgoingInputEdges(executable.clone());
+        let parent = ProductKey::AbiExecutable(executable.clone());
         let child = ProductKey::BackendExecutable(executable);
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: match &parent {
-                ProductKey::OutgoingInputEdges(executable) => Some(executable.clone()),
+                ProductKey::AbiExecutable(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
             runtime_children: HashMap::from([(parent.clone(), child.clone())]),
@@ -4141,156 +3855,6 @@ mod tests {
         assert_eq!(driver.session().request_ids.next, NonZeroU64::new(1));
         assert!(driver.session().memo.contains_in_progress(&key));
         assert!(producers.calls.is_empty());
-    }
-
-    #[test]
-    fn outgoing_edge_frontier_tracks_actual_publisher_requests_as_a_set() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(3);
-        let first = fake_executable(root);
-        let second = fake_executable_with_function(root, 4);
-        let frontier = ProductKey::OutgoingEdgeFrontier(root);
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut fake = FakeProducers::default();
-        let mut world = World::new();
-
-        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
-        let first_frontier = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier.clone())
-        };
-        assert_eq!(
-            first_frontier,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(ordered_frontier([first.clone(),])))
-        );
-        let first_generation = driver.session().memo().generation(&frontier);
-
-        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
-        driver.pull(&mut fake, ProductKey::BackendExecutable(first.clone()));
-        assert_eq!(driver.session().memo().generation(&frontier), first_generation);
-
-        assert_eq!(
-            driver.pull(&mut fake, ProductKey::OutgoingInputEdges(second.clone())),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        let expanded = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier.clone())
-        };
-        assert_eq!(
-            expanded,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(ordered_frontier([first, second])))
-        );
-        assert_ne!(driver.session().memo().generation(&frontier), first_generation);
-    }
-
-    #[test]
-    fn incoming_input_relations_follow_frontier_generations_and_slots_project_exact_values() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(6);
-        let caller = fake_executable(root);
-        let unrelated = fake_executable_with_function(root, 7);
-        let callee = fake_executable_with_function(root, 8);
-        let slot = InputSlot {
-            executable: callee,
-            semantic_index: 0,
-        };
-        let source = IncomingInputSource {
-            producer: caller.clone(),
-            value: ValueId::from_u32(9),
-            role: IncomingInputRole::CallArgument,
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut fake = FakeProducers::default();
-        let mut world = World::new();
-        let caller_key = ProductKey::OutgoingInputEdges(caller);
-        driver.pull(&mut fake, caller_key.clone());
-        driver.session_mut().memo.remove(&tel, &caller_key, &fake.types);
-        finish_test_entry(
-            &mut driver.session_mut().memo,
-            &tel,
-            &caller_key,
-            ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::from([(
-                slot.clone(),
-                HashSet::from([source.clone()]),
-            )]))),
-            ProductDependencies::default(),
-            &fake.types,
-        );
-
-        let incoming_key = ProductKey::IncomingInputSlot(slot);
-        let relations_key = ProductKey::IncomingInputRelations(root);
-        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
-        {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::wait_on_product(relations_key.clone())
-            );
-            assert_eq!(
-                driver.pull(&mut producers, relations_key.clone()),
-                PullOutcome::wait_on_product(frontier_key.clone())
-            );
-            driver.pull(&mut producers, frontier_key.clone());
-            driver.pull(&mut producers, relations_key.clone());
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::Produced(ProductValue::IncomingInputSlot(ordered_sources([source.clone()])))
-            );
-        }
-        let source_generation = driver.session().memo.generation(&incoming_key);
-        let relations_generation = driver.session().memo.generation(&relations_key);
-
-        let unrelated_key = ProductKey::OutgoingInputEdges(unrelated);
-        driver.pull(&mut fake, unrelated_key.clone());
-        driver.session_mut().memo.remove(&tel, &unrelated_key, &fake.types);
-        finish_test_entry(
-            &mut driver.session_mut().memo,
-            &tel,
-            &unrelated_key,
-            ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::new())),
-            ProductDependencies::default(),
-            &fake.types,
-        );
-        {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::wait_on_product(frontier_key.clone())
-            );
-            driver.pull(&mut producers, frontier_key);
-            driver.pull(&mut producers, relations_key.clone());
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::Produced(ProductValue::IncomingInputSlot(ordered_sources([source])))
-            );
-        }
-        assert_eq!(driver.session().memo.generation(&incoming_key), source_generation);
-        assert_eq!(driver.session().memo.generation(&relations_key), relations_generation);
-
-        driver.session_mut().memo.remove(&tel, &caller_key, &fake.types);
-        finish_test_entry(
-            &mut driver.session_mut().memo,
-            &tel,
-            &caller_key,
-            ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::new())),
-            ProductDependencies::default(),
-            &fake.types,
-        );
-        let withdrawn_wait = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, incoming_key.clone())
-        };
-        assert_eq!(withdrawn_wait, PullOutcome::wait_on_product(relations_key.clone()));
-        let withdrawn = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, relations_key);
-            driver.pull(&mut producers, incoming_key)
-        };
-        assert_eq!(
-            withdrawn,
-            PullOutcome::Produced(ProductValue::IncomingInputSlot(ordered_sources([])))
-        );
     }
 
     #[test]
@@ -4724,7 +4288,7 @@ mod tests {
         let mut producers = FakeProducers::default();
 
         assert_eq!(
-            driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable)),
+            driver.pull(&mut producers, ProductKey::AbiExecutable(executable)),
             PullOutcome::Produced(ProductValue::Unit)
         );
         driver.session_mut().record_producer_pokes(2);
@@ -4772,7 +4336,7 @@ mod tests {
             move |_, _, _, _, request| observed.borrow_mut().push(*request),
         );
         let root = RootId::for_test(9);
-        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         driver.session_mut().request_ids.next = NonZeroU64::new(u64::MAX);
         let mut producers = FakeProducers::default();
@@ -4845,26 +4409,6 @@ mod tests {
             &mut types,
         );
         types
-    }
-
-    fn ordered_frontier(values: impl IntoIterator<Item = ExecutableKey>) -> Rc<[ExecutableKey]> {
-        let types = fake_types();
-        let mut values = values.into_iter().collect::<Vec<_>>();
-        values.sort_by(|left, right| left.semantic_cmp(right, &types));
-        values.dedup();
-        Rc::from(values)
-    }
-
-    fn ordered_inputs(values: HashMap<InputSlot, HashSet<IncomingInputSource>>) -> Rc<OrderedIncomingInputs> {
-        Rc::new(OrderedIncomingInputs::from_unordered(values, &fake_types()))
-    }
-
-    fn ordered_sources(values: impl IntoIterator<Item = IncomingInputSource>) -> Rc<[IncomingInputSource]> {
-        let types = fake_types();
-        let mut values = values.into_iter().collect::<Vec<_>>();
-        values.sort_by(|left, right| compare_incoming_input_sources(left, right, &types));
-        values.dedup();
-        Rc::from(values)
     }
 
     fn record_materialized_product(
@@ -5530,21 +5074,18 @@ mod tests {
             executable: symbol,
             value: ValueId::from_u32(2),
         });
-        let external = ProductKey::IncomingInputSlot(InputSlot {
-            executable: fake_executable_with_function(root, 381),
-            semantic_index: 0,
+        let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 381)),
         });
         let left_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 382));
         let right_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 383));
         let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 384));
         let first_layout = TransportLayout::structural(ShapeId::for_test(110));
         let second_layout = TransportLayout::structural(ShapeId::for_test(111));
-        let external_value = |producer| {
-            ProductValue::IncomingInputSlot(ordered_sources([IncomingInputSource {
-                producer: fake_executable_with_function(root, producer),
-                value: ValueId::from_u32(1),
-                role: IncomingInputRole::CallArgument,
-            }]))
+        let external_value = |shape| {
+            ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout::structural(
+                ShapeId::for_test(shape),
+            )))
         };
 
         for reverse in [false, true] {
@@ -5658,8 +5199,8 @@ mod tests {
         );
 
         let root = RootId::for_test(60);
-        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 600));
-        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 601));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 600));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 601));
         let mut memo = ProductMemo::default();
 
         let first_value = ProductValue::ExecutableEffects(EffectSummary::default());
@@ -5755,9 +5296,9 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(61);
-        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 610));
-        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 611));
-        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 612));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 611));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 612));
         let dependencies = ProductDependencies {
             products: HashMap::from([(external, Some(7))]),
             facts: HashMap::new(),
@@ -5787,10 +5328,10 @@ mod tests {
     fn changed_product_authority_discards_pending_reader_snapshots_before_group_settlement() {
         let types = fake_types();
         let root = RootId::for_test(39);
-        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 390));
-        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 391));
-        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 392));
-        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 393));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 390));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 391));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 392));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 393));
         let first = ProductValue::ExecutableEffects(EffectSummary::default());
         let second = ProductValue::ExecutableEffects(EffectSummary {
             allocates: true,
@@ -5868,8 +5409,8 @@ mod tests {
     fn changed_fact_authority_discards_only_pending_readers_of_that_fact() {
         let types = fake_types();
         let root = RootId::for_test(40);
-        let reader = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 400));
-        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 401));
+        let reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 400));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 401));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let other_fact = FactUse::settled(FactKey::RootEntry(root));
         let first = FactState {
@@ -5925,10 +5466,10 @@ mod tests {
     #[test]
     fn group_settlement_rejects_discordant_dependency_snapshots_before_publication() {
         let root = RootId::for_test(41);
-        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 410));
-        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 411));
-        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 412));
-        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 413));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 410));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 411));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 412));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 413));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let fact_one = FactState {
             revision: Some(1),
@@ -6007,9 +5548,9 @@ mod tests {
     fn rejected_group_retries_without_displaced_dependency_snapshots() {
         let types = fake_types();
         let root = RootId::for_test(42);
-        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 420));
-        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 421));
-        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 422));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 420));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 421));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 422));
 
         for reverse in [false, true] {
             let mut memo = ProductMemo::default();
@@ -6195,10 +5736,7 @@ mod tests {
         let x = ProductKey::CallableConstruction(x_position.clone());
         let y = ProductKey::CallableConstruction(y_position);
         let terminal = ProductKey::CallableConstruction(terminal_position.clone());
-        let slot = ProductKey::IncomingInputSlot(InputSlot {
-            executable: fake_executable_with_function(root, 370),
-            semantic_index: 1,
-        });
+        let slot = ProductKey::TransportShape(x_position.clone());
         let parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 370));
         let unrelated = ProductKey::CallableConstruction(TransportPosition::Value {
             executable: executable_symbol_for_test(&fake_executable_with_function(root, 372)),
@@ -6239,11 +5777,7 @@ mod tests {
             settle_owner_equations(&equations(first_resolution.clone(), terminal_position.clone()), false).0;
         let keys = [x.clone(), y.clone()];
         let external = [terminal.clone(), slot.clone()];
-        let slot_value = ProductValue::IncomingInputSlot(ordered_sources([IncomingInputSource {
-            producer: fake_executable_with_function(root, 371),
-            value: ValueId::from_u32(1),
-            role: IncomingInputRole::CallArgument,
-        }]));
+        let slot_value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));
 
         let mut memos = Vec::new();
         for reverse in [false, true] {
@@ -6354,18 +5888,10 @@ mod tests {
         finish_test_product(
             &mut memo,
             &slot,
-            ProductValue::IncomingInputSlot(ordered_sources([
-                IncomingInputSource {
-                    producer: fake_executable_with_function(root, 371),
-                    value: ValueId::from_u32(1),
-                    role: IncomingInputRole::CallArgument,
-                },
-                IncomingInputSource {
-                    producer: fake_executable_with_function(root, 375),
-                    value: ValueId::from_u32(2),
-                    role: IncomingInputRole::CallArgument,
-                },
-            ])),
+            ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout {
+                structural: ShapeId::for_test(102),
+                ..layout
+            })),
             [],
         );
         assert!(keys.iter().all(|key| memo.get(key).is_none()));

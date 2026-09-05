@@ -10,8 +10,9 @@ use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
-    InputSlot, ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact,
 };
 use super::super::semantic::{
@@ -248,11 +249,33 @@ fn produce_generic_callable_owner(
     position: &TransportPosition,
 ) -> PullOutcome {
     let shape_key = ProductKey::TransportShape(position.clone());
+    let mut waits = Vec::new();
+    if let TransportPosition::ExecutableInput { semantic_index, .. } = position
+        && runtime
+            .input_demands
+            .get(*semantic_index)
+            .is_some_and(demand_contains_callable)
+    {
+        let fact = FactUse::settled(FactKey::IncomingInputSlot(InputSlot {
+            executable: executable.clone(),
+            semantic_index: *semantic_index,
+        }));
+        if !context.read_fact(world, fact.clone()) {
+            waits.push(PullWait::Fact(fact));
+        }
+    }
     let layout = match context.read_product(tel, shape_key.clone(), world.types()) {
-        Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
+        Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
         Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-        None => return PullOutcome::wait_on_product(shape_key),
+        None => {
+            waits.push(PullWait::Product(shape_key));
+            None
+        }
     };
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let layout = layout.expect("shape wait must be satisfied");
     if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
         return PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
@@ -272,20 +295,17 @@ fn produce_generic_callable_owner(
     if demand_contains_callable(&demand) {
         match position {
             TransportPosition::ExecutableInput { semantic_index, .. } => {
-                let key = ProductKey::IncomingInputSlot(InputSlot {
+                let slot = InputSlot {
                     executable: executable.clone(),
                     semantic_index: *semantic_index,
-                });
-                match context.read_product(tel, key.clone(), world.types()) {
-                    Some(ProductValue::IncomingInputSlot(sources)) => {
-                        source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
-                            executable: executable_symbol(&source.producer, world.types()),
-                            value: source.value,
-                        }));
-                    }
-                    Some(value) => panic!("incoming input slot produced unexpected value {value:?}"),
-                    None => return PullOutcome::wait_on_product(key),
-                }
+                };
+                let sources = world
+                    .incoming_input_sources(&slot)
+                    .expect("settled input slot has an authoritative answer");
+                source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
+                    executable: executable_symbol(&source.producer, world.types()),
+                    value: source.value,
+                }));
             }
             TransportPosition::Value { value, .. } => {
                 if let Some(origin) = facts.value_origin(*value)

@@ -37,6 +37,7 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
+use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{
     BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
 };
@@ -58,7 +59,7 @@ use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
     CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, CallableConstructionTargetKey,
-    ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
+    ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
     TargetDemandContribution,
 };
 use super::source::{
@@ -146,6 +147,7 @@ pub struct World {
     runtime_demand_type_projections: HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>>,
     runtime_demands: HashMap<ExecutableKey, std::rc::Rc<ExecutableRuntimeDemand>>,
     runtime_demand_input_contributions: RuntimeDemandInputMap<Job>,
+    incoming_input_contributions: ContributionMap<InputSlot, Job, IncomingInputSources>,
     roots: RootMap,
     macro_roots: HashMap<FunctionId, RootId>,
     namespaces: NamespaceStore,
@@ -273,6 +275,7 @@ impl World {
             runtime_demand_type_projections: HashMap::new(),
             runtime_demands: HashMap::new(),
             runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
+            incoming_input_contributions: ContributionMap::new(),
             roots: RootMap::new(),
             macro_roots: HashMap::new(),
             namespaces: NamespaceStore::new(),
@@ -517,7 +520,7 @@ impl World {
         let rebased = self.work_graph.rebased(&job);
         // The work graph is the single source of truth for each publisher's
         // prior output frontier (it tracks every job's facts under the identical
-        // accumulate-on-extend / replace-on-conclude rule). Both contribution
+        // accumulate-on-extend / replace-on-conclude rule). The contribution
         // stores read their retraction frontier from it, filtered to their fact.
         let previous_output_keys = self
             .work_graph
@@ -573,7 +576,26 @@ impl World {
                 runtime_demand_input_contributions,
             )
         };
+        let previous_incoming = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::IncomingInputSlot(slot) => Some(slot.clone()),
+                _ => None,
+            })
+            .collect();
+        let incoming = if waits.is_empty() {
+            self.incoming_input_contributions.conclude_exact(
+                &mut self.types,
+                job.clone(),
+                previous_incoming,
+                effects.incoming_input_contributions,
+            )
+        } else {
+            self.incoming_input_contributions
+                .extend(&mut self.types, job.clone(), effects.incoming_input_contributions)
+        };
         let mut outputs = effects.outputs;
+        outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
         outputs.extend(
             runtime_demand_input_outputs
@@ -585,6 +607,7 @@ impl World {
         }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
+        changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         changed.extend(
             runtime_demand_input_changed
@@ -1775,6 +1798,10 @@ impl World {
             .facts()
             .revision(&DependencyKey::Fact(key.clone()))
             .is_some()
+    }
+
+    pub(crate) fn incoming_input_sources(&self, slot: &InputSlot) -> Option<&std::rc::Rc<[IncomingInputSource]>> {
+        self.incoming_input_contributions.get(slot).map(|sources| &sources.0)
     }
 
     pub fn fact_is_settled(&self, key: &FactKey) -> bool {

@@ -327,9 +327,22 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        81,
-        "cold native production includes the definition macro's direct backend-content demand",
+        79,
+        "main and its definition macro retain their direct backend demands without per-executable relation products",
     );
+    let materialized_roots = evaluations
+        .borrow()
+        .iter()
+        .filter_map(|(key, outcome)| match (key, outcome) {
+            (ProductKey::MaterializedExecutable(executable), PullOutcome::Produced(_)) => {
+                Some(executable.activation.root)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(materialized_roots.len(), 2);
+    assert!(materialized_roots.contains(&root));
+    assert_ne!(materialized_roots[0], materialized_roots[1]);
     assert_eq!(
         evaluations
             .borrow()
@@ -2338,7 +2351,7 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     for key in memo.produced_keys() {
         if !matches!(
             key.kind(),
-            "outgoing_input_edges" | "materialized_executable" | "transport_shape" | "callable_construction"
+            "materialized_executable" | "transport_shape" | "callable_construction"
         ) {
             continue;
         }
@@ -2354,12 +2367,7 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
             key.kind(),
         );
     }
-    for expected in [
-        "outgoing_input_edges",
-        "materialized_executable",
-        "transport_shape",
-        "callable_construction",
-    ] {
+    for expected in ["materialized_executable", "transport_shape", "callable_construction"] {
         assert!(
             observed.contains(expected),
             "fixture did not exercise {expected}; observed {observed:?}"
@@ -2505,13 +2513,18 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     assert!(!world.fact_is_settled(&prerequisite));
     assert!(!world.fact_is_settled(&fact));
 
-    let stable_probe = ProductKey::OutgoingEdgeFrontier(RootId::for_test(u32::MAX));
-    assert_eq!(driver.session().memo().generation(&stable_probe), None);
+    let unrelated_root = RootId::for_test(u32::MAX);
+    let unrelated_content = ProductKey::RootBackendContent(unrelated_root);
+    assert_eq!(driver.session().memo().generation(&unrelated_content), None);
     apply_world_fact_movements(&mut driver, &dirtied.movements);
-    assert!(matches!(
-        driver.pull(&mut WorldProductProducers::new(&mut world, &tel), stable_probe.clone()),
-        PullOutcome::Produced(_)
-    ));
+    assert_eq!(
+        driver.pull(
+            &mut WorldProductProducers::new(&mut world, &tel),
+            unrelated_content.clone()
+        ),
+        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(unrelated_root)),
+        "reconciling through an unrelated request must not validate the dirty root"
+    );
     for (key, generation) in &generations {
         assert_eq!(
             driver.session().memo().generation(key),
@@ -2596,10 +2609,11 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         settled.wakes,
     );
 
-    assert!(matches!(
-        driver.pull(&mut WorldProductProducers::new(&mut world, &tel), stable_probe),
-        PullOutcome::Produced(_)
-    ));
+    assert_eq!(
+        driver.pull(&mut WorldProductProducers::new(&mut world, &tel), unrelated_content),
+        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(unrelated_root)),
+        "reconciling equal readiness must leave the unrelated dependency unresolved"
+    );
     let root_outcome = driver.pull(
         &mut WorldProductProducers::new(&mut world, &tel),
         ProductKey::RootBackendProduct(root),

@@ -1789,6 +1789,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("ActivationInputs", 9),
             ("CallSiteSummary", 11),
             ("CallSiteTargets", 11),
+            ("IncomingInputSlot", 23),
             ("ReturnType", 10),
             ("RuntimeDemand", 10),
             ("RuntimeDemandInput", 9),
@@ -1951,8 +1952,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // Each macro owns one retained RootBackendContent view.
-        (398, 398, 398, 0, 16, 0),
+        // Exact slot facts replace twenty intermediate relation product answers.
+        (378, 378, 378, 0, 15, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(

@@ -73,10 +73,6 @@ pub(crate) fn produce_materialized_executable_product(
             executable.clone(),
         ))));
     }
-    let outgoing_key = ProductKey::OutgoingInputEdges(executable.clone());
-    if context.read_product(tel, outgoing_key.clone(), world.types()).is_none() {
-        waits.push(PullWait::Product(outgoing_key));
-    }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }

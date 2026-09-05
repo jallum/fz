@@ -2211,6 +2211,10 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::RuntimeDemandInput(key)
         | FactKey::RuntimeDemand(key)
         | FactKey::RuntimeDemandInputs(key) => write_executable_key(out, key),
+        FactKey::IncomingInputSlot(slot) => {
+            write_executable_key(out, &slot.executable);
+            write_semantic_index(out, slot.semantic_index);
+        }
     }
 }
 
@@ -2383,18 +2387,11 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
     match key {
         ProductKey::RootBackendProduct(root)
         | ProductKey::RootBackendContent(root)
-        | ProductKey::NativeProgram(root)
-        | ProductKey::OutgoingEdgeFrontier(root)
-        | ProductKey::IncomingInputRelations(root) => write_root_id(out, *root),
+        | ProductKey::NativeProgram(root) => write_root_id(out, *root),
         ProductKey::BackendExecutable(executable)
         | ProductKey::AbiExecutable(executable)
         | ProductKey::MaterializedExecutable(executable)
-        | ProductKey::ExecutableEffects(executable)
-        | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
-        ProductKey::IncomingInputSlot(slot) => {
-            write_executable_key(out, &slot.executable);
-            write_semantic_index(out, slot.semantic_index);
-        }
+        | ProductKey::ExecutableEffects(executable) => write_executable_key(out, executable),
         ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) => {
             write_transport_position_field(out, position);
         }
@@ -2439,6 +2436,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::RuntimeDemandInput(_) => "RuntimeDemandInput",
         FactKey::RuntimeDemand(_) => "RuntimeDemand",
         FactKey::RuntimeDemandInputs(_) => "RuntimeDemandInputs",
+        FactKey::IncomingInputSlot(_) => "IncomingInputSlot",
     }
 }
 

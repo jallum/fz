@@ -545,10 +545,6 @@ ProductKey =
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
-  OutgoingEdgeFrontier(root)
-  OutgoingInputEdges(E)
-  IncomingInputRelations(root)
-  IncomingInputSlot(slot)
   TransportShape(position)
   CallableConstruction(position)
 
@@ -706,12 +702,14 @@ answer retains that `MaterializedTransportPlan` beside the closed
 There is no parallel session map of transport positions, shapes, layouts,
 callable boundaries, or transport-shape groups, and final packaging does not scan the
 fact table or memo to rediscover them.
-Outgoing publication is normalized once into an immutable, typed-sorted
-executable slice. `IncomingInputRelations(root)` and `OutgoingInputEdges`
-share a private immutable ordered slot/source value, and each
-`IncomingInputSlot(slot)` projects an immutable typed-sorted source slice.
-Hash maps and sets are ephemeral construction tools only; no consumer can
-observe their iteration order.
+`DeriveRuntimeDemand(E)` publishes exact input-source contributions into
+`IncomingInputSlot(slot)` facts. `ContributionMap` joins each slot's sources
+with the scheduler's publisher frontier governing replacement and withdrawal.
+The target formula claims empty own slots, making absence of incoming edges
+an authoritative readable answer. Callable construction reads that one settled
+fact directly and consumes its immutable, typed-sorted source slice. Its slot
+and shape prerequisites are named together. Equal publication retains the
+joined allocation and revision.
 `RuntimeDemand(E)` is an ordinary replacing World fact. Its formula records
 current reads of exact direct and construction targets, then reads only those
 targets' `RuntimeDemandInputs(E)` sub-facts. The sub-fact projects the input
