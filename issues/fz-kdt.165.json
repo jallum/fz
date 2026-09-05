@@ -5,7 +5,8 @@
     "fz-tfn.30"
   ],
   "blocks": [
-    "fz-tfn.13"
+    "fz-tfn.13",
+    "fz-tfn.39"
   ],
   "created": "2026-09-02T18:16:08Z",
   "description": "## Goal\n\nAdd `callable_identity` as the fourth dimension of the existing atomic `InputDemand` fact. Preserve a callable brand in an activation key exactly when a reachable entry can call it or bake it into a reachable closure; erase identity that is merely transported.\n\nThis is not a new fact, cone, solver, or body-wide flag.\n\n## Current defect\n\n`BodyKeying::consumes_callable_identity` is one Boolean for a whole body. Any capture parameter, `ClosureCall`, or `Lambda` in any entry makes every callable input identity-sensitive, including inputs used only by an unreachable arm. `List.reduce/3` consequently keeps distinct outer activations for same-surface reducers on its `{:cont, ...}` path even though the common downstream continuation already owns the indirect call.\n\nThe opposite error is also possible: a callable passed through reconstruction or projection can reach an identity consumer through an edge the former forwarding cone did not represent. `fz-kdt.214` therefore supplies the exact typed path relation, and `fz-kdt.213` supplies the one reactive atomic `InputDemand` authority before this dimension lands.\n\n## Correct model\n\n- Derive callable consumption per source input path and reachable entry from lowered SSA provenance.\n- Trace closure-call callees and constructed-lambda captures through the shared typed path relation.\n- Join the result into `InputDemand { local_dispatch, forwarded_dispatch, returned, callable_identity }` in one publication.\n- Dispatch-tested paths remain precise; only ignored transported paths may erase brands.\n- Ambiguous reachability conservatively preserves every identity a possible entry can consume.\n- Recursive convergence and the existing returned/dispatch decisions remain unchanged.\n\n## Red-first proof\n\n- Two same-surface reducers passed only through `List.reduce/3`'s `{:cont, ...}` arm share one outer activation and remain correct on interp/JIT/AOT.\n- `{:suspend, ...}`, a direct closure call, and a lambda capture retain every required construction, layout, and direct target distinction.\n- A lambda capturing only data does not make an unrelated callable input identity-sensitive.\n- Reconstructed, projected, and protocol-forwarded callables retain identity exactly when the reached consumer uses it.\n- Corpus movement has no unexplained executable, dispatch, allocation, ABI/layout, or native-byte change.\n\n## Required deletion and acceptance\n\nDelete `BodyKeying::consumes_callable_identity`, its body-wide scan, stale docs/tests, and every parallel identity-demand path. `DispatchMask` remains the dispatch-question projection; callable identity remains one additional `InputDemand` dimension. Full focused keying/transport/native tests, library, serial matrix, three target doors, cross-process determinism, formatting, check, strict clippy, and docs pass.",
@@ -30,5 +31,5 @@
   "status": "open",
   "title": "Add callable-identity as the fourth InputDemand dimension",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:20Z"
+  "updated_at": "2026-09-05T14:15:36Z"
 }
