@@ -6,7 +6,8 @@
     "fz-kdt.169",
     "fz-kdt.182",
     "fz-kdt.24",
-    "fz-kdt.30"
+    "fz-kdt.30",
+    "fz-kdt.32"
   ],
   "blocks": [],
   "created": "2026-09-05T14:15:14Z",
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-05T14:15:40Z"
+  "updated_at": "2026-09-05T14:15:41Z"
 }
