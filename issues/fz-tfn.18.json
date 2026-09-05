@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-kdt.58",
     "fz-tfn.30",
+    "fz-tfn.44",
     "fz-tfn.9"
   ],
   "blocks": [
@@ -17,5 +18,5 @@
   "status": "in_progress",
   "title": "Make root backend packaging react to exact keyed contributions",
   "type": "task",
-  "updated_at": "2026-09-05T21:01:12Z"
+  "updated_at": "2026-09-05T21:06:48Z"
 }
