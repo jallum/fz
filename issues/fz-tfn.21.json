@@ -4,7 +4,9 @@
     "fz-kdt.68",
     "fz-tfn.30"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-03T08:04:44Z",
   "description": "## Goal\n\nMake the result of fz-kdt.68 total. If measured per-answer precision does not repay its cost, delete the already-landed engine-wide per-derivation substrate rather than retaining latent complexity and hot-path overhead. If the experiment passes and a production multi-derivation consumer lands, close this ticket without code.\n\n## Evidence\n\nEvery production JobEffects currently leaves derivations empty and publishes only DerivationId::SOLE. Nevertheless scheduler claims, reads, finality, publisher identity, rosters, and completion plumbing are derivation-granular. The parked semantic consumer previously measured a 6–10 percent regression. fz-kdt.68 owns the new A/B decision.\n\n## Refuted-path deletion\n\n- DerivationId and Publisher wrappers where sole job identity suffices.\n- JobDerivation rosters and per-derivation dependency/claim maps.\n- Sole-derivation vector construction, reported-roster collection, publisher hashing/cloning, withdrawal plumbing, telemetry, tests, and documentation.\n- Experiment-only counters and proof fixtures after the removal is established.\n\n## Proof\n\n1. Let fz-kdt.68 complete its measured decision.\n2. If refuted, first pin the single-answer scheduler behavior, then collapse the data model back to job-owned reads/claims/finality.\n3. Prove identical current/settled movement, retraction, blocking, rebasing, wake attribution, semantic facts, products, artifacts, and runtime output.\n4. Require reduced allocations/hash operations/formula cost by causal or allocator counters; remove probes.\n5. Run randomized scheduler differential tests, full library, fixture matrix, determinism, formatting, and strict clippy.\n\nDo not keep generic multi-answer infrastructure without a production consumer and measured benefit.",
   "id": "fz-tfn.21",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Delete dormant per-derivation scheduler machinery if the precision experiment is refuted",
   "type": "task",
-  "updated_at": "2026-09-04T00:00:45Z"
+  "updated_at": "2026-09-05T14:15:53Z"
 }
