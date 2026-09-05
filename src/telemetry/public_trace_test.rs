@@ -1210,21 +1210,32 @@ const REQUEST_BASELINES: [[RequestBaseline; 5]; 3] = [
         (0, 0, 1, 0, 0, 0, 0, 0, 0),
         (0, 0, 1, 0, 0, 0, 0, 2, 0),
         (320, 280, 245, 4, 0, 0, 0, 116, 39),
-        (373, 332, 300, 26, 12, 2, 0, 179, 45),
+        // fz-tfn.35 seeds the exact anchor contract before ascent instead of
+        // settling and replaying the cone with a hidden bootstrap. Isolated
+        // restoration raises this request from 9 to 13 cone rounds and 282 to
+        // 286 member derivations, causing exactly 9 more product evaluations,
+        // 6 more settlements, 6 more demanded products, and 8 more changed
+        // generations. First-production, cross-request, product-cause, and
+        // formula counts do not move. Restoring the removed boxed-call target-map
+        // write alone also leaves this tuple unchanged; that independent path has
+        // its partial-return regression. The two larger fixtures have the same
+        // aggregate delta, and restoring the old replay recreates all three old
+        // baselines exactly.
+        (364, 326, 294, 18, 12, 2, 0, 179, 45),
     ],
     [
         (7584, 5430, 5056, 5269, 5223, 0, 35, 1885, 0),
         (0, 0, 1, 0, 0, 0, 0, 0, 0),
         (0, 0, 1, 0, 0, 0, 0, 2, 0),
         (745, 699, 581, 4, 0, 0, 0, 265, 90),
-        (1210, 1196, 1099, 26, 12, 2, 0, 461, 122),
+        (1201, 1190, 1093, 18, 12, 2, 0, 461, 122),
     ],
     [
         (16028, 12309, 11815, 12147, 12053, 0, 40, 3169, 0),
         (0, 0, 1, 0, 0, 0, 0, 0, 0),
         (0, 0, 1, 0, 0, 0, 0, 2, 0),
         (1657, 1376, 1372, 4, 0, 0, 0, 463, 156),
-        (2540, 2292, 2307, 26, 12, 2, 0, 643, 185),
+        (2531, 2286, 2301, 18, 12, 2, 0, 643, 185),
     ],
 ];
 

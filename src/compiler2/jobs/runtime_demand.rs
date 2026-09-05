@@ -63,6 +63,7 @@ pub(crate) struct DemandFormulaEvaluation {
     pub(crate) current: RuntimeDemandFormulaSnapshot,
     pub(crate) product_answers: Vec<RuntimeDemandProductInput>,
     pub(crate) demand: ExecutableRuntimeDemand,
+    pub(crate) observed_return_contributions: Vec<(ExecutableKey, RuntimeDemand)>,
     pub(crate) contributions: HashMap<ExecutableKey, TargetDemandContribution>,
     pub(crate) product_reads: Vec<ProductReadObservation>,
 }
@@ -349,10 +350,11 @@ impl CallableFlowBuilder {
 /// The whole cone is then solved by a bottom-start Kleene ascent inside this
 /// one producer: per round every member's demand is re-derived from the
 /// previous round's iterates (input demands down edges, return-demand
-/// contributions up edges, `ShapeDemand::join`), until nothing changes. Members
-/// with no contributor at the fixpoint (the entry, escaped closure bodies) get
-/// the whole-by-need bootstrap — absence is a distinct settled cell — and the
-/// ascent continues monotonically. Only the settled fixpoint is ever published:
+/// contributions up edges, `ShapeDemand::join`), until nothing changes. A
+/// requested anchor with no settled caller contributes its executable-need
+/// contract directly, and first-class callable owners contribute each boxed
+/// member's exact contract on the ordinary return-demand edge. Only the
+/// settled fixpoint is ever published:
 /// every member is memoized, so no other product can observe a mid-ascent
 /// value. There is no active-SCC seed (the SCC is solved together and never
 /// re-entered) and no consumed-return floor: at the fixpoint the callee's real
@@ -573,8 +575,8 @@ struct SettledDemandCone {
     contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>>,
 }
 
-/// One caller's contribution to a single target: its joined return-demand
-/// pin (the existing channel) plus any boundary-pinned INPUT positions —
+/// One caller's contribution to a single target: its joined observed and
+/// boxed-seam return demand plus any boundary-pinned INPUT positions —
 /// e.g. a boundary-published callable's argument, which a contract can
 /// demand even when the body itself elides it. Both halves join
 /// independently onto the target's `ExecutableRuntimeDemand`.
@@ -671,7 +673,7 @@ fn settle_demand_cone<T: Telemetry>(
     let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
     // The external caller evidence is settled session state the ascent never
     // mutates: join it once, not per member per round.
-    let external_return_demands: HashMap<ExecutableKey, RuntimeDemand> = members
+    let mut external_return_demands: HashMap<ExecutableKey, RuntimeDemand> = members
         .iter()
         .filter_map(|member| {
             context
@@ -680,6 +682,11 @@ fn settle_demand_cone<T: Telemetry>(
                 .map(|demand| (member.clone(), demand))
         })
         .collect();
+    if !external_return_demands.contains_key(anchor) {
+        external_return_demands
+            .entry(anchor.clone())
+            .or_insert_with(|| runtime_demand_for_executable_need(anchor.need));
+    }
     // The INPUT-side sibling: boundary-pinned argument positions a settled
     // contributor OUTSIDE this cone joined onto a member the cone treats as
     // an anchor (a resolution settled on an earlier, separate pull before its
@@ -732,7 +739,6 @@ fn settle_demand_cone<T: Telemetry>(
         );
     }
     let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>> = HashMap::new();
-    let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
     let mut dirty: HashSet<&ExecutableKey> = members.iter().collect();
     let mut rounds = 0_u32;
     let mut derivations = 0_u64;
@@ -771,9 +777,6 @@ fn settle_demand_cone<T: Telemetry>(
                 .unwrap_or_else(RuntimeDemand::ignore);
             if let Some(demand) = joined_contributions.get(member) {
                 joined.join_assign(demand);
-            }
-            if bootstrapped.contains(member) {
-                joined.join_assign(&runtime_demand_for_executable_need(member.need));
             }
             let current = reads.get(member).expect("every cone member has a read cell");
             let mut input_demands = current.input_demands.clone();
@@ -835,69 +838,25 @@ fn settle_demand_cone<T: Telemetry>(
             }
         }
         if moved.is_empty() {
-            // A member standing behind a construction wrapper is reached
-            // through the boxed apply seam, and the callsite that reaches it
-            // there names none of the wrapper's members -- a mailbox callable
-            // names no target at all. So the contributions this cone CAN see
-            // are, exactly like an unnamed member's, not the whole story: a
-            // grounded sibling callsite's discarded result must not be allowed
-            // to settle the member at zero lanes while the wrapper it also
-            // sits behind still hands a value back (fz-kdt.155).
-            //
-            // Only the bottom is at stake. A visible contributor asking for
-            // anything at all already keeps the member's return non-empty,
-            // which is all the wrapper needs -- its adapter boxes however many
-            // lanes the member returns into the one public word -- so a
-            // destination-passing member keeps its field lanes.
-            let seam_members: HashSet<&ExecutableKey> = reads
-                .values()
-                .flat_map(|demand| demand.callable_flows.values())
-                .flat_map(|flow| &flow.first_class_edges)
-                .map(|edge| &edge.resolution)
-                .collect();
-            // At the fixpoint the round's inverted join names exactly the
-            // members some contributor names in the settled contribution
-            // store.
-            let unnamed: Vec<ExecutableKey> = members
-                .iter()
-                .filter(|member| {
-                    !bootstrapped.contains(*member)
-                        && !external_return_demands.contains_key(*member)
-                        && joined_contributions.get(*member).is_none_or(RuntimeDemand::is_ignore)
-                        && (!joined_contributions.contains_key(*member) || seam_members.contains(*member))
-                })
-                .cloned()
-                .collect();
-            if unnamed.is_empty() {
-                const EVENT: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
-                if tel.is_raw_event_enabled(EVENT) {
-                    tel.raw_event2(
-                        EVENT,
-                        &ProductKey::RuntimeDemand(anchor.clone()),
-                        &DemandConeSettlement {
-                            members: members.len() as u64,
-                            external_members: external_members as u64,
-                            rounds: u64::from(rounds),
-                            derivations,
-                        },
-                    );
-                }
-                reads.retain(|executable, _| member_set.contains(executable));
-                return Ok(SettledDemandCone {
-                    members,
-                    demands: reads,
-                    contributions,
-                });
+            const EVENT: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
+            if tel.is_raw_event_enabled(EVENT) {
+                tel.raw_event2(
+                    EVENT,
+                    &ProductKey::RuntimeDemand(anchor.clone()),
+                    &DemandConeSettlement {
+                        members: members.len() as u64,
+                        external_members: external_members as u64,
+                        rounds: u64::from(rounds),
+                        derivations,
+                    },
+                );
             }
-            // Nothing this cone can see asks these members for anything, and
-            // something outside it reaches them: the entry, delivery-reached
-            // continuations, escaped closure bodies, or a construction
-            // wrapper. A settled bottom is a distinct cell from a settled
-            // narrowing — the whole-by-need bootstrap applies AT the fixpoint,
-            // where every contribution has arrived so the decision cannot
-            // depend on the schedule, and sticks: it only ever raises, so the
-            // ascent stays monotone.
-            bootstrapped.extend(unnamed);
+            reads.retain(|executable, _| member_set.contains(executable));
+            return Ok(SettledDemandCone {
+                members,
+                demands: reads,
+                contributions,
+            });
         }
         // A hard budget in every build: the ascent is monotone over a
         // finite-height lattice, so exceeding the probe-measured bound means a
@@ -934,18 +893,19 @@ fn derive_member_demand<T: Telemetry>(
     let mut input = RuntimeDemandFormulaInput::new(member, facts, own, reads);
     let mut derived = derive_executable_runtime_demand(types, &input);
     let return_demand_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
+    #[cfg(test)]
+    let observed_return_contributions = return_demand_contributions.clone();
     let flow_plans = plan_callable_flows(types, &input, &derived.callable_flows, &derived.demand);
     input.product_answers = read_runtime_demand_products(tel, context, &flow_plans, waits, types);
     finish_callable_flows(&input, flow_plans, &mut derived.demand);
     let boundary_input_demands = callable_boundary_input_demand_contributions_product(&derived.demand);
-    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
-    for (target, demand) in return_demand_contributions {
-        let entry = contributions.entry(target).or_default();
-        match &mut entry.return_demand {
-            Some(current) => current.join_assign(&demand),
-            None => entry.return_demand = Some(demand),
-        }
-    }
+    let retained_returns = derived
+        .demand
+        .callable_flows
+        .values()
+        .flat_map(|flow| &flow.first_class_edges)
+        .map(|edge| edge.resolution.clone());
+    let mut contributions = target_return_demand_contributions(return_demand_contributions, retained_returns);
     for (target, index, demand) in boundary_input_demands {
         let entry = contributions.entry(target).or_default();
         entry
@@ -973,6 +933,7 @@ fn derive_member_demand<T: Telemetry>(
                 current: input.current.clone(),
                 product_answers: input.product_answers.clone(),
                 demand: derived.demand.clone(),
+                observed_return_contributions,
                 contributions: contributions.clone(),
                 product_reads: context.product_reads_since(read_checkpoint),
             };
@@ -989,6 +950,28 @@ fn derive_member_demand<T: Telemetry>(
         }
     });
     (derived.demand, contributions)
+}
+
+fn target_return_demand_contributions(
+    observed: impl IntoIterator<Item = (ExecutableKey, RuntimeDemand)>,
+    retained: impl IntoIterator<Item = ExecutableKey>,
+) -> HashMap<ExecutableKey, TargetDemandContribution> {
+    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
+    let mut join = |target: ExecutableKey, demand: RuntimeDemand| {
+        let contribution = contributions.entry(target).or_default();
+        match &mut contribution.return_demand {
+            Some(current) => current.join_assign(&demand),
+            None => contribution.return_demand = Some(demand),
+        }
+    };
+    for (target, demand) in observed {
+        join(target, demand);
+    }
+    for target in retained {
+        let demand = runtime_demand_for_executable_need(target.need);
+        join(target, demand);
+    }
+    contributions
 }
 
 impl<'a> RuntimeDemandFormulaInput<'a> {
@@ -1226,10 +1209,10 @@ fn call_return_demand_contributions(
     // graph (`facts.callsites`), not the lossy `observed_returns` (which omits a
     // callsite entirely once its demand collapses to `ignore`). A discarded
     // callee contributes the bottom `ignore` demand: a distinct cell from "no
-    // caller has named this callee at all" -- an observed-but-discarded callee
-    // collapses its return at the settled fixpoint, whereas a member no
-    // contributor ever names gets the whole-by-need bootstrap at settle time
-    // (see `settle_demand_cone`).
+    // caller has named this callee at all" -- an observed-but-discarded direct
+    // callee can collapse its return at the settled fixpoint, while a boxed
+    // construction owner contributes the member's executable-need contract
+    // through the same map.
     let mut out = Vec::new();
     for (callsite, summary) in facts.callsites {
         let need = facts
@@ -1541,7 +1524,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     }
 
     join_previous_input_demands(&mut out.input_demands, Some(previous_input_demands));
-    widen_boxed_closure_call_results(facts, &mut out, &mut call_return_demands);
+    widen_boxed_closure_call_results(facts, &mut out);
 
     DerivedExecutableDemand {
         demand: out,
@@ -1551,10 +1534,10 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
 }
 
 /// The consumer half of the boxed apply seam's one return convention
-/// (fz-kdt.155). Its producer half is the seam clause of the whole-by-need
-/// bootstrap in [`settle_demand_cone`], which keeps a wrapper's members from
-/// settling at zero lanes; here every callsite that reaches a wrapper is made
-/// to expect the lane the wrapper hands back.
+/// (fz-kdt.155). Its producer half is the construction owner's exact
+/// executable-need contribution to every first-class member; here every
+/// callsite that reaches a wrapper is made to expect the lane the wrapper
+/// hands back.
 ///
 /// The question "does this call go through the seam?" is a property of the
 /// CALLEE VALUE, not of the callsite: `materialize_closure_call_edge` lowers a
@@ -1579,24 +1562,14 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
 /// the named target executable's own return fact
 /// (`TransportRecipe::ClosureCallReturn`'s grounded arm), so caller and callee
 /// read one shape whatever it settles to -- zero when no seam boxes the
-/// callable (fz-f98.14.11), non-empty when a seam does and the bootstrap kept
-/// the member off the bottom.
-fn widen_boxed_closure_call_results(
-    facts: &RuntimeDemandFacts<'_>,
-    out: &mut ExecutableRuntimeDemand,
-    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
-) {
+/// callable (fz-f98.14.11), non-empty when a construction owner contributes
+/// the member's return contract.
+fn widen_boxed_closure_call_results(facts: &RuntimeDemandFacts<'_>, out: &mut ExecutableRuntimeDemand) {
     let LoweredBody::Clauses { entries, .. } = &facts.body else {
         return;
     };
     for entry in entries {
-        let LoweredTail::ClosureCall {
-            value,
-            callsite,
-            callee,
-            ..
-        } = &entry.tail
-        else {
+        let LoweredTail::ClosureCall { value, callee, .. } = &entry.tail else {
             continue;
         };
         if !out
@@ -1606,17 +1579,13 @@ fn widen_boxed_closure_call_results(
         {
             continue;
         }
-        // Only the ZERO widens, and it widens on BOTH halves together: the
-        // delivered value's own demand (which the payload layout is derived
-        // from) and the callsite's contribution to whatever targets it does
-        // name. A richer demand already crosses the seam as at least one lane,
-        // and coarsening it here would cost a member its destination-passing
-        // return for nothing.
+        // Only the ZERO delivered value widens. The callsite's observed target
+        // demand stays exact; the construction owner contributes the member's
+        // executable-need contract independently.
         if !out.value_demands.get(value).is_none_or(RuntimeDemand::is_ignore) {
             continue;
         }
         join_map_demand(&mut out.value_demands, *value, RuntimeDemand::whole());
-        record_call_return_demand(call_return_demands, *callsite, RuntimeDemand::whole());
     }
 }
 
@@ -3253,6 +3222,7 @@ fn take_live_demand(live: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId) 
 mod tests {
     use super::*;
     use crate::compiler2::body::ControlEntryOrigin;
+    use crate::compiler2::identity::{ActivationKey, RootId};
     use crate::compiler2::semantic::{CallTargetSummary, SelectedCallee};
     use crate::compiler2::types::Types;
     use crate::source::Span;
@@ -3344,6 +3314,26 @@ mod tests {
             multi_target_receiver_fallbacks(&summary(vec![target(None), target(None)]), any),
             BTreeSet::from([any]),
             "only an entirely unknown target set needs the any fallback"
+        );
+    }
+
+    #[test]
+    fn boxed_return_contribution_joins_partial_observation_with_exact_need() {
+        let mut types = Types::new();
+        let target = ExecutableKey {
+            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[], &mut types),
+            need: ExecutableNeed::Value,
+        };
+        let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+
+        let contributions = target_return_demand_contributions([(target.clone(), partial)], [target.clone()]);
+
+        assert_eq!(
+            contributions
+                .get(&target)
+                .and_then(|entry| entry.return_demand.as_ref()),
+            Some(&RuntimeDemand::whole()),
+            "a boxed member's exact Value return contract joins with, rather than gets replaced by, partial field demand",
         );
     }
 }

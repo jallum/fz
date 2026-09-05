@@ -5057,8 +5057,9 @@ fn main(), do: caller(1)
     );
 
     // `caller` anchors a {caller, mid} cone that reads `id` as an external
-    // input; `mid`'s contribution (the cone's bootstrapped-whole return demand
-    // flowing down the chain) grows `id`'s join past the earlier settle.
+    // input; the anchor's explicit executable-need return contract flows down
+    // the chain, so `mid`'s contribution grows `id`'s join past the earlier
+    // settle.
     pull_product_until_produced_with_fact_waits(
         &mut driver,
         &mut world,

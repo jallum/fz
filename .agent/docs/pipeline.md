@@ -435,17 +435,14 @@ crosses the seam — and no callsite past the seam can narrow them, because it
 names none of them (a mailbox callable names no target at all). Two rules
 follow, and they are two halves of one convention:
 
-- The construction owner bootstraps a seam member to **whole** exactly where
-  the member's visible contributions add to BOTTOM (absent or all-`ignore`) —
-  a richer contribution stands, which is what keeps destination-passing's
-  field-split returns intact. This is the only place the seam's existence is
-  a local fact, and it is what stops a *grounded* sibling callsite — which
-  does name the member — from pulling a lane to zero that the seam still
-  hands back. The bootstrap raises the SHAPE axis only: a member whose
-  return is a zero-lane callable (shape-`ignore` with an exact callable
-  axis) is not bottom, keeps zero lanes, and its wrapper stays `Absent` —
-  the tripwire refuses such a program rather than miscompiling it (the
-  residual family's own ticket records the shapes).
+- The construction owner contributes
+  `runtime_demand_for_executable_need(member.need)` to every first-class
+  member through the ordinary return-demand map. That exact contract joins
+  with any observed return demand, including a non-bottom partial tuple
+  demand, and retracts with its owning construction. This is the one place
+  the seam's existence is a local fact, and it stops a *grounded* sibling
+  callsite — which does name the member — from erasing data the wrapper still
+  hands back.
 - A callsite whose callee travels in the boxed `ValueRef` carrier demands its
   result **whole**. Whether a call goes through the seam is a property of the
   callee VALUE, not of the callsite: a callsite that names an exact target is
@@ -642,14 +639,13 @@ layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 `ValueRef`. Every nonempty returning member adapts to that one public word;
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
-Because the construction owner bootstraps bottom members to whole, a wrapper
-over returning members publishes `ValueRef` — at HEAD every corpus wrapper
-does (354/354; the two spawned zero-arity `server/0` bodies that used to sit
-at `Absent` now publish their `:nil` in one raw atom lane, at zero measured
-allocation cost). `Absent` remains reachable only by a member whose return is
-a zero-lane callable (shape-`ignore`, exact callable axis — not bottom, so the
-bootstrap does not raise it), and the packaging tripwire refuses any program
-where a boxed callsite could reach such a wrapper.
+Because the construction owner contributes every member's exact return
+contract, a wrapper over returning members publishes `ValueRef` — at HEAD
+every corpus wrapper does (354/354; the two spawned zero-arity `server/0`
+bodies that used to sit at `Absent` now publish their `:nil` in one raw atom
+lane, at zero measured allocation cost). The packaging tripwire refuses any
+program where a boxed callsite could reach a wrapper that publishes no return
+lane.
 The lane count a wrapper publishes and the lane count every boxed closure
 callsite delivers are checked against each other at packaging
 (`verify_boxed_apply_seam_return_convention`).

@@ -2475,10 +2475,10 @@ fn callable_return_lanes(form: BackendCallableReturn) -> usize {
 /// reads as its own closure pointer — a corrupt closure handed to
 /// `fz_closure_get_capture_atom`, which the program discovers as a
 /// non-unwinding abort at the FIRST call, on every door. The demand rule that
-/// keeps them equal (`settle_demand_cone`'s bootstrap keeping every wrapper
-/// member off the bottom, and `widen_boxed_closure_call_results` giving a
-/// boxed callsite the seam's one lane) is a rule about facts several jobs
-/// apart, so it gets a named invariant here rather than an abort out there.
+/// keeps them equal (the construction owner's exact member-return contribution
+/// and `widen_boxed_closure_call_results` giving a boxed callsite the seam's one
+/// lane) is a rule about facts several jobs apart, so it gets a named invariant
+/// here rather than an abort out there.
 ///
 /// A closure callsite reaches a wrapper exactly when its callee VALUE travels
 /// in the boxed `ValueRef` carrier — the same condition

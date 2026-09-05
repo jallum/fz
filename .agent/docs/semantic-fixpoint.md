@@ -346,9 +346,11 @@ targets, type-derived callable-flow resolutions, and any callee set a previous
 epoch recorded. The producer runs a bottom-start monotone Kleene ascent over
 the whole cone (return demands join up edges, input demands flow down edges,
 `ShapeDemand::join` per round) until nothing changes, then memoizes the settled
-fixpoint for every member at once. Members no contributor names at the fixpoint
-(the entry, delivery-reached continuations, escaped closure bodies) get the
-whole-by-need bootstrap at settle time — absence is a distinct settled cell.
+fixpoint for every member at once. The requested anchor contributes its exact
+`ExecutableNeed` contract when no settled caller contribution exists, and a
+first-class construction contributes that same exact contract to every boxed
+member through the ordinary return-demand map. Observed partial return demand
+joins with that contract instead of replacing it.
 No mid-ascent value is ever observable outside the producer: there is no
 active-SCC seed, no consumed-return contribution floor, and no in-flight
 retraction. Settled demand retracts when materialization resolves a call edge

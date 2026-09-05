@@ -4685,6 +4685,66 @@ mod tests {
     }
 
     #[test]
+    fn equal_return_contribution_is_stable_and_owner_retraction_preserves_other_evidence() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let root = RootId::for_test(8);
+        let owner = fake_executable_with_function(root, 80);
+        let observer = fake_executable_with_function(root, 81);
+        let callee = fake_executable_with_function(root, 82);
+        let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+        let mut session = PullSession::new(root);
+
+        session.replace_settled_return_demand_contributions(
+            &tel,
+            owner.clone(),
+            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
+            &HashSet::new(),
+            &types,
+        );
+        session.replace_settled_return_demand_contributions(
+            &tel,
+            observer,
+            HashMap::from([(callee.clone(), partial.clone())]),
+            &HashSet::new(),
+            &types,
+        );
+        finish_test_entry(
+            &mut session.memo,
+            &tel,
+            &ProductKey::RuntimeDemand(callee.clone()),
+            ProductValue::RuntimeDemand(Rc::default()),
+            ProductDependencies::default(),
+            &types,
+        );
+
+        let reproduced = session.replace_settled_return_demand_contributions(
+            &tel,
+            owner.clone(),
+            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
+            &HashSet::new(),
+            &types,
+        );
+        assert!(
+            reproduced.is_empty(),
+            "reproducing the same owner contribution must not move the target"
+        );
+        assert!(session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_some());
+
+        let retracted =
+            session.replace_settled_return_demand_contributions(&tel, owner, HashMap::new(), &HashSet::new(), &types);
+        assert!(
+            retracted.contains(&callee),
+            "retracting the owner's obligation must move its target"
+        );
+        assert_eq!(
+            session.external_return_demand(&callee, &HashSet::new(), &types),
+            Some(partial),
+            "retracting one owner must preserve another caller's exact partial evidence",
+        );
+    }
+
+    #[test]
     fn pull_session_invalidates_runtime_demand_when_input_demand_grows() {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();

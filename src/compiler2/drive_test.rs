@@ -11726,6 +11726,237 @@ end
     }
 }
 
+#[test]
+fn boxed_callable_members_contribute_their_exact_return_contract() {
+    use crate::compiler2::RuntimeDemand;
+    use crate::compiler2::jobs::runtime_demand::{DemandFormulaOrder, DemandFormulaOrdered};
+
+    let order = DemandFormulaOrdered::latest(DemandFormulaOrder::Forward);
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("boxed_partial_return_contribution.fz".to_string()),
+        text: r#"
+fn make_pair(), do: fn (x) -> {:unused, x} end
+fn observe(pair, x) do
+  wrapped = {:wrapped, pair.(x)}
+  {_, {_, value}} = wrapped
+  {pair, value}
+end
+fn main() do
+  pair = make_pair()
+  observe(pair, 1)
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .expect("the boxed structured-return fixture should reach a backend program");
+
+    let program = backend.last(root).program;
+    let evaluations = order.evaluations();
+    let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let retained = RuntimeDemand::whole();
+    let mut candidates = Vec::new();
+    for owner in &evaluations {
+        for target in owner
+            .demand
+            .callable_flows
+            .values()
+            .flat_map(|flow| &flow.first_class_edges)
+            .map(|edge| &edge.resolution)
+        {
+            if target.need != ExecutableNeed::Value
+                || owner
+                    .contributions
+                    .get(target)
+                    .and_then(|contribution| contribution.return_demand.as_ref())
+                    != Some(&retained)
+            {
+                continue;
+            }
+            for observer in &evaluations {
+                if observer.member == owner.member {
+                    continue;
+                }
+                let observations = observer
+                    .observed_return_contributions
+                    .iter()
+                    .filter(|(observed_target, demand)| observed_target == target && demand == &partial)
+                    .count();
+                if observations == 1
+                    && observer
+                        .contributions
+                        .get(target)
+                        .and_then(|contribution| contribution.return_demand.as_ref())
+                        == Some(&partial)
+                {
+                    candidates.push((owner, target, observer));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the fixture should have one typed target with distinct retained and partial publishers",
+    );
+    let (owner, target, observer) = candidates.pop().unwrap();
+    assert_ne!(
+        owner.member, observer.member,
+        "the retained contract and partial observation need distinct owners"
+    );
+    assert_eq!(
+        owner
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&retained),
+        "the construction owner must publish the target's exact Value contract",
+    );
+    assert_eq!(
+        observer
+            .observed_return_contributions
+            .iter()
+            .filter(|(observed_target, demand)| observed_target == target && demand == &partial)
+            .count(),
+        1,
+        "the distinct observer must map its exact partial return demand to the same target key",
+    );
+    assert_eq!(
+        observer
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&partial),
+        "the observer must publish only its own partial evidence",
+    );
+    let target_publishers = evaluations
+        .iter()
+        .filter(|evaluation| {
+            evaluation
+                .contributions
+                .get(target)
+                .and_then(|contribution| contribution.return_demand.as_ref())
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        target_publishers.len(),
+        2,
+        "only the construction owner and exact observer may publish the selected target",
+    );
+    assert!(
+        target_publishers
+            .iter()
+            .all(|publisher| publisher.member == owner.member || publisher.member == observer.member),
+        "an anchor or unrelated owner must not satisfy the selected target's joined demand",
+    );
+
+    let mut joined = partial;
+    joined.join_assign(&retained);
+    let target_index = program
+        .executables
+        .iter()
+        .position(|executable| &executable.key == target)
+        .expect("the shared target should reach the backend program");
+    let wrapper = program
+        .construction_wrappers
+        .iter()
+        .find(|wrapper| wrapper.members.iter().any(|member| member.target == target_index))
+        .expect("the shared target should remain behind its construction wrapper");
+    let member = wrapper
+        .members
+        .iter()
+        .find(|member| member.target == target_index)
+        .expect("the selected wrapper should contain the shared target");
+    let executable = &program.executables[target_index];
+    assert_eq!(executable.runtime_demand.return_demand, joined);
+    assert_eq!(member.target_return, executable.return_layout);
+    assert_eq!(
+        wrapper.return_form,
+        BackendCallableReturn::ValueRef,
+        "the joined structured return must materialize through the wrapper's public value carrier",
+    );
+}
+
+#[test]
+fn direct_only_callable_flow_does_not_contribute_a_retained_return_contract() {
+    use crate::compiler2::RuntimeDemand;
+    use crate::compiler2::jobs::runtime_demand::{DemandFormulaOrder, DemandFormulaOrdered};
+
+    let order = DemandFormulaOrdered::latest(DemandFormulaOrder::Forward);
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("direct_only_partial_return.fz".to_string()),
+        text: r#"
+fn pair(x), do: {:unused, x}
+fn main() do
+  wrapped = {:wrapped, pair(1)}
+  {_, {_, value}} = wrapped
+  value
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .expect("the direct-only structured-return fixture should reach a backend program");
+
+    let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let evaluations = order.evaluations();
+    let mut candidates = evaluations
+        .iter()
+        .flat_map(|evaluation| {
+            evaluation
+                .observed_return_contributions
+                .iter()
+                .filter(|(_, demand)| demand == &partial)
+                .map(move |(target, _)| (evaluation, target))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the fixture should derive one exact direct-only partial-return target",
+    );
+    let (observer, target) = candidates.pop().unwrap();
+    assert_eq!(
+        observer
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&partial),
+        "without a first-class construction, the exact production contribution must remain partial",
+    );
+    assert!(
+        evaluations.iter().all(|evaluation| {
+            evaluation
+                .demand
+                .callable_flows
+                .values()
+                .flat_map(|flow| &flow.first_class_edges)
+                .all(|edge| &edge.resolution != target)
+        }),
+        "the direct-only target must be absent from every first-class resolution",
+    );
+}
+
 /// fz-kdt.47 / fz-kdt.179: callable construction has distinct authorities for
 /// resolution scheduling and semantic selection; neither is interner mutation.
 /// `plan_callable_flows` orders `CallableResolutionKey` product reads with the
