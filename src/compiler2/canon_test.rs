@@ -521,6 +521,8 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
         let program = compiler.retained_backend_program(root);
         let descents = program
             .executables()
+            .iter()
+            .collect::<Vec<_>>()
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)

@@ -2880,7 +2880,8 @@ impl World {
         let mut semantic_values = Vec::with_capacity(1 + args.len());
         semantic_values.push(RuntimeValue::Ref(caller));
         semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
-        let runtime_args = crate::ir_interp::encode_macro_entry_inputs(program, &self.transport, &semantic_values)?;
+        let runtime_args =
+            crate::ir_interp::encode_macro_entry_inputs(program, &self.types, &self.transport, &semantic_values)?;
         let value =
             source.lend_process(|process| run(&mut self.types, &self.transport, program, process, runtime_args))?;
         match value {

@@ -94,7 +94,6 @@ fn some_fact() -> FactUse<FactKey> {
 struct FailingNativeProducers {
     types: super::Types,
     backend: std::rc::Rc<super::BackendProgram>,
-    entry: super::transport::ExecutableSymbol,
     fail_once: bool,
 }
 
@@ -106,34 +105,11 @@ impl ProductProducers for FailingNativeProducers {
     fn produce(&mut self, context: &mut super::pull::ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
         let telemetry = ConfiguredTelemetry::new();
         match key {
-            ProductKey::RootBackendProduct(_) => PullOutcome::Produced(ProductValue::RootBackendProduct(
-                super::artifact::RootBackendProductAnswer {
-                    program: std::rc::Rc::clone(&self.backend),
-                    transport: std::rc::Rc::new(super::artifact::MaterializedTransportPlan {
-                        entry: self.entry.clone(),
-                        executable_membership: Box::default(),
-                        position_layouts: Vec::new(),
-                        callable_boundaries: Vec::new(),
-                        boundary_ids: Vec::new(),
-                        codegen_seam_facts: Box::default(),
-                        callable_owners: Box::default(),
-                        callable_facts: std::collections::HashMap::new(),
-                        boundary_facts: std::collections::HashMap::new(),
-                    }),
-                },
-            )),
-            ProductKey::RootBackendContent(root) => {
-                let dependency = ProductKey::RootBackendProduct(*root);
-                match context.read_product(&telemetry, dependency.clone(), &self.types) {
-                    Some(ProductValue::RootBackendProduct(answer)) => {
-                        PullOutcome::Produced(ProductValue::RootBackendContent(std::rc::Rc::clone(&answer.program)))
-                    }
-                    Some(value) => panic!("scripted backend product produced {value:?}"),
-                    None => PullOutcome::wait_on_product(dependency),
-                }
+            ProductKey::RootBackendProduct(_) => {
+                PullOutcome::Produced(ProductValue::RootBackendProduct(std::rc::Rc::clone(&self.backend)))
             }
             ProductKey::NativeProgram(root) => {
-                let dependency = ProductKey::RootBackendContent(*root);
+                let dependency = ProductKey::RootBackendProduct(*root);
                 if context
                     .read_product(&telemetry, dependency.clone(), &self.types)
                     .is_none()
@@ -180,20 +156,9 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
     let backend = std::rc::Rc::new(super::BackendProgram::empty_for_test());
-    let mut types = super::Types::new();
-    let any = types.any();
-    let entry = super::transport::ExecutableSymbol {
-        activation: super::transport::ActivationSymbol {
-            function: super::FunctionId::for_test(0),
-            arrow: any,
-            input: Box::new([]),
-        },
-        need: ExecutableNeed::Value,
-    };
     let mut producers = FailingNativeProducers {
-        types,
+        types: super::Types::new(),
         backend: std::rc::Rc::clone(&backend),
-        entry,
         fail_once: true,
     };
     let failed = super::product_drive::with_retained_root_request(
@@ -225,7 +190,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     else {
         panic!("failed native production must retain its completed backend prerequisite");
     };
-    assert!(std::rc::Rc::ptr_eq(&answer.program, &backend));
+    assert!(std::rc::Rc::ptr_eq(answer, &backend));
     drop(session);
 
     let retry = super::product_drive::with_retained_root_request(
@@ -321,8 +286,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        58,
-        "main and its definition macro need no scalar callable owners or ABI retries waiting on those owners",
+        54,
+        "main and its definition macro consume backend products directly, removing their four content-projection evaluations",
     );
     let materialized_roots = evaluations
         .borrow()
@@ -341,10 +306,13 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         evaluations
             .borrow()
             .iter()
-            .filter(|(key, _)| { matches!(key, ProductKey::RootBackendContent(owner) if *owner != root) })
+            .filter(|(key, outcome)| {
+                matches!(key, ProductKey::RootBackendProduct(owner) if *owner != root)
+                    && matches!(outcome, PullOutcome::Produced(_))
+            })
             .count(),
-        2,
-        "the definition macro evaluates its content dependency once to wait and once to consume the backend answer",
+        1,
+        "the definition macro produces its exact backend dependency once",
     );
     assert_eq!(
         evaluations
@@ -409,7 +377,6 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         },
         "a reached edit starts source ingestion and only exact changed-revision readers",
     );
-    let content_key = ProductKey::RootBackendContent(root);
     evaluations.borrow_mut().clear();
     lowerings.set(0);
     let before_reached_native_work = compiler.world().work_start_tally();
@@ -428,23 +395,15 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(
         evaluated_keys,
-        std::collections::HashSet::from([content_key.clone(), native_key.clone()]),
-        "native refresh must evaluate only moved content and its recorded reader closure",
+        std::collections::HashSet::from([native_key.clone()]),
+        "the interpreter already refreshed the backend; native evaluates only its recorded reader",
     );
     assert_eq!(
         evaluations.borrow().len(),
-        2,
-        "stale-dependency routing evaluates moved content and its native reader exactly once each",
+        1,
+        "native consumes the already refreshed backend exactly once",
     );
     assert_eq!(lowerings.get(), 1);
-    assert_eq!(
-        evaluations
-            .borrow()
-            .iter()
-            .filter(|(key, outcome)| *key == content_key && matches!(outcome, PullOutcome::Produced(_)))
-            .count(),
-        1,
-    );
     assert_eq!(
         evaluations
             .borrow()
@@ -1287,8 +1246,7 @@ fn a_newly_reached_callee_adds_its_exact_struct_schema() {
     assert_eq!(
         compiler
             .retained_backend_program(root)
-            .struct_schemas
-            .get("Added")
+            .schema("Added")
             .map(Vec::as_slice),
         Some(["value".to_string()].as_slice()),
         "the retained root must gain the schema carried by its newly reached callee"
@@ -1296,7 +1254,7 @@ fn a_newly_reached_callee_adds_its_exact_struct_schema() {
 }
 
 #[test]
-fn root_backend_memo_depends_on_exactly_its_packaged_struct_facts() {
+fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -1313,15 +1271,17 @@ fn root_backend_memo_depends_on_exactly_its_packaged_struct_facts() {
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+    let (program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the exact struct dependency fixture should settle");
     let session = driver.session();
-    let dependencies = session
-        .memo()
-        .fact_dependencies(&ProductKey::RootBackendProduct(root))
-        .expect("the root product should retain its fact dependencies");
     let needed = world.reference_module("Needed");
     let spare = world.reference_module("Spare");
+    assert!(program.schema("Needed").is_some());
+    assert_eq!(program.struct_schemas.len(), 1, "only the reached schema is packaged");
+    let dependencies = session
+        .memo()
+        .fact_dependencies(&ProductKey::StructSchema(needed))
+        .expect("the exact schema contribution should retain its fact dependencies");
     let structs = dependencies
         .keys()
         .filter(|dependency| matches!(dependency.fact(), FactKey::StructDefined(_)))
@@ -1330,9 +1290,13 @@ fn root_backend_memo_depends_on_exactly_its_packaged_struct_facts() {
     assert_eq!(
         structs,
         vec![FactUse::settled(FactKey::StructDefined(needed))],
-        "root memo dependencies must equal the schemas it packages"
+        "the packaged schema contribution depends on its own definition"
     );
     assert!(!structs.contains(&FactUse::settled(FactKey::StructDefined(spare))));
+    assert!(
+        session.memo().get(&ProductKey::StructSchema(spare)).is_none(),
+        "the unrelated schema is never requested"
+    );
 }
 
 #[test]
@@ -1370,17 +1334,17 @@ fn nested_structs_with_the_same_leaf_name_keep_distinct_runtime_schemas() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(5));
-    let schemas = &compiler.retained_backend_program(root).struct_schemas;
+    let program = compiler.retained_backend_program(root);
     assert_eq!(
-        schemas.get("A.Item").map(Vec::as_slice),
+        program.schema("A.Item").map(Vec::as_slice),
         Some(["left".to_string()].as_slice())
     );
     assert_eq!(
-        schemas.get("B.Item").map(Vec::as_slice),
+        program.schema("B.Item").map(Vec::as_slice),
         Some(["right".to_string()].as_slice())
     );
     assert!(
-        !schemas.contains_key("Item"),
+        program.schema("Item").is_none(),
         "runtime schema keys must remain fully qualified"
     );
 }
@@ -1435,7 +1399,7 @@ fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mir
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
         .expect("cold native request");
-    let content_key = ProductKey::RootBackendContent(root);
+    let content_key = ProductKey::RootBackendProduct(root);
     let native_key = ProductKey::NativeProgram(root);
     let cold_content_generation = compiler.retained_product_generation(root, &content_key);
     let cold_native = compiler.retained_native_program(root);
@@ -2508,7 +2472,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     assert!(!world.fact_is_settled(&fact));
 
     let unrelated_root = RootId::for_test(u32::MAX);
-    let unrelated_content = ProductKey::RootBackendContent(unrelated_root);
+    let unrelated_content = ProductKey::NativeProgram(unrelated_root);
     assert_eq!(driver.session().memo().generation(&unrelated_content), None);
     apply_world_fact_movements(&mut driver, &dirtied.movements);
     assert_eq!(

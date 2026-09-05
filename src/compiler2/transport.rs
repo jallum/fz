@@ -1,9 +1,8 @@
 //! Shared transport descriptor vocabulary.
 //!
-//! This module is deliberately below the root-scoped `MaterializedTransportPlan`
-//! (`artifact.rs`): it owns immutable descriptor interners and root-independent
-//! symbols only. Positions may mention semantic body evidence, but descriptor
-//! keys must not.
+//! This module owns immutable descriptor interners and root-independent symbols.
+//! Position-owned products retain these descriptors in each executable's ABI.
+//! Positions may mention semantic body evidence, but descriptor keys must not.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -214,82 +213,6 @@ impl SemanticOrd<Types> for ExecutableSymbol {
             .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
             .then_with(|| self.need.cmp(&other.need))
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CodegenLaneRepr {
-    ValueRef,
-    RawInt,
-    RawF64,
-    RawAtom,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CodegenSeam {
-    FunctionEntry {
-        executable: ExecutableSymbol,
-        semantic_index: usize,
-    },
-    BlockParam {
-        executable: ExecutableSymbol,
-        entry: ControlEntryId,
-    },
-    EntryCapture {
-        executable: ExecutableSymbol,
-        entry: ControlEntryId,
-        capture_index: usize,
-    },
-    ReturnDelivery {
-        executable: ExecutableSymbol,
-    },
-    ContinuationEntry {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-        entry: ControlEntryId,
-    },
-    ReturnContinuation {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-    },
-    TailCall {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-    },
-    CallableBoundary {
-        boundary: BoundaryId,
-        slot: usize,
-    },
-    ExternBoundary {
-        executable: ExecutableSymbol,
-    },
-    FirstClassPublication {
-        boundary: BoundaryId,
-    },
-}
-
-impl CodegenSeam {
-    #[cfg(test)]
-    pub(crate) fn executable(&self) -> Option<&ExecutableSymbol> {
-        match self {
-            Self::FunctionEntry { executable, .. }
-            | Self::BlockParam { executable, .. }
-            | Self::EntryCapture { executable, .. }
-            | Self::ReturnDelivery { executable }
-            | Self::ContinuationEntry { executable, .. }
-            | Self::ReturnContinuation { executable, .. }
-            | Self::TailCall { executable, .. }
-            | Self::ExternBoundary { executable } => Some(executable),
-            Self::CallableBoundary { .. } | Self::FirstClassPublication { .. } => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CodegenSeamFact {
-    pub seam: CodegenSeam,
-    pub shape: Option<ShapeId>,
-    pub lane: LaneId,
-    pub repr: CodegenLaneRepr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

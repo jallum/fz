@@ -5,6 +5,8 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+mod rooted;
+
 #[cfg(test)]
 use super::body::{CallSiteId, ValueId};
 use super::world::World;
@@ -18,12 +20,11 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
     AbiReadyExecutable, BackendExecutable, BackendProgram, EffectSummary, MaterializedExecutable, NativeProgram,
-    RootBackendProductAnswer,
 };
 use super::drive::{DependencyKey, FactKey, ProductAddress};
 use super::executable_facts::ExecutableFacts;
 use super::facts::{FactChange, FactMovement, FactState, FactUse};
-use super::identity::{ExecutableKey, RootId};
+use super::identity::{ExecutableKey, ModuleId, RootId};
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
 #[cfg(test)]
@@ -100,7 +101,6 @@ fn allocate_pull_session_id(counter: &AtomicU64) -> PullSessionId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProductKey {
     RootBackendProduct(RootId),
-    RootBackendContent(RootId),
     NativeProgram(RootId),
     BackendExecutable(ExecutableKey),
     AbiExecutable(ExecutableKey),
@@ -108,6 +108,7 @@ pub enum ProductKey {
     ExecutableEffects(ExecutableKey),
     TransportShape(TransportPosition),
     CallableConstruction(TransportPosition),
+    StructSchema(ModuleId),
 }
 
 impl SemanticOrd<super::types::Types> for ProductKey {
@@ -120,8 +121,8 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 | (Self::MaterializedExecutable(left), Self::MaterializedExecutable(right))
                 | (Self::ExecutableEffects(left), Self::ExecutableEffects(right)) => left.semantic_cmp(right, types),
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
-                | (Self::RootBackendContent(left), Self::RootBackendContent(right))
                 | (Self::NativeProgram(left), Self::NativeProgram(right)) => left.cmp(right),
+                (Self::StructSchema(left), Self::StructSchema(right)) => left.cmp(right),
                 (Self::TransportShape(left), Self::TransportShape(right))
                 | (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
                     left.semantic_cmp(right, types)
@@ -139,9 +140,9 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::ExecutableEffects(_) => 3,
         ProductKey::MaterializedExecutable(_) => 6,
         ProductKey::RootBackendProduct(_) => 9,
-        ProductKey::RootBackendContent(_) => 10,
         ProductKey::NativeProgram(_) => 11,
         ProductKey::TransportShape(_) => 12,
+        ProductKey::StructSchema(_) => 13,
     }
 }
 
@@ -149,7 +150,6 @@ impl ProductKey {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::RootBackendProduct(_) => "root_backend_product",
-            Self::RootBackendContent(_) => "root_backend_content",
             Self::NativeProgram(_) => "native_program",
             Self::BackendExecutable(_) => "backend_executable",
             Self::AbiExecutable(_) => "abi_executable",
@@ -157,6 +157,7 @@ impl ProductKey {
             Self::ExecutableEffects(_) => "executable_effects",
             Self::TransportShape(_) => "transport_shape",
             Self::CallableConstruction(_) => "callable_construction",
+            Self::StructSchema(_) => "struct_schema",
         }
     }
 
@@ -167,10 +168,10 @@ impl ProductKey {
             | Self::MaterializedExecutable(executable)
             | Self::ExecutableEffects(executable) => Some(executable),
             Self::RootBackendProduct(_)
-            | Self::RootBackendContent(_)
             | Self::NativeProgram(_)
             | Self::TransportShape(_)
             | Self::CallableConstruction(_) => None,
+            Self::StructSchema(_) => None,
         }
     }
 }
@@ -184,8 +185,7 @@ pub enum TransportShapeFact {
 pub enum ProductValue {
     #[cfg(test)]
     Unit,
-    RootBackendProduct(RootBackendProductAnswer),
-    RootBackendContent(Rc<BackendProgram>),
+    RootBackendProduct(Rc<BackendProgram>),
     NativeProgram(Rc<NativeProgram>),
     BackendExecutable(Rc<BackendExecutable>),
     AbiExecutable(Rc<AbiReadyExecutable>),
@@ -193,15 +193,14 @@ pub enum ProductValue {
     ExecutableEffects(EffectSummary),
     TransportShape(TransportShapeFact),
     CallableConstruction(Rc<CallableConstructionOwner>),
+    StructSchema(Rc<super::backend_program::BackendSchema>),
 }
 
 fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
     match (left, right) {
         (ProductValue::RootBackendProduct(left), ProductValue::RootBackendProduct(right)) => {
-            (Rc::ptr_eq(&left.program, &right.program) || left.program == right.program)
-                && (Rc::ptr_eq(&left.transport, &right.transport) || left.transport == right.transport)
+            Rc::ptr_eq(left, right) || left == right
         }
-        (ProductValue::RootBackendContent(left), ProductValue::RootBackendContent(right)) => Rc::ptr_eq(left, right),
         (ProductValue::NativeProgram(left), ProductValue::NativeProgram(right)) => {
             Rc::ptr_eq(left, right) || super::artifact::native_programs_equal(left, right)
         }
@@ -267,6 +266,9 @@ pub struct ProductMemo {
     next_group_id: u64,
     observed_products: HashSet<ProductKey>,
     external_changes: Vec<FactChange<ProductKey>>,
+    rooted: HashMap<ProductKey, rooted::RootedProducts>,
+    membership_readers: HashMap<ProductKey, HashSet<ProductKey>>,
+    rooted_readers: HashMap<ProductKey, HashSet<ProductKey>>,
 }
 
 type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies);
@@ -440,15 +442,34 @@ struct ProductEntry {
     value: ProductValue,
     generation: u64,
     dependencies: Rc<ProductDependencies>,
+    membership: HashSet<ProductKey>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ProductDependencies {
     products: HashMap<ProductKey, Option<u64>>,
     facts: HashMap<FactUse<FactKey>, FactState>,
+    membership: HashSet<ProductKey>,
 }
 
 impl ProductMemo {
+    fn has_unsettled_inputs(&self, key: &ProductKey) -> bool {
+        self.displaced.contains_key(key)
+            || self.fact_stale_dependencies.contains_key(key)
+            || self.dirty_descendants.contains(key)
+    }
+
+    fn dependencies_are_unsettled(&self, key: &ProductKey) -> bool {
+        self.rooted.get(key).is_some_and(|rooted| !rooted.dirty.is_empty())
+            || self.produced.get(key).is_some_and(|entry| {
+                entry
+                    .dependencies
+                    .products
+                    .keys()
+                    .any(|dependency| self.has_unsettled_inputs(dependency))
+            })
+    }
+
     fn external_state(&self, key: &ProductKey) -> FactState {
         FactState {
             revision: self
@@ -456,9 +477,7 @@ impl ProductMemo {
                 .get(key)
                 .or_else(|| self.displaced.get(key))
                 .map(|entry| entry.generation),
-            settled: self.produced.contains_key(key)
-                && !self.fact_stale_dependencies.contains_key(key)
-                && !self.dirty_descendants.contains(key),
+            settled: self.produced.contains_key(key) && !self.has_unsettled_inputs(key),
         }
     }
 
@@ -724,24 +743,12 @@ impl ProductMemo {
     ) {
         let mut prepared = Vec::with_capacity(members.len());
         let mut external_before = Vec::new();
-        for (key, mut value, dependencies) in members {
+        for (key, value, mut dependencies) in members {
             if self.observed_products.contains(&key) {
                 external_before.push((key.clone(), self.external_state(&key)));
             }
             self.in_progress.remove(&key);
             let previous = self.produced.remove(&key).or_else(|| self.displaced.remove(&key));
-            if let (
-                Some(ProductEntry {
-                    value: ProductValue::RootBackendProduct(previous),
-                    ..
-                }),
-                ProductValue::RootBackendProduct(answer),
-            ) = (&previous, &mut value)
-                && !Rc::ptr_eq(&previous.program, &answer.program)
-                && previous.program == answer.program
-            {
-                answer.program = Rc::clone(&previous.program);
-            }
             self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| entry.dependencies.as_ref()));
             self.take_pending_dependencies(&key);
             let changed = previous
@@ -763,13 +770,23 @@ impl ProductMemo {
                     entry.generation
                 }
             });
+            let membership = std::mem::take(&mut dependencies.membership);
+            let previous_membership = previous.map(|entry| entry.membership).unwrap_or_default();
             let dependencies = shared_dependencies
                 .as_ref()
                 .map_or_else(|| Rc::new(dependencies), Rc::clone);
-            prepared.push((key, value, dependencies, generation, changed));
+            prepared.push((
+                key,
+                value,
+                dependencies,
+                generation,
+                changed,
+                membership,
+                previous_membership,
+            ));
         }
 
-        for (key, value, dependencies, generation, changed) in &prepared {
+        for (key, value, dependencies, generation, changed, membership, _) in &prepared {
             self.install_reader_dependencies(key, dependencies);
             self.fact_stale_dependencies.remove(key);
             self.dirty_descendants.remove(key);
@@ -779,6 +796,7 @@ impl ProductMemo {
                     value: value.clone(),
                     generation: *generation,
                     dependencies: dependencies.clone(),
+                    membership: membership.clone(),
                 },
             );
             tel.raw_event3(
@@ -800,7 +818,14 @@ impl ProductMemo {
         for (key, before) in external_before {
             self.record_external_change(&key, before);
         }
-        let mutations = prepared.iter().flat_map(|(key, _, _, _, changed)| {
+        for (key, _, _, _, _, _, previous) in &prepared {
+            self.replace_membership_readers(key, previous);
+        }
+        let mut rooted_mutations = Vec::new();
+        for (key, _, _, _, changed, _, previous) in &prepared {
+            rooted_mutations.extend(self.committed_rooted_member(key, previous, *changed, types));
+        }
+        let mutations = prepared.iter().flat_map(|(key, _, _, _, changed, _, _)| {
             self.reader_mutations(
                 key,
                 if *changed {
@@ -810,7 +835,8 @@ impl ProductMemo {
                 },
             )
         });
-        self.mutate_product_wave(tel, mutations.collect(), types);
+        let mutations = mutations.chain(rooted_mutations).collect();
+        self.mutate_product_wave(tel, mutations, types);
     }
 
     fn reject_group(&mut self, tel: &impl Telemetry, member_keys: &HashSet<ProductKey>, types: &super::types::Types) {
@@ -985,6 +1011,11 @@ impl ProductMemo {
                 .then(|| (reader.clone(), self.external_state(&reader)));
             match mutation {
                 ReaderMutation::Invalidate => {
+                    pending.extend(
+                        self.rooted_member_dirty(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Dirty, root)),
+                    );
                     let (was_pending, was_produced) = self.displace_for_reproduction_shallow(tel, &reader);
                     let next = if was_pending {
                         Some(ReaderMutation::Invalidate)
@@ -1005,6 +1036,11 @@ impl ProductMemo {
                     }
                 }
                 ReaderMutation::Dirty => {
+                    pending.extend(
+                        self.rooted_member_dirty(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Dirty, root)),
+                    );
                     if self.pending_dependencies.contains_key(&reader) {
                         pending.push((ReaderMutation::Invalidate, reader));
                         continue;
@@ -1021,15 +1057,9 @@ impl ProductMemo {
                     }
                 }
                 ReaderMutation::Refresh => {
-                    let dirty = self.produced.get(&reader).is_some_and(|entry| {
-                        entry.dependencies.products.keys().any(|dependency| {
-                            self.displaced.contains_key(dependency)
-                                || self.fact_stale_dependencies.contains_key(dependency)
-                                || self.dirty_descendants.contains(dependency)
-                        })
-                    });
+                    let dirty = self.dependencies_are_unsettled(&reader);
                     if dirty {
-                        self.dirty_descendants.insert(reader);
+                        self.dirty_descendants.insert(reader.clone());
                     } else if self.dirty_descendants.remove(&reader) {
                         pending.extend(
                             self.product_readers
@@ -1040,6 +1070,11 @@ impl ProductMemo {
                                 .map(|reader| (ReaderMutation::Refresh, reader)),
                         );
                     }
+                    pending.extend(
+                        self.rooted_member_refresh(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Refresh, root)),
+                    );
                 }
             }
             if let Some((observed, before)) = external_before {
@@ -1130,13 +1165,24 @@ impl ProductMemo {
         if self.displaced.contains_key(key) {
             return Some(key.clone());
         }
-        if !self.dirty_descendants.contains(key) {
+        if !self.dirty_descendants.contains(key) && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty()) {
             return None;
         }
-        let entry = self.produced.get(key)?;
         if !visiting.insert(key.clone()) {
             return Some(key.clone());
         }
+        if let Some(stale) = self.rooted_stale_dependency(key, visiting, types) {
+            visiting.remove(key);
+            return Some(stale);
+        }
+        if !self.dirty_descendants.contains(key) {
+            visiting.remove(key);
+            return None;
+        }
+        let Some(entry) = self.produced.get(key) else {
+            visiting.remove(key);
+            return None;
+        };
         let mut dependencies = entry.dependencies.products.iter().collect::<Vec<_>>();
         dependencies.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
         for (dependency, generation) in dependencies {
@@ -1922,8 +1968,8 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
             ProductKey::RootBackendProduct(root) => {
                 super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, *root)
             }
-            ProductKey::RootBackendContent(root) => {
-                super::jobs::backend::produce_root_backend_content(self.telemetry, context, *root, self.world.types())
+            ProductKey::StructSchema(module) => {
+                super::jobs::backend::produce_struct_schema(self.world, context, *module)
             }
             ProductKey::NativeProgram(root) => {
                 super::jobs::produce_native_program(self.world, self.telemetry, context, *root)
@@ -2192,6 +2238,7 @@ mod tests {
 
     fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
         ProductDependencies {
+            membership: HashSet::new(),
             products: HashMap::from([(dependency.clone(), None)]),
             facts: HashMap::new(),
         }
@@ -2256,6 +2303,7 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
@@ -2278,7 +2326,7 @@ mod tests {
         let root = RootId::for_test(1);
         let address = ProductAddress {
             root,
-            key: ProductKey::RootBackendContent(root),
+            key: ProductKey::RootBackendProduct(root),
         };
         let mut sessions = ProductSessions::default();
         sessions.observe(&address);
@@ -2335,7 +2383,7 @@ mod tests {
         let root = RootId::for_test(1);
         let address = ProductAddress {
             root,
-            key: ProductKey::RootBackendContent(root),
+            key: ProductKey::RootBackendProduct(root),
         };
         let mut sessions = ProductSessions::default();
         sessions.observe(&address);
@@ -2481,6 +2529,7 @@ mod tests {
                 (
                     target.clone(),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(current.clone(), None), (detour_1.clone(), None)]),
                         facts: HashMap::new(),
                     },
@@ -2488,6 +2537,7 @@ mod tests {
                 (
                     detour_1.clone(),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(detour_2.clone(), None)]),
                         facts: HashMap::new(),
                     },
@@ -2495,6 +2545,7 @@ mod tests {
                 (
                     detour_2.clone(),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(detour_3.clone(), None)]),
                         facts: HashMap::new(),
                     },
@@ -2584,6 +2635,7 @@ mod tests {
         disjoint.unblock(
             &dependency,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(peer.clone(), None)]),
                 facts: HashMap::new(),
             },
@@ -2591,6 +2643,7 @@ mod tests {
         disjoint.unblock(
             &peer,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(dependency.clone(), None)]),
                 facts: HashMap::new(),
             },
@@ -2613,6 +2666,7 @@ mod tests {
         cross_kind.unblock(
             &dependency,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(bridge.clone(), None)]),
                 facts: HashMap::new(),
             },
@@ -2620,6 +2674,7 @@ mod tests {
         cross_kind.unblock(
             &bridge,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(current.clone(), None)]),
                 facts: HashMap::new(),
             },
@@ -2690,6 +2745,7 @@ mod tests {
         session.memo.unblock(
             &cyclic,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(current.clone(), None)]),
                 facts: HashMap::new(),
             },
@@ -2848,6 +2904,7 @@ mod tests {
             memo.unblock(
                 pending,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([
                         (left.clone(), memo.generation(left)),
                         (right.clone(), memo.generation(right)),
@@ -2858,6 +2915,7 @@ mod tests {
             memo.unblock(
                 pending_child,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(pending.clone(), None)]),
                     facts: HashMap::new(),
                 },
@@ -2900,6 +2958,7 @@ mod tests {
         memo.unblock(
             &pending,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(intermediate.clone(), Some(1))]),
                 facts: HashMap::new(),
             },
@@ -3114,76 +3173,34 @@ mod tests {
     }
 
     #[test]
-    fn transport_only_root_movement_stops_at_equal_backend_content() {
+    fn equal_root_reproduction_retains_root_allocation_and_native_generation() {
         let root = RootId::for_test(0);
         let root_key = ProductKey::RootBackendProduct(root);
-        let content_key = ProductKey::RootBackendContent(root);
         let native_key = ProductKey::NativeProgram(root);
         let backend = Rc::new(super::super::artifact::BackendProgram::empty_for_test());
-        let answer = |entry, program| {
-            ProductValue::RootBackendProduct(RootBackendProductAnswer {
-                program,
-                transport: Rc::new(super::super::artifact::MaterializedTransportPlan {
-                    entry,
-                    executable_membership: Box::default(),
-                    position_layouts: Vec::new(),
-                    callable_boundaries: Vec::new(),
-                    boundary_ids: Vec::new(),
-                    codegen_seam_facts: Box::default(),
-                    callable_owners: Box::default(),
-                    callable_facts: HashMap::new(),
-                    boundary_facts: HashMap::new(),
-                }),
-            })
-        };
         let mut memo = ProductMemo::default();
-
         finish_test_product(
             &mut memo,
             &root_key,
-            answer(
-                executable_symbol_for_test(&fake_executable_with_function(root, 1)),
-                Rc::clone(&backend),
-            ),
+            ProductValue::RootBackendProduct(Rc::clone(&backend)),
             [],
         );
-        finish_test_product(
-            &mut memo,
-            &content_key,
-            ProductValue::RootBackendContent(Rc::clone(&backend)),
-            [root_key.clone()],
-        );
-        finish_test_product(&mut memo, &native_key, ProductValue::Unit, [content_key.clone()]);
-        let content_generation = memo.generation(&content_key);
+        finish_test_product(&mut memo, &native_key, ProductValue::Unit, [root_key.clone()]);
+        let generation = memo.generation(&root_key);
         let native_generation = memo.generation(&native_key);
-
         finish_test_product(
             &mut memo,
             &root_key,
-            answer(
-                executable_symbol_for_test(&fake_executable_with_function(root, 2)),
-                Rc::new((*backend).clone()),
-            ),
+            ProductValue::RootBackendProduct(Rc::new((*backend).clone())),
             [],
         );
         let Some(ProductValue::RootBackendProduct(reproduced)) = memo.get(&root_key) else {
-            panic!("root reproduction must retain its answer");
+            panic!("retained root");
         };
-        assert!(
-            Rc::ptr_eq(&backend, &reproduced.program),
-            "the memo owns equal backend retention even when transport moves"
-        );
-        let reproduced_program = Rc::clone(&reproduced.program);
-        finish_test_product(
-            &mut memo,
-            &content_key,
-            ProductValue::RootBackendContent(reproduced_program),
-            [root_key],
-        );
-
-        assert_eq!(memo.generation(&content_key), content_generation);
-        assert_eq!(memo.generation(&native_key), native_generation);
+        assert!(Rc::ptr_eq(&backend, reproduced));
+        assert_eq!(memo.generation(&root_key), generation);
         assert!(memo.get(&native_key).is_some());
+        assert_eq!(memo.generation(&native_key), native_generation);
     }
 
     #[test]
@@ -3516,6 +3533,7 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([
                     (
@@ -3561,6 +3579,7 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
@@ -3601,6 +3620,7 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
@@ -4615,6 +4635,7 @@ mod tests {
             key,
             value,
             ProductDependencies {
+                membership: HashSet::new(),
                 products,
                 facts: HashMap::new(),
             },
@@ -4675,20 +4696,7 @@ mod tests {
         finish_test_product(
             &mut memo,
             &root_key,
-            ProductValue::RootBackendProduct(RootBackendProductAnswer {
-                program: Rc::new(super::super::artifact::BackendProgram::empty_for_test()),
-                transport: Rc::new(super::super::artifact::MaterializedTransportPlan {
-                    entry: left_resolution.clone(),
-                    executable_membership: Box::default(),
-                    position_layouts: Vec::new(),
-                    callable_boundaries: Vec::new(),
-                    boundary_ids: Vec::new(),
-                    codegen_seam_facts: Box::default(),
-                    callable_owners: Box::default(),
-                    callable_facts: HashMap::new(),
-                    boundary_facts: HashMap::new(),
-                }),
-            }),
+            ProductValue::RootBackendProduct(Rc::new(super::super::artifact::BackendProgram::empty_for_test())),
             [left_abi.clone(), right_abi.clone()],
         );
 
@@ -4943,6 +4951,7 @@ mod tests {
                     keys[index].clone(),
                     answers[index].product_value(callable, boundary),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products,
                         facts: HashMap::new(),
                     },
@@ -4997,6 +5006,7 @@ mod tests {
                     left.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([
                             (right.clone(), None),
                             (external.clone(), memo.generation(&external)),
@@ -5008,6 +5018,7 @@ mod tests {
                     right.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(left.clone(), None)]),
                         facts: HashMap::new(),
                     },
@@ -5050,6 +5061,7 @@ mod tests {
                         left.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
+                            membership: HashSet::new(),
                             products: HashMap::from([
                                 (right.clone(), right_generation),
                                 (external.clone(), external_generation),
@@ -5061,6 +5073,7 @@ mod tests {
                         right.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
+                            membership: HashSet::new(),
                             products: HashMap::from([(left.clone(), left_generation)]),
                             facts: HashMap::new(),
                         },
@@ -5197,6 +5210,7 @@ mod tests {
         let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 611));
         let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 612));
         let dependencies = ProductDependencies {
+            membership: HashSet::new(),
             products: HashMap::from([(external, Some(7))]),
             facts: HashMap::new(),
         };
@@ -5246,6 +5260,7 @@ mod tests {
             memo.unblock(
                 &left,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(right.clone(), None), (external.clone(), Some(1))]),
                     facts: HashMap::new(),
                 },
@@ -5275,6 +5290,7 @@ mod tests {
                     left.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(right.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
@@ -5283,6 +5299,7 @@ mod tests {
                     right.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(left.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
@@ -5336,6 +5353,7 @@ mod tests {
             memo.unblock(
                 key,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::new(),
                     facts: HashMap::from([(dependency, state)]),
                 },
@@ -5384,10 +5402,12 @@ mod tests {
                 finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
                 let unrelated_generation = memo.generation(&unrelated);
                 let left_dependencies = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
                     facts: HashMap::from([(fact.clone(), fact_one)]),
                 };
                 let right_dependencies = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
                 };
@@ -5424,6 +5444,7 @@ mod tests {
                     assert!(memo.begin(key.clone()));
                 }
                 let concordant = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), fact_two)]),
                 };
@@ -5456,6 +5477,7 @@ mod tests {
                 assert!(memo.begin(key.clone()));
             }
             let first = ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(external.clone(), Some(1))]),
                 facts: HashMap::new(),
             };
@@ -5475,6 +5497,7 @@ mod tests {
 
             assert!(memo.begin(right.clone()));
             let current = ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(external.clone(), Some(2))]),
                 facts: HashMap::new(),
             };

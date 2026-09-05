@@ -324,12 +324,12 @@
         <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and
         <code>CallableConstruction(position)</code> pulled only when a demanded executable names
         them. The final
-        <code>RootBackendProduct(root)</code> follows exact reachable backend product values and
-        owns their transport plan beside one shared <code>BackendProgram</code> inventory.
+        <code>RootBackendProduct(root)</code> owns one shared <code>BackendProgram</code> and
+        applies exact rooted executable, wrapper, atom, and schema contribution changes.
         <code>Compiler2</code> retains user and macro root sessions in
         <code>ProductSessions</code>; each session's <code>ProductMemo</code> owns these
-        artifact answers. <code>RootBackendContent(root)</code> exposes the backend
-        allocation independently of transport metadata. Source jobs read that product
+        artifact answers. Transport metadata stays with its exact positioned and ABI owners.
+        Source jobs read the root backend product
         directly when invoking macros, through the same scheduler dependency mechanism
         used for World facts.
       </p>
@@ -672,12 +672,13 @@ MaterializedExecutable(E)
         Product materialization clones one executable body, enters a sole reachable clause directly
         only when failure is unreachable, prunes unreachable clauses, rewrites
         semantically cold local-control entries into explicit halt stubs, and freezes each live
-        callsite to selected symbolic callee executable keys. The root product traverses exact
-        reachable <code>BackendExecutable</code> product values through their symbolic call edges
-        and positioned callable owners. Its answer retains the transport plan beside shared
-        executable and wrapper allocations, without rewriting their bodies. Root assembly still
-        aggregates transport, atoms, and reachable schemas; it does not scan session state or
-        semantic facts to rediscover membership.
+        callsite to selected typed callee executable keys. Each backend producer records membership
+        edges for its local calls, positioned callable targets, and reachable schemas. The memo
+        maintains root membership over those committed edges and supplies changed keys to packaging.
+        Persistent ordered inventories share untouched branches and payloads with older snapshots.
+        Each backend body extracts its atoms once; <code>StructSchema(module)</code> reads one
+        exact <code>StructDefined(module)</code> fact. Root assembly does not traverse all retained
+        bodies or inventory historical memo entries to rediscover membership.
       </p>
       <p>
         Product freshness is revisioned by exact product generations and exact fact uses. A producer
@@ -722,13 +723,12 @@ MaterializedExecutable(E)
         carrier consumes one typed value lane, while an absent carrier walks
         the recursive layout. An unboxed tuple therefore stays decomposed even
         when one child is boxed, and field projection interprets that child
-        later without rebuilding the parent. ABI seam facts preserve the same
+        later without rebuilding the parent. ABI physical-layout contracts preserve the same
         provenance: carrier lanes are always <code>ValueRef</code>; only
         structural scalar lanes may use a raw representation. Callable
         boundaries retain surface argument layouts and obtain capture layouts
-        from their callable descriptor; their seam facts flatten those layouts
-        in capture-then-argument order. A positional slot distinguishes
-        repeated lane identities without creating another lane inventory.
+        from their callable descriptor. Construction wrappers consume those exact layouts
+        and semantic input mappings, without a separate seam-lane inventory.
       </p>
       <p>
         Backend-required transport positions wait for produced
@@ -821,11 +821,11 @@ MaterializedExecutable(E)
         <div class="card">
           <h3><code>RootBackendProduct</code></h3>
           <p>
-            The final product answer. It traverses exact reachable backend product values, retains
-            their positioned layouts and callable owners in a transport plan, and gathers shared
-            executable and wrapper members into <code>BackendProgram</code>. Private immutable
-            inventories provide derived ordinal lookups for interpreter execution and native
-            linking; those ordinals do not replace typed body references.
+            The final product answer owns a shared <code>BackendProgram</code>. The memo supplies
+            exact rooted contribution changes; persistent ordered inventories share untouched
+            executable, wrapper, atom, and schema state. Consumer boundaries project ordinals
+            where needed, while interpreter continuations and parked receives retain their body
+            allocation. Neither representation replaces typed body references.
           </p>
         </div>
         <div class="card">
@@ -851,7 +851,7 @@ MaterializedExecutable(E)
         <li>settled clause-entry dispatch</li>
         <li>stable emission inventory</li>
         <li>backend-ready structured bodies with settled executable targets</li>
-        <li>the memo-owned <code>NativeProgram</code> derived from <code>RootBackendContent</code></li>
+        <li>the memo-owned <code>NativeProgram</code> derived from <code>RootBackendProduct</code></li>
       </ul>
       <p>
         Rejected baggage stays out of Compiler2 facts:
@@ -1095,7 +1095,7 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
         <h3><span class="num">07</span>Product demand excludes <code>foo/0</code></h3>
         <p>
           When <code>RootBackendProduct(root)</code> pulls the entry backend executable, products follow
-          only the symbolic call edges recorded by demanded executable products:
+          only the typed membership edges recorded by demanded executable products:
         </p>
         <pre><code>RootBackendProduct(root)
   entry: main/0[]

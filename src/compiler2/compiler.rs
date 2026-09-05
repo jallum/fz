@@ -193,9 +193,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
                 let backend = match self
                     .product_sessions
                     .get(root)
-                    .and_then(|session| session.memo().get(&ProductKey::RootBackendContent(root)).cloned())
+                    .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
                 {
-                    Some(super::pull::ProductValue::RootBackendContent(backend)) => backend,
+                    Some(super::pull::ProductValue::RootBackendProduct(backend)) => backend,
                     _ => panic!("native product must retain its exact backend content dependency"),
                 };
                 Ok((backend, Some(native)))
@@ -355,7 +355,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .get(root)
             .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
         {
-            Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer.program),
+            Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer),
             _ => panic!("root product must be retained after a successful request"),
         }
     }

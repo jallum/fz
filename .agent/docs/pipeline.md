@@ -31,7 +31,7 @@ body      LowerFunction
             survive only as interface-backed FunctionId expectations
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
-macro     source expansion reads RootBackendContent(hidden macro root)
+macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
 keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
@@ -54,6 +54,8 @@ product   RootBackendProduct(root)
             closed shared backend inventory for a root
           BackendExecutable(E)
             one immutable interpreter-ready backend executable
+          StructSchema(module)
+            one reachable module's name and fields from StructDefined(module)
           AbiExecutable(E)
             ABI lanes, return delivery, entry captures, resumes, and callable entries
             for one executable
@@ -101,18 +103,19 @@ and `MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly.
 World fact values are not copied into `ProductMemo` and therefore have no
 product settlement, displacement, cache-hit, or re-entry lifecycle.
 
-`RootBackendProduct(root)` is the final assembly boundary. It keys the root
-entry, pulls `BackendExecutable(entry)`, follows typed backend call edges and
-positioned callable owners embedded in each reached backend product, and gathers
-their shared allocations into one `RootBackendProductAnswer`. That
-answer owns both the `MaterializedTransportPlan` and the closed runtime
-`BackendProgram`; runtime consumers project only the program. The product pull
-path is the only artifact path. Each materialized executable first drops value
-types removed with pruned control, then carries the typed `ModuleId` set named
-by its surviving struct steps and runtime-facing `Ty` surfaces. Root assembly
-reads exactly those `StructDefined(module)` facts and registers schemas by full
-qualified module name; it never inventories World structs or decodes rendered
-types.
+`RootBackendProduct(root)` owns one shared `BackendProgram`. Each
+`BackendExecutable` contributes typed membership edges for its local calls,
+positioned callable targets, and reachable `StructSchema` products. The memo
+maintains root membership over those committed edges and supplies changed keys
+to root packaging. The program's persistent ordered inventories share untouched
+branches with prior snapshots; packaging does not rediscover the root closure.
+
+Each materialized executable drops value types removed with pruned control,
+then carries the typed `ModuleId` set named by its surviving struct steps and
+runtime-facing `Ty` surfaces. `StructSchema(module)` reads exactly
+`StructDefined(module)` and owns the qualified name and field list. The root
+never inventories World structs or decodes rendered types. Transport layouts
+remain on their exact ABI and materialized owners, not a root-wide aggregate.
 
 A callable target keeps its exact private return layout. A first-class callable
 wrapper publishes one uniform contract: `Diverges`, `Absent`, or one `ValueRef`
@@ -152,7 +155,8 @@ submit_root(main/0)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
       reads exact ABI prerequisites for return endpoints and construction members/captures
       lowers one interpreter-ready backend executable
-    follows exact reachable backend products and publishes RootBackendProductAnswer(root)
+      records typed executable/schema membership and extracts local atoms
+    applies memo membership/content deltas and publishes shared BackendProgram(root)
   Compiler2 retains this session and exact dependency graph for the root's next request
 ```
 
@@ -178,12 +182,12 @@ product:
 expand inc(41)
   waits for FunctionDefined(inc/1)
   creates macro root input [Any(__CALLER__), Any(x)]
-  waits on RootBackendContent(macro_root)
-  the shared product driver pulls RootBackendProduct(macro_root)
+  waits on RootBackendProduct(macro_root)
+  the shared product driver settles that exact root
   the source job resumes and executes the memo-owned backend handle
 ```
 
-The macro root requests `RootBackendContent(macro_root)`; compile-time
+The macro root requests `RootBackendProduct(macro_root)`; compile-time
 macro execution uses the backend interpreter over the quoted source heap.
 Typed product telemetry asserts that no `NativeProgram(macro_root)` is
 evaluated.
@@ -496,9 +500,10 @@ mailbox round trip has erased the name (`static_closure_each`, `a_mixed`).
 Getting either half alone is an abort, not a diagnostic: the wrapper writes its
 returned value into the register the continuation reads as its own closure
 pointer, and the program dies in `fz_closure_get_capture_atom` at the first
-call. `verify_boxed_apply_seam_return_convention` turns that into a named
-invariant at backend packaging — every boxed closure callsite must deliver
-exactly what the wrappers it can reach publish.
+call. Each backend body records its boxed-call argument arities and delivered
+lane counts. `BoxedContracts` indexes those requirements and wrapper publications
+by arity, retaining an exact mismatch witness when their lanes disagree. Root
+packaging checks that witness without scanning every body and wrapper.
 
 The exact callable surfaces demand reads originate in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
@@ -547,13 +552,12 @@ outer carrier separately.
 Encoding and decoding obey the carrier before the structure: a carrier consumes
 one typed value lane, while an absent carrier walks the recursive layout. Thus
 an unboxed tuple remains decomposed even when one child is boxed, and field
-projection interprets that child later without rebuilding the parent. ABI seam
-facts retain this provenance, so a carrier lane is always `ValueRef`; only a
+projection interprets that child later without rebuilding the parent. ABI
+physical-layout contracts retain this provenance, so a carrier lane is always `ValueRef`; only a
 structural scalar lane may use a raw representation. A callable boundary keeps
-surface argument layouts and its callable descriptor keeps capture layouts; its
-seam facts flatten those layouts in capture-then-argument order. A positional
-slot distinguishes repeated lane identities without creating a second lane
-inventory.
+surface argument layouts and its callable descriptor keeps capture layouts.
+Construction wrappers consume those exact layouts and semantic input mappings;
+there is no separate seam-lane inventory.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
@@ -633,7 +637,7 @@ allowed to carry only local facts already proven by semantics:
 
 Transport planning owns physical layout before packaging:
 `TransportPosition -> TransportLayout`, lane facts, callable and boundary
-facts, call-result payload positions, and `CodegenSeamFact` rows. One
+facts, and call-result payload positions. One
 `TransportLayout` contains both structural shape and carrier presence; later
 stages do not derive either component by rescanning semantic types or lowered
 bodies.
@@ -661,30 +665,23 @@ The next products narrow the contract:
   interpreter-ready body with `ExecutableKey` call targets and
   `TransportPosition` construction references. Its ABI handle retains the
   materialized input; metadata is read from those owners rather than copied.
-- `RootBackendProduct(root)` traverses exact reachable `BackendExecutable`
-  product values and gathers their shared executable and wrapper allocations
-  into `BackendProgram`. It aggregates transport, atom, and reachable-schema
-  inventories; it does not rewrite or clone backend bodies.
-- `RootBackendContent(root)` is the native dependency's exact, pointer-only
-  view of the immutable `BackendProgram` inside `RootBackendProduct(root)`.
-  Equality is one `Rc::ptr_eq`, so this boundary never walks the program.
-- `NativeProgram(root)` reads that exact content product and carries direct
+- `RootBackendProduct(root)` applies the memo's exact rooted contribution
+  changes to shared executable, wrapper, atom, and schema inventories. Backend
+  bodies extract their own atoms once; retained root snapshots share collection
+  paths and immutable payloads.
+- `NativeProgram(root)` reads that root product and carries direct
   executable bodies, clause helpers, continuations, construction wrappers,
   native body return contracts, and extern-marshal facts instead of rebuilt
   `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
-The retained root answer is a pair of shared immutable backend and transport
-handles, without another shared wrapper. Runtime consumers and macro expansion
-clone the Rc<BackendProgram>, not the program tree. Transport metadata has a
-distinct lifetime: equal backend reproduction keeps the backend allocation
-when transport changes. RootBackendContent projects that
-handle with pointer-only equality. NativeProgram also lives only in the memo
-and returns an Rc<NativeProgram>; World owns no backend, macro, or native
-artifact mirror.
+Runtime consumers and macro expansion clone the `Rc<BackendProgram>`, not the
+program tree. Equal product reproduction retains the existing allocation and
+generation. `NativeProgram` also lives only in the memo and returns an
+`Rc<NativeProgram>`; World owns no backend, macro, or native artifact mirror.
 
 An external backend/native request owns one retained root-session activation.
 It applies queued edits before reading products. Native requests pull
-NativeProgram directly through RootBackendContent and RootBackendProduct. The
+NativeProgram directly through RootBackendProduct. The
 same retained product driver handles exact product waits from source jobs,
 including hidden macro roots. Active sessions remain addressable through short
 checked borrows that end before scheduler jobs run. Every failure restores the
@@ -693,12 +690,13 @@ same session, and failed native lowering installs no cached native answer.
 `ProductMemo` is the only settled inventory for materialized, ABI, and
 backend executables. Typed iterators project those entries without collecting
 or cloning them; `PullSession` has no artifact mirrors or mirror invalidation.
-Final root packaging semantically orders reached executable and construction
-keys. `BackendProgram` owns a private immutable entry key and inventories of shared members and
-derives key-to-ordinal lookups from them at construction. Body references remain
-typed keys even when membership order changes. Ordinals serve interpreter
-execution and native linking, not semantic identity. Consumers do not scan a
-retained memo's historical products to rediscover the current root closure.
+`BackendProgram` owns a private entry key and persistent ordered inventories of
+shared members. Semantic key comparison supplies lookup and order; subtree
+counts supply ordinal projection at consumer boundaries. Body references remain
+typed keys even when membership order changes. Interpreter continuations and
+parked receives retain their body allocation, so local execution does not look
+it up again. Consumers do not scan a retained memo's historical products to
+rediscover the current root closure.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
 positioned owner whose exact product contains a first-class construction. It
@@ -711,12 +709,11 @@ layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
 The construction owner contributes every member's exact return contract.
-The packaging tripwire refuses any
-program where a boxed callsite could reach a wrapper that publishes no return
-lane.
-The lane count a wrapper publishes and the lane count every boxed closure
-callsite delivers are checked against each other at packaging
-(`verify_boxed_apply_seam_return_convention`).
+`BoxedContracts` requires callers and nondiverging wrappers of the same arity
+to agree on delivered lanes. Caller requirements are extracted once per backend
+body; exact caller and wrapper changes update only their arity buckets. Equal
+contributions leave those buckets alone. Packaging rejects a retained mismatch
+witness, preserving the calling-convention check without a whole-root scan.
 
 Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
 the producer wrapper when the runtime object is created; the resulting code
@@ -890,7 +887,7 @@ Current conclusion from the code:
   interned type store instead of a fresh legacy one
 - the native/JIT/AOT front doors request `NativeProgram(root)` directly through
   the same retained product driver as interp; its exact dependency chain is
-  `NativeProgram(root) -> RootBackendContent(root) -> RootBackendProduct(root)`
+  `NativeProgram(root) -> RootBackendProduct(root)`
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work; `fz2 test`

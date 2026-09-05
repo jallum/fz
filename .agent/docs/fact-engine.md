@@ -539,7 +539,6 @@ outcome that the memo never installs:
 ```text
 ProductKey =
   RootBackendProduct(root)
-  RootBackendContent(root)
   NativeProgram(root)
   BackendExecutable(E)
   AbiExecutable(E)
@@ -547,6 +546,7 @@ ProductKey =
   ExecutableEffects(E)
   TransportShape(position)
   CallableConstruction(position)
+  StructSchema(module)
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
@@ -700,18 +700,28 @@ encode, so a value tail returning through it reads no value at all
 (`return_lane_vars` in `jobs/native.rs`, the `BackendTail::Value` arm in
 `ir_interp/backend.rs`).
 
-The root backend producer traverses its exact reachable backend-product
-values and aggregates their embedded layouts and callable owners into one root
-product answer. The answer retains that `MaterializedTransportPlan` beside a
-`BackendProgram` of shared executable and wrapper allocations. Each body keeps
-`ExecutableKey` call targets and `TransportPosition` construction references;
-membership changes do not rewrite them. The program's private immutable
-inventories supply derived key-to-ordinal lookups for runtime consumers.
-Root assembly also collects atoms and reachable schemas. Runtime consumers
-project only the program.
-There is no parallel session map of transport positions, shapes, layouts,
-callable boundaries, or transport-shape groups, and final packaging does not scan the
-fact table or memo to rediscover them.
+Root membership is a distinct dependency relation, not a read of every member's
+value. Each backend producer commits its exact executable and schema membership
+edges alongside its value. Pending attempts leave the committed membership
+standing; recursive-group external read unions do not merge producer-owned
+membership. `ProductMemo` keeps the forward edges, their reverse index, and a
+rooted parent/child witness. Cutting a witness edge repairs support from the
+remaining committed edges; an isolated recursive cycle cannot retain itself.
+The witness stores reachability evidence, not a second copy of the graph.
+The memo's derived readiness bit covers both value readers and rooted members.
+Refresh recomputes it from those inputs; external notifications observe the
+bit's transition through the ordinary mutation wave, not partially updated
+membership state. An equal member can restore readiness without reevaluating
+the root or its native and source consumers.
+
+The root producer consumes changed member keys and owns one shared
+`BackendProgram`. Its persistent ordered inventories retain executable,
+wrapper, atom, and schema contributions while sharing untouched branches with
+older snapshots. Each body extracts its atoms once and keeps `ExecutableKey`
+call targets and `TransportPosition` construction references; membership changes
+do not rewrite it. `StructSchema(module)` owns one settled `StructDefined`
+projection. Exact ABI owners retain transport layouts and callable metadata;
+there is no root transport aggregate or historical-memo census.
 ABI inputs are selected by the settled runtime demand's physical and callable
 axes together. Ignored inputs request no positioned products; lexical capture
 layouts belong to their explicitly named source `Value` positions instead.
@@ -755,7 +765,7 @@ slots store only World fact revisions; an external state provider reads product
 generations and readiness directly from the retained ProductMemo. A product has
 no scheduler publisher, fact slot, or synthetic job.
 
-A source job expanding a macro reads RootBackendContent of its hidden macro
+A source job expanding a macro reads RootBackendProduct of its hidden macro
 root. Missing content becomes an exact product wait. Fact movement reaches only
 subscribed root sessions. When it dirties a product with scheduler consumers,
 the product movement makes those consumers unfinal through the ordinary
@@ -772,11 +782,9 @@ Session activation identities persist across requests, while product request
 ids advance. Each activation owns its work-start delta; nested roots and
 standalone drives have separate balanced accounting boundaries.
 
-RootBackendProductAnswer owns transport metadata and a shared BackendProgram.
-ProductMemo retains the existing inner program allocation when backend content
-reproduces equal, including when transport changes independently. This makes
-RootBackendContent equality an O(1) pointer comparison. NativeProgram and macro
-execution consume that same content handle. A native failure installs no native
+RootBackendProduct owns an Rc<BackendProgram>. ProductMemo retains the existing
+allocation and generation when its answer reproduces equal. NativeProgram and
+macro execution consume that same handle. A native failure installs no native
 answer and restores the same retained session for retry.
 
 Compiler2::retire_root_products removes the root-owned fact subscription edges

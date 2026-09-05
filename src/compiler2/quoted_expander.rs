@@ -349,9 +349,9 @@ pub(crate) trait QuotedExpansionCtx {
         let root = self.world().macro_root(function);
         let address = ProductAddress {
             root,
-            key: ProductKey::RootBackendContent(root),
+            key: ProductKey::RootBackendProduct(root),
         };
-        let Some(ProductValue::RootBackendContent(program)) =
+        let Some(ProductValue::RootBackendProduct(program)) =
             self.products().and_then(|products| products.product(&address))
         else {
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects {

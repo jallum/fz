@@ -332,10 +332,12 @@ materialization neither rereads nor reconstructs that projection.
 
 The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
 `InputDemand(entry)` only so it can key the entry executable, then asks for
-`BackendExecutable(entry)`. Additional executables enter the request through
-symbolic call edges and callable entries recorded by already demanded products.
-Those exact dependencies grow artifact membership; no root-wide scan decides
-it.
+`BackendExecutable(entry)`. Each backend producer records typed membership
+edges for its local calls, positioned callable targets, and reachable schemas.
+The retained memo updates rooted membership from those committed edges, including
+withdrawal when a recursive component loses its last root path. Value reads
+and membership have separate roles: a caller can retain its unchanged body
+while a changed callee remains part of the root artifact.
 
 `DeriveRuntimeDemand(E)` owns the ordinary `RuntimeDemand(E)` World
 fact. It waits for `ExecutableFacts(E)` to appear settled and thereafter reads

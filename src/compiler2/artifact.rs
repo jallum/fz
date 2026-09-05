@@ -34,8 +34,8 @@ use super::body::{
 use super::identity::{ExecutableKey, FunctionId, ModuleId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
-    BoundaryFacts, BoundaryId, CallableConstructionOwner, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
-    ShapeId, TransportCarrier, TransportLayout, TransportPosition,
+    BoundaryId, CallableConstructionOwner, CallableId, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
+    TransportPosition,
 };
 use super::types::Ty;
 
@@ -58,21 +58,6 @@ impl<T: Copy> CallTarget<T> {
     pub fn copied_local(&self) -> Option<T> {
         self.local().copied()
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MaterializedTransportPlan {
-    pub entry: ExecutableSymbol,
-    pub executable_membership: Box<[ExecutableSymbol]>,
-    pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
-    /// Per-callable boundary inventory projected from position-owned callable
-    /// construction products.
-    pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
-    pub boundary_ids: Vec<BoundaryId>,
-    pub codegen_seam_facts: Box<[CodegenSeamFact]>,
-    pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
-    pub callable_facts: HashMap<CallableId, CallableFacts>,
-    pub boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,20 +113,6 @@ pub struct BackendReturnLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionCapture {
     pub layout: BackendValueLayout,
-}
-
-impl MaterializedTransportPlan {
-    #[cfg(test)]
-    pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
-        self.layout_at(position).map(|layout| layout.structural)
-    }
-
-    #[cfg(test)]
-    pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
-        self.position_layouts
-            .iter()
-            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,104 +247,7 @@ pub enum BackendReturnFlow {
     },
 }
 
-#[cfg_attr(test, derive(Clone))]
-#[derive(Debug, PartialEq)]
-pub struct BackendProgram {
-    entry: ExecutableKey,
-    pub atom_names: Vec<String>,
-    pub struct_schemas: BTreeMap<String, Vec<String>>,
-    executables: Vec<Rc<BackendExecutable>>,
-    construction_wrappers: Vec<Rc<BackendConstructionWrapper>>,
-    executable_indices: HashMap<ExecutableKey, usize>,
-    construction_indices: HashMap<TransportPosition, usize>,
-}
-
-impl BackendProgram {
-    pub fn entry(&self) -> &ExecutableKey {
-        &self.entry
-    }
-    pub fn executables(&self) -> &[Rc<BackendExecutable>] {
-        &self.executables
-    }
-
-    pub fn construction_wrappers(&self) -> &[Rc<BackendConstructionWrapper>] {
-        &self.construction_wrappers
-    }
-
-    #[cfg(test)]
-    pub(crate) fn empty_for_test() -> Self {
-        let mut world = super::World::new();
-        let function = world.reference_function(ModuleId::GLOBAL, "test_entry", 0);
-        let entry = ExecutableKey {
-            activation: super::identity::ActivationKey::from_inputs(
-                super::RootId::for_test(0),
-                function,
-                &[],
-                world.types_mut(),
-            ),
-            need: super::ExecutableNeed::Value,
-        };
-        Self {
-            entry,
-            atom_names: Vec::new(),
-            struct_schemas: BTreeMap::new(),
-            executables: Vec::new(),
-            construction_wrappers: Vec::new(),
-            executable_indices: HashMap::new(),
-            construction_indices: HashMap::new(),
-        }
-    }
-
-    pub fn new(
-        entry: ExecutableKey,
-        atom_names: Vec<String>,
-        struct_schemas: BTreeMap<String, Vec<String>>,
-        executables: Vec<Rc<BackendExecutable>>,
-        construction_wrappers: Vec<Rc<BackendConstructionWrapper>>,
-    ) -> Self {
-        let mut executable_indices = HashMap::with_capacity(executables.len());
-        for (index, executable) in executables.iter().enumerate() {
-            assert!(
-                executable_indices.insert(executable.key.clone(), index).is_none(),
-                "duplicate backend executable identity"
-            );
-        }
-        assert!(
-            executable_indices.contains_key(&entry),
-            "backend entry must belong to its program"
-        );
-        let mut construction_indices = HashMap::with_capacity(construction_wrappers.len());
-        for (index, wrapper) in construction_wrappers.iter().enumerate() {
-            assert!(
-                construction_indices.insert(wrapper.identity.clone(), index).is_none(),
-                "duplicate backend construction identity"
-            );
-        }
-        Self {
-            entry,
-            atom_names,
-            struct_schemas,
-            executables,
-            construction_wrappers,
-            executable_indices,
-            construction_indices,
-        }
-    }
-
-    pub fn executable_index(&self, key: &ExecutableKey) -> Option<usize> {
-        self.executable_indices.get(key).copied()
-    }
-
-    pub fn construction_index(&self, key: &TransportPosition) -> Option<usize> {
-        self.construction_indices.get(key).copied()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RootBackendProductAnswer {
-    pub program: Rc<BackendProgram>,
-    pub transport: Rc<MaterializedTransportPlan>,
-}
+pub use super::backend_program::BackendProgram;
 
 #[cfg_attr(test, derive(Clone))]
 #[derive(Debug)]
@@ -1080,6 +954,8 @@ pub struct BackendExecutable {
     pub abi: Rc<AbiReadyExecutable>,
     pub body: BackendBody,
     pub construction_wrappers: Box<[Rc<BackendConstructionWrapper>]>,
+    pub(crate) atom_names: Box<[Rc<String>]>,
+    pub(crate) boxed_apply_requirements: Box<[super::backend_program::boxed_contract::BoxedApplyRequirement]>,
 }
 
 #[cfg(test)]
@@ -1149,6 +1025,8 @@ impl BackendExecutable {
                 generated: Vec::new(),
             },
             construction_wrappers: Box::default(),
+            atom_names: Box::default(),
+            boxed_apply_requirements: Box::default(),
         }
     }
 }

@@ -3,7 +3,7 @@
 //! This module packages product-keyed symbolic backend executables into the
 //! backend-owned program consumed by the interpreter and native lowering.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
@@ -15,33 +15,28 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableReturn, BackendClause,
-    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
-    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm, MaterializedTransportPlan,
-    RootBackendProductAnswer,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
+    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
+    BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
-    LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
+    ValueId,
 };
 use super::super::drive::{FactKey, Job};
 use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey};
-use super::super::pull::{
-    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
-};
+use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait};
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
 use super::super::transport::{
-    ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
-    CodegenSeamFact, ExecutableSymbol, LaneId, PhysicalLane, PhysicalLaneSource, ShapeDescr, ShapeId,
+    BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol, PhysicalLaneSource, ShapeDescr, ShapeId,
     TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
-use super::artifact::compare_codegen_seam_facts;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -163,160 +158,59 @@ pub(crate) fn produce_root_backend_product(
         return PullOutcome::Waiting(keying_waits);
     }
     let entry = world.root_entry_executable(root);
-    let mut reachable = HashSet::new();
-    let mut stack = vec![entry.clone()];
-    let mut waits = Vec::new();
-    let mut backends = HashMap::new();
-    while let Some(current) = stack.pop() {
-        if !reachable.insert(current.clone()) {
-            continue;
-        }
-        let Some(value) = context.read_product(tel, ProductKey::BackendExecutable(current.clone()), world.types())
-        else {
-            waits.push(PullWait::Product(ProductKey::BackendExecutable(current)));
-            continue;
-        };
-        let ProductValue::BackendExecutable(backend) = value else {
-            panic!("backend executable product produced unexpected value {value:?}");
-        };
-        let backend = Rc::clone(backend);
-        for edge in backend.abi.call_edges.values() {
-            for callee in symbolic_call_edge_callees(&edge.target) {
-                stack.push(callee.clone());
-            }
-        }
-        for positioned in backend.abi.callable_owners.iter() {
-            let owner = &positioned.owner;
-            stack.extend(callable_fact_executables(root, &owner.callable_facts));
-            stack.extend(boundary_resolution_executables(root, &owner.boundary_facts));
-        }
-        backends.insert(current, backend);
-    }
-    if !waits.is_empty() {
-        return PullOutcome::Waiting(waits);
-    }
-    let struct_modules = backends
-        .values()
-        .flat_map(|backend| backend.abi.materialized.struct_modules.iter().copied())
-        .collect::<BTreeSet<_>>();
-    let mut struct_schemas = BTreeMap::new();
-    for module in struct_modules {
-        let fact = FactKey::StructDefined(module);
-        if !context.read_fact(world, FactUse::settled(fact.clone())) {
-            waits.push(PullWait::Fact(FactUse::settled(fact)));
-            continue;
-        }
-        let name = world
-            .module_name(module)
-            .expect("a reachable struct module must have a name")
-            .to_string();
-        let fields = world
-            .struct_def_fields(module)
-            .expect("a settled reachable struct fact must have a schema")
-            .to_vec();
-        struct_schemas.insert(name, fields);
-    }
-    if !waits.is_empty() {
-        return PullOutcome::Waiting(waits);
-    }
-    let owners = backends.values().flat_map(|backend| {
-        backend
-            .abi
-            .callable_owners
-            .iter()
-            .map(|positioned| positioned.owner.as_ref())
-    });
-    let (produced_callables, produced_boundaries) = aggregate_callable_owners(owners);
-    let transport =
-        symbolic_materialized_transport_plan(&backends, &entry, world, &produced_callables, &produced_boundaries);
-
-    let mut executable_keys = reachable.into_iter().collect::<Vec<_>>();
-    executable_keys.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-    let executables = executable_keys
-        .iter()
-        .map(|key| Rc::clone(&backends[key]))
-        .collect::<Vec<_>>();
-    let mut construction_wrappers = executables
-        .iter()
-        .flat_map(|backend| backend.construction_wrappers.iter().cloned())
-        .collect::<Vec<_>>();
-    construction_wrappers.sort_by(|left, right| left.identity.semantic_cmp(&right.identity, world.types()));
-    construction_wrappers.dedup_by(|left, right| {
-        if left.identity != right.identity {
-            return false;
-        }
-        assert_eq!(left, right, "one construction position has one complete wrapper");
-        true
-    });
-    let program = Rc::new(BackendProgram::new(
-        entry,
-        collect_backend_atom_names(world, &executables),
-        struct_schemas,
-        executables,
-        construction_wrappers,
-    ));
-    verify_boxed_apply_seam_return_convention(tel, root, &program)
-        .expect("root backend product should compile one return convention across the boxed apply seam");
-    PullOutcome::Produced(ProductValue::RootBackendProduct(RootBackendProductAnswer {
-        program,
-        transport: Rc::new(transport),
-    }))
-}
-
-pub(crate) fn produce_root_backend_content(
-    tel: &impl crate::telemetry::Telemetry,
-    context: &mut ProductReadContext<'_>,
-    root: RootId,
-    types: &super::super::types::Types,
-) -> PullOutcome {
     let key = ProductKey::RootBackendProduct(root);
-    match context.read_product(tel, key.clone(), types) {
-        Some(ProductValue::RootBackendProduct(answer)) => {
-            PullOutcome::Produced(ProductValue::RootBackendContent(Rc::clone(&answer.program)))
+    let changes =
+        match context.read_rooted_products(key.clone(), ProductKey::BackendExecutable(entry.clone()), world.types()) {
+            Ok(changes) => changes,
+            Err(waits) => return PullOutcome::Waiting(waits),
+        };
+    let mut program = match context.previous_product(&key) {
+        Some(ProductValue::RootBackendProduct(program)) => (**program).clone(),
+        None => {
+            let mut program = BackendProgram::empty(entry.clone());
+            program.add_builtins(world.types());
+            program
         }
-        Some(value) => panic!("root backend product produced unexpected value {value:?}"),
-        None => PullOutcome::wait_on_product(key),
+        Some(other) => panic!("root backend product has unexpected previous value {other:?}"),
+    };
+    program.set_entry(entry);
+    let mut executable_changes = Vec::new();
+    for (key, value) in changes {
+        match (key, value) {
+            (ProductKey::BackendExecutable(key), Some(ProductValue::BackendExecutable(backend))) => {
+                executable_changes.push((key, Some(backend)))
+            }
+            (ProductKey::StructSchema(module), Some(ProductValue::StructSchema(schema))) => {
+                program.replace_schema(module, Some(schema))
+            }
+            (ProductKey::StructSchema(module), None) => program.replace_schema(module, None),
+            (ProductKey::BackendExecutable(key), None) => executable_changes.push((key, None)),
+            (key, value) => panic!("root membership names unexpected contribution {key:?}: {value:?}"),
+        }
     }
+    program.reconcile_executables(executable_changes, world.types());
+    program
+        .validate_boxed_contract(tel, root)
+        .expect("root backend product should compile one return convention across the boxed apply seam");
+    PullOutcome::Produced(ProductValue::RootBackendProduct(Rc::new(program)))
 }
 
-pub(crate) fn aggregate_callable_owners<'a>(
-    owners: impl IntoIterator<Item = &'a super::super::transport::CallableConstructionOwner>,
-) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
-    let mut callables = HashMap::<CallableId, CallableFacts>::new();
-    let mut boundaries = HashMap::<BoundaryId, BoundaryFacts>::new();
-    for owner in owners {
-        for (callable, facts) in &owner.callable_facts {
-            let aggregate = callables.entry(*callable).or_insert_with(|| CallableFacts {
-                resolutions: Box::default(),
-                direct_surfaces: Box::default(),
-                direct_edges: Box::default(),
-                boundary_ids: Box::default(),
-            });
-            aggregate.resolutions = union_boxed(&aggregate.resolutions, &facts.resolutions);
-            aggregate.direct_surfaces = union_boxed(&aggregate.direct_surfaces, &facts.direct_surfaces);
-            aggregate.direct_edges = union_boxed(&aggregate.direct_edges, &facts.direct_edges);
-            aggregate.boundary_ids = union_boxed(&aggregate.boundary_ids, &facts.boundary_ids);
-        }
-        for (boundary, facts) in &owner.boundary_facts {
-            let aggregate = boundaries.entry(*boundary).or_insert_with(|| BoundaryFacts {
-                publications: Box::default(),
-                resolutions: Box::default(),
-            });
-            aggregate.publications = union_boxed(&aggregate.publications, &facts.publications);
-            aggregate.resolutions = union_boxed(&aggregate.resolutions, &facts.resolutions);
-        }
+pub(crate) fn produce_struct_schema(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    module: super::super::ModuleId,
+) -> PullOutcome {
+    let fact = FactUse::settled(FactKey::StructDefined(module));
+    if !context.read_fact(world, fact.clone()) {
+        return PullOutcome::wait_on_fact(fact);
     }
-    (callables, boundaries)
-}
-
-fn union_boxed<T: Clone + PartialEq>(left: &[T], right: &[T]) -> Box<[T]> {
-    let mut values = left.to_vec();
-    for value in right {
-        if !values.contains(value) {
-            values.push(value.clone());
-        }
-    }
-    values.into_boxed_slice()
+    PullOutcome::Produced(ProductValue::StructSchema(Rc::new(
+        super::super::backend_program::BackendSchema {
+            module,
+            name: Rc::new(world.module_name(module).expect("reachable struct name").to_string()),
+            fields: Rc::new(world.struct_def_fields(module).expect("settled schema").to_vec()),
+        },
+    )))
 }
 
 pub(crate) fn produce_backend_executable_product(
@@ -407,12 +301,35 @@ pub(crate) fn produce_backend_executable_product(
     let mut lowerer = BackendLowerer::new(world, tel, root, value_shapes, return_endpoints, constructions);
     let lowered = lower_backend_body(&mut lowerer, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
-    let backend = BackendExecutable {
+    let boxed_apply_requirements =
+        super::super::backend_program::boxed_contract::BoxedApplyRequirement::for_body(&lowered, &abi);
+    let mut backend = BackendExecutable {
         key: executable.clone(),
         abi,
         body: lowered,
         construction_wrappers,
+        atom_names: Box::default(),
+        boxed_apply_requirements,
     };
+    let mut atoms = Vec::new();
+    collect_executable_atoms(world, &backend, &mut HashSet::new(), &mut atoms);
+    backend.atom_names = atoms.into_iter().map(Rc::new).collect();
+    for edge in backend.abi.call_edges.values() {
+        for callee in symbolic_call_edge_callees(&edge.target) {
+            context.include_product(ProductKey::BackendExecutable(callee.clone()));
+        }
+    }
+    for positioned in &backend.abi.callable_owners {
+        for target in callable_fact_executables(root, &positioned.owner.callable_facts)
+            .into_iter()
+            .chain(boundary_resolution_executables(root, &positioned.owner.boundary_facts))
+        {
+            context.include_product(ProductKey::BackendExecutable(target));
+        }
+    }
+    for module in &backend.abi.materialized.struct_modules {
+        context.include_product(ProductKey::StructSchema(*module));
+    }
     let backend = Rc::new(backend);
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
 }
@@ -540,11 +457,15 @@ fn backend_entry_captures(
                 .into_iter()
                 .filter(|physical| !ignored || physical.source == PhysicalLaneSource::Carrier)
                 .map(|physical| {
-                    let repr = match block_param_codegen_repr_for_physical_lane(world, physical) {
-                        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
-                        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
-                        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
-                        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+                    let ty = world.lane(physical.lane).ty;
+                    let repr = if physical.source == PhysicalLaneSource::Carrier {
+                        AbiValueRepr::ValueRef
+                    } else if world.types().is_integer(&ty) {
+                        AbiValueRepr::RawInt
+                    } else if world.types().is_atom_type(&ty) {
+                        AbiValueRepr::RawAtom
+                    } else {
+                        AbiValueRepr::ValueRef
                     };
                     (world.lane(physical.lane).ty, repr)
                 })
@@ -891,528 +812,6 @@ fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&C
     }
 }
 
-pub(crate) fn symbolic_materialized_transport_plan(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    executable: &ExecutableKey,
-    world: &World,
-    callables: &HashMap<CallableId, CallableFacts>,
-    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
-) -> MaterializedTransportPlan {
-    let mut position_layouts = backends
-        .values()
-        .flat_map(|backend| {
-            backend.abi.transport.position_layouts.iter().cloned().chain(
-                backend
-                    .abi
-                    .callable_owners
-                    .iter()
-                    .map(|positioned| (positioned.position.clone(), positioned.owner.layout)),
-            )
-        })
-        .collect::<Vec<_>>();
-    // Structural comparison, not `format!("{position:?}")`: these are
-    // final-packaging sorts over the GLOBAL position set, and Debug-string
-    // keys recomputed per comparison were ~21% of the release compile. Compared
-    // in place rather than through a materialized key, so a comparison stops at
-    // the first difference and the input-type vector is never cloned.
-    position_layouts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, world.types()));
-    position_layouts.dedup_by(|left, right| {
-        if left.0 != right.0 {
-            return false;
-        }
-        assert_eq!(left.1, right.1, "one transport position must have one settled layout");
-        true
-    });
-    let codegen_seam_facts = symbolic_codegen_seam_facts(backends, &position_layouts, world, boundaries);
-    let mut callable_owners = backends
-        .values()
-        .flat_map(|backend| backend.abi.callable_owners.iter().cloned())
-        .collect::<Vec<_>>();
-    callable_owners.sort_by(|left, right| left.position.semantic_cmp(&right.position, world.types()));
-    callable_owners.dedup_by(|left, right| {
-        if left.position != right.position {
-            return false;
-        }
-        assert_eq!(
-            left.owner, right.owner,
-            "one callable position must have one settled owner"
-        );
-        true
-    });
-    MaterializedTransportPlan {
-        entry: ExecutableSymbol {
-            activation: ActivationSymbol {
-                function: executable.activation.function,
-                arrow: executable.activation.arrow,
-                input: executable.activation.inputs(world.types()).into_boxed_slice(),
-            },
-            need: executable.need,
-        },
-        executable_membership: Box::default(),
-        position_layouts,
-        callable_boundaries: {
-            let mut rows = callables
-                .iter()
-                .map(|(callable, facts)| (*callable, facts.boundary_ids.clone()))
-                .collect::<Vec<_>>();
-            rows.sort_by_key(|(callable, _)| callable.as_u32());
-            rows
-        },
-        boundary_ids: {
-            let mut ids = boundaries.keys().copied().collect::<Vec<_>>();
-            ids.sort_by_key(|boundary| boundary.as_u32());
-            ids
-        },
-        codegen_seam_facts,
-        callable_owners: callable_owners.into_boxed_slice(),
-        callable_facts: callables.clone(),
-        boundary_facts: boundaries.clone(),
-    }
-}
-
-fn symbolic_codegen_seam_facts(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    position_layouts: &[(TransportPosition, TransportLayout)],
-    world: &World,
-    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
-) -> Box<[CodegenSeamFact]> {
-    let mut out = Vec::new();
-    for (position, layout) in position_layouts {
-        let ignore_structural = symbolic_position_structural_lanes_are_ignored(backends, position, world);
-        for physical in world.layout_physical_lanes(*layout) {
-            if ignore_structural && physical.source == PhysicalLaneSource::Structural {
-                continue;
-            }
-            let leaf_shape = physical.structural;
-            let lane = physical.lane;
-            match position {
-                TransportPosition::ExecutableInput {
-                    executable,
-                    semantic_index,
-                } => {
-                    let repr = codegen_repr_for_physical_lane(world, physical);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::FunctionEntry {
-                            executable: executable.clone(),
-                            semantic_index: *semantic_index,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if symbolic_backend_for_executable(backends, executable, world)
-                        .is_some_and(|backend| matches!(backend.body, BackendBody::Extern { .. }))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ExternBoundary {
-                                executable: executable.clone(),
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ExecutableReturn { executable } => {
-                    let repr = codegen_repr_for_physical_lane(world, physical);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ReturnDelivery {
-                            executable: executable.clone(),
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if symbolic_backend_for_executable(backends, executable, world)
-                        .is_some_and(|backend| matches!(backend.body, BackendBody::Extern { .. }))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ExternBoundary {
-                                executable: executable.clone(),
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ResumePayload {
-                    executable,
-                    callsite,
-                    entry,
-                } => {
-                    let repr = block_param_codegen_repr_for_physical_lane(world, physical);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::BlockParam {
-                            executable: executable.clone(),
-                            entry: *entry,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if let Some(callsite) = callsite {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ContinuationEntry {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                                entry: *entry,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ReturnPayload { executable, callsite } => {
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ReturnContinuation {
-                            executable: executable.clone(),
-                            callsite: *callsite,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr: codegen_repr_for_physical_lane(world, physical),
-                    });
-                }
-                TransportPosition::EntryCapture {
-                    executable,
-                    entry,
-                    capture_index,
-                } => {
-                    let repr = block_param_codegen_repr_for_physical_lane(world, physical);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::EntryCapture {
-                            executable: executable.clone(),
-                            entry: *entry,
-                            capture_index: *capture_index,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if let Some(callsite) = symbolic_entry_capture_owner_callsite(backends, executable, position, world)
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ContinuationEntry {
-                                executable: executable.clone(),
-                                callsite,
-                                entry: *entry,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::CallArg {
-                    executable, callsite, ..
-                } => {
-                    if symbolic_backend_for_executable(backends, executable, world)
-                        .and_then(|backend| symbolic_callsite_dest(backend, *callsite))
-                        .is_some_and(|dest| matches!(dest, ControlDestination::Return))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::TailCall {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr: codegen_repr_for_physical_lane(world, physical),
-                        });
-                    }
-                }
-                TransportPosition::Value { .. } => {}
-            }
-        }
-    }
-    for boundary in boundaries.keys().copied() {
-        push_symbolic_boundary_codegen_seams(backends, world, boundary, &boundaries[&boundary], &mut out);
-    }
-    // Same comparator the session's codegen-seam-fact product uses
-    // (`jobs/artifact.rs`), so the plan's facts and the session product share
-    // one canonical order.
-    out.sort_by(|left, right| compare_codegen_seam_facts(left, right, world.types()));
-    out.into_boxed_slice()
-}
-
-fn symbolic_position_structural_lanes_are_ignored(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    position: &TransportPosition,
-    world: &World,
-) -> bool {
-    match position {
-        TransportPosition::ExecutableInput {
-            executable,
-            semantic_index,
-        } => symbolic_backend_for_executable(backends, executable, world)
-            .and_then(|backend| {
-                backend
-                    .abi
-                    .materialized
-                    .runtime_demand
-                    .input_demands
-                    .get(*semantic_index)
-            })
-            .is_some_and(|demand| demand.is_ignore()),
-        TransportPosition::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => symbolic_backend_for_executable(backends, executable, world)
-            .and_then(|backend| backend.abi.materialized.runtime_demand.entry_capture_demands.get(entry))
-            .and_then(|demands| demands.get(*capture_index))
-            .is_some_and(|demand| demand.is_ignore()),
-        TransportPosition::ExecutableReturn { .. }
-        | TransportPosition::ResumePayload { .. }
-        | TransportPosition::ReturnPayload { .. }
-        | TransportPosition::CallArg { .. }
-        | TransportPosition::Value { .. } => false,
-    }
-}
-
-fn push_symbolic_boundary_codegen_seams(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    world: &World,
-    boundary: BoundaryId,
-    facts: &BoundaryFacts,
-    out: &mut Vec<CodegenSeamFact>,
-) {
-    let descr = world.boundary(boundary);
-    let capture_layouts = &world.callable(descr.callable).capture_layouts;
-    for (slot, physical) in capture_layouts
-        .iter()
-        .chain(descr.surface_arg_layouts.iter())
-        .copied()
-        .flat_map(|layout| world.layout_physical_lanes(layout))
-        .enumerate()
-    {
-        out.push(CodegenSeamFact {
-            seam: CodegenSeam::CallableBoundary { boundary, slot },
-            shape: Some(physical.structural),
-            lane: physical.lane,
-            repr: codegen_repr_for_physical_lane(world, physical),
-        });
-    }
-    if facts.publications.is_empty() {
-        return;
-    }
-    out.push(CodegenSeamFact {
-        seam: CodegenSeam::FirstClassPublication { boundary },
-        shape: None,
-        lane: descr.published_value_lane,
-        repr: CodegenLaneRepr::ValueRef,
-    });
-    for publication in facts.publications.iter() {
-        push_symbolic_publication_codegen_seam(backends, world, boundary, publication, descr.published_value_lane, out);
-    }
-}
-
-fn push_symbolic_publication_codegen_seam(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    world: &World,
-    boundary: BoundaryId,
-    publication: &TransportPosition,
-    lane: LaneId,
-    out: &mut Vec<CodegenSeamFact>,
-) {
-    let repr = CodegenLaneRepr::ValueRef;
-    match publication {
-        TransportPosition::ExecutableInput {
-            executable,
-            semantic_index,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::FunctionEntry {
-                executable: executable.clone(),
-                semantic_index: *semantic_index,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite: Some(callsite),
-            entry,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ContinuationEntry {
-                executable: executable.clone(),
-                callsite: *callsite,
-                entry: *entry,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ReturnPayload { executable, callsite } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ReturnContinuation {
-                executable: executable.clone(),
-                callsite: *callsite,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ExecutableReturn { executable } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ReturnDelivery {
-                executable: executable.clone(),
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite: None,
-            entry,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::BlockParam {
-                executable: executable.clone(),
-                entry: *entry,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => {
-            out.push(CodegenSeamFact {
-                seam: CodegenSeam::EntryCapture {
-                    executable: executable.clone(),
-                    entry: *entry,
-                    capture_index: *capture_index,
-                },
-                shape: None,
-                lane,
-                repr,
-            });
-            if let Some(callsite) = symbolic_entry_capture_owner_callsite(backends, executable, publication, world) {
-                out.push(CodegenSeamFact {
-                    seam: CodegenSeam::ContinuationEntry {
-                        executable: executable.clone(),
-                        callsite,
-                        entry: *entry,
-                    },
-                    shape: None,
-                    lane,
-                    repr,
-                });
-            }
-        }
-        TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {
-            let _ = boundary;
-        }
-    }
-}
-
-fn symbolic_backend_for_executable<'a>(
-    backends: &'a HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    executable: &ExecutableSymbol,
-    world: &World,
-) -> Option<&'a BackendExecutable> {
-    backends
-        .values()
-        .find(|backend| executable_symbol(&backend.key, world) == *executable)
-        .map(Rc::as_ref)
-}
-
-fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSymbol {
-    ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: executable.activation.function,
-            arrow: executable.activation.arrow,
-            input: executable.activation.inputs(world.types()).into_boxed_slice(),
-        },
-        need: executable.need,
-    }
-}
-
-fn symbolic_entry_capture_owner_callsite(
-    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
-    executable: &ExecutableSymbol,
-    position: &TransportPosition,
-    world: &World,
-) -> Option<CallSiteId> {
-    let backend = symbolic_backend_for_executable(backends, executable, world)?;
-    let TransportPosition::EntryCapture { entry, .. } = position else {
-        return None;
-    };
-    backend
-        .abi
-        .transport
-        .resume_positions
-        .iter()
-        .find_map(|position| match position {
-            TransportPosition::ResumePayload {
-                entry: resumed,
-                callsite,
-                ..
-            } if resumed == entry => *callsite,
-            _ => None,
-        })
-}
-
-fn symbolic_callsite_dest(backend: &BackendExecutable, callsite: CallSiteId) -> Option<&ControlDestination> {
-    let BackendBody::Clauses { entries, .. } = &backend.body else {
-        return None;
-    };
-    entries.iter().find_map(|entry| match &entry.tail {
-        BackendTail::DirectCall {
-            callsite: candidate,
-            dest,
-            ..
-        }
-        | BackendTail::ClosureCall {
-            callsite: candidate,
-            dest,
-            ..
-        } if *candidate == callsite => Some(dest),
-        _ => None,
-    })
-}
-
-fn raw_codegen_repr_for_lane(world: &World, lane: LaneId) -> Option<CodegenLaneRepr> {
-    let ty = world.lane(lane).ty;
-    if world.types().is_floating(&ty) {
-        Some(CodegenLaneRepr::RawF64)
-    } else if world.types().is_integer(&ty) {
-        Some(CodegenLaneRepr::RawInt)
-    } else if world.types().is_atom_type(&ty) {
-        Some(CodegenLaneRepr::RawAtom)
-    } else {
-        None
-    }
-}
-
-fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
-    raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
-}
-
-fn codegen_repr_for_physical_lane(world: &World, physical: PhysicalLane) -> CodegenLaneRepr {
-    match physical.source {
-        PhysicalLaneSource::Structural => codegen_repr_for_lane(world, physical.lane),
-        PhysicalLaneSource::Carrier => CodegenLaneRepr::ValueRef,
-    }
-}
-
-fn block_param_codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
-    match raw_codegen_repr_for_lane(world, lane) {
-        Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
-        Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
-    }
-}
-
-fn block_param_codegen_repr_for_physical_lane(world: &World, physical: PhysicalLane) -> CodegenLaneRepr {
-    match physical.source {
-        PhysicalLaneSource::Structural => block_param_codegen_repr_for_lane(world, physical.lane),
-        PhysicalLaneSource::Carrier => CodegenLaneRepr::ValueRef,
-    }
-}
-
 struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     world: &'a mut World,
     telemetry: &'tel T,
@@ -1716,18 +1115,6 @@ fn original_entry_id(executable: &AbiReadyExecutable, entry_index: usize) -> Con
         .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
-fn collect_backend_atom_names(world: &mut World, executables: &[Rc<BackendExecutable>]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut atoms = Vec::new();
-    for name in ["nil", "true", "false"] {
-        push_atom(&mut seen, &mut atoms, name);
-    }
-    for executable in executables {
-        collect_executable_atoms(world, executable, &mut seen, &mut atoms);
-    }
-    atoms
-}
-
 fn collect_executable_atoms(
     world: &mut World,
     executable: &BackendExecutable,
@@ -1934,98 +1321,6 @@ fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
     }
 }
 
-/// How many lanes a construction wrapper hands its caller back.
-fn callable_return_lanes(form: BackendCallableReturn) -> usize {
-    match form {
-        BackendCallableReturn::Diverges | BackendCallableReturn::Absent => 0,
-        BackendCallableReturn::ValueRef => 1,
-    }
-}
-
-/// fz-kdt.155 — the two halves of the boxed apply seam are one calling
-/// convention, and this is the only place both halves are in the same room.
-///
-/// A wrapper's public return form is derived from its MEMBERS' return layouts;
-/// a boxed callsite's delivered payload is derived from the CALLSITE's own
-/// demand. Nothing structural forces the two to agree, and when they disagreed
-/// the wrapper wrote its returned value into the register the continuation
-/// reads as its own closure pointer — a corrupt closure handed to
-/// `fz_closure_get_capture_atom`, which the program discovers as a
-/// non-unwinding abort at the FIRST call, on every door. The demand rules that
-/// keep them equal (an exact first-class target contribution retaining each
-/// wrapper member's required return, and `widen_boxed_closure_call_results`
-/// giving a boxed callsite the seam's one lane) span several facts, so the
-/// agreement gets a named invariant here rather than an abort out there.
-///
-/// A closure callsite reaches a wrapper exactly when its callee VALUE travels
-/// in the boxed `ValueRef` carrier — the same condition
-/// `materialize_closure_call_edge` uses to choose the seam over a direct edge
-/// to a named target. An exact-carrier callee is excluded because it needs no
-/// agreement: its result aliases the target executable's own return fact, so
-/// caller and callee read one shape by construction. Among the wrappers, the
-/// ones a boxed callsite could reach are those taking the same number of call
-/// arguments; a wrapper whose every member diverges publishes no lanes because
-/// it never returns at all, and is not a party to the convention.
-fn verify_boxed_apply_seam_return_convention(
-    tel: &impl crate::telemetry::Telemetry,
-    root_id: RootId,
-    program: &BackendProgram,
-) -> Result<(), FatalError> {
-    let mut published: HashMap<usize, Vec<&BackendConstructionWrapper>> = HashMap::new();
-    for wrapper in program.construction_wrappers() {
-        if matches!(wrapper.return_form, BackendCallableReturn::Diverges) {
-            continue;
-        }
-        published.entry(wrapper.call_arity).or_default().push(wrapper);
-    }
-    for executable in program.executables() {
-        let BackendBody::Clauses { entries, .. } = &executable.body else {
-            continue;
-        };
-        for entry in entries {
-            let BackendTail::ClosureCall {
-                callee,
-                args,
-                return_flow,
-                ..
-            } = &entry.tail
-            else {
-                continue;
-            };
-            if !executable
-                .abi
-                .value_layouts
-                .get(callee)
-                .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef(_)))
-            {
-                continue;
-            }
-            let delivered = match return_flow {
-                Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
-                    source.layout.reprs.len()
-                }
-                Some(BackendReturnFlow::Tail) | Some(BackendReturnFlow::NoReturn) | None => continue,
-            };
-            for wrapper in published.get(&args.len()).into_iter().flatten() {
-                let published_lanes = callable_return_lanes(wrapper.return_form);
-                if published_lanes != delivered {
-                    return Err(incomplete_backend_program(
-                        tel,
-                        root_id,
-                        format!(
-                            "boxed closure call in {:?} expects {delivered} delivered lane(s) but construction \
-                             wrapper {:?} it can reach publishes {published_lanes} ({:?}): the two halves of one \
-                             calling convention were compiled against different contracts",
-                            executable.key.activation.function, wrapper.identity, wrapper.return_form,
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn incomplete_backend_program(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -2048,7 +1343,8 @@ mod tests {
     use crate::compiler2::artifact::BackendValueLayout;
     use crate::compiler2::identity::ExecutableNeed;
     use crate::compiler2::pull::TransportCarrier;
-    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol};
+    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, LaneId};
+    use std::collections::BTreeMap;
 
     #[test]
     fn resolve_return_flow_rejects_divergence_contradictions() {
@@ -2100,137 +1396,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn root_carrier_seam_forces_value_ref_for_a_raw_capable_lane() {
-        let mut world = World::new();
-        let int = world.types_mut().int();
-        let lane = world.intern_lane(crate::compiler2::transport::LaneDescr {
-            ty: int,
-            class: crate::compiler2::transport::TransportClass::Value,
-        });
-        let shape = world.intern_shape(ShapeDescr::Lane(lane));
-        let executable = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function: FunctionId::for_test(1),
-                arrow: int,
-                input: Box::default(),
-            },
-            need: ExecutableNeed::Value,
-        };
-        let position = TransportPosition::ExecutableReturn { executable };
-        let structural = symbolic_codegen_seam_facts(
-            &HashMap::new(),
-            &[(position.clone(), TransportLayout::structural(shape))],
-            &world,
-            &HashMap::new(),
-        );
-        let carrier = symbolic_codegen_seam_facts(
-            &HashMap::new(),
-            &[(
-                position,
-                TransportLayout {
-                    structural: shape,
-                    carrier: TransportCarrier::ValueRef(lane),
-                },
-            )],
-            &world,
-            &HashMap::new(),
-        );
-
-        assert_eq!(structural[0].repr, CodegenLaneRepr::RawInt);
-        assert_eq!(carrier[0].repr, CodegenLaneRepr::ValueRef);
-        assert_eq!(structural[0].lane, carrier[0].lane);
-    }
-
-    #[test]
-    fn callable_boundary_seams_preserve_capture_and_argument_carrier_provenance() {
-        let mut world = World::new();
-        let float = world.types_mut().float();
-        let lane = world.intern_lane(crate::compiler2::transport::LaneDescr {
-            ty: float,
-            class: crate::compiler2::transport::TransportClass::Value,
-        });
-        let shape = world.intern_shape(ShapeDescr::Lane(lane));
-        let callable = world.intern_callable(crate::compiler2::transport::CallableDescr {
-            function: Some(FunctionId::for_test(1)),
-            arity: 0,
-            capture_tys: vec![float].into_boxed_slice(),
-            capture_layouts: vec![TransportLayout {
-                structural: shape,
-                carrier: TransportCarrier::ValueRef(lane),
-            }]
-            .into_boxed_slice(),
-        });
-        let boundary = world.intern_boundary(crate::compiler2::transport::BoundaryDescr {
-            callable,
-            surface_arg_layouts: vec![
-                TransportLayout::structural(shape),
-                TransportLayout {
-                    structural: shape,
-                    carrier: TransportCarrier::ValueRef(lane),
-                },
-            ]
-            .into_boxed_slice(),
-            published_value_lane: lane,
-        });
-        let boundaries = HashMap::from([(
-            boundary,
-            BoundaryFacts {
-                publications: Box::default(),
-                resolutions: Box::default(),
-            },
-        )]);
-
-        let seams = symbolic_codegen_seam_facts(&HashMap::new(), &[], &world, &boundaries);
-        let boundary_seams = seams
-            .iter()
-            .filter(
-                |fact| matches!(fact.seam, CodegenSeam::CallableBoundary { boundary: found, .. } if found == boundary),
-            )
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            boundary_seams.len(),
-            3,
-            "duplicate physical lane occurrences remain positional"
-        );
-        assert!(
-            boundary_seams
-                .iter()
-                .all(|fact| fact.lane == lane && fact.shape == Some(shape))
-        );
-        assert_eq!(
-            boundary_seams
-                .iter()
-                .map(|fact| match fact.seam {
-                    CodegenSeam::CallableBoundary { slot, .. } => slot,
-                    _ => unreachable!(),
-                })
-                .collect::<Vec<_>>(),
-            vec![0, 1, 2],
-            "repeated lane identities remain distinct physical occurrences",
-        );
-        assert_eq!(
-            boundary_seams
-                .iter()
-                .filter(|fact| fact.repr == CodegenLaneRepr::ValueRef)
-                .count(),
-            2,
-            "the capture and carrier-bearing argument must remain ValueRef",
-        );
-        assert_eq!(
-            boundary_seams
-                .iter()
-                .filter(|fact| fact.repr == CodegenLaneRepr::RawF64)
-                .count(),
-            1,
-            "the structural argument of the same Ty remains raw",
-        );
-    }
-
     /// FIX-1 of the fz-kdt.155 re-refutation: the seam tripwire's REFUSING
-    /// half must have a witness -- neutering `verify_boxed_apply_seam_return_
-    /// convention` shipped green through every gate (the fz-kdt.157 pattern).
+    /// half must have a witness: removing the calling-convention invariant
+    /// shipped green through every gate (the fz-kdt.157 pattern).
     /// A hand-built program with one Absent wrapper and one boxed closure
     /// call delivering a lane is the mismatch `a_mixed` hits when the
     /// producer half is reverted; agreement (ValueRef wrapper) must pass.
@@ -2319,31 +1487,31 @@ mod tests {
                 selection: None,
             });
             executable.construction_wrappers = vec![Rc::clone(&wrapper)].into_boxed_slice();
+            executable.boxed_apply_requirements =
+                super::super::super::backend_program::boxed_contract::BoxedApplyRequirement::for_body(
+                    &executable.body,
+                    &executable.abi,
+                );
             BackendProgram::new(
                 key,
                 Vec::new(),
                 BTreeMap::new(),
                 vec![Rc::new(executable)],
-                vec![wrapper],
+                Vec::new(),
+                world.types(),
             )
         };
 
         assert!(
-            verify_boxed_apply_seam_return_convention(
-                &tel,
-                RootId::for_test(0),
-                &program(BackendCallableReturn::Absent)
-            )
-            .is_err(),
+            program(BackendCallableReturn::Absent)
+                .validate_boxed_contract(&tel, RootId::for_test(0))
+                .is_err(),
             "a boxed call delivering one lane must refuse an Absent wrapper it can reach"
         );
         assert!(
-            verify_boxed_apply_seam_return_convention(
-                &tel,
-                RootId::for_test(0),
-                &program(BackendCallableReturn::ValueRef)
-            )
-            .is_ok(),
+            program(BackendCallableReturn::ValueRef)
+                .validate_boxed_contract(&tel, RootId::for_test(0))
+                .is_ok(),
             "agreement at one lane must pass"
         );
     }

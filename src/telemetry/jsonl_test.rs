@@ -570,14 +570,14 @@ fn product_dependency_reads_identify_both_the_owner_and_the_product() {
     for owner in [7, 8] {
         let dependency = FactUse::settled(DependencyKey::Product(ProductAddress {
             root: RootId::for_test(owner),
-            key: ProductKey::RootBackendContent(RootId::for_test(9)),
+            key: ProductKey::RootBackendProduct(RootId::for_test(9)),
         }));
         let mut body = String::new();
         write_dependency_use_identity(&mut body, &dependency);
         assert_eq!(
             body,
             format!(
-                "{{\"use\":\"settled\",\"kind\":\"Product\",\"root_id\":{owner},\"product\":{{\"kind\":\"root_backend_content\",\"root_id\":9}}}}"
+                "{{\"use\":\"settled\",\"kind\":\"Product\",\"root_id\":{owner},\"product\":{{\"kind\":\"root_backend_product\",\"root_id\":9}}}}"
             )
         );
     }
@@ -639,7 +639,7 @@ fn product_movements_are_public_causal_events() {
         movements: vec![FactMovement {
             key: DependencyKey::Product(ProductAddress {
                 root: RootId::for_test(7),
-                key: ProductKey::RootBackendContent(RootId::for_test(7)),
+                key: ProductKey::RootBackendProduct(RootId::for_test(7)),
             }),
             state: FactState {
                 revision: Some(3),
@@ -657,7 +657,7 @@ fn product_movements_are_public_causal_events() {
     assert_eq!(events.len(), 1, "each product movement has one causal record");
     assert_eq!(
         events[0]["metadata"]["step"]["movements"][0]["product"]["kind"],
-        "root_backend_content"
+        "root_backend_product"
     );
     assert_eq!(events[0]["metadata"]["step"]["movements"][0]["revision"], 3);
 }

@@ -1769,11 +1769,11 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
-        push_u64(out, answer.program.executables().len() as u64);
+        push_u64(out, answer.executables().len() as u64);
         out.push(',');
         write_str_lit(out, "construction_wrappers");
         out.push(':');
-        push_u64(out, answer.program.construction_wrappers().len() as u64);
+        push_u64(out, answer.construction_wrappers().len() as u64);
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");
@@ -2414,15 +2414,17 @@ fn write_applied_step_body(
 fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductKey) {
     use crate::compiler2::ProductKey;
     match key {
-        ProductKey::RootBackendProduct(root)
-        | ProductKey::RootBackendContent(root)
-        | ProductKey::NativeProgram(root) => write_root_id(out, *root),
+        ProductKey::RootBackendProduct(root) | ProductKey::NativeProgram(root) => write_root_id(out, *root),
         ProductKey::BackendExecutable(executable)
         | ProductKey::AbiExecutable(executable)
         | ProductKey::MaterializedExecutable(executable)
         | ProductKey::ExecutableEffects(executable) => write_executable_key(out, executable),
         ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) => {
             write_transport_position_field(out, position);
+        }
+        ProductKey::StructSchema(module) => {
+            out.push_str(",\"module_id\":");
+            push_u64(out, module.as_u32() as u64);
         }
     }
 }

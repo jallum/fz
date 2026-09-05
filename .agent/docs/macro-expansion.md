@@ -132,7 +132,7 @@ The shared recursive walk does three things:
 
 3. Run the macro and recurse on its result.
    `expand_macro_invocation(...)` reads `FunctionDefined(function)` and the
-   hidden root's retained `RootBackendContent(root)`, projects
+   hidden root's retained `RootBackendProduct(root)`, projects
    `__CALLER__` from the current `ScopeSnapshot`, runs the macro, emits
    telemetry, and then immediately re-enters expansion on the returned root.
 
@@ -188,13 +188,13 @@ silently reaching body lowering.
 `World::macro_root(function)` names a hidden compile-time root.
 `Compiler2` retains its `PullSession` in `ProductSessions`; the session's
 `ProductMemo` owns `RootBackendProduct(root)` and its shared backend program.
-`RootBackendContent(root)` exposes that same allocation to the macro caller.
+The macro caller uses that same backend allocation.
 
 Source jobs record exact product reads and waits through `DependencyKey`.
 The scheduler reads product readiness and generations from the retained memo,
 and a named wait drives the ordinary product loop. Equal backend reproduction
-preserves its allocation and generation, including when transport metadata
-changes. An unchanged content value therefore leaves source consumers quiet.
+preserves its allocation and generation. An unchanged backend answer therefore
+leaves source consumers quiet.
 
 Macro execution consumes this interpreter-ready content directly. Native
 lowering is requested only by native front doors.
@@ -303,7 +303,7 @@ fn main(), do: answer()
 1. reserves `make_answer/0`
 2. publishes its raw `FunctionSource`
 3. hits `make_answer()`
-4. waits for the hidden macro root's `RootBackendContent` if needed
+4. waits for the hidden macro root's `RootBackendProduct` if needed
 5. runs the macro and gets quoted `fn answer(), do: 42`
 6. applies that fragment as source
 7. publishes `answer/0`, then `main/0`
@@ -322,7 +322,7 @@ fn main(), do: inc(41)
 Later, `DefineFunction(main)` triggers `ExpandFunctionSource(main)`:
 
 1. find `inc(41)` in the `do:` body
-2. wait for the hidden macro root's `RootBackendContent` if needed
+2. wait for the hidden macro root's `RootBackendProduct` if needed
 3. run the macro with `__CALLER__` and quoted arg `41`
 4. get quoted `41 + 1`
 5. recurse on the result until stable

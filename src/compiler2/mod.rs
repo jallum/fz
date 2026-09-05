@@ -1,5 +1,6 @@
 mod agenda;
 mod artifact;
+mod backend_program;
 mod body;
 pub(crate) mod callsite_dispatch;
 mod canon;
@@ -35,6 +36,7 @@ mod runtime;
 mod scheduler;
 mod scope;
 mod semantic;
+mod shared_order;
 mod source;
 mod source_diagnostics;
 mod source_publish;

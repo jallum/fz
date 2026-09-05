@@ -295,7 +295,7 @@ impl<'a> ProgramCanon<'a> {
         out.section("atoms", atoms);
         if !program.struct_schemas.is_empty() {
             out.enter("struct_schemas");
-            for (name, fields) in &program.struct_schemas {
+            for (name, fields) in program.struct_schemas.entries() {
                 out.put(&format!("{name} [{}]", fields.join(", ")));
             }
             out.exit();

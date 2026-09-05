@@ -301,7 +301,7 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
         fact_wait_budget,
     )?;
     match value {
-        ProductValue::RootBackendProduct(answer) => Ok(Rc::clone(&answer.program)),
+        ProductValue::RootBackendProduct(answer) => Ok(Rc::clone(&answer)),
         value => panic!("backend root product produced unexpected value {value:?}"),
     }
 }

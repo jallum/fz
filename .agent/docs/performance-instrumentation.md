@@ -100,7 +100,7 @@ external product changes or readiness propagation. Its changes, movements,
 wakes, and blocked dependencies use the same renderer as job completions and
 quiescence. Equal product reproduction retains its allocation and generation,
 so consumers see no value movement. Macro expansion reads
-`RootBackendContent(macro_root)` directly. Successful native production is measured by
+`RootBackendProduct(macro_root)` directly. Successful native production is measured by
 `NativeProgram(root)` settlement and `native_program.reusable_cons`.
 
 A failed direct product request returns `DriveOutcome::DependencyFailed`.

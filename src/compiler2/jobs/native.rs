@@ -52,9 +52,9 @@ pub(crate) fn produce_native_program(
     context: &mut ProductReadContext<'_>,
     root_id: RootId,
 ) -> PullOutcome {
-    let backend_key = ProductKey::RootBackendContent(root_id);
+    let backend_key = ProductKey::RootBackendProduct(root_id);
     let backend = match context.read_product(telemetry, backend_key.clone(), world.types()) {
-        Some(ProductValue::RootBackendContent(backend)) => Rc::clone(backend),
+        Some(ProductValue::RootBackendProduct(backend)) => Rc::clone(backend),
         Some(value) => panic!("root backend content produced unexpected value {value:?}"),
         None => return PullOutcome::wait_on_product(backend_key),
     };
@@ -121,7 +121,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Self, FatalError> {
         let mut atom_ids = HashMap::new();
         for (index, atom) in program.atom_names.iter().enumerate() {
-            atom_ids.insert(atom.clone(), index as u32);
+            atom_ids.insert(atom.as_ref().clone(), index as u32);
         }
         for atom in ["function_clause", "match_error"] {
             if !atom_ids.contains_key(atom) {
@@ -181,7 +181,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .map(|member| NativeConstructionMember {
                     boundary: member.boundary,
                     target_fn: executable_fns[program
-                        .executable_index(&member.target)
+                        .executable_index(&member.target, world.types())
                         .expect("construction target belongs to program")],
                     target: member.target.clone(),
                     surface_inputs: member.surface_inputs.clone(),
@@ -323,7 +323,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .executable_fns
             .get(
                 self.program
-                    .executable_index(self.program.entry())
+                    .executable_index(self.program.entry(), self.world.types())
                     .expect("native entry belongs to program"),
             )
             .expect("native entry executable should exist");
@@ -347,7 +347,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .enumerate()
             .map(|(index, decl)| (decl.id, index))
             .collect();
-        module.struct_schemas = self.program.struct_schemas.clone();
+        module.struct_schemas = self
+            .program
+            .struct_schemas
+            .entries()
+            .map(|(name, fields)| (name.as_ref().clone(), fields.as_ref().clone()))
+            .collect();
         let mut program = NativeProgram {
             entry,
             module,
@@ -543,7 +548,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         args: &[Var],
     ) -> Result<(), FatalError> {
         let member = boundary.members.get(member_index).ok_or(FatalError)?;
-        let target_index = self.program.executable_index(&member.target).ok_or(FatalError)?;
+        let target_index = self
+            .program
+            .executable_index(&member.target, self.world.types())
+            .ok_or(FatalError)?;
         let target = &self.program.executables()[target_index];
         let mut values = vec![
             None;
@@ -1465,7 +1473,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             "native direct-only closure call did not settle an exact local target",
                         )
                     })?;
-                    let target = self.program.executable_index(target).ok_or(FatalError)?;
+                    let target = self
+                        .program
+                        .executable_index(target, self.world.types())
+                        .ok_or(FatalError)?;
                     let callee_executable = &self.program.executables()[target];
                     let mut call_args = capture_lanes;
                     let mut direct_ok = true;
@@ -1905,7 +1916,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<(DirectCallTarget, Vec<Var>), FatalError> {
         match callee {
             CallTarget::Local(callee) => {
-                let callee = self.program.executable_index(callee).ok_or(FatalError)?;
+                let callee = self
+                    .program
+                    .executable_index(callee, self.world.types())
+                    .ok_or(FatalError)?;
                 let callee_executable = &self.program.executables()[callee];
                 let mut lanes = Vec::new();
                 for (semantic_index, arg) in args.iter().enumerate() {
@@ -3670,7 +3684,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let Some(target) = target else {
             return Ok(None);
         };
-        let target = self.program.executable_index(target).ok_or(FatalError)?;
+        let target = self
+            .program
+            .executable_index(target, self.world.types())
+            .ok_or(FatalError)?;
         let executable = &self.program.executables()[target];
         let capture_inputs_end = executable
             .key
@@ -4474,7 +4491,7 @@ fn collect_extern_marshals_in_tail(
 }
 
 fn collect_extern_marshals_for_call_target(
-    _world: &World,
+    world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     program: &BackendProgram,
@@ -4483,7 +4500,7 @@ fn collect_extern_marshals_for_call_target(
     out: &mut HashMap<usize, Vec<ExternTy>>,
 ) -> Result<(), FatalError> {
     if let CallTarget::Local(key) = callee
-        && let Some(callee) = program.executable_index(key)
+        && let Some(callee) = program.executable_index(key, world.types())
         && matches!(program.executables()[callee].body, BackendBody::Extern { .. })
     {
         let signature = match &program.executables()[callee].body {

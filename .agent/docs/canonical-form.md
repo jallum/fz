@@ -107,7 +107,9 @@ Built on `canon(Ty)`, by four rules:
   entry, call targets, wrappers, and construction references. These references
   remain typed keys in the retained bodies. Rendering neither renumbers nor
   rewrites the real structures; runtime ordinal lookups are a separate consumer
-  projection of the immutable program inventory.
+  projection of the persistent ordered program inventory. Updating a root
+  contribution shares untouched collection branches; canonical rendering walks
+  the snapshot only when a caller requests a dump.
 
   Two entries that render the same tie fall back to published order, so that
   order must also be semantic. `SemanticOrd<Types>` is the single typed owner

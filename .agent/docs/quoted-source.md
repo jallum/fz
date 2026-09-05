@@ -212,14 +212,14 @@
   before `Mod` is defined, but a demanded body that calls such a binding waits
   for the provider `ModuleDefined` fact before staged expansion can continue.
   Once the provider surface is known, import binds the real exported symbol
-  kind. Invoking an imported macro reads its retained `RootBackendContent`.
+  kind. Invoking an imported macro reads its retained `RootBackendProduct`.
 - `require Mod` selects the requested macro exports from `ModuleInterface`
   (`only:` or all macros minus `except:`). An exact `only:` list can reserve
   macro identities before the interface is ready. It records those function ids as
   required in the source session. It does not import bare names; only required
   remote macro calls such as `Mod.m(...)` are available to source expansion.
 - Source-order item macro calls expand through the same
-  retained `RootBackendContent(root)` product as expression macros. The returned root is
+  retained `RootBackendProduct(root)` product as expression macros. The returned root is
   read as a source fragment, local definitions are reserved, and the fragment is
   applied immediately in source order.
 - Remote calls to user modules may wait for the provider `ModuleDefined` fact
@@ -239,7 +239,7 @@
 ## Macro Runtime
 
 - A macro invocation reads `FunctionDefined(function)` and its hidden root's
-  `RootBackendContent(root)`. `Compiler2` retains macro and user root sessions
+  `RootBackendProduct(root)`. `Compiler2` retains macro and user root sessions
   in `ProductSessions`; each session's `ProductMemo` owns its backend products.
   Source consumers record typed product reads and waits in the ordinary
   scheduler, whose product readiness comes directly from that memo. Equal
@@ -250,7 +250,7 @@
   published `Activation` fact value.
 - A runtime root is `RootKind::Runtime`. Runtime roots reject macro entry
   functions during `SeedRoot`. Compile-time macro roots pull
-  `RootBackendContent` through `RootBackendProduct` and execute the shared
+  `RootBackendProduct` and execute the shared
   interpreter-ready backend handle.
 - `LowerFunction` and `PlanEntryDispatch` are shared by runtime functions and
   macros. The difference is the hidden compile-time ABI slot, not a second

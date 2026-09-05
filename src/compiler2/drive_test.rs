@@ -2524,12 +2524,12 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.struct_schemas.get("Point").map(Vec::as_slice),
+        program.schema("Point").map(Vec::as_slice),
         Some(["x".to_string(), "y".to_string()].as_slice()),
         "Point's schema should be the declared defstruct order, not the literal's write order"
     );
     assert_eq!(
-        program.struct_schemas.get("Pair").map(Vec::as_slice),
+        program.schema("Pair").map(Vec::as_slice),
         Some(["first".to_string(), "second".to_string()].as_slice()),
         "Pair's schema should be present from the fact store even though it is only ever pattern-destructured"
     );
@@ -2565,12 +2565,7 @@ fn compiler2_backend_keeps_a_struct_named_only_by_a_retained_type_predicate() {
     );
 
     assert_eq!(
-        backend
-            .last(root)
-            .program
-            .struct_schemas
-            .get("Packet")
-            .map(Vec::as_slice),
+        backend.last(root).program.schema("Packet").map(Vec::as_slice),
         Some(["value".to_string()].as_slice()),
         "the retained entry predicate must carry Packet's typed schema dependency even without a Struct step"
     );
@@ -2620,7 +2615,7 @@ fn compiler2_main_root_keeps_its_struct_schema_independent_of_a_macro_root() {
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.struct_schemas.get("Widget").map(Vec::as_slice),
+        program.schema("Widget").map(Vec::as_slice),
         Some(["label".to_string(), "count".to_string()].as_slice()),
         "the runtime root must retain its exact Widget schema (in declaration order) even though an \
          independently driven macro root touches no structs in the shared World",
@@ -4141,7 +4136,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     );
 
     let (_, main_exec) = backend_executable(&program, main_id);
-    let call = backend_direct_call(main_exec, &program, qsort_id);
+    let call = backend_direct_call(main_exec, qsort_id);
     match call {
         BackendTail::DirectCall { target, args, .. } => {
             let CallEdge::Direct(direct) = target else {
@@ -4207,7 +4202,7 @@ fn main(), do: inc(41)
     let main_id = function_id(&functions, "main", 0);
     let inc_id = function_id(&functions, "inc", 1);
     let (_, main_exec) = backend_executable(&program, main_id);
-    let call = backend_direct_call(main_exec, &program, inc_id);
+    let call = backend_direct_call(main_exec, inc_id);
     let BackendTail::DirectCall {
         target: CallEdge::Direct(target),
         ..
@@ -4534,7 +4529,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
         other => panic!("expected backend extern body for libc::open, got {other:?}"),
     }
 
-    let call = backend_direct_call(main_exec, &program, open_id);
+    let call = backend_direct_call(main_exec, open_id);
     match call {
         BackendTail::DirectCall { target, args, .. } => {
             let CallEdge::Direct(direct) = target else {
@@ -16273,7 +16268,7 @@ impl BackendProgramCapture {
                     defs.borrow_mut().push(BackendProgramRecord {
                         root_id: *root,
                         changed: settlement.changed,
-                        program: Rc::clone(&answer.program),
+                        program: Rc::clone(answer),
                     });
                 }
             },
@@ -16598,16 +16593,12 @@ fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize,
         .unwrap_or_else(|| panic!("backend executable for {function:?}"))
 }
 
-fn backend_direct_call<'a>(
-    executable: &'a crate::compiler2::BackendExecutable,
-    program: &'a BackendProgram,
-    callee: FunctionId,
-) -> &'a BackendTail {
+fn backend_direct_call(executable: &crate::compiler2::BackendExecutable, callee: FunctionId) -> &BackendTail {
     match &executable.body {
         crate::compiler2::BackendBody::Extern { .. } => panic!("expected clause body with a direct call"),
         crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
-                if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, program, callee) {
+                if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, callee) {
                     return found;
                 }
             }
@@ -16616,31 +16607,21 @@ fn backend_direct_call<'a>(
     }
 }
 
-fn backend_direct_call_in_entry<'a>(
-    entries: &'a [BackendEntry],
+fn backend_direct_call_in_entry(
+    entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
-    program: &'a BackendProgram,
     callee: FunctionId,
-) -> Option<&'a BackendTail> {
+) -> Option<&BackendTail> {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
         BackendTail::DirectCall {
             target: CallEdge::Direct(target),
             ..
-        } if program.executables()[program
-            .executable_index(local_call_target(&target.callee))
-            .expect("a backend direct target belongs to its program")]
-        .key
-        .activation
-        .function
-            == callee =>
-        {
-            Some(&entry.tail)
-        }
+        } if local_call_target(&target.callee).activation.function == callee => Some(&entry.tail),
         BackendTail::If {
             then_entry, else_entry, ..
-        } => backend_direct_call_in_entry(entries, *then_entry, program, callee)
-            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
+        } => backend_direct_call_in_entry(entries, *then_entry, callee)
+            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, callee)),
         _ => None,
     }
 }

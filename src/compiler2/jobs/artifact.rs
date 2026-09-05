@@ -4,7 +4,6 @@
 //! producer names the exact fact or product it needs instead of deriving a
 //! root-wide projection stack.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -42,8 +41,7 @@ use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSumm
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
 use super::super::transport::{
-    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId,
-    PhysicalLaneSource, ShapeId, TransportPosition,
+    ActivationSymbol, ExecutableSymbol, LaneId, PhysicalLaneSource, ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -126,8 +124,7 @@ pub(crate) fn produce_materialized_executable_product(
         return PullOutcome::Waiting(waits);
     }
     let transport = materialized_executable_transport(position_layouts, executable, world.types());
-    let codegen_seam_facts = Box::default();
-    let transport_plan = transport_lookup(&transport.position_layouts, &codegen_seam_facts);
+    let transport_plan = transport_lookup(&transport.position_layouts);
     let call_edges = materialize_call_edges(
         world,
         tel,
@@ -379,8 +376,7 @@ pub(crate) fn produce_abi_executable_product(
         return PullOutcome::Waiting(waits);
     }
     let transport = transport.expect("complete transport reads must construct the ABI transport");
-    let codegen_seam_facts = Box::default();
-    let transport_plan = transport_lookup(&transport.position_layouts, &codegen_seam_facts);
+    let transport_plan = transport_lookup(&transport.position_layouts);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport, &transport_plan);
     let abi = Rc::new(
         build_abi_executable(
@@ -467,17 +463,10 @@ fn materialized_executable_transport(
 
 struct ArtifactTransportLookup<'a> {
     positions: &'a [(TransportPosition, TransportLayout)],
-    codegen_seam_facts: &'a [CodegenSeamFact],
 }
 
-fn transport_lookup<'a>(
-    positions: &'a [(TransportPosition, TransportLayout)],
-    codegen_seam_facts: &'a [CodegenSeamFact],
-) -> ArtifactTransportLookup<'a> {
-    ArtifactTransportLookup {
-        positions,
-        codegen_seam_facts,
-    }
+fn transport_lookup<'a>(positions: &'a [(TransportPosition, TransportLayout)]) -> ArtifactTransportLookup<'a> {
+    ArtifactTransportLookup { positions }
 }
 
 impl ArtifactTransportLookup<'_> {
@@ -485,81 +474,6 @@ impl ArtifactTransportLookup<'_> {
         self.positions
             .iter()
             .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
-    }
-}
-
-/// Canonical packaging order for the codegen-seam facts of one root: seam kind,
-/// then the owner the seam hangs off, then the seam's own structural
-/// discriminants, then the lane it names.
-pub(crate) fn compare_codegen_seam_facts(left: &CodegenSeamFact, right: &CodegenSeamFact, types: &Types) -> Ordering {
-    let (left_kind, left_owner, left_second, left_third) = codegen_seam_parts(&left.seam);
-    let (right_kind, right_owner, right_second, right_third) = codegen_seam_parts(&right.seam);
-    left_kind
-        .cmp(&right_kind)
-        .then_with(|| compare_codegen_seam_owners(&left_owner, &right_owner, types))
-        .then_with(|| left_second.cmp(&right_second))
-        .then_with(|| left_third.cmp(&right_third))
-        .then_with(|| shape_rank(left.shape).cmp(&shape_rank(right.shape)))
-        .then_with(|| left.lane.as_u32().cmp(&right.lane.as_u32()))
-        .then_with(|| codegen_lane_repr_rank(left.repr).cmp(&codegen_lane_repr_rank(right.repr)))
-}
-
-/// What a codegen seam hangs off. Executable-owned seams lead; the seam KIND
-/// already separates the two, so this only ever compares like with like.
-enum CodegenSeamOwner<'a> {
-    Executable(&'a ExecutableSymbol),
-    Boundary(BoundaryId),
-}
-
-fn compare_codegen_seam_owners(left: &CodegenSeamOwner<'_>, right: &CodegenSeamOwner<'_>, types: &Types) -> Ordering {
-    match (left, right) {
-        (CodegenSeamOwner::Executable(left), CodegenSeamOwner::Executable(right)) => left.semantic_cmp(right, types),
-        (CodegenSeamOwner::Executable(_), CodegenSeamOwner::Boundary(_)) => Ordering::Less,
-        (CodegenSeamOwner::Boundary(_), CodegenSeamOwner::Executable(_)) => Ordering::Greater,
-        (CodegenSeamOwner::Boundary(left), CodegenSeamOwner::Boundary(right)) => left.as_u32().cmp(&right.as_u32()),
-    }
-}
-
-/// A seam's kind rank, its owner, and the two structural discriminants that
-/// separate seams of one kind on one owner.
-fn codegen_seam_parts(seam: &CodegenSeam) -> (u8, CodegenSeamOwner<'_>, u32, u32) {
-    use CodegenSeamOwner::{Boundary, Executable};
-    match seam {
-        CodegenSeam::FunctionEntry {
-            executable,
-            semantic_index,
-        } => (0, Executable(executable), *semantic_index as u32, 0),
-        CodegenSeam::BlockParam { executable, entry } => (1, Executable(executable), entry.as_u32(), 0),
-        CodegenSeam::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => (2, Executable(executable), entry.as_u32(), *capture_index as u32),
-        CodegenSeam::ReturnDelivery { executable } => (3, Executable(executable), 0, 0),
-        CodegenSeam::ContinuationEntry {
-            executable,
-            callsite,
-            entry,
-        } => (4, Executable(executable), callsite.as_u32(), entry.as_u32()),
-        CodegenSeam::ReturnContinuation { executable, callsite } => (5, Executable(executable), callsite.as_u32(), 0),
-        CodegenSeam::TailCall { executable, callsite } => (6, Executable(executable), callsite.as_u32(), 0),
-        CodegenSeam::CallableBoundary { boundary, slot } => (7, Boundary(*boundary), *slot as u32, 0),
-        CodegenSeam::ExternBoundary { executable } => (8, Executable(executable), 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (9, Boundary(*boundary), 0, 0),
-    }
-}
-
-/// A seam without a shape sorts after every seam that has one.
-fn shape_rank(shape: Option<ShapeId>) -> u32 {
-    shape.map(ShapeId::as_u32).unwrap_or(u32::MAX)
-}
-
-fn codegen_lane_repr_rank(repr: CodegenLaneRepr) -> u8 {
-    match repr {
-        CodegenLaneRepr::ValueRef => 0,
-        CodegenLaneRepr::RawInt => 1,
-        CodegenLaneRepr::RawF64 => 2,
-        CodegenLaneRepr::RawAtom => 3,
     }
 }
 
@@ -1827,33 +1741,15 @@ fn build_executable_abi_plan(
         .input_positions
         .iter()
         .filter_map(|position| {
-            let TransportPosition::ExecutableInput {
-                executable: symbol,
-                semantic_index,
-            } = position
-            else {
+            let TransportPosition::ExecutableInput { semantic_index, .. } = position else {
                 return None;
             };
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
             let shape = layout.structural;
-            let contract = physical_layout_contract(world, layout, |world, leaf_shape, lane| {
-                seam_repr_for_lane_or_default(
-                    world,
-                    transport_plan.codegen_seam_facts,
-                    |seam| {
-                        matches!(
-                            seam,
-                            CodegenSeam::FunctionEntry {
-                                executable,
-                                semantic_index: index
-                            } if executable == symbol && index == semantic_index
-                        )
-                    },
-                    Some(leaf_shape),
-                    lane,
-                )
+            let contract = physical_layout_contract(world, layout, |world, _, lane| {
+                abi_value_repr(world, world.lane(lane).ty)
             });
             Some(BackendSemanticInputLayout {
                 semantic_index: *semantic_index,
@@ -1875,20 +1771,8 @@ fn build_executable_abi_plan(
     let return_layout = transport_plan
         .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
-    let return_contract = physical_layout_contract(world, return_layout, |world, leaf_shape, lane| {
-        seam_repr_for_lane_or_default(
-            world,
-            transport_plan.codegen_seam_facts,
-            |seam| {
-                matches!(
-                    seam,
-                    CodegenSeam::ReturnDelivery { executable: symbol }
-                        if symbol == &transport.executable
-                )
-            },
-            Some(leaf_shape),
-            lane,
-        )
+    let return_contract = physical_layout_contract(world, return_layout, |world, _, lane| {
+        abi_value_repr(world, world.lane(lane).ty)
     });
     let mut value_layouts: HashMap<ValueId, BackendValueLayout> = transport
         .value_positions
@@ -1937,8 +1821,8 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized return endpoint {position:?}"));
-            let contract = physical_layout_contract(world, layout, |world, leaf_shape, lane| {
-                endpoint_seam_repr(world, transport_plan.codegen_seam_facts, position, leaf_shape, lane)
+            let contract = physical_layout_contract(world, layout, |world, _, lane| {
+                abi_value_repr(world, world.lane(lane).ty)
             });
             (
                 position.clone(),
@@ -2005,58 +1889,6 @@ fn build_abi_executable(
     })
 }
 
-fn endpoint_seam_repr(
-    world: &mut World,
-    facts: &[super::super::transport::CodegenSeamFact],
-    position: &TransportPosition,
-    shape: ShapeId,
-    lane: super::super::transport::LaneId,
-) -> AbiValueRepr {
-    seam_repr_for_lane_or_default(
-        world,
-        facts,
-        |seam| match (position, seam) {
-            (
-                TransportPosition::ExecutableReturn { executable },
-                CodegenSeam::ReturnDelivery { executable: candidate },
-            ) => executable == candidate,
-            (
-                TransportPosition::ReturnPayload { executable, callsite },
-                CodegenSeam::ReturnContinuation {
-                    executable: candidate,
-                    callsite: candidate_callsite,
-                },
-            ) => executable == candidate && callsite == candidate_callsite,
-            (
-                TransportPosition::ResumePayload {
-                    executable,
-                    callsite: Some(callsite),
-                    entry,
-                },
-                CodegenSeam::ContinuationEntry {
-                    executable: candidate,
-                    callsite: candidate_callsite,
-                    entry: candidate_entry,
-                },
-            ) => executable == candidate && callsite == candidate_callsite && entry == candidate_entry,
-            (
-                TransportPosition::ResumePayload {
-                    executable,
-                    callsite: None,
-                    entry,
-                },
-                CodegenSeam::BlockParam {
-                    executable: candidate,
-                    entry: candidate_entry,
-                },
-            ) => executable == candidate && entry == candidate_entry,
-            _ => false,
-        },
-        Some(shape),
-        lane,
-    )
-}
-
 pub(super) fn physical_layout_contract(
     world: &mut World,
     layout: TransportLayout,
@@ -2074,32 +1906,6 @@ pub(super) fn physical_layout_contract(
             (ty, repr)
         })
         .collect()
-}
-
-fn seam_repr_for_lane_or_default(
-    world: &mut World,
-    facts: &[super::super::transport::CodegenSeamFact],
-    seam_matches: impl Fn(&CodegenSeam) -> bool,
-    shape: Option<ShapeId>,
-    lane: LaneId,
-) -> AbiValueRepr {
-    facts
-        .iter()
-        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
-        .map(|fact| abi_repr_from_codegen(fact.repr))
-        .unwrap_or_else(|| {
-            let ty = world.lane(lane).ty;
-            abi_value_repr(world, ty)
-        })
-}
-
-fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
-    match repr {
-        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
-        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
-        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
-        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
-    }
 }
 
 fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
@@ -2351,11 +2157,7 @@ mod tests {
         } else {
             Vec::new()
         };
-        let codegen_seam_facts = Vec::new();
-        let transport_plan = ArtifactTransportLookup {
-            positions: &positions,
-            codegen_seam_facts: &codegen_seam_facts,
-        };
+        let transport_plan = ArtifactTransportLookup { positions: &positions };
         let callee_layout = TransportLayout {
             structural: world.intern_shape(ShapeDescr::Nothing),
             carrier,

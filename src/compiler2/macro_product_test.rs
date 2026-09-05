@@ -66,7 +66,7 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "answer", 0);
     let macro_root = compiler.world_mut().macro_root(function);
     assert_eq!(
-        compiler.retained_product_generation(macro_root, &ProductKey::RootBackendContent(macro_root)),
+        compiler.retained_product_generation(macro_root, &ProductKey::RootBackendProduct(macro_root)),
         None
     );
     assert!(compiler.retire_root_products(macro_root));
@@ -81,7 +81,7 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
         diagnostics.events()
     );
     assert_eq!(
-        compiler.retained_product_generation(macro_root, &ProductKey::RootBackendContent(macro_root)),
+        compiler.retained_product_generation(macro_root, &ProductKey::RootBackendProduct(macro_root)),
         Some(1)
     );
 }
@@ -118,7 +118,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     let main = compiler.root_function(root);
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "inc", 1);
     let macro_root = compiler.world_mut().macro_root(function);
-    let content = ProductKey::RootBackendContent(macro_root);
+    let content = ProductKey::RootBackendProduct(macro_root);
     let generation = compiler.retained_product_generation(macro_root, &content);
     assert_eq!(generation, Some(1));
     let program = compiler.retained_backend_program(macro_root);
@@ -135,7 +135,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         .world_mut()
         .reference_function(ModuleId::GLOBAL, "control_inc", 1);
     let control_macro_root = compiler.world_mut().macro_root(control_function);
-    let control_content = ProductKey::RootBackendContent(control_macro_root);
+    let control_content = ProductKey::RootBackendProduct(control_macro_root);
     let control_generation = compiler.retained_product_generation(control_macro_root, &control_content);
     let control_program = compiler.retained_backend_program(control_macro_root);
 

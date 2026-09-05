@@ -197,7 +197,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             for wake in &step.wakes {
                 if wake.disposition == super::WakeDisposition::Enqueued
                     && let super::DependencyKey::Product(address) = wake.cause.fact()
-                    && matches!(address.key, super::ProductKey::RootBackendContent(_))
+                    && matches!(address.key, super::ProductKey::RootBackendProduct(_))
                 {
                     observed_product_consumers.borrow_mut().insert(wake.job.clone());
                 }

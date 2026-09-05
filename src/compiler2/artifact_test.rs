@@ -52,6 +52,7 @@ fn backend_program_rejects_duplicate_member_identities() {
         Default::default(),
         vec![member.clone(), member],
         Vec::new(),
+        world.types(),
     );
 }
 
@@ -64,7 +65,7 @@ fn backend_program_rejects_an_entry_outside_its_inventory() {
         activation,
         need: ExecutableNeed::Value,
     };
-    BackendProgram::new(key, Vec::new(), Default::default(), Vec::new(), Vec::new());
+    BackendProgram::new(key, Vec::new(), Default::default(), Vec::new(), Vec::new(), &types);
 }
 
 #[test]
@@ -97,6 +98,7 @@ fn backend_program_rejects_duplicate_construction_owners() {
         Default::default(),
         vec![member],
         vec![wrapper.clone(), wrapper],
+        world.types(),
     );
 }
 

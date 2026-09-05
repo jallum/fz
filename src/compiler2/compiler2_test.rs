@@ -16,6 +16,109 @@ struct ContractCase<'a> {
 }
 
 #[test]
+fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained_bodies() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_membership.fz".into()),
+        text: "defmodule Cycle do\nfn first(n) do\n if n == 0, do: 42, else: second(n - 1)\nend\nfn second(n), do: first(n)\nend\n".into(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_main.fz".into()),
+        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let before = compiler.retained_backend_program(root);
+    let module = compiler.world_mut().reference_module("Cycle");
+    let first = compiler.world_mut().reference_function(module, "first", 1);
+    let second = compiler.world_mut().reference_function(module, "second", 1);
+    let recursive = before
+        .executables()
+        .iter()
+        .filter(|body| [first, second].contains(&body.key.activation.function))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(recursive.iter().any(|body| body.key.activation.function == first));
+    assert!(recursive.iter().any(|body| body.key.activation.function == second));
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_cut.fz".into()),
+        text: "fn main(), do: 7\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let detached = compiler.retained_backend_program(root);
+    assert!(
+        detached
+            .executables()
+            .iter()
+            .all(|body| ![first, second].contains(&body.key.activation.function))
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_reattach.fz".into()),
+        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let reattached = compiler.retained_backend_program(root);
+    for body in &recursive {
+        let retained = reattached
+            .executable(&body.key, compiler.world().types())
+            .expect("the same recursive specialization returns");
+        assert!(Rc::ptr_eq(body, retained));
+        assert!(Rc::ptr_eq(
+            body,
+            before.executable(&body.key, compiler.world().types()).unwrap()
+        ));
+    }
+}
+
+#[test]
+fn reached_leaf_edit_preserves_unchanged_root_atom_allocations() {
+    let telemetry = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.set_output(DbgCapture::new().sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("root_atom_sharing.fz".into()),
+        text: "fn left(), do: 1\nfn right(), do: :retained_atom\nfn main() do\n dbg(right())\n left()\nend\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    let original = compiler.retained_backend_program(root);
+    let original_atom = original
+        .atom_names
+        .iter()
+        .find(|name| name.as_str() == "retained_atom")
+        .unwrap();
+    compiler.submit_code(CodeSubmission {
+        name: Some("root_atom_leaf_edit.fz".into()),
+        text: "fn left(), do: 2\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    let changed = compiler.retained_backend_program(root);
+    let changed_atom = changed
+        .atom_names
+        .iter()
+        .find(|name| name.as_str() == "retained_atom")
+        .unwrap();
+    assert_eq!(
+        original_atom.as_ptr(),
+        changed_atom.as_ptr(),
+        "a reached leaf edit must retain the allocation of an unchanged sibling's atom contribution"
+    );
+}
+
+#[test]
 fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
     use super::artifact::{BackendBody, BackendExecutable, BackendTail, CallEdge};
     use super::pull::ProductKey;
@@ -242,7 +345,9 @@ fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdraw
     let generation =
         compiler.retained_product_generation(root, &super::pull::ProductKey::BackendExecutable(member.key.clone()));
     let original_count = original.construction_wrappers().len();
-    let old_ordinal = original.construction_index(&identity).unwrap();
+    let old_ordinal = original
+        .construction_index(&identity, compiler.world().types())
+        .unwrap();
     for (text, added) in [
         (
             "fn aleaf(), do: fn x -> x + 1 end\nfn left() do\n f = aleaf()\n dbg(f)\n f.(0)\nend\n",
@@ -269,7 +374,7 @@ fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdraw
             "the edit must actually add or remove one independent construction"
         );
         let ordinal = changed
-            .construction_index(&identity)
+            .construction_index(&identity, compiler.world().types())
             .expect("right still owns its exact construction");
         assert_eq!(
             ordinal,

@@ -1962,8 +1962,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // The 165 shape answers stay; callable owners are only the 23 callable positions.
-        (241, 241, 241, 0, 15, 0),
+        // Shape/owner answers stay; runtime and definition-macro roots no longer
+        // settle separate pointer-only backend-content projection products.
+        (239, 239, 239, 0, 15, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(

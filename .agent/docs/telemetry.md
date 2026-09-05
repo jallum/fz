@@ -502,10 +502,11 @@ per-position product demand. There is no root-wide `transport_flow` signal: the
 legacy `DeriveTransportPlan` job that emitted it — and its `TransportPlan(root)`
 fact — do not exist. The product path treats the settled
 `RuntimeDemand(E)` World fact as pre-transport evidence; `TransportPosition ->
-ShapeId`, `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows
+ShapeId`, `CallableId` facts, and `BoundaryId` contracts
 are produced for the positions and boundaries named by demanded executable
-products. Tests assert ShapeId relationships from the demanded
-`MaterializedTransportPlan` when correctness depends on sharing.
+products. Tests assert sharing and representation through exact positioned
+products, retained ABI layouts, and emitted backend contracts. No root-wide
+transport or synthetic seam inventory stands in for those consumers.
 
 `ProductDriver`/`ProductMemo` (`pull.rs`) expose distinct public request,
 evaluation, settlement, cache-hit, displacement, co-publication, and recursive
@@ -582,7 +583,7 @@ deliberate mislabeling remains a review concern made visible by the session's
 per-reason breakdown. Bounded inner product pulls complete directly rather
 than entering the shared scheduler agenda, so they have no work-start tag.
 
-Macro readiness is the settlement of `RootBackendContent(macro_root)` in its
+Macro readiness is the settlement of `RootBackendProduct(macro_root)` in its
 retained memo. Source-expansion jobs record that exact product dependency in
 their reads or waits. The nested retained-session test in
 `product_drive_test.rs` observes backend production without requesting
