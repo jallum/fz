@@ -634,14 +634,9 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        assert!(
-            compiler.demand(super::Job::LowerNativeProgram(root)),
-            "{name} should explicitly demand the native program",
-        );
-        assert!(
-            matches!(compiler.drive(), super::DriveOutcome::Resolved),
-            "{name} should drive to a settled native program",
-        );
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
+            .unwrap_or_else(|error| panic!("{name} should drive to a settled native program: {error}"));
 
         let collapses = capture
             .find(&["fz", "compiler2", "activation_inputs", "budget_collapsed"])

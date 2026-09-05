@@ -184,8 +184,10 @@ demand BuildMacroExecutable(inc/1)
   publishes MacroExecutable(inc/1)
 ```
 
-The macro root does not schedule `LowerNativeProgram`; compile-time macro
-execution uses the backend interpreter over the quoted source heap.
+The macro root requests only `RootBackendProduct(macro_root)`; compile-time
+macro execution uses the backend interpreter over the quoted source heap.
+Typed product telemetry asserts that no `NativeProgram(macro_root)` is
+evaluated.
 `BuildMacroExecutable` does not wait with a producer list. If the macro root's
 `BackendProgram` fact is missing, it directly invokes the backend product
 producer and completes that exact product job's effects so the fact table sees
@@ -303,7 +305,8 @@ entry resume_k:
   tail = ...
 ```
 
-The backend and native jobs preserve this shape mechanically. They derive ABI
+The backend products and native lowering preserve this shape mechanically.
+They derive ABI
 for resume entries, clause-entry helpers, and continuations from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
@@ -646,27 +649,34 @@ The next products narrow the contract:
   product values and packages them into dense `BackendProgram` indices and
   closed `BackendValueLayout` contracts. Its answer retains the symbolic plan;
   the program is the interpreter-ready projection.
-- `NativeProgram(root)` is the native-specific projection above
-  `BackendProgram(root)`: it carries direct executable bodies, clause helpers,
-  continuations, construction wrappers, native body return contracts, and
-  extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
-  `AbiFacts`.
+- `RootBackendContent(root)` is the native dependency's exact, pointer-only
+  view of the immutable `BackendProgram` inside `RootBackendProduct(root)`.
+  Equality is one `Rc::ptr_eq`, so this boundary never walks the program.
+- `NativeProgram(root)` reads that exact content product and carries direct
+  executable bodies, clause helpers, continuations, construction wrappers,
+  native body return contracts, and extern-marshal facts instead of rebuilt
+  `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
 The root answer and World retain the same immutable `Rc<BackendProgram>`; macro
 packaging and interpreter reads clone that handle rather than the program tree.
-The native projection is stored and returned as `Rc<NativeProgram>` for the
-same reason. These handles are deliberately `Rc`, not `Arc`: compiler2's World,
-product driver, interpreter handoff, and native lowering are single-thread
-owned, and the World already is not `Send`.
+The native projection is stored only in the retained product memo and returned
+as `Rc<NativeProgram>` for the same reason; World has no native-program mirror.
+These handles are deliberately `Rc`, not `Arc`: compiler2's World, product
+driver, interpreter handoff, and native lowering are single-thread owned, and
+the World already is not `Send`.
 
 An external backend/native request owns one retained root-session activation.
-While it reconciles queued edits, the agenda parks same-root backend, native,
-and already-mapped macro consumers without removing them from agenda ownership;
-duplicate demands still coalesce and runnable FIFO order is unchanged. The
-root product projection consumes a parked backend job exactly once, including
-an equal cache hit, then unparks the remaining consumers for the ordinary
-post-projection drive. Scoped cleanup unparks on every failure before the
-session is restored.
+While it reconciles queued edits, the agenda parks same-root backend and
+already-mapped macro artifact jobs without removing them from agenda ownership;
+duplicate demands still coalesce and runnable FIFO order is unchanged. A
+native request asks for `NativeProgram(root)` directly. When that pull first
+settles its `RootBackendProduct(root)` dependency, it publishes the exact World
+backend projection before native lowering can continue or fail; it does not
+open a second backend request or manufacture a cache hit to do so. The
+projection consumes a parked backend job exactly once, including an equal
+answer, then the shared request lifecycle unparks the remaining consumers for
+the ordinary post-projection drive. Scoped cleanup unparks on every failure
+before the same session is restored for retry.
 
 `ProductMemo` is the only settled inventory for materialized, ABI, and symbolic
 backend executables. Typed iterators project those entries without collecting
@@ -866,10 +876,9 @@ Current conclusion from the code:
 - `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
   consume that same compiler2-owned backend path directly, using the world's
   interned type store instead of a fresh legacy one
-- the native/JIT/AOT front doors reach `NativeProgram(root)` through the same
-  product boundary as interp: `native_program_for_root` runs the single demanded
-  `LowerNativeProgram(root)` job, which builds `BackendProgram(root)` via the
-  product driver (`build_backend_product`)
+- the native/JIT/AOT front doors request `NativeProgram(root)` directly through
+  the same retained product driver as interp; its exact dependency chain is
+  `NativeProgram(root) -> RootBackendContent(root) -> RootBackendProduct(root)`
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work; `fz2 test`

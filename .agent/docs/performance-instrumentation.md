@@ -87,13 +87,16 @@ deltas. `ProductSessions` partitions the World's monotone work-start counters
 across its nested activation stack and gives standalone `Compiler2::drive` its
 own balanced owner boundary, so nested sessions neither overlap the standalone
 prefix nor charge a later cache hit for work performed outside its request.
-When an interp, native, or macro consumer needs the World projection,
+When a root backend settles for an interp, macro, or native request,
 `pull.product.projected` carries the exact structured root product, retained
-session id, product request id, settled generation, and fact movement. Causal
-replay matches all three identities before accepting that movement. This is a
-product projection, not another scheduler-formula evaluation; the three cold
-fixture totals consequently contain two fewer formula evaluations than the
-pre-retention baseline (1215, 1885, and 3169).
+session id, product request id, settled generation, and fact movement. A
+native pull emits this projection from its first
+`RootBackendProduct(root)` dependency settlement, before lowering, rather than
+through a second backend request or cache hit. Causal replay matches all three
+identities before accepting that movement. This is a product projection, not
+another scheduler-formula evaluation; the three cold fixture totals
+consequently contain two fewer formula evaluations than the pre-retention
+baseline (1215, 1885, and 3169).
 That classification travels with `JobEffects`, so an explicitly queued
 `BuildBackendProduct` cannot silently become formula work at the shared
 completion boundary.
@@ -102,9 +105,12 @@ reconciles edits. The agenda's root-scoped pop parks only matching jobs it
 encounters on the FIFO walk; it does not rescan the whole queue after every
 completion. Parked jobs still coalesce duplicate demand, are excluded from the
 runnable length, and are restored on every request exit. Total pending-job
-counts still include them, so timeout diagnostics do not hide queued work. The projection takes
-the one parked backend job directly, so an equal retained hit adds neither a
-producer evaluation nor an artifact retraction/republication.
+counts still include them, so timeout diagnostics do not hide queued work. The
+projection takes the one parked backend job directly, so an equal retained hit
+adds neither a producer evaluation nor an artifact retraction/republication.
+The agenda has no native-lowering job: successful native production is
+measured by one `NativeProgram(root)` product settlement and one
+`native_program.reusable_cons` event.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
 `WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,

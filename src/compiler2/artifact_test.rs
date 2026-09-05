@@ -7,7 +7,7 @@ use crate::compiler2::artifact::{
     BackendCallableReturn, BackendExecutable, BackendProgram, BackendProgramMap, BackendReturnLayout,
     BackendSemanticInputLayout, BackendValueLayout, EffectSummary, MacroExecutable, MacroExecutableMap, NativeBody,
     NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi,
-    NativeExecutableEntry, NativeProgram, NativeProgramMap,
+    NativeExecutableEntry, NativeProgram,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -65,34 +65,6 @@ fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     }
 
     let _ = assert_closed as fn(BackendProgram);
-}
-
-#[test]
-fn compiler2_native_program_map_observes_schema_only_recompute() {
-    let root = RootId::for_test(0);
-    let initial = Rc::new(NativeProgram {
-        entry: FnId(0),
-        module: Module::default(),
-        executable_entries: Vec::new(),
-        bodies: Vec::new(),
-        callable_boundaries: Vec::new(),
-    });
-    let mut changed = initial.as_ref().clone();
-    changed
-        .module
-        .struct_schemas
-        .insert("Point".to_string(), vec!["x".to_string(), "y".to_string()]);
-    let mut programs = NativeProgramMap::new();
-
-    assert!(programs.define(root, Rc::clone(&initial)));
-    assert!(!programs.define(root, Rc::clone(&initial)));
-    let equal_but_distinct = Rc::new(initial.as_ref().clone());
-    assert!(!programs.define(root, equal_but_distinct));
-    assert!(Rc::ptr_eq(programs.get(root).unwrap(), &initial));
-    assert!(
-        programs.define(root, Rc::new(changed)),
-        "a schema-only recompute changes codegen-visible native content and must emit a definition",
-    );
 }
 
 #[test]
@@ -171,7 +143,7 @@ fn compiler2_native_program_contract_test_shapes_use_one_interner() {
 fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
-    let (root, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let (_root, _, activation) = stub_activation_key(&mut types, vec![int]);
     let mut shapes = TestTransportShapes::default();
     let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
@@ -303,36 +275,11 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "callable boundary members should name the executable they adapt",
     );
 
-    let mut single_entry_program = program.clone();
+    let mut single_entry_program = program;
     assert_eq!(
         single_entry_program.deduplicate_equivalent_sibling_graphs(),
         super::artifact::NativeGraphSharingWork::default(),
         "a program with no sibling semantic entries has no graph-sharing candidate and must do no ownership-index work",
-    );
-
-    let mut programs = NativeProgramMap::new();
-    let shared = std::rc::Rc::new(program.clone());
-    assert!(programs.define(root, std::rc::Rc::clone(&shared)));
-    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &shared));
-    assert!(
-        !programs.define(root, std::rc::Rc::clone(&shared)),
-        "an identical recomputation should remain quiet",
-    );
-    let equal_but_distinct = std::rc::Rc::new(program.clone());
-    assert!(!programs.define(root, std::rc::Rc::clone(&equal_but_distinct)));
-    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &shared));
-    let mut logically_changed = program;
-    logically_changed.executable_entries[0].key.need = ExecutableNeed::TupleFields(1);
-    // `lower_native_program` feeds this exact `define` result into
-    // `JobEffects.changed`, which is the scheduler's dependent-wake signal.
-    assert!(
-        programs.define(root, std::rc::Rc::new(logically_changed.clone())),
-        "a changed semantic-to-physical entry must report movement even when all physical native code is identical",
-    );
-    assert_eq!(
-        programs.get(root).unwrap().executable_entries,
-        logically_changed.executable_entries,
-        "the movement signal used to wake NativeProgram dependents must install the changed logical mapping",
     );
 }
 

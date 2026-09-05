@@ -1226,7 +1226,6 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
             | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "backend_program", "defined"]
-            | ["fz", "compiler2", "native_program", "defined"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
             | ["fz", "compiler2", "native_backend", ..]
             | ["fz", "compiler2", "aot", ..]
@@ -1847,6 +1846,10 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 }
                 out.push(']');
             }
+            crate::compiler2::pull::PullOutcome::Failed(_) => {
+                write_str_lit(out, "failed");
+                out.push_str(",\"wait_count\":0");
+            }
         }
     } else if let Some(timeout) = opaque.downcast_ref::<Option<std::time::Duration>>() {
         out.push(',');
@@ -2190,9 +2193,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::DeriveCallGraphComponent(function)
         | Job::DeriveInputDemand(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
-        Job::SeedRoot(root) | Job::BuildBackendProduct(root) | Job::LowerNativeProgram(root) => {
-            write_root_id(out, *root)
-        }
+        Job::SeedRoot(root) | Job::BuildBackendProduct(root) => write_root_id(out, *root),
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
         Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
@@ -2226,9 +2227,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::Recursive(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
-        FactKey::RootEntry(root) | FactKey::BackendProgram(root) | FactKey::NativeProgram(root) => {
-            write_root_id(out, *root)
-        }
+        FactKey::RootEntry(root) | FactKey::BackendProgram(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
         | FactKey::ActivationAnalyzed(key)
@@ -2382,6 +2381,8 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
     use crate::compiler2::ProductKey;
     match key {
         ProductKey::RootBackendProduct(root)
+        | ProductKey::RootBackendContent(root)
+        | ProductKey::NativeProgram(root)
         | ProductKey::OutgoingEdgeFrontier(root)
         | ProductKey::IncomingInputRelations(root) => write_root_id(out, *root),
         ProductKey::BackendExecutable(executable)
@@ -2439,7 +2440,6 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::RuntimeDemand(_) => "RuntimeDemand",
         FactKey::RuntimeDemandInputs(_) => "RuntimeDemandInputs",
         FactKey::BackendProgram(_) => "BackendProgram",
-        FactKey::NativeProgram(_) => "NativeProgram",
     }
 }
 
@@ -2470,7 +2470,6 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
         Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
         Job::BuildBackendProduct(_) => "BuildBackendProduct",
-        Job::LowerNativeProgram(_) => "LowerNativeProgram",
     }
 }
 

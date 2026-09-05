@@ -560,12 +560,10 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
 /// Overproduction guard: an interp drive demands only `BackendProgram`, so it
 /// must never lower a `NativeProgram` no consumer asked for -- the spreadsheet-
 /// model rule (produce only what the demander needs). The JIT and AOT front
-/// doors demand `NativeProgram` explicitly (`native_program_for_root` ->
-/// `Job::LowerNativeProgram`), so they must still produce it.
+/// doors demand the exact `NativeProgram(root)` product, so they must still
+/// produce it.
 ///
-/// `Job::LowerNativeProgram` is run as a direct, synchronous call
-/// (`native_program_for_root`), not through the agenda's per-job
-/// `["fz","compiler2","job"]` span, so this counts the one telemetry event
+/// This counts the one telemetry event
 /// `lower_native_program` unconditionally emits per successful lowering
 /// (`["fz","compiler2","native_program","reusable_cons"]`) instead of tapping
 /// that span.
@@ -599,9 +597,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             "an interp drive must never lower NativeProgram -- interp reads BackendProgram, \
              never NativeProgram, so lowering native off the backend product is pure overproduction",
         );
-        assert!(
-            !compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "an interp drive must leave NativeProgram absent -- no consumer on this path ever demands it",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            None
         );
     }
 
@@ -630,9 +628,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             1,
             "the JIT front door demands NativeProgram exactly once through compile_root_jit",
         );
-        assert!(
-            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "the JIT front door must still produce NativeProgram",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            Some(1)
         );
     }
 
@@ -661,9 +659,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             1,
             "the AOT front door demands NativeProgram exactly once through compile_root_aot",
         );
-        assert!(
-            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "the AOT front door must still produce NativeProgram",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            Some(1)
         );
     }
 }

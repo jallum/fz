@@ -4,7 +4,7 @@ use crate::compiler2::artifact::{
     NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
 };
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::pull::TransportCarrier;
+use crate::compiler2::pull::{ProductSettlement, ProductValue, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
@@ -43,6 +43,12 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+
+fn settle_native_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root: crate::compiler2::RootId) {
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        .expect("native product should settle");
+}
 
 #[test]
 fn executable_construction_and_runtime_demand_share_one_world_type_projection() {
@@ -3168,14 +3174,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
     );
     assert!(macro_defined.measurements.get("backend_revision").is_none());
-    assert!(
-        !outputs
-            .all()
-            .into_iter()
-            .any(|(fact, _)| matches!(fact, FactKey::NativeProgram(_))),
-        "compile-time macro roots should stop at backend interpreter readiness and not enter native codegen"
-    );
-
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let arg = builder.int(41);
@@ -3427,9 +3425,7 @@ fn compiler2_runtime_roots_reject_macro_entries() {
     );
     assert!(
         outputs
-            .stops_matching(
-                |job| matches!(job, Job::BuildBackendProduct(id) | Job::LowerNativeProgram(id) if *id == root),
-            )
+            .stops_matching(|job| matches!(job, Job::BuildBackendProduct(id) if *id == root),)
             .is_empty(),
         "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
     );
@@ -4477,7 +4473,7 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4623,7 +4619,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4706,7 +4702,7 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(
             compiler.drive(),
             "quicksort native lowering should settle when reading the delivered resume payload shape",
@@ -4783,7 +4779,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(compiler.drive(), "quicksort native lowering should settle");
         let program = native.last(root_id).program;
         let qsort_owners = program
@@ -4824,7 +4820,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(compiler.drive(), "Enum.each native lowering should settle");
         let program = native.last(root_id).program;
         let zero_width = program
@@ -4881,7 +4877,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4998,7 +4994,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5072,7 +5068,7 @@ fn compiler2_native_program_shares_boxed_callable_cps_without_erasing_semantic_i
         need: ExecutableNeed::Value,
     });
 
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
         let message = capture
@@ -5364,7 +5360,7 @@ fn main(), do: mk(double).(4) + mk(triple).(4)
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
         let message = capture
@@ -5557,7 +5553,7 @@ fn measure_native_cps_sharing_corpus() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root));
+        settle_native_product(&mut compiler, root);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compiler.drive()));
         let Ok(outcome) = outcome else {
             drive_panics.push(path.display().to_string());
@@ -5742,7 +5738,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5795,7 +5791,7 @@ fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "opaque mapper should lower");
     let each_a_id = function_id(&functions, "each_a", 1);
     let each_b_id = function_id(&functions, "each_b", 1);
@@ -5907,7 +5903,7 @@ fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "mixed public callable should lower");
 
     let program = native.last(root_id).program;
@@ -5990,7 +5986,7 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6043,7 +6039,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6393,7 +6389,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6427,63 +6423,6 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
 }
 
 #[test]
-fn compiler2_identical_native_recompute_emits_no_definition() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    // Native is demand-only: demand it to produce the initial derivation.
-    compiler.demand(Job::LowerNativeProgram(root_id));
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!("initial native lowering should settle for quicksort: {outcome:?}; diagnostic={message}");
-    }
-    assert!(
-        compiler.demand(Job::LowerNativeProgram(root_id)),
-        "explicitly re-demanding unchanged native lowering should enqueue one fresh derivation",
-    );
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "re-lowering unchanged native state should resolve without redefining it: {outcome:?}; diagnostic={message}"
-        );
-    }
-
-    let records = native.records(root_id);
-    assert_eq!(
-        records.len(),
-        1,
-        "an unchanged native re-derivation must not emit another definition event",
-    );
-    assert!(
-        records[0].changed,
-        "a native-program definition event represents actual state movement",
-    );
-}
-
-#[test]
 fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -6504,7 +6443,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6567,7 +6506,7 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     let outcome = compiler.drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
@@ -6698,7 +6637,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6792,7 +6731,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "spawned tuple-returning closure should lower");
 
     let program = native.last(root_id).program;
@@ -6833,7 +6772,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6878,7 +6817,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6925,7 +6864,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_exact_reducer_lanes() 
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6973,7 +6912,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -7033,7 +6972,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -7078,7 +7017,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -7114,7 +7053,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -7164,7 +7103,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "tail recursion lowers to a native program");
 
     let program = native.last(root_id).program;
@@ -7213,9 +7152,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Resolved)
-            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
-        "heap_alloc_stats backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+        matches!(outcome, DriveOutcome::Resolved),
+        "heap_alloc_stats backend capture should resolve: {outcome:?}",
     );
 
     let program = backend.last(root_id).program;
@@ -7279,9 +7217,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
 
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Resolved)
-            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
-        "heap_stats dbg-resume backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+        matches!(outcome, DriveOutcome::Resolved),
+        "heap_stats dbg-resume backend capture should resolve: {outcome:?}",
     );
 
     let program = backend.last(root_id).program;
@@ -7714,7 +7651,7 @@ fn compiler2_native_program_grounds_exact_carrier_closure_call_returns() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "curried_add should settle before inspecting apply's closure calls",
@@ -8253,7 +8190,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8508,7 +8445,7 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
         need: ExecutableNeed::Value,
     });
 
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "multi_relay native handoff should settle before checking ReturnPayload continuations",
@@ -8650,7 +8587,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8710,7 +8647,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8808,7 +8745,7 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -9019,7 +8956,7 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -9055,7 +8992,7 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "enum take/drop/split should lower natively");
 
     let predicate_functions = functions
@@ -9159,7 +9096,7 @@ fn compiler2_variable_callee_is_absence_not_an_earned_any() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "one Enum HOF at three distinct closures should lower without earning `any` at its reducer call",
@@ -9196,7 +9133,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -9326,7 +9263,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -9396,7 +9333,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -13473,7 +13410,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -13551,7 +13488,7 @@ fn main(), do: rebuild([1, 2])
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -15897,7 +15834,6 @@ struct BackendProgramRecord {
 #[derive(Debug, Clone)]
 struct NativeProgramRecord {
     root_id: crate::compiler2::RootId,
-    changed: bool,
     program: Rc<NativeProgram>,
 }
 
@@ -16030,15 +15966,6 @@ impl OutputCapture {
             outputs.remove(&job);
         }
         output
-    }
-
-    fn all(&self) -> Vec<(FactKey, bool)> {
-        self.outputs
-            .borrow()
-            .values()
-            .flat_map(|outputs| outputs.iter())
-            .flat_map(|facts| facts.iter().cloned())
-            .collect()
     }
 
     fn stop(&self, job: Job) -> JobSpanStop {
@@ -16418,13 +16345,17 @@ impl NativeProgramCapture {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
-            &["fz", "compiler2", "native_program", "defined"],
-            move |_, _, _, world, root| {
+        telemetry.attach_raw_event3::<crate::compiler2::ProductKey, ProductValue, ProductSettlement, _>(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |_, _, _, key, value, _settlement| {
+                let (crate::compiler2::ProductKey::NativeProgram(root), ProductValue::NativeProgram(program)) =
+                    (key, value)
+                else {
+                    return;
+                };
                 defs.borrow_mut().push(NativeProgramRecord {
                     root_id: *root,
-                    changed: true,
-                    program: world.native_program(*root),
+                    program: Rc::clone(program),
                 });
             },
         );
@@ -16437,16 +16368,7 @@ impl NativeProgramCapture {
             .rev()
             .find(|record| record.root_id == root_id)
             .cloned()
-            .unwrap_or_else(|| panic!("native_program.defined for {root_id:?}"))
-    }
-
-    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<NativeProgramRecord> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.root_id == root_id)
-            .cloned()
-            .collect()
+            .unwrap_or_else(|| panic!("NativeProgram product settlement for {root_id:?}"))
     }
 }
 
@@ -16794,7 +16716,7 @@ fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert!(
         matches!(compiler.drive(), DriveOutcome::Resolved),
         "native lowering of {fixture} must settle",
@@ -18287,7 +18209,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -18346,7 +18268,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "connected callable returns should lower natively");
 
     let program = native.last(root_id).program;
@@ -18425,7 +18347,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root));
+    settle_native_product(&mut compiler, root);
     assert_resolved(compiler.drive(), "published captured closure should lower natively");
     let program = native.last(root).program;
     let [boundary] = program.callable_boundaries.as_slice() else {
@@ -18540,7 +18462,7 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "native program lowering must settle for a shared reducer body named by two boundaries with differing \
@@ -18690,7 +18612,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "enum_predicate_search should settle native lowering with construction-owned callable wrappers",

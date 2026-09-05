@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use super::artifact::{AbiValueRepr, MaterializedTransportPlan};
 use super::body::{DeliveredValueSource, delivered_value_joins};
-use super::drive_test::assert_resolved;
 use super::facts::FactUse;
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail, TransportCarrier,
@@ -2163,12 +2162,6 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
     assert!(
         dead_return_boundaries.is_empty(),
         "first-class callable boundaries whose resolved target returns an empty type are not callable contracts: {dead_return_boundaries:?}"
-    );
-
-    world.demand(super::Job::LowerNativeProgram(root));
-    assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None),
-        "Range Enumerable fixture should lower native callable publications before the known slicer runtime blocker",
     );
 }
 
@@ -5199,6 +5192,16 @@ fn pull_root_backend_driver_for_test<'a>(
 struct PanicProductDriveError;
 
 impl super::product_drive::ProductDriveError for PanicProductDriveError {
+    fn product_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: super::RootId,
+        product: &ProductKey,
+        failure: super::pull::ProductFailure,
+    ) -> Self {
+        panic!("root {} product {product:?} failed: {failure:?}", root.as_u32());
+    }
+
     fn job_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
@@ -5293,6 +5296,7 @@ fn pull_product_until_produced_with_fact_waits(
                     }
                 }
             }
+            PullOutcome::Failed(failure) => panic!("{message}: product {current:?} failed: {failure:?}"),
         }
     }
     panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");

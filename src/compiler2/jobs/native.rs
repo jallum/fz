@@ -1,10 +1,10 @@
 //! Compiler2 native-handoff lowering.
 //!
-//! This job turns one closed `BackendProgram(root)` into one CPS/native
-//! handoff. The result is still Compiler2-owned: direct executable entries,
-//! clause helpers, continuations, settled callable-boundary facts, and extern
-//! marshal facts are all derived once here instead of being rediscovered by
-//! shared codegen.
+//! This product producer turns one closed `BackendProgram(root)` into one
+//! CPS/native handoff. The result is still Compiler2-owned: direct executable
+//! entries, clause helpers, continuations, settled callable-boundary facts,
+//! and extern marshal facts are all derived once here instead of being
+//! rediscovered by shared codegen.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -33,8 +33,8 @@ use super::super::artifact::{
     ReusableConsCapture, required_dispatch_input_ordinals,
 };
 use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
-use super::super::drive::{FactKey, JobEffects, settled_uses};
 use super::super::identity::RootId;
+use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{CallableId, ShapeDescr, ShapeId, TransportLayout};
@@ -42,6 +42,27 @@ use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
+
+pub(crate) fn produce_native_program(
+    world: &mut World,
+    telemetry: &impl crate::telemetry::Telemetry,
+    context: &mut ProductReadContext<'_>,
+    root_id: RootId,
+) -> PullOutcome {
+    let backend_key = ProductKey::RootBackendContent(root_id);
+    let backend = match context.read_product(telemetry, backend_key.clone(), world.types()) {
+        Some(ProductValue::RootBackendContent(backend)) => Rc::clone(backend),
+        Some(value) => panic!("root backend content produced unexpected value {value:?}"),
+        None => return PullOutcome::wait_on_product(backend_key),
+    };
+    match NativeLowerer::new(world, telemetry, root_id, &backend).and_then(NativeLowerer::lower) {
+        Ok(program) => {
+            emit_reusable_cons(telemetry, &root_id, &backend);
+            PullOutcome::Produced(ProductValue::NativeProgram(Rc::new(program)))
+        }
+        Err(_) => PullOutcome::Failed(super::super::pull::ProductFailure::NativeLowering),
+    }
+}
 
 fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
     match form {
@@ -55,63 +76,6 @@ fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
 /// The native handoff consumes only `BackendProgram(root)` plus compiler-owned
 /// stores. It introduces CPS/native bodies and side facts, but it does not
 /// reopen semantic closure, type inference, or planner discovery.
-pub(super) fn lower_native_program(
-    context: &mut super::super::drive::ExecutionContext<'_, impl crate::telemetry::RawSpanTelemetry>,
-    root_id: RootId,
-) -> Result<JobEffects, FatalError> {
-    if context.root_product_is_active(root_id) && !context.root_backend_is_projected(root_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::BackendProgram(root_id)));
-    }
-    let backend = if context.root_backend_is_projected(root_id) {
-        context.world.backend_program(root_id)
-    } else {
-        super::backend::complete_backend_product(context, root_id)?
-    };
-    lower_native_program_with_backend(context, root_id, backend)
-}
-
-pub(super) fn lower_native_program_for_request<T: crate::telemetry::RawSpanTelemetry>(
-    context: &mut super::super::drive::ExecutionContext<'_, T>,
-    root_id: RootId,
-    timeout: Option<std::time::Duration>,
-) -> Result<Rc<NativeProgram>, String> {
-    super::backend::with_backend_product_for_request(context, root_id, timeout, |context, backend| {
-        let job = super::super::drive::Job::LowerNativeProgram(root_id);
-        if context.world.has_fact(&FactKey::NativeProgram(root_id))
-            && !context.world.work_graph.pending(&job)
-            && !context.world.work_graph.blocked(&job)
-            && !context.world.work_graph.rebased(&job)
-        {
-            return Ok(context.world.native_program(root_id));
-        }
-        let effects = lower_native_program_with_backend(context, root_id, backend).map_err(|_| {
-            format!(
-                "compiler2 root {} native lowering failed before backend execution",
-                root_id.as_u32()
-            )
-        })?;
-        context.complete_job(job, effects);
-        Ok(context.world.native_program(root_id))
-    })
-}
-
-fn lower_native_program_with_backend(
-    context: &mut super::super::drive::ExecutionContext<'_, impl crate::telemetry::RawSpanTelemetry>,
-    root_id: RootId,
-    backend: Rc<BackendProgram>,
-) -> Result<JobEffects, FatalError> {
-    let backend_fact = FactKey::BackendProgram(root_id);
-    let program = std::rc::Rc::new(NativeLowerer::new(context.world, context.telemetry, root_id, &backend)?.lower()?);
-    let changed = context.define_native_program(root_id, program);
-    emit_reusable_cons(context.telemetry, &root_id, &backend);
-    Ok(JobEffects {
-        reads: settled_uses([backend_fact]),
-        outputs: vec![FactKey::NativeProgram(root_id)],
-        changed: changed.then_some(FactKey::NativeProgram(root_id)).into_iter().collect(),
-        ..JobEffects::default()
-    })
-}
-
 fn emit_reusable_cons(tel: &impl crate::telemetry::Telemetry, root: &RootId, program: &BackendProgram) {
     tel.raw_event2(&["fz", "compiler2", "native_program", "reusable_cons"], root, program);
 }

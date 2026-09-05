@@ -146,15 +146,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<Rc<NativeProgram>, String> {
-        // Native/JIT/AOT reach the same retained backend request as interp,
-        // then lower its authoritative program handle before that request
-        // closes. Queued artifact consumers coalesce on the same projection.
-        let mut context = super::drive::ExecutionContext::with_product_sessions(
+        super::product_drive::drive_retained_root_native_program(
             &mut self.world,
             &self.telemetry,
             &mut self.product_sessions,
-        );
-        super::jobs::lower_native_program_for_request(&mut context, root, self.drive_timeout)
+            root,
+            self.drive_timeout,
+        )
     }
 
     fn compile_native_backend<B>(
@@ -181,13 +179,27 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         )
     }
 
-    pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
+    pub(crate) fn drive_root_to_dump_stage(
+        &mut self,
+        root: RootId,
+        stage: DumpStage,
+    ) -> Result<(Rc<BackendProgram>, Option<Rc<NativeProgram>>), String> {
         match stage {
-            DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
-            // Native dumps share the front-door routing: the guarded product
-            // boundary plus a single `LowerNativeProgram` job, never the legacy
-            // root-wide planning ladder.
-            DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
+            DumpStage::Backend => self
+                .product_backend_program_for_root(root)
+                .map(|backend| (backend, None)),
+            DumpStage::Native => {
+                let native = self.native_program_for_root(root)?;
+                let backend = match self
+                    .product_sessions
+                    .get(root)
+                    .and_then(|session| session.memo().get(&ProductKey::RootBackendContent(root)))
+                {
+                    Some(super::pull::ProductValue::RootBackendContent(backend)) => Rc::clone(backend),
+                    _ => panic!("native product must retain its exact backend content dependency"),
+                };
+                Ok((backend, Some(native)))
+            }
         }
     }
 
@@ -208,8 +220,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         Ok(())
     }
 
-    pub(crate) fn emit_requested_program_dumps(&mut self, root: RootId) {
-        self.requested_output.program(&self.world, root);
+    pub(crate) fn emit_requested_program_dumps(
+        &mut self,
+        root: RootId,
+        backend: &BackendProgram,
+        native: Option<&NativeProgram>,
+    ) {
+        self.requested_output.program(&self.world, root, backend, native);
     }
 
     /// Drives one root to its backend product and returns the settled
@@ -265,6 +282,11 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     #[cfg(test)]
     pub(crate) fn world(&self) -> &World {
         &self.world
+    }
+
+    #[cfg(test)]
+    pub(crate) fn world_mut(&mut self) -> &mut World {
+        &mut self.world
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared
@@ -331,6 +353,23 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer.program),
             _ => panic!("root product must be retained after a successful request"),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_native_program(&self, root: RootId) -> Rc<NativeProgram> {
+        match self
+            .product_sessions
+            .get(root)
+            .and_then(|session| session.memo().get(&ProductKey::NativeProgram(root)))
+        {
+            Some(super::pull::ProductValue::NativeProgram(program)) => Rc::clone(program),
+            _ => panic!("native product must be retained after a successful request"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_product_generation(&self, root: RootId, key: &ProductKey) -> Option<u64> {
+        self.product_sessions.get(root)?.memo().generation(key)
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the
@@ -439,6 +478,16 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 /// this path does not emit a diagnostic — it never has, and the drive-loop
 /// unification is not the place to change that.
 impl super::product_drive::ProductDriveError for String {
+    fn product_failed<T: Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: RootId,
+        product: &ProductKey,
+        _failure: super::pull::ProductFailure,
+    ) -> Self {
+        format!("compiler2 root {} failed producing {product:?}", root.as_u32())
+    }
+
     fn job_failed<T: Telemetry>(
         _world: &World,
         _tel: &T,

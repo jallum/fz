@@ -6,6 +6,7 @@ use super::canon::{canon_backend_program, function_label};
 use super::identity::{ActivationKey, ExecutableKey, RootId};
 use super::semantic::SemanticOrd;
 use super::world::World;
+use super::{BackendProgram, NativeProgram};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DumpKind {
@@ -69,7 +70,7 @@ pub(crate) trait RequestedOutputSink {
         false
     }
     fn semantic(&mut self, _world: &World, _root: RootId, _activations: &[ActivationKey]) {}
-    fn program(&mut self, _world: &World, _root: RootId) {}
+    fn program(&mut self, _world: &World, _root: RootId, _backend: &BackendProgram, _native: Option<&NativeProgram>) {}
     fn clif(
         &mut self,
         _module: &crate::fz_ir::Module,
@@ -118,7 +119,7 @@ impl RequestedOutputSink for FileRequestedOutput {
         }
     }
 
-    fn program(&mut self, world: &World, root: RootId) {
+    fn program(&mut self, world: &World, root: RootId, backend: &BackendProgram, native: Option<&NativeProgram>) {
         if root != self.root {
             return;
         }
@@ -128,9 +129,9 @@ impl RequestedOutputSink for FileRequestedOutput {
                 // the program renders `HashMap`s in per-instance `RandomState`
                 // order, so two runs of ONE binary over ONE input differed even
                 // when the programs were equal (fz-kdt.6).
-                DumpKind::Backend => canon_backend_program(world, &world.backend_program(root)),
-                DumpKind::Native => format!("{:#?}\n", world.native_program(root)),
-                DumpKind::Fnir => format!("{:#?}\n", world.native_program(root).module),
+                DumpKind::Backend => canon_backend_program(world, backend),
+                DumpKind::Native => format!("{:#?}\n", native.expect("native dump requires native product")),
+                DumpKind::Fnir => format!("{:#?}\n", native.expect("FNIR dump requires native product").module),
                 _ => continue,
             };
             write_dump_file(&spec.path, &text);

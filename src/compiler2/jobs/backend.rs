@@ -35,7 +35,6 @@ use super::super::pull::{
     SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportCarrier,
     TransportLayout,
 };
-use super::super::scheduler::DriveOutcome;
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
 use super::super::transport::{
@@ -84,18 +83,6 @@ pub(crate) fn complete_backend_product_for_request<T: crate::telemetry::RawSpanT
     root_id: RootId,
     timeout: Option<Duration>,
 ) -> Result<Rc<BackendProgram>, String> {
-    with_backend_product_for_request(context, root_id, timeout, |_, program| Ok(program))
-}
-
-pub(super) fn with_backend_product_for_request<T, R>(
-    context: &mut super::super::drive::ExecutionContext<'_, T>,
-    root_id: RootId,
-    timeout: Option<Duration>,
-    consume: impl FnOnce(&mut super::super::drive::ExecutionContext<'_, T>, Rc<BackendProgram>) -> Result<R, String>,
-) -> Result<R, String>
-where
-    T: crate::telemetry::RawSpanTelemetry,
-{
     let super::super::drive::ExecutionContext {
         world,
         telemetry,
@@ -104,13 +91,13 @@ where
     let sessions = product_sessions
         .as_deref_mut()
         .expect("production backend requests require Compiler2-owned retained sessions");
-    super::super::product_drive::with_retained_root_request(
+    super::super::product_drive::with_reconciled_root_request(
         world,
         *telemetry,
         sessions,
         root_id,
-        |world, telemetry, sessions, driver, retained| {
-            reconcile_request(world, telemetry, sessions, root_id, timeout, retained)?;
+        timeout,
+        |world, telemetry, sessions, driver| {
             let (program, projection) = super::super::product_drive::drive_active_root_backend_product::<_, String>(
                 world, telemetry, sessions, root_id, driver,
             )?;
@@ -118,77 +105,9 @@ where
             sessions.mark_backend_projected(root_id);
             let mut context = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions);
             let program = publish_backend_projection(&mut context, root_id, program, projection, complete_build);
-            context.world.unpark_root_artifact_jobs(root_id);
-            drain_request_context(&mut context, root_id, timeout)?;
-            let consumed = consume(&mut context, program)?;
-            drain_request_context(&mut context, root_id, timeout)?;
-            Ok(consumed)
+            Ok(program)
         },
     )
-}
-
-fn reconcile_request<T: crate::telemetry::RawSpanTelemetry>(
-    world: &mut World,
-    telemetry: &T,
-    sessions: &mut super::super::pull::ProductSessions,
-    root: RootId,
-    timeout: Option<Duration>,
-    retained: bool,
-) -> Result<(), String> {
-    if timeout == Some(Duration::ZERO) {
-        let outcome = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions)
-            .drain_pending_for_root(root, timeout);
-        if let DriveOutcome::TimedOut { jobs_ran, pending_jobs } = outcome {
-            return Err(format!(
-                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
-                root.as_u32(),
-                jobs_ran,
-                pending_jobs,
-            ));
-        }
-    }
-    if world.work_graph.runnable_jobs() == 0
-        || !retained
-            && !world.work_graph.pending(&Job::BuildBackendProduct(root))
-            && !world.work_graph.pending(&Job::LowerNativeProgram(root))
-    {
-        return Ok(());
-    }
-    let outcome = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions)
-        .drain_pending_for_root(root, timeout);
-    interpret_request_drain(root, outcome)
-}
-
-fn drain_request_context<T: crate::telemetry::RawSpanTelemetry>(
-    context: &mut super::super::drive::ExecutionContext<'_, T>,
-    root: RootId,
-    timeout: Option<Duration>,
-) -> Result<(), String> {
-    if context.world.work_graph.runnable_jobs() == 0 {
-        return Ok(());
-    }
-    let outcome = context.drain_pending_for(timeout);
-    interpret_request_drain(root, outcome)
-}
-
-fn interpret_request_drain(root: RootId, outcome: DriveOutcome<Job, FactKey>) -> Result<(), String> {
-    match outcome {
-        DriveOutcome::Resolved => Ok(()),
-        DriveOutcome::Fatal { job } => Err(format!(
-            "compiler2 root {} failed while applying queued work at {job:?}",
-            root.as_u32()
-        )),
-        DriveOutcome::TimedOut { jobs_ran, pending_jobs } => Err(format!(
-            "compiler2 root {} exceeded its drive limit after {} jobs with {} pending",
-            root.as_u32(),
-            jobs_ran,
-            pending_jobs
-        )),
-        DriveOutcome::Unresolved { waits } => Err(format!(
-            "compiler2 root {} could not apply queued work; unresolved={waits:?}",
-            root.as_u32()
-        )),
-    }
 }
 
 fn publish_backend_projection<T: crate::telemetry::RawSpanTelemetry>(
@@ -222,6 +141,20 @@ fn publish_backend_projection<T: crate::telemetry::RawSpanTelemetry>(
         context.complete_job(Job::BuildBackendProduct(root_id), effects);
     }
     program
+}
+
+pub(in crate::compiler2) fn publish_backend_product_projection<T: crate::telemetry::RawSpanTelemetry>(
+    world: &mut World,
+    telemetry: &T,
+    sessions: &mut super::super::pull::ProductSessions,
+    root_id: RootId,
+    program: Rc<BackendProgram>,
+    projection: Option<super::super::pull::ProductProjection>,
+) {
+    let complete_build = world.take_pending_root_backend_product(root_id);
+    sessions.mark_backend_projected(root_id);
+    let mut context = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions);
+    publish_backend_projection(&mut context, root_id, program, projection, complete_build);
 }
 
 fn drive_backend_product<T: crate::telemetry::RawSpanTelemetry, E: super::super::product_drive::ProductDriveError>(
@@ -280,6 +213,20 @@ fn define_backend_projection<T: crate::telemetry::RawSpanTelemetry>(
 /// that fails through `jobs::run` has already emitted its own diagnostic, so
 /// this boundary must not emit a second one for the same failure.
 impl super::super::product_drive::ProductDriveError for FatalError {
+    fn product_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        product: &ProductKey,
+        _failure: super::super::pull::ProductFailure,
+    ) -> Self {
+        emit_backend_product_error(
+            tel,
+            Span::DUMMY,
+            format!("compiler2 product {product:?} for root {} failed", root.as_u32()),
+        )
+    }
+
     fn job_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
@@ -495,6 +442,22 @@ pub(crate) fn produce_root_backend_product(
         program,
         transport,
     })))
+}
+
+pub(crate) fn produce_root_backend_content(
+    tel: &impl crate::telemetry::Telemetry,
+    context: &mut ProductReadContext<'_>,
+    root: RootId,
+    types: &super::super::types::Types,
+) -> PullOutcome {
+    let key = ProductKey::RootBackendProduct(root);
+    match context.read_product(tel, key.clone(), types) {
+        Some(ProductValue::RootBackendProduct(answer)) => {
+            PullOutcome::Produced(ProductValue::RootBackendContent(Rc::clone(&answer.program)))
+        }
+        Some(value) => panic!("root backend product produced unexpected value {value:?}"),
+        None => PullOutcome::wait_on_product(key),
+    }
 }
 
 pub(crate) fn aggregate_callable_owners<'a>(

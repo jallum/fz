@@ -17,7 +17,14 @@ fn null_requested_output_is_inert() {
 
     assert!(!output.wants_clif());
     output.semantic(&world, root, &[]);
-    output.program(&world, root);
+    let backend = super::BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: Default::default(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    };
+    output.program(&world, root, &backend, None);
 }
 
 #[test]

@@ -141,11 +141,6 @@ impl MaterializedTransportPlan {
             .iter()
             .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
     }
-
-    pub fn carries_runtime_value(&self, position: &TransportPosition) -> bool {
-        self.layout_at(position)
-            .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef(_)))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +318,12 @@ pub(crate) struct NativeProgram {
     /// Closed callable-boundary inventory plus callable identity bodies. This
     /// replaces the old planner-side callable-entry lookup surface.
     pub callable_boundaries: Vec<NativeCallableBoundary>,
+}
+
+impl PartialEq for NativeProgram {
+    fn eq(&self, other: &Self) -> bool {
+        native_programs_equal(self, other)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1422,24 +1423,14 @@ struct ProjectionSlot<T> {
     revision: u64,
 }
 
-#[derive(Debug)]
-struct RootProjectionMap<T> {
-    slots: Vec<ProjectionState<T>>,
-}
-
 #[derive(Debug, Default)]
 pub struct BackendProgramMap {
-    inner: RootProjectionMap<Rc<BackendProgram>>,
+    slots: Vec<Option<Rc<BackendProgram>>>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct MacroExecutableMap {
     slots: Vec<ProjectionSlot<MacroExecutable>>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct NativeProgramMap {
-    inner: RootProjectionMap<Rc<NativeProgram>>,
 }
 
 impl BackendProgramMap {
@@ -1448,11 +1439,20 @@ impl BackendProgramMap {
     }
 
     pub fn define(&mut self, root: RootId, program: Rc<BackendProgram>) -> bool {
-        self.inner.define_by(root, program, shared_eq)
+        let needed = root.as_u32() as usize + 1;
+        if self.slots.len() < needed {
+            self.slots.resize_with(needed, || None);
+        }
+        let slot = &mut self.slots[root.as_u32() as usize];
+        if slot.as_ref().is_some_and(|previous| shared_eq(previous, &program)) {
+            return false;
+        }
+        *slot = Some(program);
+        true
     }
 
     pub fn get(&self, root: RootId) -> Option<&Rc<BackendProgram>> {
-        self.inner.get(root)
+        self.slots.get(root.as_u32() as usize)?.as_ref()
     }
 
     pub fn retain_equal(&self, root: RootId, program: Rc<BackendProgram>) -> Rc<BackendProgram> {
@@ -1497,56 +1497,6 @@ impl MacroExecutableMap {
     }
 }
 
-impl NativeProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: Rc<NativeProgram>) -> bool {
-        self.inner.define_by(root, program, |left, right| {
-            Rc::ptr_eq(left, right) || native_programs_equal(left, right)
-        })
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&Rc<NativeProgram>> {
-        self.inner.get(root)
-    }
-}
-
-impl<T> RootProjectionMap<T> {
-    fn define_by(&mut self, root: RootId, value: T, same: impl FnOnce(&T, &T) -> bool) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        if let ProjectionState::Defined(previous) = slot
-            && same(previous, &value)
-        {
-            return false;
-        }
-        *slot = ProjectionState::Defined(value);
-        true
-    }
-
-    fn get(&self, root: RootId) -> Option<&T> {
-        match self.slots.get(root.as_u32() as usize)? {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionState::Placeholder);
-        }
-    }
-}
-
-impl<T> Default for RootProjectionMap<T> {
-    fn default() -> Self {
-        Self { slots: Vec::new() }
-    }
-}
-
 fn macro_executable_same_state(
     left: &ProjectionState<MacroExecutable>,
     right: &ProjectionState<MacroExecutable>,
@@ -1566,7 +1516,7 @@ fn shared_eq<T: PartialEq>(left: &Rc<T>, right: &Rc<T>) -> bool {
     Rc::ptr_eq(left, right) || left == right
 }
 
-fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
+pub(crate) fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
     left.entry == right.entry
         && left.executable_entries == right.executable_entries
         && left.bodies == right.bodies

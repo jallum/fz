@@ -1,9 +1,8 @@
-//! Regression coverage for the shared `RootBackendProduct` pull-drive seam:
-//! one loop (`product_drive::drive_root_backend_product`) reports its four
-//! failure shapes through a `ProductDriveError` hook so the interp front door
-//! (`String`) and the backend product job (`FatalError`) keep their distinct
-//! error surfaces byte-for-byte, even though the loop that discovers the
-//! failure lives once.
+//! Regression coverage for the shared root-product request and pull-drive
+//! seam. Backend and native front doors retain one session lifecycle; the
+//! stack loop reports failures through `ProductDriveError`, so production
+//! `String` and scheduler `FatalError` surfaces remain distinct without
+//! duplicating the loop.
 //!
 //! The first block of tests calls the trait implementations directly rather
 //! than forcing a genuine product-pull stall through a fixture: the loop
@@ -22,7 +21,7 @@
 //! their direct-call tests were redundant and are deleted.
 //!
 //! The second block (`*_end_to_end` below) proves the wiring itself: that a
-//! genuine failure inside `drive_root_backend_product` reaches the hook with
+//! genuine failure inside the product drive reaches the hook with
 //! the right `root`/`fact`/`job` arguments, not just that the hook formats
 //! them correctly in isolation. `fact_wait_budget_exceeded` and
 //! `did_not_settle` go through `drive_root_backend_product_with_budgets`, a
@@ -37,7 +36,8 @@ use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
 use super::pull::{
-    ProductKey, ProductProjection, ProductSettlement, PullOutcome, PullSession, PullWait, WorldProductProducers,
+    ProductFailure, ProductKey, ProductProducers, ProductProjection, ProductSettlement, ProductValue, PullOutcome,
+    PullSession, PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
@@ -53,6 +53,455 @@ fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
 
 fn some_fact() -> FactUse<FactKey> {
     FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
+}
+
+struct FailingNativeProducers {
+    types: super::Types,
+    backend: std::rc::Rc<super::BackendProgram>,
+    entry: super::transport::ExecutableSymbol,
+    fail_once: bool,
+}
+
+impl ProductProducers for FailingNativeProducers {
+    fn product_types(&self) -> &super::Types {
+        &self.types
+    }
+
+    fn produce(&mut self, context: &mut super::pull::ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+        let telemetry = ConfiguredTelemetry::new();
+        match key {
+            ProductKey::RootBackendProduct(_) => PullOutcome::Produced(ProductValue::RootBackendProduct(
+                std::rc::Rc::new(super::artifact::RootBackendProductAnswer {
+                    program: std::rc::Rc::clone(&self.backend),
+                    transport: super::artifact::MaterializedTransportPlan {
+                        entry: self.entry.clone(),
+                        executable_membership: Box::default(),
+                        position_layouts: Vec::new(),
+                        callable_boundaries: Vec::new(),
+                        boundary_ids: Vec::new(),
+                        codegen_seam_facts: Box::default(),
+                        callable_owners: Box::default(),
+                        callable_facts: std::collections::HashMap::new(),
+                        boundary_facts: std::collections::HashMap::new(),
+                    },
+                }),
+            )),
+            ProductKey::RootBackendContent(root) => {
+                let dependency = ProductKey::RootBackendProduct(*root);
+                match context.read_product(&telemetry, dependency.clone(), &self.types) {
+                    Some(ProductValue::RootBackendProduct(answer)) => {
+                        PullOutcome::Produced(ProductValue::RootBackendContent(std::rc::Rc::clone(&answer.program)))
+                    }
+                    Some(value) => panic!("scripted backend product produced {value:?}"),
+                    None => PullOutcome::wait_on_product(dependency),
+                }
+            }
+            ProductKey::NativeProgram(root) => {
+                let dependency = ProductKey::RootBackendContent(*root);
+                if context
+                    .read_product(&telemetry, dependency.clone(), &self.types)
+                    .is_none()
+                {
+                    return PullOutcome::wait_on_product(dependency);
+                }
+                if std::mem::take(&mut self.fail_once) {
+                    PullOutcome::Failed(ProductFailure::NativeLowering)
+                } else {
+                    PullOutcome::Produced(ProductValue::NativeProgram(std::rc::Rc::new(super::NativeProgram {
+                        entry: crate::fz_ir::FnId(0),
+                        module: crate::fz_ir::Module::default(),
+                        executable_entries: Vec::new(),
+                        bodies: Vec::new(),
+                        callable_boundaries: Vec::new(),
+                    })))
+                }
+            }
+            key => panic!("scripted native request reached unrelated product {key:?}"),
+        }
+    }
+}
+
+#[test]
+fn failed_native_request_publishes_backend_and_reuses_the_same_session_for_retry() {
+    let root = RootId::for_test(0);
+    let tel = ConfiguredTelemetry::new();
+    let backend_requests = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed_backend_requests = std::rc::Rc::clone(&backend_requests);
+    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
+        &["fz", "compiler2", "pull", "product", "requested"],
+        move |_, _, _, key, _| {
+            if key == &ProductKey::RootBackendProduct(root) {
+                observed_backend_requests.set(observed_backend_requests.get() + 1);
+            }
+        },
+    );
+    let projections = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let projected = std::rc::Rc::clone(&projections);
+    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
+        &["fz", "compiler2", "pull", "product", "projected"],
+        move |_, _, _, key, projection, step| {
+            projected.borrow_mut().push((key.clone(), *projection, step.clone()));
+        },
+    );
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed_finished = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed_finished.borrow_mut().push(session.id()),
+    );
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let backend = std::rc::Rc::new(super::BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: std::collections::BTreeMap::new(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    });
+    let mut types = super::Types::new();
+    let any = types.any();
+    let entry = super::transport::ExecutableSymbol {
+        activation: super::transport::ActivationSymbol {
+            function: super::FunctionId::for_test(0),
+            arrow: any,
+            input: Box::new([]),
+        },
+        need: ExecutableNeed::Value,
+    };
+    let mut producers = FailingNativeProducers {
+        types,
+        backend: std::rc::Rc::clone(&backend),
+        entry,
+        fail_once: true,
+    };
+    assert!(world.demand(Job::BuildBackendProduct(root)));
+    let failed = super::product_drive::with_retained_root_request(
+        &mut world,
+        &tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, retained| {
+            assert!(!retained);
+            super::product_drive::drive_root_product_with_producers::<_, String>(
+                world,
+                tel,
+                root,
+                ProductKey::NativeProgram(root),
+                driver,
+                Some(sessions),
+                &mut producers,
+            )
+            .map(|_| ())
+        },
+    );
+    assert!(failed.is_err());
+    assert_eq!(sessions.counts().0, 1);
+    let session = sessions.get(root).expect("failed session must be restored");
+    let session_id = session.id().expect("observed retained session identity");
+    assert_eq!(finished.borrow().as_slice(), [Some(session_id)]);
+    assert_eq!(session.memo().get(&ProductKey::NativeProgram(root)), None);
+    assert!(std::rc::Rc::ptr_eq(&world.backend_program(root), &backend));
+    let projection_events = projections.borrow();
+    let [(product, projection, step)] = projection_events.as_slice() else {
+        panic!("failed native request must publish one exact backend projection: {projection_events:?}");
+    };
+    assert_eq!(product, &ProductKey::RootBackendProduct(root));
+    assert_eq!(projection.session(), session_id);
+    assert_eq!(projection.generation(), 1);
+    assert_eq!(step.movements.len(), 1);
+    assert_eq!(step.movements[0].key, FactKey::BackendProgram(root));
+    drop(projection_events);
+    assert!(!world.work_graph.pending(&Job::BuildBackendProduct(root)));
+
+    let retry = super::product_drive::with_retained_root_request(
+        &mut world,
+        &tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, retained| {
+            assert!(retained);
+            super::product_drive::drive_root_product_with_producers::<_, String>(
+                world,
+                tel,
+                root,
+                ProductKey::NativeProgram(root),
+                driver,
+                Some(sessions),
+                &mut producers,
+            )
+            .map(|_| ())
+        },
+    );
+    assert_eq!(retry, Ok(()));
+    assert_eq!(sessions.counts().0, 1);
+    assert_eq!(sessions.get(root).and_then(PullSession::id), Some(session_id));
+    assert_eq!(finished.borrow().as_slice(), [Some(session_id), Some(session_id)]);
+    assert_eq!(
+        projections.borrow().len(),
+        1,
+        "retry must reuse the published backend projection"
+    );
+    assert_eq!(
+        backend_requests.get(),
+        1,
+        "retry must not open a second backend request or cache hit",
+    );
+    assert_eq!(
+        sessions
+            .get(root)
+            .and_then(|session| session.memo().generation(&ProductKey::NativeProgram(root))),
+        Some(1),
+    );
+}
+
+#[test]
+fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
+    let observed_evaluations = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, outcome| observed_evaluations.borrow_mut().push((key.clone(), outcome.clone())),
+    );
+    let cache_hits = std::rc::Rc::new(std::cell::RefCell::new(Vec::<ProductKey>::new()));
+    let observed_cache_hits = std::rc::Rc::clone(&cache_hits);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "cache_hit"],
+        move |_, _, _, key| observed_cache_hits.borrow_mut().push(key.clone()),
+    );
+    let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed_lowerings = std::rc::Rc::clone(&lowerings);
+    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        move |_, _, _, _, _| observed_lowerings.set(observed_lowerings.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_cache.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let before_cold_work = compiler.world().work_start_tally();
+    compiler.compile_root_jit(root).expect("cold native product");
+    let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
+    assert_eq!(
+        cold_work,
+        super::WorkStartTally {
+            ignition: 0,
+            changed_revision_wake: 20,
+            activation_frontier: 2,
+            blocked_waiter_expansion: 25,
+            unclassified: 0,
+            root_scans: 0,
+            drain_discovery_sweeps: 0,
+        },
+        "cold native production must preserve its exact sanctioned work-start census",
+    );
+    let native_key = ProductKey::NativeProgram(root);
+    let cold = compiler.retained_native_program(root);
+    let generation = compiler
+        .retained_product_generation(root, &native_key)
+        .expect("cold native generation");
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        evaluations.borrow().len(),
+        79,
+        "cold native production must preserve its exact product-evaluation trace census",
+    );
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| *key == native_key && matches!(outcome, PullOutcome::Produced(_)))
+            .count(),
+        1,
+        "cold native production must complete successfully once",
+    );
+
+    evaluations.borrow_mut().clear();
+    cache_hits.borrow_mut().clear();
+    lowerings.set(0);
+    let before_work = compiler.world().work_start_tally();
+    compiler.compile_root_jit(root).expect("retained native product");
+    assert!(evaluations.borrow().is_empty());
+    assert_eq!(cache_hits.borrow().as_slice(), std::slice::from_ref(&native_key));
+    assert_eq!(lowerings.get(), 0);
+    assert_eq!(compiler.world().work_start_tally(), before_work);
+    assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        Some(generation)
+    );
+
+    let before_unreachable_work = compiler.world().work_start_tally();
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_unreachable.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    compiler.compile_root_jit(root).expect("native after unreachable edit");
+    let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
+    assert_eq!(
+        unreachable_work,
+        super::WorkStartTally {
+            ignition: 2,
+            ..super::WorkStartTally::default()
+        },
+        "an unreachable edit starts only its two source-ingestion jobs",
+    );
+    assert!(evaluations.borrow().is_empty());
+    assert_eq!(lowerings.get(), 0);
+    assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
+
+    let before_reached_backend_work = compiler.world().work_start_tally();
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_cache.fz".to_string()),
+        text: "fn main(), do: 8\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(8));
+    let reached_backend_work = compiler
+        .world()
+        .work_start_tally()
+        .delta_since(before_reached_backend_work);
+    assert_eq!(
+        reached_backend_work,
+        super::WorkStartTally {
+            ignition: 2,
+            changed_revision_wake: 21,
+            ..super::WorkStartTally::default()
+        },
+        "a reached edit starts source ingestion and only exact changed-revision readers",
+    );
+    let content_key = ProductKey::RootBackendContent(root);
+    evaluations.borrow_mut().clear();
+    lowerings.set(0);
+    let before_reached_native_work = compiler.world().work_start_tally();
+    compiler
+        .compile_root_jit(root)
+        .expect("native after reached backend refresh");
+    assert_eq!(
+        compiler.world().work_start_tally(),
+        before_reached_native_work,
+        "refreshing a moved product dependency starts no scheduler work",
+    );
+    let evaluated_keys = evaluations
+        .borrow()
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        evaluated_keys,
+        std::collections::HashSet::from([content_key.clone(), native_key.clone()]),
+        "native refresh must evaluate only moved content and its recorded reader closure",
+    );
+    assert_eq!(
+        evaluations.borrow().len(),
+        2,
+        "stale-dependency routing evaluates moved content and its native reader exactly once each",
+    );
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| *key == content_key && matches!(outcome, PullOutcome::Produced(_)))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| *key == native_key && matches!(outcome, PullOutcome::Produced(_)))
+            .count(),
+        1,
+    );
+    let moved = compiler.retained_native_program(root);
+    assert!(!std::rc::Rc::ptr_eq(&cold, &moved));
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        Some(generation + 1)
+    );
+
+    let weak = std::rc::Rc::downgrade(&moved);
+    drop(moved);
+    drop(cold);
+    evaluations.borrow_mut().clear();
+    assert!(compiler.retire_root_products(root));
+    assert!(
+        weak.upgrade().is_none(),
+        "retiring the root must release its native product"
+    );
+}
+
+#[test]
+fn jit_and_aot_share_one_retained_native_product() {
+    let tel = ConfiguredTelemetry::new();
+    let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = std::rc::Rc::clone(&lowerings);
+    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        move |_, _, _, _, _| observed.set(observed.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_native_front_doors.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.compile_root_jit(root).expect("JIT native product");
+    compiler
+        .compile_root_aot(root, "shared_native_front_doors")
+        .expect("AOT native product");
+
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        compiler.retained_product_generation(root, &ProductKey::NativeProgram(root)),
+        Some(1)
+    );
+}
+
+#[test]
+fn native_request_completes_the_existing_backend_projection_job_from_the_same_pull() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_with_queued_backend_projection.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    compiler
+        .compile_root_jit(root)
+        .expect("native product with queued backend projection");
+
+    assert!(compiler.world().has_fact(&FactKey::BackendProgram(root)));
+    assert!(!compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
+    assert_eq!(
+        compiler.retained_product_generation(root, &ProductKey::RootBackendProduct(root)),
+        Some(1)
+    );
+    assert_eq!(
+        compiler.retained_product_generation(root, &ProductKey::NativeProgram(root)),
+        Some(1)
+    );
 }
 
 #[test]
@@ -405,6 +854,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
 #[test]
 fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hit() {
     let tel = ConfiguredTelemetry::new();
+    let evaluated = std::rc::Rc::new(std::cell::RefCell::new(Vec::<ProductKey>::new()));
+    let observed_evaluated = std::rc::Rc::clone(&evaluated);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| observed_evaluated.borrow_mut().push(key.clone()),
+    );
     let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = std::rc::Rc::clone(&finished);
     tel.attach_raw_event1::<PullSession, _>(
@@ -431,6 +886,29 @@ fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hi
     compiler.run_root_interp(root).expect("nested macro request");
     let cold_sessions = finished.borrow().len();
     assert!(cold_sessions > 1, "the fixture must exercise nested retained roots");
+    let macro_roots = finished
+        .borrow()
+        .iter()
+        .filter_map(|(candidate, _, _)| (*candidate != root).then_some(*candidate))
+        .collect::<std::collections::HashSet<_>>();
+    assert!(
+        !macro_roots.is_empty(),
+        "the fixture must open a retained macro-root session"
+    );
+    assert!(
+        macro_roots.iter().all(|macro_root| evaluated
+            .borrow()
+            .iter()
+            .any(|key| key == &ProductKey::RootBackendProduct(*macro_root))),
+        "each nested macro root must evaluate its backend product",
+    );
+    assert!(
+        evaluated
+            .borrow()
+            .iter()
+            .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
+        "typed product telemetry must show that macro roots never evaluate NativeProgram",
+    );
     let mut cold_work = super::WorkStartTally::default();
     for (_, _, work) in finished.borrow().iter().copied() {
         cold_work.add(work);
@@ -568,7 +1046,6 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     let cold_events = finished.borrow().len();
     let before_failure = compiler.world().work_start_tally();
     assert!(compiler.demand(Job::BuildBackendProduct(root)));
-    assert!(compiler.demand(Job::LowerNativeProgram(root)));
     compiler.submit_code(CodeSubmission {
         name: Some("fatal_reconcile_edit.fz".to_string()),
         text: "fn broken(\n".to_string(),
@@ -581,7 +1058,6 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
     assert_ne!(failed_delta, super::WorkStartTally::default());
     assert!(compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
-    assert!(compiler.world().work_graph.pending(&Job::LowerNativeProgram(root)));
 
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     assert_eq!(finished.borrow().len(), after_failure_events + 1);
@@ -920,193 +1396,7 @@ fn a_struct_used_only_by_pruned_control_does_not_enter_the_root_artifact() {
 }
 
 #[test]
-fn queued_artifact_jobs_do_not_reenter_a_cold_root_product_session() {
-    let tel = ConfiguredTelemetry::new();
-    let finished_sessions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let finished = std::rc::Rc::clone(&finished_sessions);
-    tel.attach_raw_event1::<PullSession, _>(
-        &["fz", "compiler2", "pull", "session", "finished"],
-        move |_, _, _, session| finished.borrow_mut().push(session.root()),
-    );
-    let projections = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let projected = std::rc::Rc::clone(&projections);
-    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
-        &["fz", "compiler2", "pull", "product", "projected"],
-        move |_, _, _, product, _, step| projected.borrow_mut().push((product.clone(), step.movements.len())),
-    );
-    let formula_completions = std::rc::Rc::new(std::cell::Cell::new(0));
-    let applied = std::rc::Rc::clone(&formula_completions);
-    let native_completions = std::rc::Rc::new(std::cell::Cell::new(0));
-    let native_applied = std::rc::Rc::clone(&native_completions);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
-        &["fz", "compiler2", "work_graph", "applied"],
-        move |_, _, _, _, completion| {
-            if matches!(completion.job, Job::BuildBackendProduct(_)) {
-                applied.set(applied.get() + 1);
-            }
-            if matches!(completion.job, Job::LowerNativeProgram(_)) {
-                native_applied.set(native_applied.get() + 1);
-            }
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
-    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
-    compiler.submit_code(CodeSubmission {
-        name: Some("queued_artifact_jobs.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    assert!(compiler.demand(Job::BuildBackendProduct(root)));
-    assert!(compiler.demand(Job::LowerNativeProgram(root)));
-
-    assert_eq!(compiler.run_root_interp(root), Ok(1));
-    assert!(compiler.world().has_fact(&FactKey::NativeProgram(root)));
-    assert_eq!(
-        projections
-            .borrow()
-            .iter()
-            .filter(|(product, movements)| { product == &ProductKey::RootBackendProduct(root) && *movements == 1 })
-            .count(),
-        1,
-        "the queued backend job must publish the requested root exactly once"
-    );
-    assert_eq!(
-        formula_completions.get(),
-        0,
-        "a queued retained product projection is not a scheduler formula"
-    );
-    assert_eq!(
-        finished_sessions
-            .borrow()
-            .iter()
-            .filter(|finished_root| **finished_root == root)
-            .count(),
-        1,
-        "queued artifact consumers must share the requested root's one activation"
-    );
-    assert_eq!(native_completions.get(), 1, "the queued native consumer completes once");
-    assert!(!compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
-    assert!(!compiler.world().work_graph.blocked(&Job::BuildBackendProduct(root)));
-    assert!(!compiler.world().work_graph.pending(&Job::LowerNativeProgram(root)));
-    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
-}
-
-#[test]
-fn queued_artifact_waits_coalesce_on_an_equal_retained_projection() {
-    let tel = ConfiguredTelemetry::new();
-    let evaluations = std::rc::Rc::new(std::cell::Cell::new(0));
-    let evaluated = std::rc::Rc::clone(&evaluations);
-    tel.attach_raw_event1::<ProductKey, _>(
-        &["fz", "compiler2", "pull", "product", "evaluated"],
-        move |_, _, _, _| evaluated.set(evaluated.get() + 1),
-    );
-    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = std::rc::Rc::clone(&finished);
-    tel.attach_raw_event1::<PullSession, _>(
-        &["fz", "compiler2", "pull", "session", "finished"],
-        move |_, _, _, session| observed.borrow_mut().push(session.root()),
-    );
-    let mut compiler = Compiler2::new(tel);
-    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
-    compiler.submit_code(CodeSubmission {
-        name: Some("queued_equal_artifacts.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    compiler.compile_root_jit(root).expect("initial native artifact");
-    let backend_revision = compiler.world().fact_revision(&FactKey::BackendProgram(root));
-    let native_revision = compiler.world().fact_revision(&FactKey::NativeProgram(root));
-    evaluations.set(0);
-    let prior_sessions = finished.borrow().len();
-    assert!(compiler.demand(Job::BuildBackendProduct(root)));
-    assert!(compiler.demand(Job::LowerNativeProgram(root)));
-
-    assert_eq!(compiler.run_root_interp(root), Ok(7));
-    assert_eq!(
-        evaluations.get(),
-        0,
-        "the equal retained answer stays an O(1) product hit"
-    );
-    assert_eq!(
-        finished.borrow()[prior_sessions..]
-            .iter()
-            .filter(|finished_root| **finished_root == root)
-            .count(),
-        1
-    );
-    assert!(compiler.world().has_fact(&FactKey::NativeProgram(root)));
-    assert!(!compiler.world().work_graph.blocked(&Job::BuildBackendProduct(root)));
-    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
-    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
-    assert_eq!(
-        compiler.world().fact_revision(&FactKey::BackendProgram(root)),
-        backend_revision,
-        "parking must not retract or republish the equal backend fact"
-    );
-    assert_eq!(
-        compiler.world().fact_revision(&FactKey::NativeProgram(root)),
-        native_revision,
-        "parking leaves the prior native conclusion standing until its equal replacement"
-    );
-}
-
-#[test]
-fn direct_native_front_door_uses_one_root_activation_and_one_completion() {
-    let tel = ConfiguredTelemetry::new();
-    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = std::rc::Rc::clone(&finished);
-    tel.attach_raw_event1::<PullSession, _>(
-        &["fz", "compiler2", "pull", "session", "finished"],
-        move |_, _, _, session| observed.borrow_mut().push(session.root()),
-    );
-    let native_completions = std::rc::Rc::new(std::cell::Cell::new(0));
-    let completed = std::rc::Rc::clone(&native_completions);
-    tel.attach_raw_event2::<World, super::JobCompletion, _>(
-        &["fz", "compiler2", "work_graph", "applied"],
-        move |_, _, _, _, completion| {
-            if matches!(completion.job, Job::LowerNativeProgram(_)) {
-                completed.set(completed.get() + 1);
-            }
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("one_native_request.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    compiler.compile_root_jit(root).expect("direct native request");
-    assert_eq!(
-        finished
-            .borrow()
-            .iter()
-            .filter(|finished_root| **finished_root == root)
-            .count(),
-        1
-    );
-    assert_eq!(native_completions.get(), 1);
-    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
-    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
-}
-
-#[test]
-fn interp_refresh_projects_the_latest_backend_before_the_next_native_request() {
+fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mirror() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
@@ -1124,21 +1414,19 @@ fn interp_refresh_projects_the_latest_backend_before_the_next_native_request() {
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
         .expect("cold native request");
-    let cold_backend_revision = compiler
-        .world()
-        .fact_revision(&FactKey::BackendProgram(root))
-        .expect("cold backend fact");
-    let cold_native = compiler.world().native_program(root);
+    let content_key = ProductKey::RootBackendContent(root);
+    let native_key = ProductKey::NativeProgram(root);
+    let cold_content_generation = compiler.retained_product_generation(root, &content_key);
+    let cold_native = compiler.retained_native_program(root);
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
         .expect("unchanged native request");
     assert_eq!(
-        compiler.world().fact_revision(&FactKey::BackendProgram(root)),
-        Some(cold_backend_revision),
-        "an unchanged backend request must not move its fact"
+        compiler.retained_product_generation(root, &content_key),
+        cold_content_generation
     );
     assert!(
-        std::rc::Rc::ptr_eq(&cold_native, &compiler.world().native_program(root)),
+        std::rc::Rc::ptr_eq(&cold_native, &compiler.retained_native_program(root)),
         "an unchanged backend request must not replace the native artifact"
     );
 
@@ -1147,28 +1435,21 @@ fn interp_refresh_projects_the_latest_backend_before_the_next_native_request() {
         text: "fn leaf(), do: 2\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(2));
-    assert!(
-        compiler
-            .world()
-            .fact_revision(&FactKey::BackendProgram(root))
-            .expect("refreshed backend fact")
-            > cold_backend_revision,
-        "interp must publish its changed backend projection"
-    );
 
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
         .expect("warm native request");
+    assert_eq!(
+        compiler.retained_product_generation(root, &content_key),
+        cold_content_generation.map(|generation| generation + 1),
+    );
     assert!(
-        !std::rc::Rc::ptr_eq(&cold_native, &compiler.world().native_program(root)),
+        !std::rc::Rc::ptr_eq(&cold_native, &compiler.retained_native_program(root)),
         "the backend movement must invalidate and replace the native artifact"
     );
 
-    let interp_backend_revision = compiler
-        .world()
-        .fact_revision(&FactKey::BackendProgram(root))
-        .expect("interp-refreshed backend fact");
-    let interp_native = compiler.world().native_program(root);
+    let interp_native = compiler.retained_native_program(root);
+    let interp_native_generation = compiler.retained_product_generation(root, &native_key);
     compiler.submit_code(CodeSubmission {
         name: Some("cross_door_backend.fz".to_string()),
         text: "fn leaf(), do: 3\n".to_string(),
@@ -1176,17 +1457,13 @@ fn interp_refresh_projects_the_latest_backend_before_the_next_native_request() {
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
         .expect("native-only refresh");
-    assert!(
-        compiler
-            .world()
-            .fact_revision(&FactKey::BackendProgram(root))
-            .expect("native-refreshed backend fact")
-            > interp_backend_revision,
-        "native must request the retained backend before accepting its own cache"
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        interp_native_generation.map(|generation| generation + 1),
     );
     assert!(!std::rc::Rc::ptr_eq(
         &interp_native,
-        &compiler.world().native_program(root)
+        &compiler.retained_native_program(root)
     ));
 }
 
@@ -2215,7 +2492,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
         .fact_revision(&prerequisite)
         .expect("the lowered body prerequisite should already be published");
     let prerequisite_job = Job::LowerFunction(executable.activation.function);
-    let observer = Job::LowerNativeProgram(RootId::for_test(u32::MAX));
+    let observer = Job::BuildBackendProduct(RootId::for_test(u32::MAX));
     let observer_completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
         observer.clone(),
         super::drive::JobEffects {

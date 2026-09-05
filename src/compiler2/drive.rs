@@ -156,7 +156,6 @@ pub enum Job {
     DeriveCallableConstructionTarget(CallableConstructionTargetKey),
     DeriveRuntimeDemand(ExecutableKey),
     BuildBackendProduct(RootId),
-    LowerNativeProgram(RootId),
 }
 
 impl SemanticOrd<Types> for Job {
@@ -188,8 +187,7 @@ impl SemanticOrd<Types> for Job {
                 (Job::DeriveCallableConstructionTarget(left), Job::DeriveCallableConstructionTarget(right)) => {
                     left.semantic_cmp(right, types)
                 }
-                (Job::BuildBackendProduct(left), Job::BuildBackendProduct(right))
-                | (Job::LowerNativeProgram(left), Job::LowerNativeProgram(right)) => left.cmp(right),
+                (Job::BuildBackendProduct(left), Job::BuildBackendProduct(right)) => left.cmp(right),
                 _ => std::cmp::Ordering::Equal,
             })
     }
@@ -212,15 +210,14 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::ExpandFunctionSource(_) => 12,
         Job::IndexCode(_) => 13,
         Job::LowerFunction(_) => 14,
-        Job::LowerNativeProgram(_) => 15,
-        Job::PlanEntryDispatch(_) => 16,
-        Job::PublishFunctionSource(_) => 17,
-        Job::ReifyGuardDispatch(_) => 18,
-        Job::ScopeCode(_) => 19,
-        Job::SeedActivation(_) => 20,
-        Job::SeedRoot(_) => 21,
-        Job::DeriveCallableConstructionTarget(_) => 22,
-        Job::DeriveRuntimeDemand(_) => 23,
+        Job::PlanEntryDispatch(_) => 15,
+        Job::PublishFunctionSource(_) => 16,
+        Job::ReifyGuardDispatch(_) => 17,
+        Job::ScopeCode(_) => 18,
+        Job::SeedActivation(_) => 19,
+        Job::SeedRoot(_) => 20,
+        Job::DeriveCallableConstructionTarget(_) => 21,
+        Job::DeriveRuntimeDemand(_) => 22,
     }
 }
 
@@ -262,7 +259,6 @@ pub enum FactKey {
     RuntimeDemand(ExecutableKey),
     RuntimeDemandInputs(ExecutableKey),
     BackendProgram(RootId),
-    NativeProgram(RootId),
 }
 
 impl SemanticOrd<Types> for FactKey {
@@ -299,8 +295,7 @@ impl FactKey {
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
             (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
             (FactKey::RootEntry(left), FactKey::RootEntry(right))
-            | (FactKey::BackendProgram(left), FactKey::BackendProgram(right))
-            | (FactKey::NativeProgram(left), FactKey::NativeProgram(right)) => left.cmp(right),
+            | (FactKey::BackendProgram(left), FactKey::BackendProgram(right)) => left.cmp(right),
             (FactKey::Activation(left), FactKey::Activation(right))
             | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
             | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
@@ -349,18 +344,17 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::ModuleDefined(_) => 21,
         FactKey::ModuleIndexed(_) => 22,
         FactKey::ModuleInterface(_) => 23,
-        FactKey::NativeProgram(_) => 24,
-        FactKey::ProtocolDispatch(_) => 25,
-        FactKey::ProtocolImplProviders(_) => 26,
-        FactKey::Recursive(_) => 27,
-        FactKey::ReturnType(_) => 28,
-        FactKey::RootEntry(_) => 29,
-        FactKey::StaticCallees(_) => 30,
-        FactKey::StructDefined(_) => 31,
-        FactKey::TypeDefined(_) => 32,
-        FactKey::RuntimeDemand(_) => 33,
-        FactKey::RuntimeDemandInput(_) => 34,
-        FactKey::RuntimeDemandInputs(_) => 35,
+        FactKey::ProtocolDispatch(_) => 24,
+        FactKey::ProtocolImplProviders(_) => 25,
+        FactKey::Recursive(_) => 26,
+        FactKey::ReturnType(_) => 27,
+        FactKey::RootEntry(_) => 28,
+        FactKey::StaticCallees(_) => 29,
+        FactKey::StructDefined(_) => 30,
+        FactKey::TypeDefined(_) => 31,
+        FactKey::RuntimeDemand(_) => 32,
+        FactKey::RuntimeDemandInput(_) => 33,
+        FactKey::RuntimeDemandInputs(_) => 34,
     }
 }
 
@@ -449,7 +443,7 @@ impl World {
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
     /// `ProtocolImplProviders`, `Executable`, `BackendProgram`,
-    /// `NativeProgram`, `FunctionSourceStash`) have no arm: their demand rides
+    /// `FunctionSourceStash`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
     /// with a single sole-producing job gets an arm here, even when that job
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —

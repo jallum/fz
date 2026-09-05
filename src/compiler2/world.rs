@@ -23,9 +23,7 @@ use crate::source::Span;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::CodeId;
-use super::artifact::{
-    BackendProgram, BackendProgramMap, MacroExecutable, MacroExecutableMap, NativeProgram, NativeProgramMap,
-};
+use super::artifact::{BackendProgram, BackendProgramMap, MacroExecutable, MacroExecutableMap};
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
@@ -149,7 +147,6 @@ pub struct World {
     runtime_demand_input_contributions: RuntimeDemandInputMap<Job>,
     backend: BackendProgramMap,
     macro_executables: MacroExecutableMap,
-    native: NativeProgramMap,
     roots: RootMap,
     macro_roots: HashMap<FunctionId, RootId>,
     namespaces: NamespaceStore,
@@ -279,7 +276,6 @@ impl World {
             runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
             backend: BackendProgramMap::new(),
             macro_executables: MacroExecutableMap::new(),
-            native: NativeProgramMap::new(),
             roots: RootMap::new(),
             macro_roots: HashMap::new(),
             namespaces: NamespaceStore::new(),
@@ -677,7 +673,7 @@ impl World {
     pub(crate) fn pop_root_request_job(&mut self, root: RootId) -> Option<Job> {
         let macro_roots = &self.macro_roots;
         self.work_graph.pop_or_park_pending(root.as_u32(), |job| match job {
-            Job::BuildBackendProduct(job_root) | Job::LowerNativeProgram(job_root) => *job_root == root,
+            Job::BuildBackendProduct(job_root) => *job_root == root,
             Job::BuildMacroExecutable(function) => macro_roots.get(function) == Some(&root),
             _ => false,
         })
@@ -966,13 +962,6 @@ impl World {
 
     pub(crate) fn macro_executable(&self, function: FunctionId) -> Option<&MacroExecutable> {
         self.macro_executables.get(function)
-    }
-
-    pub(crate) fn native_program(&self, root: RootId) -> std::rc::Rc<NativeProgram> {
-        self.native
-            .get(root)
-            .cloned()
-            .expect("native programs should only be read after their fact is defined")
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -2845,10 +2834,6 @@ impl World {
         )
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: std::rc::Rc<NativeProgram>) -> bool {
-        self.native.define(root, program)
-    }
-
     pub(crate) fn run_macro_on_source_with(
         &mut self,
         function: FunctionId,
@@ -3327,14 +3312,6 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 )
             },
         )
-    }
-
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: std::rc::Rc<NativeProgram>) -> bool {
-        let changed = self.world.define_native_program(root, program);
-        if changed {
-            self.emit_world_key(&["fz", "compiler2", "native_program", "defined"], &root);
-        }
-        changed
     }
 
     pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {

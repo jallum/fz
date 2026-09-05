@@ -73,7 +73,7 @@ supplies the activation's inputs (`World::seed_activation_producer`), because
 a key a caller discovered is that caller's to publish and to withdraw. A fact
 whose producer publishes it only as a co-output of a broader
 job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
-`ProtocolImplProviders`, `Executable`, `BackendProgram`, `NativeProgram`) has
+`ProtocolImplProviders`, `Executable`, `BackendProgram`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
 it. Every fact with one sole-producing job gets an arm — including
 `FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
@@ -523,12 +523,15 @@ there is no diagnostics fact family to reconcile.
 
 The interpreter artifact path is not a scheduler pass and it does not enqueue
 follow-up jobs. `Compiler2::run_root_interp` asks the product driver for
-`ProductKey::RootBackendProduct(root)`. Each product producer returns either a
-`ProductValue` or an exact set of waits:
+`ProductKey::RootBackendProduct(root)`. Each product producer returns a
+`ProductValue`, an exact set of waits, or an explicit `Failed(ProductFailure)`
+outcome that the memo never installs:
 
 ```text
 ProductKey =
   RootBackendProduct(root)
+  RootBackendContent(root)
+  NativeProgram(root)
   BackendExecutable(E)
   AbiExecutable(E)
   MaterializedExecutable(E)
@@ -718,7 +721,7 @@ next pull. This path scans neither roots, facts, products, nor dependencies,
 and equal final state leaves readers settled.
 
 Before reconciling queued movements, an empty agenda returns in O(1). A root
-request parks its own queued backend, native, and mapped macro artifact jobs in
+request parks its own queued backend and mapped macro artifact jobs in
 the existing agenda: they still coalesce duplicate demands, but are not
 runnable until the one retained product request has projected its answer.
 Parking preserves FIFO position, nests by active `RootId`, and is always undone
@@ -759,9 +762,14 @@ so a retired-and-recreated session does not split ownership. One
 `BuildBackendProduct` boundary drives the retained product, defines
 `World::BackendProgram(root)`, and completes the matching fact claim only when
 that projection changed (or the claim is first established).
-Interp, native, and macro consumers share that projection boundary, so a
-retained hit cannot republish or move the backend fact, while a changed
-artifact publishes one product-owned movement before those consumers proceed.
+Interp and macro requests publish that boundary directly. A native request
+pulls `NativeProgram(root)` first; its
+`RootBackendContent(root) -> RootBackendProduct(root)` dependency publishes the
+same exact boundary as soon as the root backend settles, before native lowering
+can continue or fail. It never opens a second backend request or asks for a
+second cache hit to obtain that projection. A retained hit cannot republish or
+move the backend fact, while a changed artifact publishes one product-owned
+movement before consumers proceed.
 The completion carries its product authority through the ordinary completion
 boundary; the public `pull.product.projected` step therefore carries that
 movement even when `BuildBackendProduct` entered through the agenda, without
@@ -769,14 +777,21 @@ inventing a scheduler-formula evaluation. If artifact jobs for the same root
 are already queued, agenda parking leaves them under their original scheduler
 ownership while the product is active. The projection consumes the exact
 parked `BuildBackendProduct(root)` job even when the retained answer is equal,
-then unparks native and macro consumers for the ordinary post-projection drive.
-They consume the authoritative World handle without recursively opening a
-second session.
+then unparks macro consumers for the ordinary post-projection drive. They
+consume the authoritative World handle without recursively opening a second
+session.
+
+`RootBackendContent(root)` retains the exact immutable `Rc<BackendProgram>`
+from the root answer. Its equality is pointer-only O(1): equal backend content
+already reuses that handle, while moved content necessarily supplies another.
+`NativeProgram(root)` records this product as its sole backend dependency and
+lives only in the retained memo. A failed native production publishes no
+native value, restores the same retained session, and can retry against the
+already-published backend projection.
 
 Freshness stays on those owners: the fact slot revision records published
 `BackendProgram(root)` movement, and product generations reject stale pull
-results. Neither `BackendProgram` nor its `NativeProgram` projection embeds a
-second revision field; their equality compares artifact content directly.
+results. Neither artifact embeds a second revision field.
 `MacroExecutable.backend_revision` is deliberately different: it snapshots the
 live backend fact revision used to build a compile-time executable.
 

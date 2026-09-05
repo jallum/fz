@@ -292,8 +292,8 @@ the `World` that produced it instead of leaking into the next reader.
 
 `[fz, compiler2, work_graph, applied]` is public (fz-kdt.34.3). It fires
 unconditionally on every job completion — all five `ExecutionContext::
-complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
-`jobs/native.rs`, `jobs/macro_runtime.rs`) route through `emit_job_completion`
+complete_job` call sites (one each in `drive.rs` and `product_drive.rs`, plus
+three in `jobs/backend.rs`) route through `emit_job_completion`
 (`drive.rs`), which always emits it — carrying the raw `JobCompletion` under
 `metadata.completion`. `write_applied_step_body` (`jsonl.rs`) renders the
 shared `AppliedStep` body once and both the standalone `AppliedStep` opaque
@@ -571,8 +571,10 @@ than entering the shared scheduler agenda, so they have no work-start tag.
 
 Macro executable readiness emits `[fz, compiler2, macro_executable, defined]`
 with raw `World` and `FunctionId`; handlers select the stored executable and
-backend revision during the callback. Artifact tests still assert the
-`JobEffects` facts and absence of `NativeProgram(macro_root)`.
+backend revision during the callback. The nested retained-session test in
+`product_drive_test.rs` uses typed product-evaluation telemetry to prove each
+macro root evaluates `RootBackendProduct(macro_root)` and never evaluates
+`NativeProgram(macro_root)`.
 
 Macro expansion emits `[fz, compiler2, macro, expanded]` after a
 `MacroExecutable` runs over quoted source and before recursive expansion
@@ -602,8 +604,8 @@ change. The raw callback receives `World` plus the stable
 key that addresses the result: `FunctionId`, `ModuleId`, `RootId`, `TypeName`,
 `ActivationKey`, or `CallSiteKey`. Generated-function publication adds its raw owner key. A
 handler reads the stored function source, contract, lowered body, dispatch,
-type, protocol wiring, activation analysis, callsite summary, backend program,
-or native program from those authorities during the callback.
+type, protocol wiring, activation analysis, callsite summary, or backend
+program from those authorities during the callback.
 
 Type-reference publication keeps the two owning key domains explicit.
 `[fz,compiler2,type,references,function,recorded]` carries raw `World` plus
@@ -615,9 +617,12 @@ own required key clone.
 This schema covers function `defined` and source `stashed`/`noted`/`expanded`,
 function contracts, lowered bodies, guard and entry dispatch, modules, structs,
 types, protocol dispatch, activation analysis, callsite summaries, backend
-programs, native programs, roots, and code submissions. `input_demand.derived`
-and `native_program.reusable_cons` already own their result outside `World`, so
-they carry the raw key and artifact directly. Code submission carries raw
+programs, roots, and code submissions. Native programs live only in the
+retained product memo: `pull.product.settled` carries successful typed product
+settlement, and `native_program.reusable_cons` carries the root plus its exact
+backend input when native lowering succeeds. A failed evaluation appears as a
+typed `pull.product.evaluated` failure with no native settlement. Code
+submission carries raw
 `World` plus either its `CodeId` or the existing runtime-module registration
 result. No event duplicates ids, arities, counts, names, source references, or
 stored artifacts.

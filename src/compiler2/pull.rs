@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendReceive, BackendStep, CallEdge, CallReturnFlow, EffectSummary,
-    MaterializedExecutable, ReusableConsCapture, RootBackendProductAnswer,
+    AbiReadyExecutable, BackendCallArg, BackendProgram, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
+    EffectSummary, MaterializedExecutable, NativeProgram, ReusableConsCapture, RootBackendProductAnswer,
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
@@ -28,7 +28,9 @@ use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
 #[cfg(test)]
 use super::transport::LaneId;
-use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
+#[cfg(test)]
+use super::transport::ShapeId;
+use super::transport::{CallableConstructionOwner, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
 
@@ -128,6 +130,8 @@ pub struct InputSlot {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProductKey {
     RootBackendProduct(RootId),
+    RootBackendContent(RootId),
+    NativeProgram(RootId),
     BackendExecutable(ExecutableKey),
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
@@ -151,6 +155,8 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 | (Self::ExecutableEffects(left), Self::ExecutableEffects(right))
                 | (Self::OutgoingInputEdges(left), Self::OutgoingInputEdges(right)) => left.semantic_cmp(right, types),
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
+                | (Self::RootBackendContent(left), Self::RootBackendContent(right))
+                | (Self::NativeProgram(left), Self::NativeProgram(right))
                 | (Self::OutgoingEdgeFrontier(left), Self::OutgoingEdgeFrontier(right))
                 | (Self::IncomingInputRelations(left), Self::IncomingInputRelations(right)) => left.cmp(right),
                 (Self::IncomingInputSlot(left), Self::IncomingInputSlot(right)) => left
@@ -178,7 +184,9 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::OutgoingEdgeFrontier(_) => 7,
         ProductKey::OutgoingInputEdges(_) => 8,
         ProductKey::RootBackendProduct(_) => 9,
-        ProductKey::TransportShape(_) => 10,
+        ProductKey::RootBackendContent(_) => 10,
+        ProductKey::NativeProgram(_) => 11,
+        ProductKey::TransportShape(_) => 12,
     }
 }
 
@@ -186,6 +194,8 @@ impl ProductKey {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::RootBackendProduct(_) => "root_backend_product",
+            Self::RootBackendContent(_) => "root_backend_content",
+            Self::NativeProgram(_) => "native_program",
             Self::BackendExecutable(_) => "backend_executable",
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
@@ -208,6 +218,8 @@ impl ProductKey {
             | Self::OutgoingInputEdges(executable) => Some(executable),
             Self::IncomingInputSlot(slot) => Some(&slot.executable),
             Self::RootBackendProduct(_)
+            | Self::RootBackendContent(_)
+            | Self::NativeProgram(_)
             | Self::OutgoingEdgeFrontier(_)
             | Self::IncomingInputRelations(_)
             | Self::TransportShape(_)
@@ -221,24 +233,13 @@ pub enum TransportShapeFact {
     Layout(TransportLayout),
 }
 
-impl TransportShapeFact {
-    pub fn shape(&self) -> Option<ShapeId> {
-        match self {
-            Self::Layout(layout) => Some(layout.structural),
-        }
-    }
-
-    pub fn layout(&self) -> Option<TransportLayout> {
-        match self {
-            Self::Layout(layout) => Some(*layout),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
+    #[cfg(test)]
     Unit,
     RootBackendProduct(Rc<RootBackendProductAnswer>),
+    RootBackendContent(Rc<BackendProgram>),
+    NativeProgram(Rc<NativeProgram>),
     BackendExecutable(Rc<SymbolicBackendExecutable>),
     AbiExecutable(Rc<AbiReadyExecutable>),
     MaterializedExecutable(Rc<MaterializedExecutable>),
@@ -255,6 +256,10 @@ fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
     match (left, right) {
         (ProductValue::RootBackendProduct(left), ProductValue::RootBackendProduct(right)) => {
             Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::RootBackendContent(left), ProductValue::RootBackendContent(right)) => Rc::ptr_eq(left, right),
+        (ProductValue::NativeProgram(left), ProductValue::NativeProgram(right)) => {
+            Rc::ptr_eq(left, right) || super::artifact::native_programs_equal(left, right)
         }
         (ProductValue::BackendExecutable(left), ProductValue::BackendExecutable(right)) => {
             Rc::ptr_eq(left, right) || left == right
@@ -323,6 +328,12 @@ pub enum PullWait {
 pub enum PullOutcome {
     Produced(ProductValue),
     Waiting(Vec<PullWait>),
+    Failed(ProductFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductFailure {
+    NativeLowering,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -631,6 +642,7 @@ impl ProductMemo {
         self.produced.get(key).map(|entry| entry.generation)
     }
 
+    #[cfg(test)]
     pub fn materialized_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<MaterializedExecutable>)> {
         self.produced
             .iter()
@@ -643,6 +655,7 @@ impl ProductMemo {
             })
     }
 
+    #[cfg(test)]
     pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&Rc<MaterializedExecutable>> {
         match self.get(&ProductKey::MaterializedExecutable(executable.clone())) {
             Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized),
@@ -650,6 +663,7 @@ impl ProductMemo {
         }
     }
 
+    #[cfg(test)]
     pub fn abi_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<AbiReadyExecutable>)> {
         self.produced
             .iter()
@@ -659,6 +673,7 @@ impl ProductMemo {
             })
     }
 
+    #[cfg(test)]
     pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&Rc<AbiReadyExecutable>> {
         match self.get(&ProductKey::AbiExecutable(executable.clone())) {
             Some(ProductValue::AbiExecutable(abi)) => Some(abi),
@@ -666,6 +681,7 @@ impl ProductMemo {
         }
     }
 
+    #[cfg(test)]
     pub fn backend_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<SymbolicBackendExecutable>)> {
         self.produced
             .iter()
@@ -675,13 +691,6 @@ impl ProductMemo {
                 }
                 _ => None,
             })
-    }
-
-    pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&Rc<SymbolicBackendExecutable>> {
-        match self.get(&ProductKey::BackendExecutable(executable.clone())) {
-            Some(ProductValue::BackendExecutable(backend)) => Some(backend),
-            _ => None,
-        }
     }
 
     #[cfg(test)]
@@ -973,6 +982,12 @@ impl ProductMemo {
         retained.facts.extend(dependencies.facts);
         self.install_reader_dependencies(key, &retained);
         self.pending_dependencies.insert(key.clone(), retained);
+    }
+
+    fn abort(&mut self, key: &ProductKey) {
+        self.in_progress.remove(key);
+        self.invalidated_in_progress.remove(key);
+        self.take_pending_dependencies(key);
     }
 
     fn remove(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
@@ -1366,6 +1381,7 @@ impl PullSession {
         &self.memo
     }
 
+    #[cfg(test)]
     pub fn demanded_executables(&self) -> &HashSet<ExecutableKey> {
         &self.demanded_executables
     }
@@ -1600,7 +1616,6 @@ impl ProductSessions {
         );
     }
 
-    #[cfg(test)]
     pub(crate) fn get(&self, root: RootId) -> Option<&PullSession> {
         self.sessions.get(&root)
     }
@@ -1889,10 +1904,6 @@ impl<'s> ProductReadContext<'s> {
         self.session
     }
 
-    pub fn session_mut(&mut self) -> &mut PullSession {
-        self.session
-    }
-
     fn into_completion(
         self,
     ) -> (
@@ -1906,48 +1917,7 @@ impl<'s> ProductReadContext<'s> {
 
 pub trait ProductProducers {
     fn product_types(&self) -> &super::types::Types;
-
-    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_backend_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_abi_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_materialized_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_executable_effects(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_outgoing_input_edges(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome;
-    fn produce_transport_shape(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome;
-    fn produce_callable_construction(
-        &mut self,
-        _context: &mut ProductReadContext<'_>,
-        _position: &TransportPosition,
-    ) -> PullOutcome {
-        panic!("callable construction producer is not installed")
-    }
+    fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome;
 }
 
 pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
@@ -1958,73 +1928,6 @@ pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
 impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
     pub fn new(world: &'w mut World, telemetry: &'a T) -> Self {
         Self { world, telemetry }
-    }
-}
-
-impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
-    fn product_types(&self) -> &super::types::Types {
-        self.world.types()
-    }
-
-    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-        super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, root)
-    }
-
-    fn produce_backend_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::backend::produce_backend_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_abi_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_materialized_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_materialized_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_executable_effects(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_executable_effects_product(
-            self.telemetry,
-            context,
-            executable,
-            self.world.types(),
-        )
-    }
-
-    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(ordered_executable_frontier(
-            context.session().outgoing_edge_requests(),
-            self.world.types(),
-        )))
-    }
-
-    fn produce_outgoing_input_edges(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_outgoing_input_edges_product(
-            self.world,
-            self.telemetry,
-            context,
-            executable,
-        )
     }
 
     fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
@@ -2067,21 +1970,72 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
             None => PullOutcome::wait_on_product(relations_key),
         }
     }
+}
 
-    fn produce_transport_shape(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome {
-        super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
+impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
+    fn product_types(&self) -> &super::types::Types {
+        self.world.types()
     }
 
-    fn produce_callable_construction(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome {
-        super::jobs::transport::produce_callable_construction_product(self.world, self.telemetry, context, position)
+    fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+        match key {
+            ProductKey::RootBackendProduct(root) => {
+                super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, *root)
+            }
+            ProductKey::RootBackendContent(root) => {
+                super::jobs::backend::produce_root_backend_content(self.telemetry, context, *root, self.world.types())
+            }
+            ProductKey::NativeProgram(root) => {
+                super::jobs::produce_native_program(self.world, self.telemetry, context, *root)
+            }
+            ProductKey::BackendExecutable(executable) => super::jobs::backend::produce_backend_executable_product(
+                self.world,
+                self.telemetry,
+                context,
+                executable,
+            ),
+            ProductKey::AbiExecutable(executable) => {
+                super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, context, executable)
+            }
+            ProductKey::MaterializedExecutable(executable) => {
+                super::jobs::artifact::produce_materialized_executable_product(
+                    self.world,
+                    self.telemetry,
+                    context,
+                    executable,
+                )
+            }
+            ProductKey::ExecutableEffects(executable) => super::jobs::artifact::produce_executable_effects_product(
+                self.telemetry,
+                context,
+                executable,
+                self.world.types(),
+            ),
+            ProductKey::OutgoingEdgeFrontier(_) => PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(
+                ordered_executable_frontier(context.session().outgoing_edge_requests(), self.world.types()),
+            )),
+            ProductKey::OutgoingInputEdges(executable) => {
+                super::jobs::runtime_demand::produce_outgoing_input_edges_product(
+                    self.world,
+                    self.telemetry,
+                    context,
+                    executable,
+                )
+            }
+            ProductKey::IncomingInputRelations(root) => self.produce_incoming_input_relations(context, *root),
+            ProductKey::IncomingInputSlot(slot) => self.produce_incoming_input_slot(context, slot),
+            ProductKey::TransportShape(position) => {
+                super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
+            }
+            ProductKey::CallableConstruction(position) => {
+                super::jobs::transport::produce_callable_construction_product(
+                    self.world,
+                    self.telemetry,
+                    context,
+                    position,
+                )
+            }
+        }
     }
 }
 
@@ -2090,7 +2044,7 @@ pub struct ProductDriver<'a, T: Telemetry> {
     session: Option<PullSession>,
     emit_causal_products: bool,
     emit_session_lifecycle: bool,
-    last_request: Option<ProductRequestId>,
+    last_request: Option<(ProductKey, ProductRequestId)>,
     finished: Cell<bool>,
 }
 
@@ -2149,17 +2103,19 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session.take().expect("product driver session already retained")
     }
 
-    pub(crate) fn root_projection(&self) -> Option<ProductProjection> {
+    pub(crate) fn projection(&self, key: &ProductKey) -> Option<ProductProjection> {
+        let (requested, request) = self.last_request.as_ref()?;
+        if requested != key {
+            return None;
+        }
         Some(ProductProjection {
             session: self.session().id()?,
-            request: self.last_request?,
-            generation: self
-                .session()
-                .memo
-                .generation(&ProductKey::RootBackendProduct(self.session().root()))?,
+            request: *request,
+            generation: self.session().memo.generation(key)?,
         })
     }
 
+    #[cfg(test)]
     pub fn finish_session(&self) {
         self.emit_finished_once();
     }
@@ -2176,7 +2132,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
         let request = self.session_mut().request_ids.allocate();
-        self.last_request = Some(request);
+        self.last_request = Some((key.clone(), request));
         if self.emit_causal_products {
             tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
         }
@@ -2202,25 +2158,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         );
 
         let mut context = ProductReadContext::new(self.session_mut());
-        let outcome = match &key {
-            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut context, *root),
-            ProductKey::BackendExecutable(executable) => producers.produce_backend_executable(&mut context, executable),
-            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(&mut context, executable),
-            ProductKey::MaterializedExecutable(executable) => {
-                producers.produce_materialized_executable(&mut context, executable)
-            }
-            ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
-            ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
-            ProductKey::OutgoingInputEdges(executable) => {
-                producers.produce_outgoing_input_edges(&mut context, executable)
-            }
-            ProductKey::IncomingInputRelations(root) => producers.produce_incoming_input_relations(&mut context, *root),
-            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut context, slot),
-            ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut context, position),
-            ProductKey::CallableConstruction(position) => {
-                producers.produce_callable_construction(&mut context, position)
-            }
-        };
+        let outcome = producers.produce(&mut context, &key);
         let (dependencies, mut staged, recursive_group) = context.into_completion();
         if self.emit_causal_products {
             tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
@@ -2261,6 +2199,15 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             PullOutcome::Waiting(waits) => {
                 self.session_mut().memo.unblock(&key, dependencies);
                 PullOutcome::Waiting(waits)
+            }
+            PullOutcome::Failed(failure) => {
+                assert!(staged.is_empty(), "a failed product cannot publish peers");
+                assert!(
+                    recursive_group.is_none(),
+                    "a failed product cannot publish a recursive group"
+                );
+                self.session_mut().memo.abort(&key);
+                PullOutcome::Failed(failure)
             }
         }
     }
@@ -3045,6 +2992,8 @@ mod tests {
         backend_fact: Option<FactUse<FactKey>>,
         backend_value: Option<ProductValue>,
         fact_state_reads: usize,
+        fail_native_once: bool,
+        native_fact: Option<FactUse<FactKey>>,
     }
 
     impl FakeProducers {
@@ -3056,34 +3005,10 @@ mod tests {
             })
         }
 
-        fn produce(&mut self, key: ProductKey) -> PullOutcome {
+        fn produce_unit(&mut self, key: ProductKey) -> PullOutcome {
             self.calls.push(key.clone());
-            if self.self_wait.as_ref() == Some(&key) {
-                return PullOutcome::wait_on_product(key);
-            }
-            match key {
-                ProductKey::RootBackendProduct(root) => {
-                    let prerequisite =
-                        ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
-                    if self.produced.contains(&prerequisite) {
-                        self.produced.insert(ProductKey::RootBackendProduct(root));
-                        PullOutcome::Produced(ProductValue::Unit)
-                    } else {
-                        PullOutcome::wait_on_product(prerequisite)
-                    }
-                }
-                ProductKey::OutgoingInputEdges(_) => {
-                    self.produced.insert(key);
-                    PullOutcome::Produced(ProductValue::Unit)
-                }
-                ProductKey::BackendExecutable(_) => {
-                    PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO)))
-                }
-                _ => {
-                    self.produced.insert(key);
-                    PullOutcome::Produced(ProductValue::Unit)
-                }
-            }
+            self.produced.insert(key);
+            PullOutcome::Produced(ProductValue::Unit)
         }
     }
 
@@ -3092,161 +3017,250 @@ mod tests {
             &self.types
         }
 
-        fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-            let tel = ConfiguredTelemetry::new();
-            let key = ProductKey::RootBackendProduct(root);
-            self.calls.push(key.clone());
-            let mut waits = if self.root_prerequisites.is_empty() {
-                Vec::new()
-            } else {
-                self.root_prerequisites
-                    .iter()
-                    .filter(|prerequisite| {
-                        context
-                            .read_product_entry(&tel, (*prerequisite).clone(), &self.types)
+        fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+            if self.self_wait.as_ref() == Some(key) {
+                self.calls.push(key.clone());
+                return PullOutcome::wait_on_product(key.clone());
+            }
+            match key {
+                ProductKey::RootBackendProduct(root) => {
+                    let tel = ConfiguredTelemetry::new();
+                    self.calls.push(key.clone());
+                    let mut waits = self
+                        .root_prerequisites
+                        .iter()
+                        .filter(|prerequisite| {
+                            context
+                                .read_product_entry(&tel, (*prerequisite).clone(), &self.types)
+                                .is_none()
+                        })
+                        .cloned()
+                        .map(PullWait::Product)
+                        .collect::<Vec<_>>();
+                    if let Some(prerequisite) = self.root_recursive_prerequisite.clone() {
+                        let telemetry = self
+                            .recursive_telemetry
+                            .as_ref()
+                            .expect("a recursive fake producer needs its driver telemetry");
+                        if matches!(
+                            context.read_recursive_product(telemetry.as_ref(), prerequisite.clone(), key, &self.types,),
+                            RecursiveProductRead::Waiting
+                        ) {
+                            waits.push(PullWait::Product(prerequisite));
+                        }
+                    }
+                    if !waits.is_empty() {
+                        return PullOutcome::Waiting(waits);
+                    }
+                    let prerequisite =
+                        ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
+                    if context
+                        .read_product_entry(&tel, prerequisite.clone(), &self.types)
+                        .is_some()
+                    {
+                        self.produced.insert(ProductKey::RootBackendProduct(*root));
+                        PullOutcome::Produced(ProductValue::Unit)
+                    } else {
+                        PullOutcome::wait_on_product(prerequisite)
+                    }
+                }
+                ProductKey::NativeProgram(_) => {
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.native_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        context.record_fact_state(fact.clone(), state);
+                        if !state.settled {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    }
+                    if std::mem::take(&mut self.fail_native_once) {
+                        PullOutcome::Failed(ProductFailure::NativeLowering)
+                    } else {
+                        PullOutcome::Produced(ProductValue::Unit)
+                    }
+                }
+                ProductKey::BackendExecutable(_) => {
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.backend_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        let ready = match fact.readiness() {
+                            FactReadiness::Current => state.revision.is_some(),
+                            FactReadiness::Settled => state.settled,
+                        };
+                        context.record_fact_state(fact.clone(), state);
+                        if !ready {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    } else if self.backend_value.is_none() {
+                        return PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(
+                            super::super::CodeId::ZERO,
+                        )));
+                    }
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.backend_value.clone().unwrap_or(ProductValue::Unit))
+                }
+                ProductKey::MaterializedExecutable(_) => {
+                    self.calls.push(key.clone());
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.materialized_value.clone().unwrap_or(ProductValue::Unit))
+                }
+                ProductKey::OutgoingInputEdges(_) => {
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.runtime_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        let ready = match fact.readiness() {
+                            FactReadiness::Current => state.revision.is_some(),
+                            FactReadiness::Settled => state.settled,
+                        };
+                        context.record_fact_state(fact.clone(), state);
+                        if !ready {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    }
+                    if let Some(child) = self.runtime_children.get(key).cloned()
+                        && context
+                            .read_product_entry(&ConfiguredTelemetry::new(), child.clone(), &self.types)
                             .is_none()
-                    })
-                    .cloned()
-                    .map(PullWait::Product)
-                    .collect::<Vec<_>>()
-            };
-            if let Some(prerequisite) = self.root_recursive_prerequisite.clone() {
-                let telemetry = self
-                    .recursive_telemetry
-                    .as_ref()
-                    .expect("a recursive fake producer needs its driver telemetry");
-                if matches!(
-                    context.read_recursive_product(telemetry.as_ref(), prerequisite.clone(), &key, &self.types),
-                    RecursiveProductRead::Waiting
-                ) {
-                    waits.push(PullWait::Product(prerequisite));
+                    {
+                        return PullOutcome::wait_on_product(child);
+                    }
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.runtime_value.clone().unwrap_or(ProductValue::Unit))
                 }
-            }
-            if !waits.is_empty() {
-                return PullOutcome::Waiting(waits);
-            }
-            let prerequisite =
-                ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
-            if context
-                .read_product_entry(&tel, prerequisite.clone(), &self.types)
-                .is_some()
-            {
-                self.produced.insert(key);
-                PullOutcome::Produced(ProductValue::Unit)
-            } else {
-                PullOutcome::wait_on_product(prerequisite)
+                _ => self.produce_unit(key.clone()),
             }
         }
+    }
 
-        fn produce_backend_executable(
-            &mut self,
-            context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            let key = ProductKey::BackendExecutable(executable.clone());
-            self.calls.push(key.clone());
-            if let Some(fact) = self.backend_fact.clone() {
-                let state = self.fact_state(&fact);
-                let ready = match fact.readiness() {
-                    FactReadiness::Current => state.revision.is_some(),
-                    FactReadiness::Settled => state.settled,
-                };
-                context.record_fact_state(fact.clone(), state);
-                if !ready {
-                    return PullOutcome::wait_on_fact(fact);
-                }
-            }
-            self.produced.insert(key);
-            PullOutcome::Produced(self.backend_value.clone().unwrap_or(ProductValue::Unit))
-        }
+    #[test]
+    fn failed_product_is_not_memoized_and_can_be_retried() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(0);
+        let key = ProductKey::NativeProgram(root);
+        let prerequisite = FactUse::settled(FactKey::RootEntry(root));
+        let mut producers = FakeProducers {
+            fail_native_once: true,
+            native_fact: Some(prerequisite.clone()),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(&tel, root);
 
-        fn produce_abi_executable(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::AbiExecutable(executable.clone()))
-        }
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::wait_on_fact(prerequisite.clone())
+        );
+        assert!(driver.session().memo.pending_product_dependencies(&key).is_some());
+        producers.facts.insert(
+            prerequisite.fact().clone(),
+            FactState {
+                revision: Some(1),
+                settled: true,
+            },
+        );
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Failed(ProductFailure::NativeLowering)
+        );
+        assert!(!driver.session().memo.contains_in_progress(&key));
+        assert!(driver.session().memo.pending_product_dependencies(&key).is_none());
+        assert_eq!(driver.session().memo.get(&key), None);
+        assert_eq!(driver.session().memo.generation(&key), None);
 
-        fn produce_materialized_executable(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            let key = ProductKey::MaterializedExecutable(executable.clone());
-            self.calls.push(key.clone());
-            self.produced.insert(key);
-            PullOutcome::Produced(self.materialized_value.clone().unwrap_or(ProductValue::Unit))
-        }
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo.generation(&key), Some(1));
+    }
 
-        fn produce_executable_effects(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::ExecutableEffects(executable.clone()))
-        }
+    #[test]
+    fn transport_only_root_movement_stops_at_equal_backend_content() {
+        let root = RootId::for_test(0);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let content_key = ProductKey::RootBackendContent(root);
+        let native_key = ProductKey::NativeProgram(root);
+        let backend = Rc::new(super::super::artifact::BackendProgram {
+            entry: 0,
+            atom_names: Vec::new(),
+            struct_schemas: Default::default(),
+            executables: Vec::new(),
+            construction_wrappers: Vec::new(),
+        });
+        let answer = |entry| {
+            ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
+                program: Rc::clone(&backend),
+                transport: super::super::artifact::MaterializedTransportPlan {
+                    entry,
+                    executable_membership: Box::default(),
+                    position_layouts: Vec::new(),
+                    callable_boundaries: Vec::new(),
+                    boundary_ids: Vec::new(),
+                    codegen_seam_facts: Box::default(),
+                    callable_owners: Box::default(),
+                    callable_facts: HashMap::new(),
+                    boundary_facts: HashMap::new(),
+                },
+            }))
+        };
+        let mut memo = ProductMemo::default();
 
-        fn produce_outgoing_input_edges(
-            &mut self,
-            context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            let key = ProductKey::OutgoingInputEdges(executable.clone());
-            self.calls.push(key.clone());
-            if let Some(fact) = self.runtime_fact.clone() {
-                let state = self.fact_state(&fact);
-                let ready = match fact.readiness() {
-                    FactReadiness::Current => state.revision.is_some(),
-                    FactReadiness::Settled => state.settled,
-                };
-                context.record_fact_state(fact.clone(), state);
-                if !ready {
-                    return PullOutcome::wait_on_fact(fact);
-                }
-            }
-            if let Some(child) = self.runtime_children.get(&key).cloned()
-                && context
-                    .read_product_entry(&ConfiguredTelemetry::new(), child.clone(), &self.types)
-                    .is_none()
-            {
-                return PullOutcome::wait_on_product(child);
-            }
-            self.produced.insert(key);
-            PullOutcome::Produced(self.runtime_value.clone().unwrap_or(ProductValue::Unit))
-        }
+        finish_test_product(
+            &mut memo,
+            &root_key,
+            answer(executable_symbol_for_test(&fake_executable_with_function(root, 1))),
+            [],
+        );
+        finish_test_product(
+            &mut memo,
+            &content_key,
+            ProductValue::RootBackendContent(Rc::clone(&backend)),
+            [root_key.clone()],
+        );
+        finish_test_product(&mut memo, &native_key, ProductValue::Unit, [content_key.clone()]);
+        let content_generation = memo.generation(&content_key);
+        let native_generation = memo.generation(&native_key);
 
-        fn produce_outgoing_edge_frontier(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            root: RootId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::OutgoingEdgeFrontier(root))
-        }
+        finish_test_product(
+            &mut memo,
+            &root_key,
+            answer(executable_symbol_for_test(&fake_executable_with_function(root, 2))),
+            [],
+        );
+        finish_test_product(
+            &mut memo,
+            &content_key,
+            ProductValue::RootBackendContent(Rc::clone(&backend)),
+            [root_key],
+        );
 
-        fn produce_incoming_input_relations(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            root: RootId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::IncomingInputRelations(root))
-        }
+        assert_eq!(memo.generation(&content_key), content_generation);
+        assert_eq!(memo.generation(&native_key), native_generation);
+        assert!(memo.get(&native_key).is_some());
+    }
 
-        fn produce_incoming_input_slot(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            slot: &InputSlot,
-        ) -> PullOutcome {
-            self.produce(ProductKey::IncomingInputSlot(slot.clone()))
-        }
+    #[test]
+    fn equal_native_reproduction_retains_allocation_and_generation() {
+        let root = RootId::for_test(0);
+        let key = ProductKey::NativeProgram(root);
+        let native = || NativeProgram {
+            entry: crate::fz_ir::FnId(0),
+            module: crate::fz_ir::Module::default(),
+            executable_entries: Vec::new(),
+            bodies: Vec::new(),
+            callable_boundaries: Vec::new(),
+        };
+        let original = Rc::new(native());
+        let mut memo = ProductMemo::default();
 
-        fn produce_transport_shape(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            position: &TransportPosition,
-        ) -> PullOutcome {
-            self.produce(ProductKey::TransportShape(position.clone()))
-        }
+        finish_test_product(&mut memo, &key, ProductValue::NativeProgram(Rc::clone(&original)), []);
+        let generation = memo.generation(&key);
+        finish_test_product(&mut memo, &key, ProductValue::NativeProgram(Rc::new(native())), []);
+
+        let Some(ProductValue::NativeProgram(retained)) = memo.get(&key) else {
+            panic!("native program must remain settled");
+        };
+        assert!(Rc::ptr_eq(retained, &original));
+        assert_eq!(memo.generation(&key), generation);
     }
 
     #[test]
@@ -4585,6 +4599,7 @@ mod tests {
                         }
                     }
                 }
+                PullOutcome::Failed(failure) => panic!("effect product failed: {failure:?}"),
             }
         }
         unreachable!("the requested effects product remains on the work stack until it settles")

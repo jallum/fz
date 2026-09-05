@@ -25,8 +25,7 @@ mod native_codegen;
 mod ordered_set;
 mod product_drive;
 mod protocol;
-#[doc(hidden)]
-pub mod pull;
+pub(crate) mod pull;
 mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;

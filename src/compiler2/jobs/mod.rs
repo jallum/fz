@@ -7,14 +7,6 @@
 use super::drive::{ExecutionContext, Job, JobEffects};
 use super::scheduler::FatalError;
 
-pub(crate) fn lower_native_program_for_request<T: crate::telemetry::RawSpanTelemetry>(
-    context: &mut ExecutionContext<'_, T>,
-    root: super::identity::RootId,
-    timeout: Option<std::time::Duration>,
-) -> Result<std::rc::Rc<super::NativeProgram>, String> {
-    native::lower_native_program_for_request(context, root, timeout)
-}
-
 pub(crate) mod artifact;
 pub(crate) mod backend;
 mod body;
@@ -25,6 +17,7 @@ mod executable_facts;
 mod keying;
 mod macro_runtime;
 mod native;
+pub(super) use native::produce_native_program;
 mod root;
 pub(crate) mod runtime_demand;
 mod semantic;
@@ -41,7 +34,6 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     match job {
         Job::BuildMacroExecutable(function_id) => return macro_runtime::build_macro_executable(context, *function_id),
         Job::BuildBackendProduct(root_id) => return backend::build_backend_product(context, *root_id),
-        Job::LowerNativeProgram(root_id) => return native::lower_native_program(context, *root_id),
         _ => {}
     }
     let ExecutionContext { world, telemetry, .. } = context;
@@ -59,7 +51,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::LowerFunction(function_id) => body::lower_function(world, tel, *function_id),
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
-        Job::BuildMacroExecutable(_) | Job::BuildBackendProduct(_) | Job::LowerNativeProgram(_) => {
+        Job::BuildMacroExecutable(_) | Job::BuildBackendProduct(_) => {
             unreachable!("context-owning jobs return before the ordinary dispatch")
         }
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
