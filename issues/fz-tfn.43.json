@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.58"
+  ],
   "blocks": [],
   "created": "2026-09-05T19:36:52Z",
   "description": "## Goal\n\nMake interpreted callable display/identity arity derive from source-semantic callable identity, never demand-pruned physical input metadata.\n\n## Evidence\n\nsrc/ir_interp/backend.rs callable_value_arity selects the first matching executable and computes semantic_inputs.len().saturating_sub(capture_count). Its callers are FunctionRef/Lambda fallback paths when no construction and no direct surface is selected. The function comment promises source-fixed arity regardless of capture demand, but semantic_inputs is demand-pruned and may omit ignored positions. This mismatch exists at committed .57 and .58 removes additional ignored rows. No user-visible regression has yet been demonstrated; fallback reachability for observable callables must be proved before claiming one.\n\n## Strategy and TDD\n\nTrace actual fallback reachability with a minimal ignored-parameter callable and a lexical-capture control. Prove source arity remains fixed across cold, repeated and relevant demand edits, and across interp/run/build observations where applicable. If fallback is unreachable for any valid observable callable, eliminate the dead path with an invariant rather than adding another authority. Otherwise consume the existing typed semantic identity/arity owner, removing layout-count and first-matching-executable authority. Do not recreate omitted semantic-input rows or use rendered type strings.\n\n## Acceptance\n\nSource-semantic arity is independent of physical parameter/capture pruning and executable enumeration. Focused RED/GREEN and neighboring callable-display tests prove the chosen path; execution-door parity and full applicable regression/lint gates pass. Update interpreter/callable documentation, use ticket-scoped cold review, one commit and close. No new compatibility scanner or duplicate arity store.\n\n## Ordering\n\nDiscovered during .58 artifact audit. Tail issue unless a reachable regression proves .58 depends on it; then update dependencies and resolve before .58 delivery. Investigation remains explicit, not a silent semantic fix folded into pruning.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Derive interpreted callable arity from semantic identity, not retained input layouts",
   "type": "bug",
-  "updated_at": "2026-09-05T19:36:52Z"
+  "updated_at": "2026-09-05T19:36:58Z"
 }
