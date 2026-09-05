@@ -6,7 +6,8 @@
     "fz-tfn.6"
   ],
   "blocks": [
-    "fz-tfn.16"
+    "fz-tfn.16",
+    "fz-tfn.39"
   ],
   "created": "2026-09-03T08:00:25Z",
   "description": "## Goal\n\nAfter scan-shaped scheduling work is removed, delete the `root_scans` metric and its unreachable fact-table escape hatch.\n\n## Evidence\n\n`Scheduler::fact_keys` has zero callers, and `FactTable::keys` exists only behind it. Therefore `root_scans` is permanently zero by construction while the real root, activation-frontier, and waiter scans bypass the counter. The compiler stores, serializes, aggregates, documents, and asserts an always-zero metric that does not observe the work it claims to guard.\n\n## Strategy and proof\n\n1. Complete edge-triggered wait and activation ignition so no normal-drive global discovery scan remains.\n2. Repository-search every fact/root/wait/product inventory iterator and classify remaining uses as exact keyed work or terminal diagnostics.\n3. Delete `Scheduler::fact_keys`, `FactTable::keys`, the counter, public tally/schema fields, causal aggregation, assertions, and documentation.\n4. Replace the runtime canary with compile-time absence plus focused tests that prove work begins only from sanctioned exact edges.\n5. Prove unchanged causal work starts, products, artifacts, and diagnostics.\n6. Run telemetry compatibility tests, full suite, fixture matrix, formatting, and strict clippy.\n\nDo not rename an unobservant counter. Temporary scan probes used for proof leave with the ticket.",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Delete the misleading root-scans telemetry canary",
   "type": "task",
-  "updated_at": "2026-09-04T00:00:49Z"
+  "updated_at": "2026-09-05T14:15:49Z"
 }
