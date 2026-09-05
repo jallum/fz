@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.4",
+    "fz-tfn.28",
     "fz-tfn.30"
   ],
   "blocks": [
@@ -17,5 +18,5 @@
   "status": "in_progress",
   "title": "Delete unreachable native branch and resume helpers at their emitter",
   "type": "bug",
-  "updated_at": "2026-09-05T23:13:40Z"
+  "updated_at": "2026-09-05T23:17:58Z"
 }
