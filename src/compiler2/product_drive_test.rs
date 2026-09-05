@@ -327,8 +327,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        79,
-        "main and its definition macro retain their direct backend demands without per-executable relation products",
+        58,
+        "main and its definition macro need no scalar callable owners or ABI retries waiting on those owners",
     );
     let materialized_roots = evaluations
         .borrow()

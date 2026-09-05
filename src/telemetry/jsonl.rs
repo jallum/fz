@@ -1748,6 +1748,21 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "cycle_closed");
         out.push(':');
         out.push_str(if search.cycle_closed { "true" } else { "false" });
+    } else if let Some(crate::compiler2::pull::ProductValue::CallableConstruction(owner)) =
+        opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
+    {
+        write_transport_layout_fields(out, owner.layout);
+        out.push_str(",\"construction\":");
+        out.push_str(if owner.construction.is_some() { "true" } else { "false" });
+        out.push_str(",\"callable_facts\":");
+        push_u64(out, owner.callable_facts.len() as u64);
+        out.push_str(",\"boundary_facts\":");
+        push_u64(out, owner.boundary_facts.len() as u64);
+    } else if let Some(crate::compiler2::pull::ProductValue::TransportShape(
+        crate::compiler2::pull::TransportShapeFact::Layout(layout),
+    )) = opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
+    {
+        write_transport_layout_fields(out, *layout);
     } else if let Some(crate::compiler2::pull::ProductValue::RootBackendProduct(answer)) =
         opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
     {
@@ -2014,6 +2029,20 @@ fn write_executable_need(out: &mut String, need: crate::compiler2::ExecutableNee
 fn write_executable_key(out: &mut String, key: &crate::compiler2::ExecutableKey) {
     write_activation_key(out, &key.activation);
     write_executable_need(out, key.need);
+}
+
+fn write_transport_layout_fields(out: &mut String, layout: crate::compiler2::transport::TransportLayout) {
+    out.push_str(",\"structural_shape_id\":");
+    push_u64(out, layout.structural.as_u32() as u64);
+    out.push_str(",\"carrier\":");
+    match layout.carrier {
+        crate::compiler2::transport::TransportCarrier::Absent => write_str_lit(out, "absent"),
+        crate::compiler2::transport::TransportCarrier::ValueRef(lane) => {
+            write_str_lit(out, "value_ref");
+            out.push_str(",\"carrier_lane_id\":");
+            push_u64(out, lane.as_u32() as u64);
+        }
+    }
 }
 
 fn write_callable_construction_target_key(out: &mut String, key: &crate::compiler2::CallableConstructionTargetKey) {

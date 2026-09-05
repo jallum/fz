@@ -213,23 +213,17 @@ pub(crate) fn produce_callable_construction_product(
     }
     let facts = facts.expect("executable-facts wait should have been satisfied");
     let runtime = runtime.expect("runtime-demand wait should have been satisfied");
-    let TransportPosition::Value { value, .. } = position else {
+    let Some((value, producer, flow)) = local_callable_construction(&facts, &runtime, position) else {
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
-    let Some(TransportSource::CallableValue(producer)) = facts.value_origin(*value) else {
-        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
-    };
-    let Some(flow) = runtime.callable_flows.get(value) else {
-        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
-    };
-    let demand = runtime.value_demands.get(value).cloned().unwrap_or_default();
+    let demand = runtime.value_demands.get(&value).cloned().unwrap_or_default();
     match produce_local_callable_construction(
         world,
         tel,
         context,
         &executable,
         facts.as_ref(),
-        *value,
+        value,
         producer,
         flow,
         demand,
@@ -237,6 +231,20 @@ pub(crate) fn produce_callable_construction_product(
         Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
     }
+}
+
+pub(crate) fn local_callable_construction<'a>(
+    facts: &'a ExecutableFacts,
+    runtime: &'a ExecutableRuntimeDemand,
+    position: &TransportPosition,
+) -> Option<(ValueId, &'a LocalCallableProducer, &'a CallableFlowFact)> {
+    let TransportPosition::Value { value, .. } = position else {
+        return None;
+    };
+    let TransportSource::CallableValue(producer) = facts.value_origin(*value)? else {
+        return None;
+    };
+    Some((*value, producer, runtime.callable_flows.get(value)?))
 }
 
 fn produce_generic_callable_owner(
@@ -1680,6 +1688,9 @@ fn produce_named_transport_position(
         }
     };
 
+    if demand.is_ignore() {
+        return Some(bottom_transport_shape(world));
+    }
     let names_in_component_direct_return = match cut_recursive_edges(world, context, executable, &mut recipe) {
         Ok(names_direct) => names_direct,
         Err(fact) => return Some(PullOutcome::wait_on_fact(fact)),

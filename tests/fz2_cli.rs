@@ -1952,8 +1952,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // Exact slot facts replace twenty intermediate relation product answers.
-        (378, 378, 378, 0, 15, 0),
+        // The 165 shape answers stay; callable owners are only the 23 callable positions.
+        (241, 241, 241, 0, 15, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(

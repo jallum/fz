@@ -343,6 +343,12 @@ by a root pass.
 Backend-required transport positions wait for an actual produced
 `TransportShape(position)`. Backend and ABI products consume layouts, so their
 waits test the exact position product.
+The input inventory comes from `RuntimeDemand::is_ignore()`: an input with
+neither physical nor callable demand has no ABI position. An ignored transport
+recipe produces its zero-lane contract without requesting origin products.
+Lexical captures are a different obligation. The local callable flow names each
+capture's `Value` position, retaining the source layout needed by a wrapper even
+when its parameter input has no physical or callable demand.
 Product entries retain exact product generations and fact-use states. Producers
 record dependencies at the read site; waits name those reads without restamping
 or rereading the world. Scheduler movements are reconciled to their final exact
@@ -399,6 +405,12 @@ layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class
 producer owns `Some` with at least one exact executable member. There is no root
 solve, component inventory, or absence-provenance side channel.
+The ABI uses the same local-producer selector as callable construction. These
+local flow owners retain lexical metadata independently of their physical
+layout. The ABI requests a generic owner only when the settled structural layout
+contains a callable node: a scalar or callable-free tuple cannot publish
+callable or boundary facts. The positioned shape remains the ABI's exact
+dependency; equal layouts do not combine owners or dependencies.
 
 Unlike transport shapes, callable construction still settles a recursive product
 GROUP: a callable threaded through a mutual recursion reaches its own owner, and

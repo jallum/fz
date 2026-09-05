@@ -535,6 +535,16 @@ impl TransportInterners {
         self.shapes.get(id)
     }
 
+    pub fn shape_contains_callable(&self, shape: ShapeId) -> bool {
+        match self.shape(shape) {
+            ShapeDescr::Callable(_) => true,
+            ShapeDescr::Tuple(fields) => fields
+                .iter()
+                .any(|field| self.shape_contains_callable(field.structural)),
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+        }
+    }
+
     pub fn shape_width(&self, shape: ShapeId) -> usize {
         match self.shape(shape) {
             ShapeDescr::Nothing => 0,

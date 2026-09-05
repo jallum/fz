@@ -4478,6 +4478,139 @@ fn return_flow_arms(
 }
 
 #[test]
+fn positioned_callable_owners_have_observable_obligations() {
+    for (name, source) in [
+        (
+            "take_drop",
+            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+        ),
+        ("scalar", "fn main(), do: 42"),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let evaluated = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&evaluated);
+        tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+            &["fz", "compiler2", "pull", "product", "evaluated"],
+            move |_, _, _, key, _, _| observed.borrow_mut().push(key.clone()),
+        );
+        let mut world = World::new();
+        world.submit_code(Some(format!("{name}.fz")), source.into());
+        let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+        let session = driver.session();
+        let mut classes = BTreeMap::new();
+        for (key, abi) in session.memo().abi_executables() {
+            for positioned in &abi.callable_owners {
+                let owner = &positioned.owner;
+                let class = if owner.construction.is_some() {
+                    "construction"
+                } else if !owner.callable_facts.is_empty() || !owner.boundary_facts.is_empty() {
+                    "metadata"
+                } else {
+                    "empty"
+                };
+                let physical = !world.layout_physical_lanes(owner.layout).is_empty();
+                *classes.entry((class, physical)).or_insert(0usize) += 1;
+                assert!(
+                    session
+                        .memo()
+                        .product_dependencies(&ProductKey::AbiExecutable(key.clone()))
+                        .expect("ABI dependency inventory")
+                        .contains_key(&ProductKey::CallableConstruction(positioned.position.clone())),
+                    "the final owner has its exact ABI consumer"
+                );
+            }
+        }
+        assert!(
+            !classes.keys().any(|(class, _)| *class == "empty"),
+            "every retained owner carries construction or callable/boundary facts"
+        );
+        if name == "scalar" {
+            assert!(
+                !evaluated
+                    .borrow()
+                    .iter()
+                    .any(|key| matches!(key, ProductKey::CallableConstruction(_))),
+                "physical scalar layouts perform no callable-construction producer work"
+            );
+        } else {
+            assert_eq!(
+                classes,
+                BTreeMap::from([
+                    (("construction", true), 38),
+                    (("metadata", false), 125),
+                    (("metadata", true), 302)
+                ]),
+                "the pruned owner population preserves every nonempty baseline obligation"
+            );
+        }
+    }
+}
+
+#[test]
+fn ignored_forwarded_input_requests_no_positioned_products() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluated = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&evaluated);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| observed.borrow_mut().push(key.clone()),
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("ignored_forwarded_input.fz".into()),
+        "fn discard(_), do: 0\nfn forward(x), do: discard(x)\nfn main(), do: forward(42)".into(),
+    );
+    let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let (executable, abi) = session
+        .memo()
+        .abi_executables()
+        .find(|(key, _)| function_is(&world, key.activation.function, "forward", 1))
+        .expect("reached forward executable");
+    let demand = world.runtime_demand(executable).expect("settled demand authority");
+    assert!(
+        demand.input_demands[0].is_ignore(),
+        "neither physical nor callable input is demanded"
+    );
+    let super::body::LoweredBody::Clauses { clauses, .. } = &abi.materialized.body else {
+        panic!("ordinary forward body")
+    };
+    for clause in clauses {
+        assert!(
+            !demand.callable_flows.contains_key(&clause.params[0]),
+            "ignored scalar is not a callable flow"
+        );
+    }
+    let position = TransportPosition::ExecutableInput {
+        executable: executable_symbol_for(&world, executable),
+        semantic_index: 0,
+    };
+    let forbidden = [
+        ProductKey::TransportShape(position.clone()),
+        ProductKey::CallableConstruction(position.clone()),
+    ];
+    assert_eq!(
+        evaluated
+            .borrow()
+            .iter()
+            .filter(|key| forbidden.contains(key))
+            .collect::<Vec<_>>(),
+        Vec::<&ProductKey>::new(),
+        "an authoritative absent input has no positioned producer work"
+    );
+    assert!(
+        !abi.transport.input_positions.contains(&position),
+        "ABI has no absent input consumer"
+    );
+    assert!(
+        !abi.callable_owners.iter().any(|owner| owner.position == position),
+        "ABI has no absent callable owner"
+    );
+}
+
+#[test]
 fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
     let source = r#"
 fn discard(_), do: 0
@@ -4518,6 +4651,38 @@ fn main(), do: make(41).(1)
         TransportCarrier::Absent,
         "a capture used only by an ignored callee input should have no physical carrier",
     );
+    let TransportPosition::Value {
+        executable: capture_executable,
+        value,
+    } = &capture.source
+    else {
+        panic!("lexical capture has a positioned source value")
+    };
+    let (_, capture_abi) = session
+        .memo()
+        .abi_executables()
+        .find(|(key, _)| executable_symbol_for(&world, key) == *capture_executable)
+        .expect("capture producer ABI");
+    assert!(
+        capture_abi.transport.value_positions.contains(&capture.source),
+        "the lexical source owns capture metadata directly, independent of parameter transport"
+    );
+    assert!(capture_abi.value_layouts[value].reprs.is_empty());
+    for (key, abi) in session.memo().abi_executables() {
+        for (semantic_index, demand) in world.runtime_demand(key).unwrap().input_demands.iter().enumerate() {
+            if demand.is_ignore() {
+                assert!(
+                    !abi.transport
+                        .input_positions
+                        .contains(&TransportPosition::ExecutableInput {
+                            executable: executable_symbol_for(&world, key),
+                            semantic_index,
+                        }),
+                    "lexical metadata must not retain an ignored input ABI position"
+                );
+            }
+        }
+    }
     let wrapper = program
         .construction_wrappers
         .iter()

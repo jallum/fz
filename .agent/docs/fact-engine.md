@@ -677,8 +677,9 @@ present. Direct-only owners retain their layout and direct callable facts with
 no construction, so final packaging does not rejoin boundary publications to
 recover first-class eligibility.
 
-A value whose positioned layout settled to `Nothing` carries no lanes, so
-nothing downstream can read it. Backend lowering applies that proof once, in the
+A value whose positioned layout settled to `Nothing` carries no runtime lanes.
+Its lexical capture metadata can still be consumed by a callable wrapper.
+Backend lowering applies the lane-absence proof once, in the
 shared symbolic lowering: every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
@@ -702,6 +703,13 @@ answer retains that `MaterializedTransportPlan` beside the closed
 There is no parallel session map of transport positions, shapes, layouts,
 callable boundaries, or transport-shape groups, and final packaging does not scan the
 fact table or memo to rediscover them.
+ABI inputs are selected by the settled runtime demand's physical and callable
+axes together. Ignored inputs request no positioned products; lexical capture
+layouts belong to their explicitly named source `Value` positions instead.
+The ABI requests no generic callable owner when its structural layout contains
+no callable nodes. Local callable-flow owners use the producer's shared selector
+and retain metadata even without physical lanes. Every retained layout and
+owner remains keyed by its own position, not by equality with another answer.
 `DeriveRuntimeDemand(E)` publishes exact input-source contributions into
 `IncomingInputSlot(slot)` facts. `ContributionMap` joins each slot's sources
 with the scheduler's publisher frontier governing replacement and withdrawal.

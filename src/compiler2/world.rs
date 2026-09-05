@@ -394,6 +394,10 @@ impl World {
         self.transport.interners().shape_physical_lanes(shape)
     }
 
+    pub fn shape_contains_callable(&self, shape: ShapeId) -> bool {
+        self.transport.interners().shape_contains_callable(shape)
+    }
+
     pub fn layout_physical_lanes(&self, layout: TransportLayout) -> Vec<super::transport::PhysicalLane> {
         self.transport.interners().layout_physical_lanes(layout)
     }

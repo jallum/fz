@@ -153,6 +153,36 @@ command and result live in
 `.agent/measurements/fz-kdt.4-external-members-census.txt`. The removed
 external/displacement path therefore had no observed owner to preserve.
 
+**Positioned product obligations** — settlement values expose their structural
+shape id and carrier separately. A carrier of `absent` does not imply a
+`Nothing` structural shape. Callable-owner values also expose the existing
+construction flag and callable/boundary fact counts; these are observations of
+the immutable answer, not additional compiler state. Pair them with exact
+requested/evaluated keys and the ABI's retained dependency inventory. The
+positioned-owner regression classifies physical lanes through the World's
+immutable shape descriptors and proves that scalar owners are never evaluated,
+while direct-only metadata and first-class constructions remain distinct.
+
+Cold interpreter requests, including nested definition-macro roots, report the
+following positioned work. Each cell is requests / evaluations / settlements /
+cache hits; a settlement is not necessarily a distinct final owner.
+
+| fixture | TransportShape | CallableConstruction |
+| --- | ---: | ---: |
+| `fz_f98_range_map_converges` | 1219 / 1201 / 873 / 18 | 181 / 156 / 116 / 25 |
+| `enum_predicate_search` | 2811 / 2780 / 2051 / 31 | 566 / 481 / 315 / 85 |
+| `00420_enum_take_drop_split` | 7110 / 7015 / 5309 / 95 | 795 / 716 / 516 / 79 |
+
+The take/drop final ABI inventory contains 38 construction owners and 427
+metadata-only owners: 125 without physical lanes and 302 with lanes. It contains
+no empty owner. The retained-input regression proves both directions of demand
+replacement: ignored inputs make no positioned requests, a reached demand edit
+creates the exact shape consumer, and withdrawal removes that consumer again.
+A generic call-result owner likewise appears only while its callable obligation
+exists. Unchanged and irrelevant requests use one retained root cache hit;
+an independent callable owner and its shape keep their generation across the
+reached input edit, and the owner keeps its allocation.
+
 **Input-source relations** — `IncomingInputSlot(slot)` is a World fact,
 not a product projection. `DeriveRuntimeDemand` completions name its exact
 publisher, content revision, readiness movements, and changed source ownership.

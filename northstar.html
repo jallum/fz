@@ -760,6 +760,11 @@ MaterializedExecutable(E)
         direct edges with no construction. A first-class producer carries one nonempty construction
         with its captures, members, boundaries, and selection. Root packaging consumes those owners
         directly; it does not rejoin boundary publications to decide which constructions exist.
+        The ABI uses the same local-flow selector as the construction producer. Generic positions
+        whose structural layouts contain no callable nodes request no callable owner; their
+        positioned layout remains an exact dependency. Ignored physical-and-callable input demand
+        requests no input product. Lexical captures retain their own source value layouts, including
+        zero-lane metadata needed by wrappers, independently of omitted parameter inputs.
         Closure-call materialization reads the callee's positioned transport carrier. A
         <code>ValueRef</code> carrier keeps the call on its public wrapper even when semantic
         resolution has one target, while an <code>Absent</code> carrier leaves one exact target

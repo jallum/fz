@@ -3671,7 +3671,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     fn closure_fast_path_arg_is_structural(&self, value: &NativeBoundValue, shape: ShapeId) -> bool {
-        if !shape_contains_callable(self.world, shape) {
+        if !self.world.shape_contains_callable(shape) {
             return true;
         }
         matches!(
@@ -4131,16 +4131,6 @@ impl ValueEnv {
 
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
         self.value(value).and_then(NativeBoundValue::runtime_lane)
-    }
-}
-
-fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
-    match world.shape(shape) {
-        ShapeDescr::Callable(_) => true,
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .any(|field| shape_contains_callable(world, field.structural)),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
     }
 }
 

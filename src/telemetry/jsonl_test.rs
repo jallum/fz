@@ -341,6 +341,31 @@ fn through_configured_telemetry_roundtrips() {
 }
 
 #[test]
+fn callable_owner_settlement_renders_its_existing_obligations() {
+    use crate::compiler2::pull::{ProductValue, TransportCarrier, TransportLayout};
+    use crate::compiler2::transport::{CallableConstructionOwner, ShapeId};
+    let value = ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
+        layout: TransportLayout {
+            structural: ShapeId::for_test(17),
+            carrier: TransportCarrier::Absent,
+        },
+        construction: None,
+        callable_facts: Default::default(),
+        boundary_facts: Default::default(),
+    }));
+    let measurements = Measurements::new();
+    let metadata = crate::metadata! { value: crate::telemetry::opaque(&value) };
+    let event = make_event(&["test"], EventKind::Event, &measurements, &metadata);
+    let json: serde_json::Value = serde_json::from_str(&capture_jsonl(&event)).unwrap();
+    let answer = &json["metadata"]["value"];
+    assert_eq!(answer["structural_shape_id"], 17);
+    assert_eq!(answer["carrier"], "absent");
+    assert_eq!(answer["construction"], false);
+    assert_eq!(answer["callable_facts"], 0);
+    assert_eq!(answer["boundary_facts"], 0);
+}
+
+#[test]
 fn pull_product_settled_renders_the_value_authority() {
     let (buf, writer) = vec_writer();
     let telemetry = ConfiguredTelemetry::new();

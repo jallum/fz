@@ -38,7 +38,7 @@ use super::super::scheduler::FatalError;
 #[cfg(test)]
 use super::super::semantic::CallSiteKey;
 use super::super::semantic::SemanticOrd;
-use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand};
+use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
 use super::super::transport::{
@@ -351,7 +351,18 @@ pub(crate) fn produce_abi_executable_product(
         .then(|| materialized_executable_transport(position_layouts, executable, world.types()));
     let mut callable_owners = Vec::new();
     let owner_transport = transport.as_ref().unwrap_or(&materialized.transport);
-    for position in executable_transport_positions(owner_transport) {
+    let facts = context
+        .read_executable_facts(world, executable)
+        .expect("materialized prerequisite has settled executable facts");
+    for (position, layout) in &owner_transport.position_layouts {
+        if position.executable() != &owner_transport.executable {
+            continue;
+        }
+        let local_flow =
+            super::transport::local_callable_construction(&facts, &materialized.runtime_demand, position).is_some();
+        if !local_flow && !world.shape_contains_callable(layout.structural) {
+            continue;
+        }
         let key = ProductKey::CallableConstruction(position.clone());
         match context.read_product(tel, key.clone(), world.types()) {
             Some(ProductValue::CallableConstruction(owner)) => {
@@ -382,20 +393,6 @@ pub(crate) fn produce_abi_executable_product(
         .expect("per-executable ABI derivation should not require root fan-in"),
     );
     PullOutcome::Produced(ProductValue::AbiExecutable(abi))
-}
-
-pub(crate) fn executable_transport_positions(
-    transport: &MaterializedExecutableTransport,
-) -> impl Iterator<Item = &TransportPosition> {
-    transport
-        .input_positions
-        .iter()
-        .chain(std::iter::once(&transport.return_position))
-        .chain(&transport.resume_positions)
-        .chain(&transport.return_payload_positions)
-        .chain(&transport.entry_capture_positions)
-        .chain(&transport.call_arg_positions)
-        .chain(&transport.value_positions)
 }
 
 #[derive(Debug, Clone)]
@@ -631,16 +628,13 @@ fn required_executable_input_transport_positions(
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let symbol = transport_executable_symbol(executable, world.types());
-    let callable_carriers = callable_carrier_values(&materialized.body);
-    let input_callable_carrier_indexes = input_indexes_for_values(&materialized.body, &callable_carriers);
     materialized
         .runtime_demand
         .input_demands
         .iter()
         .enumerate()
         .filter_map(|(semantic_index, demand)| {
-            if matches!(demand.shape, ShapeDemand::Ignore) && !input_callable_carrier_indexes.contains(&semantic_index)
-            {
+            if demand.is_ignore() {
                 return None;
             }
             let position = TransportPosition::ExecutableInput {
@@ -648,51 +642,6 @@ fn required_executable_input_transport_positions(
                 semantic_index,
             };
             Some(position)
-        })
-        .collect()
-}
-
-fn callable_carrier_values(body: &LoweredBody) -> HashSet<ValueId> {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return HashSet::new();
-    };
-    let mut values = HashSet::new();
-    for entry in entries {
-        for step in &entry.steps {
-            if let LoweredStep::Lambda { captures, .. } = step {
-                values.extend(captures.iter().copied());
-            }
-        }
-        match &entry.tail {
-            LoweredTail::DirectCall { args, .. } => {
-                values.extend(args.iter().map(|arg| arg.value));
-            }
-            LoweredTail::ClosureCall { callee, args, .. } => {
-                values.insert(*callee);
-                values.extend(args.iter().map(|arg| arg.value));
-            }
-            LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
-            | LoweredTail::Dispatch { .. }
-            | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => {}
-        }
-    }
-    values
-}
-
-fn input_indexes_for_values(body: &LoweredBody, values: &HashSet<ValueId>) -> HashSet<usize> {
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return HashSet::new();
-    };
-    clauses
-        .iter()
-        .flat_map(|clause| {
-            clause
-                .params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, value)| values.contains(value).then_some(index))
         })
         .collect()
 }
@@ -762,6 +711,13 @@ fn required_local_backend_transport_positions(
             .runtime_demand
             .callable_flows
             .keys()
+            .chain(
+                materialized
+                    .runtime_demand
+                    .callable_flows
+                    .values()
+                    .flat_map(|flow| flow.captures.iter()),
+            )
             .map(|value| TransportPosition::Value {
                 executable: symbol.clone(),
                 value: *value,
@@ -1882,29 +1838,23 @@ fn build_executable_abi_plan(
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
             let shape = layout.structural;
-            let demand = executable.runtime_demand.input_demands.get(*semantic_index);
-            let contract =
-                if layout.carrier == TransportCarrier::Absent && demand.is_some_and(|demand| demand.is_ignore()) {
-                    Vec::new()
-                } else {
-                    physical_layout_contract(world, layout, |world, leaf_shape, lane| {
-                        seam_repr_for_lane_or_default(
-                            world,
-                            transport_plan.codegen_seam_facts,
-                            |seam| {
-                                matches!(
-                                    seam,
-                                    CodegenSeam::FunctionEntry {
-                                        executable,
-                                        semantic_index: index
-                                    } if executable == symbol && index == semantic_index
-                                )
-                            },
-                            Some(leaf_shape),
-                            lane,
+            let contract = physical_layout_contract(world, layout, |world, leaf_shape, lane| {
+                seam_repr_for_lane_or_default(
+                    world,
+                    transport_plan.codegen_seam_facts,
+                    |seam| {
+                        matches!(
+                            seam,
+                            CodegenSeam::FunctionEntry {
+                                executable,
+                                semantic_index: index
+                            } if executable == symbol && index == semantic_index
                         )
-                    })
-                };
+                    },
+                    Some(leaf_shape),
+                    lane,
+                )
+            });
             Some(BackendSemanticInputLayout {
                 semantic_index: *semantic_index,
                 layout: BackendValueLayout {
