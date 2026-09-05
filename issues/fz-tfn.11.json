@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-tfn.1",
     "fz-tfn.17",
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make NativeProgram a persistent exact root product",
   "type": "task",
-  "updated_at": "2026-09-05T07:48:25Z"
+  "updated_at": "2026-09-05T12:26:04Z"
 }
