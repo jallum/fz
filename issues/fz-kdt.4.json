@@ -7,8 +7,7 @@
     "fz-tfn.1",
     "fz-tfn.30",
     "fz-tfn.34",
-    "fz-tfn.35",
-    "fz-tfn.36"
+    "fz-tfn.35"
   ],
   "blocks": [
     "fz-kdt.57",
@@ -25,5 +24,5 @@
   "status": "in_progress",
   "title": "Replace RuntimeDemand cone replay with reactive per-executable facts",
   "type": "bug",
-  "updated_at": "2026-09-05T02:08:41Z"
+  "updated_at": "2026-09-05T02:08:42Z"
 }
