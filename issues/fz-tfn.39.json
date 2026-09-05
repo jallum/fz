@@ -34,6 +34,7 @@
     "fz-tfn.40",
     "fz-tfn.42",
     "fz-tfn.43",
+    "fz-tfn.45",
     "fz-tfn.6"
   ],
   "blocks": [],
@@ -46,5 +47,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-05T19:36:58Z"
+  "updated_at": "2026-09-05T22:36:36Z"
 }
