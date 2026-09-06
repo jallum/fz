@@ -1,0 +1,176 @@
+diff --git a/src/compiler2/jobs/keying.rs b/src/compiler2/jobs/keying.rs
+index b84f911ed..5bfb2c9ca 100644
+--- a/src/compiler2/jobs/keying.rs
++++ b/src/compiler2/jobs/keying.rs
+@@ -289,6 +289,7 @@ struct DemandNode {
+     /// The positions this body's OWN returns are built from (fz-kdt.199),
+     /// before any forwarding join.
+     local_result: Vec<DispatchDemand>,
++    local_capture_layout: Vec<DispatchDemand>,
+     forwards: Vec<ForwardEdge>,
+ }
+ 
+@@ -356,6 +357,7 @@ pub(super) fn derive_input_demand(
+         local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
+         forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
+         returned: solve_forwarded_demand(&graph, function, |node| &node.local_result),
++        capture_layout: solve_forwarded_demand(&graph, function, |node| &node.local_capture_layout),
+     };
+     emit_input_demand_derived(tel, &function, &demand);
+     let changed = world.define_input_demand(function, demand);
+@@ -417,6 +419,21 @@ fn collect_input_forwarding_graph(
+     reads.push(lowered);
+     let local = local_dispatch_mask(&world.entry_dispatch(function));
+     let local_result = return_flow_mask(world, function, local.len());
++    let keying = FactKey::Recursive(function);
++    if !world.has_fact(&keying) {
++        waits.insert(keying);
++        return;
++    }
++    reads.push(keying);
++    let local_capture_layout = if world
++        .body_keying(function)
++        .expect("recursive fact should carry body keying")
++        .consumes_callable_identity
++    {
++        vec![DispatchDemand::Whole; local.len()]
++    } else {
++        local_result.clone()
++    };
+     let forwards = forwarded_inputs(world, function, local.len());
+     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
+     graph.insert(
+@@ -424,6 +441,7 @@ fn collect_input_forwarding_graph(
+         DemandNode {
+             local,
+             local_result,
++            local_capture_layout,
+             forwards,
+         },
+     );
+@@ -497,6 +515,7 @@ fn collect_protocol_callback_node(
+         DemandNode {
+             local: vec![DispatchDemand::Ignore; arity],
+             local_result: vec![DispatchDemand::Ignore; arity],
++            local_capture_layout: vec![DispatchDemand::Ignore; arity],
+             forwards,
+         },
+     );
+diff --git a/src/compiler2/keying.rs b/src/compiler2/keying.rs
+index fcb613e86..28378e5d7 100644
+--- a/src/compiler2/keying.rs
++++ b/src/compiler2/keying.rs
+@@ -105,6 +105,11 @@ pub(crate) struct InputDemand {
+     /// raise a returned position to `Whole`, which has no collapse at all
+     /// (fz-kdt.200) -- so they stay two.
+     pub(crate) returned: Vec<DispatchDemand>,
++    /// Where a transported callable's CAPTURE LAYOUT becomes observable: a
++    /// body that consumes callable identity, returns the input, or forwards it
++    /// to a body that does either. A slot left at `Ignore` can erase the whole
++    /// closure literal rather than only its brand.
++    pub(crate) capture_layout: Vec<DispatchDemand>,
+ }
+ 
+ pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
+diff --git a/src/compiler2/types/mod.rs b/src/compiler2/types/mod.rs
+index 29818f258..57d7d383a 100644
+--- a/src/compiler2/types/mod.rs
++++ b/src/compiler2/types/mod.rs
+@@ -1084,7 +1084,12 @@ impl Types {
+     /// question is "does a clause of THIS body test this slot", and a body that
+     /// merely hands a callable to a callee that tests it still cannot tell two
+     /// same-shape lambdas apart itself (fz-kdt.183).
+-    pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
++    pub(crate) fn erase_transported_closure_identities(
++        &mut self,
++        arrow: Ty,
++        mask: &[DispatchDemand],
++        capture_layout: &[DispatchDemand],
++    ) -> Ty {
+         let Some(sig) = self.descr(&arrow).pure_arrow() else {
+             return arrow;
+         };
+@@ -1094,7 +1099,14 @@ impl Types {
+             .iter()
+             .enumerate()
+             .map(|(slot, param)| match mask.get(slot).unwrap_or(&DispatchDemand::Whole) {
+-                DispatchDemand::Ignore => self.erase_closure_identity(param),
++                DispatchDemand::Ignore => {
++                    if matches!(capture_layout.get(slot), Some(DispatchDemand::Ignore)) {
++                        let erased = erase_closure_literal(self, *param);
++                        self.intern(erased)
++                    } else {
++                        self.erase_closure_identity(param)
++                    }
++                }
+                 _ => *param,
+             })
+             .collect::<Vec<_>>();
+@@ -3434,6 +3446,19 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
+     erased
+ }
+ 
++/// Erase every closure literal WHOLE, including its capture tuple, at every
++/// depth. The callable surface remains.
++fn erase_closure_literal(t: &mut Types, a: Ty) -> Descr {
++    let base = t.descr(&a).clone();
++    let mut erased = map_recursive_inputs(t, base, erase_closure_literal);
++    for conj in &mut erased.funcs {
++        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
++            sig.lit = None;
++        }
++    }
++    erased
++}
++
+ /// Returns an interned `Ty`: every result is canonically interned in `Types`,
+ /// so a widened type is never an un-interned `Descr` that a caller might compare
+ /// or store without canonicalization.
+diff --git a/src/compiler2/types/types_test.rs b/src/compiler2/types/types_test.rs
+index 9d1b8d384..2861dbe16 100644
+--- a/src/compiler2/types/types_test.rs
++++ b/src/compiler2/types/types_test.rs
+@@ -581,7 +581,11 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
+     let branded = t.intersect(branded, surface);
+     let arrow = t.arrow(&[branded, branded], int);
+ 
+-    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
++    let erased = t.erase_transported_closure_identities(
++        arrow,
++        &[DispatchDemand::Ignore, DispatchDemand::Whole],
++        &[DispatchDemand::Whole, DispatchDemand::Whole],
++    );
+     let params = t.arrow_params(&erased);
+     assert_eq!(params.len(), 2);
+     assert_ne!(
+diff --git a/src/compiler2/world.rs b/src/compiler2/world.rs
+index 40a8418af..adae49326 100644
+--- a/src/compiler2/world.rs
++++ b/src/compiler2/world.rs
+@@ -2113,9 +2113,11 @@ impl World {
+             if keying.consumes_callable_identity {
+                 return key;
+             }
+-            let arrow = self
+-                .types
+-                .erase_transported_closure_identities(key.arrow, &demand.local_dispatch);
++            let arrow = self.types.erase_transported_closure_identities(
++                key.arrow,
++                &demand.local_dispatch,
++                &demand.capture_layout,
++            );
+             return super::identity::ActivationKey { arrow, ..key };
+         }
+         // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
+diff --git a/src/compiler2/world_test.rs b/src/compiler2/world_test.rs
+index c0849ff9b..38f77e2cc 100644
+--- a/src/compiler2/world_test.rs
++++ b/src/compiler2/world_test.rs
+@@ -17,6 +17,7 @@ use std::rc::Rc;
+ fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
+     InputDemand {
+         returned: vec![DispatchDemand::Ignore; mask.len()],
++        capture_layout: vec![DispatchDemand::Ignore; mask.len()],
+         local_dispatch: mask.clone(),
+         forwarded_dispatch: mask,
+     }
