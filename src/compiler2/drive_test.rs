@@ -18071,12 +18071,28 @@ fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
 fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
     for (source_name, source) in [
         (
+            "fixtures2/00275_enum_count_member_reduce.fz",
+            include_str!("../../fixtures2/00275_enum_count_member_reduce.fz"),
+        ),
+        (
+            "fixtures2/behavior/enum_list_allocations.fz",
+            include_str!("../../fixtures2/behavior/enum_list_allocations.fz"),
+        ),
+        (
+            "fixtures2/behavior/membership_operator.fz",
+            include_str!("../../fixtures2/behavior/membership_operator.fz"),
+        ),
+        (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+        (
+            "fixtures2/behavior/with_index_users_key_apart_by_element.fz",
+            include_str!("../../fixtures2/behavior/with_index_users_key_apart_by_element.fz"),
         ),
     ] {
         let runtime_diagnostics = no_matching_clause_diagnostics(source_name, source);

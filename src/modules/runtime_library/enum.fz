@@ -262,7 +262,7 @@ defmodule Enum do
   @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer
   fnp count_result({:ok, count}, _enumerable), do: count
   fnp count_result({:error, _module}, enumerable), do: count(enumerable, fn (_entry) -> true end)
-
+  @spec member_result({:ok, bool} | {:error, any}, Enumerable.t(a), a) :: bool
   fnp member_result({:ok, found}, _enumerable, _value), do: found
   fnp member_result({:error, _module}, enumerable, value) do
     reduce_while(enumerable, false, fn (entry, _found) ->
@@ -315,10 +315,10 @@ defmodule Enum do
 
   fnp intersperse_tail([], _separator), do: []
   fnp intersperse_tail([head | tail], separator), do: [separator, head | intersperse_tail(tail, separator)]
-
+  @spec with_index_list([a], integer) :: [{a, integer}]
   fnp with_index_list([], _index), do: []
   fnp with_index_list([head | tail], index), do: [{head, index} | with_index_list(tail, index + 1)]
-
+  @spec with_index_list([a], integer, (a, integer) -> b) :: [b]
   fnp with_index_list([], _index, _fun), do: []
   fnp with_index_list([head | tail], index, fun), do: [fun.(head, index) | with_index_list(tail, index + 1, fun)]
 

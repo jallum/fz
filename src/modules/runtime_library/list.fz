@@ -32,7 +32,7 @@ defmodule List do
   fn count(list), do: count(list, 0)
 
   @doc "Returns true when value appears in list for Enumerable."
-  @spec member?(any, any) :: bool
+  @spec member?([a], any) :: bool
   fn member?([], _value), do: false
   fn member?([head | tail], value) when head == value, do: true
   fn member?([head | tail], value), do: member?(tail, value)

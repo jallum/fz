@@ -17,8 +17,8 @@
 # nothing at the collapse can say how far down the chain that reads it looks --
 # so the element is kept and the two users key apart.
 #
-# The two `type/no-matching-clause` warnings in the golden are fz-kdt.185's,
-# as in `with_index_users_key_apart_by_element.fz`.
+# The runtime helper's declared list domain makes its empty and cons clauses
+# exhaustive, so the fixture is diagnostic-free.
 defmodule M do
   @spec strings([binary]) :: integer
   fn strings(_xs), do: 1
