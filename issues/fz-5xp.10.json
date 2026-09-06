@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T23:43:24Z",
+  "description": "~50 fixtures carry decorative budget keys and GOLDEN.md documents enforcement that does not exist.\n\nfixtures2/GOLDEN.md:38 claims budgets are 'checked by fz dump --emit stats against a\n+/-20% band'. Both halves are false:\n  - BudgetAssertion is parsed at fixture_metadata.rs:273 and read only by\n    participates_in_matrix() (fixture_metadata.rs:37). Nothing compares it to a\n    measurement.\n  - fz2 has no dump command: './target/debug/fz2 dump' =\u003e 'unknown command'.\n  - DUMP_BUDGET_TOLERANCE_PERCENT does not exist anywhere in the tree.\n\nEither wire it up or delete it. It currently misleads exactly the way the project\nrules warn about, and fz-5xp must not plan to pin new stdlib work with budget.*.\n\nRelated: no gate exists on runtime-library spec population either --\nassert.metric.semantic.* in fixtures 00547-00552 counts only executables whose\nfunction comes from the fixture's own code (fixture_contract_harness_test.rs:128).\nExpanding the stdlib without such a gate means specialization growth lands unmeasured.",
+  "id": "fz-5xp.10",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "budget.* fixture frontmatter is parsed but never checked",
+  "type": "bug",
+  "updated_at": "2026-09-06T23:43:24Z"
+}
