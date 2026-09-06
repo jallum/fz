@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.1"
+  ],
   "blocks": [],
   "created": "2026-09-06T23:44:35Z",
   "description": "The biggest single gap: fz has no String module. Utf8 (4 fns) is the entire text surface.\n\nShip class A + B + D (~27 of 34 core functions) plus Elixir's two SMALL self-owned\ntables, and put UAX #29 grapheme breaking behind one seam.\n\n  A -- pure byte work (12): starts_with?/2 ends_with?/2 byte_slice/3 replace_prefix/3\n       replace_suffix/3 replace_leading/3 replace_trailing/3 trim/2 trim_leading/2\n       trim_trailing/2 upcase/2 downcase/2 (:ascii)\n  B -- codepoint decode, no tables (6): codepoints/1 next_codepoint/1 valid?/2\n       printable?/2 replace_invalid/2 chunk/2\n  D -- thin primitive wrappers (9): contains?/2 count/2 split/3 splitter/3 replace/4\n       duplicate/2 to_atom/1 to_integer/1,2 to_float/1\n\nONE primitive unlocks five: multi-pattern binary search (:binary.match/matches/split/\ncompile_pattern) gives split/3 + splitter/3 + replace/4 + contains?/2 + count/2.\n\nElixir generates code from Unicode data for exactly TWO things -- case mapping (2,989\ncodepoints + 103 special casings) and whitespace (25 codepoints, under 100 clauses).\nEverything grapheme- and normalization-shaped is delegated to OTP's :unicode_util,\nwhich is ~1MB compiled and grows ~15% per OTP major (825KB @ OTP27 -\u003e 1.03MB @ 28 -\u003e\n1.18MB @ 29). Define next_grapheme_size/1 as the single seam, alias it to\nnext_codepoint/1 initially, and keep the tables in their OWN module so demand-driven\nper-module loading actually pays.\n\nDESIGN GOAL to state explicitly: fz owns both halves, so it can guarantee ONE coherent\nUnicode version. Elixir cannot -- in a running system its case mapping is Unicode 17\nwhile OTP's grapheme breaking is Unicode 16.\n\nfz is ahead of Elixir on one axis: String.t/codepoint/grapheme are all literally\n'binary' in Elixir (pure documentation), while fz already brands binaries\n(Utf8.from_bytes!, fz_brand_bitstring_as_utf8). A real String.t brand gives static\nguarantees Elixir cannot, and lets fz DELETE the invalid-byte fallback clauses that\nclutter Elixir's codepoints/1, valid?/2 and normalize/2.\n\nBlocked on fz-5xp.1 (idiomatic String is multi-clause binary matching) and fz-5xp.3.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "String core, staged behind a grapheme seam",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:35Z"
+  "updated_at": "2026-09-06T23:44:46Z"
 }
