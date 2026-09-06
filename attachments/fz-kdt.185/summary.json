@@ -1,0 +1,57 @@
+{
+  "backend_hash_movers": 28,
+  "backend_length_movers": 0,
+  "base_backend_producers": 478,
+  "current_backend_producers": 478,
+  "diagnostic_movers": 9,
+  "metrics": {
+    "fz.compiler2.activation_analysis.defined": {
+      "base": 17350,
+      "current": 17350,
+      "delta": 0
+    },
+    "fz.compiler2.function_contract.defined": {
+      "base": 2754,
+      "current": 2764,
+      "delta": 10
+    },
+    "fz.compiler2.job.start": {
+      "base": 143562,
+      "current": 143572,
+      "delta": 10
+    },
+    "fz.compiler2.pull.product.cache_hit": {
+      "base": 1398,
+      "current": 1398,
+      "delta": 0
+    },
+    "fz.compiler2.pull.product.evaluated": {
+      "base": 174085,
+      "current": 174085,
+      "delta": 0
+    },
+    "fz.compiler2.pull.product.requested": {
+      "base": 175483,
+      "current": 175483,
+      "delta": 0
+    },
+    "fz.compiler2.pull.product.settled": {
+      "base": 112468,
+      "current": 112468,
+      "delta": 0
+    },
+    "fz.compiler2.work_graph.applied": {
+      "base": 143525,
+      "current": 143535,
+      "delta": 10
+    },
+    "fz.diag.warning": {
+      "base": 94,
+      "current": 78,
+      "delta": -16
+    }
+  },
+  "rc_movers": 0,
+  "sources": 607,
+  "stdout_movers": 0
+}
