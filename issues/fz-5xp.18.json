@@ -3,6 +3,7 @@
   "blocked_by": [],
   "blocks": [
     "fz-5xp.16",
+    "fz-5xp.17",
     "fz-5xp.9"
   ],
   "created": "2026-09-06T23:48:06Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Native mixed int/float comparison is wrong; interpreter is right",
   "type": "bug",
-  "updated_at": "2026-09-06T23:48:13Z"
+  "updated_at": "2026-09-06T23:48:14Z"
 }
