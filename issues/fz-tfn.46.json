@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.48"
+  ],
   "blocks": [
     "fz-kdt.46",
     "fz-tfn.39"
@@ -14,5 +16,5 @@
   "status": "in_progress",
   "title": "Preserve exact dependency ownership across failed compiler derivations",
   "type": "bug",
-  "updated_at": "2026-09-06T02:35:22Z"
+  "updated_at": "2026-09-06T02:47:53Z"
 }
