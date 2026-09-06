@@ -4,7 +4,8 @@
     "fz-kdt.34",
     "fz-tfn.12",
     "fz-tfn.26",
-    "fz-tfn.30"
+    "fz-tfn.30",
+    "fz-tfn.46"
   ],
   "blocks": [
     "fz-kdt.114",
@@ -32,5 +33,5 @@
   "status": "in_progress",
   "title": "Make blocked-wait expansion and settled arbitration edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-06T00:27:49Z"
+  "updated_at": "2026-09-06T00:38:35Z"
 }
