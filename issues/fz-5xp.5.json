@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.15"
+  ],
   "blocks": [],
   "created": "2026-09-06T23:42:52Z",
   "description": "Silent wrong answer -- the highest-severity correctness finding in the fz-5xp research.\n\n  fz:      dbg(\"a#{1}b\")   =\u003e  \"a#{1}b\"\n  Elixir:  IO.inspect(\"a#{1}b\") =\u003e  \"a1b\"\n\nsrc/parser/lexer.rs:340 read_quoted_binary_bytes copies bytes verbatim; there is no\n#{ handling anywhere. Recognised escapes are only \\n \\t \\r \\\\ \\\" -- no \\x, no\n\\uXXXX, no heredocs.\n\nUntil interpolation is implemented, an unescaped #{ inside a string literal must be a\nlex error. Shipping a String module while interpolation silently no-ops would make\nevery error message in the library wrong.\n\nElixir's lowering is fully specified and mechanical (elixir_parser.yrl:1088) --\n\"a#{x}b\" becomes \u003c\u003c\"a\", Kernel.to_string(x)::binary, \"b\"\u003e\u003e, and fz already has\n\u003c\u003c\u003e\u003e construction and \u003c\u003e concat. Implementing it needs String.Chars first.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "String interpolation renders literally with no diagnostic",
   "type": "bug",
-  "updated_at": "2026-09-06T23:42:52Z"
+  "updated_at": "2026-09-06T23:44:51Z"
 }
