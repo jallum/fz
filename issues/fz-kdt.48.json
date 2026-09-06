@@ -6,6 +6,7 @@
     "fz-tfn.30"
   ],
   "blocks": [
+    "fz-0za",
     "fz-tfn.13",
     "fz-tfn.39"
   ],
@@ -24,5 +25,5 @@
   "status": "open",
   "title": "Make Ty identity denotational: mutually-subtype types intern to one ID",
   "type": "bug",
-  "updated_at": "2026-09-06T23:27:33Z"
+  "updated_at": "2026-09-06T23:27:34Z"
 }
