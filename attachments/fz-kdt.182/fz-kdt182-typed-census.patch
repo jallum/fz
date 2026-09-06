@@ -1,0 +1,151 @@
+diff --git a/src/compiler2/mod.rs b/src/compiler2/mod.rs
+index 531043f73..333333333 100644
+--- a/src/compiler2/mod.rs
++++ b/src/compiler2/mod.rs
+@@ -43,6 +43,8 @@ mod token_payload;
+ pub mod transport;
+ #[cfg(test)]
+ mod transport_relation_incremental_test;
++#[cfg(test)]
++mod kdt182_typed_census;
+ mod type_expr;
+ mod typedef;
+ mod types;
+diff --git a/src/compiler2/kdt182_typed_census.rs b/src/compiler2/kdt182_typed_census.rs
+new file mode 100644
+index 000000000..444444444
+--- /dev/null
++++ b/src/compiler2/kdt182_typed_census.rs
+@@ -0,0 +1,132 @@
++//! Temporary fz-kdt.182 typed census. This entire module is measurement-only.
++
++use super::dump::DumpStage;
++use super::identity::{ExecutableNeed, FunctionId, RootId};
++use super::types::{Ty, Types};
++use super::{CodeSubmission, Compiler2, RootSubmission};
++use crate::telemetry::ConfiguredTelemetry;
++
++fn equivalent(types: &Types, left: Ty, right: Ty) -> bool {
++    types.is_subtype(&left, &right) && types.is_subtype(&right, &left)
++}
++
++fn typed_type_classes(types: &Types, tys: impl IntoIterator<Item = Ty>) -> usize {
++    let mut representatives = Vec::new();
++    for ty in tys {
++        if !representatives.iter().any(|representative| equivalent(types, *representative, ty)) {
++            representatives.push(ty);
++        }
++    }
++    representatives.len()
++}
++
++fn typed_executable_classes(
++    types: &Types,
++    keys: impl IntoIterator<Item = (RootId, FunctionId, ExecutableNeed, Vec<Ty>)>,
++) -> usize {
++    let mut representatives: Vec<(RootId, FunctionId, ExecutableNeed, Vec<Ty>)> = Vec::new();
++    for key in keys {
++        let seen = representatives.iter().any(|representative| {
++            key.0 == representative.0
++                && key.1 == representative.1
++                && key.2 == representative.2
++                && key.3.len() == representative.3.len()
++                && key
++                    .3
++                    .iter()
++                    .zip(&representative.3)
++                    .all(|(left, right)| equivalent(types, *left, *right))
++        });
++        if !seen {
++            representatives.push(key);
++        }
++    }
++    representatives.len()
++}
++
++fn submit(name: &str, text: &str) -> (Compiler2<ConfiguredTelemetry>, RootId) {
++    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
++    compiler.submit_code(CodeSubmission {
++        name: Some(name.to_string()),
++        text: text.to_string(),
++    });
++    let root = compiler.submit_root(RootSubmission {
++        module_name: None,
++        name: "main".to_string(),
++        arity: 0,
++        need: ExecutableNeed::Value,
++    });
++    (compiler, root)
++}
++
++#[test]
++#[ignore]
++fn measure_full_corpus_typed_type_and_executable_identity_excess() {
++    let output = std::env::var("KDT182_TYPED_CENSUS_OUTPUT").expect("measurement output path");
++    let mut paths = Vec::new();
++    let mut pending = vec![std::path::PathBuf::from("fixtures2")];
++    while let Some(path) = pending.pop() {
++        for entry in std::fs::read_dir(path).expect("fixture directory") {
++            let path = entry.expect("fixture entry").path();
++            if path.is_dir() {
++                pending.push(path);
++            } else if path.extension().is_some_and(|extension| extension == "fz") {
++                paths.push(path);
++            }
++        }
++    }
++    paths.sort();
++
++    let mut rows = String::from(
++        "fixture\tarena\ttyped_type_classes\ttyped_type_excess\tbackend\texecutables\ttyped_executable_classes\ttyped_executable_excess\n",
++    );
++    for path in paths {
++        let text = std::fs::read_to_string(&path).expect("fixture source");
++        let name = path.to_string_lossy();
++        let (mut compiler, _) = submit(&name, &text);
++        let _ = compiler.drive();
++        let types = compiler.world().types();
++        let arena = types.interned_tys();
++        let type_classes = typed_type_classes(types, arena.iter().copied());
++        let backend = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let (mut compiler, root) = submit(&name, &text);
++            compiler
++                .drive_root_to_dump_stage(root, DumpStage::Backend)
++                .ok()
++                .map(|_| {
++                    let program = compiler.retained_backend_program(root);
++                    (compiler, program)
++                })
++        }))
++        .ok()
++        .flatten();
++        let executable_count = backend.as_ref().map_or(0, |(_, program)| program.executables().len());
++        let executable_classes = backend.as_ref().map_or(0, |(compiler, program)| {
++            let types = compiler.world().types();
++            typed_executable_classes(
++                types,
++                program.executables().iter().map(|executable| {
++                    let key = &executable.key;
++                    (
++                        key.activation.root,
++                        key.activation.function,
++                        key.need,
++                        key.activation.inputs(types),
++                    )
++                }),
++            )
++        });
++        rows.push_str(&format!(
++            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
++            name,
++            arena.len(),
++            type_classes,
++            arena.len() - type_classes,
++            u8::from(backend.is_some()),
++            executable_count,
++            executable_classes,
++            executable_count - executable_classes,
++        ));
++    }
++    std::fs::write(output, rows).expect("measurement output");
++}
