@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-06T04:23:42Z",
   "description": "Goal: Eliminate repeated minimum selection in ProductMemo::mutate_product_wave while preserving exact semantics and deterministic observations.\n\nEvidence: src/compiler2/pull.rs on baseline ad0ac47d3 (lines987 onward) and the uncommitted48 candidate uses pending.iter().enumerate().min_by(semantic_cmp plus mutation rank) on every pop, followed by swap_remove. N independent unique queued events with no added readers require N(N-1)/2 comparisons. Deduplication happens after selection. This is a verified preexisting algorithmic defect, not a runtime benchmark claim. Open-ticket search found no mutation-wave coverage; tfn32 concerns producer retries and kdt7 fact subscription replacement.\n\nStrategy: TDD through the production mutation-wave path. Establish the ordering actually required for mixed mutation strengths and deterministic observations. Remove repeated minimum scanning with the simplest single worklist; prefer eliminating unnecessary ordering authority. No parallel scheduler, display-string authority or compatibility path.\n\nAcceptance: Growing independent fan-outs and shared/duplicate reader paths prove subquadratic total work including insertion, selection and deduplication. Cover mixed Dirty/Invalidate/Refresh, cycles, pending/delivered rooted reads and external-state events under varied input order. Unchanged/unrelated requests do no new work; equal values preserve allocation/generation and do not evaluate downstream formulas. Preserve semantic answers, byte-identical artifacts and healthy producer/job counts, allowing only proven work reductions. Delete obsolete selection and temporary probes, update docs, run relevant full gates and fresh ticket-scoped cold review, one commit/close. Do not raise work budgets.\n\nPlacement: Required epic-tail work discovered during48 review; predates48 and does not block its correctness cutover. Blocks final tfn39 acceptance.48 must independently eliminate its newly introduced quadratic validation/maintenance.",
   "id": "fz-tfn.49",
