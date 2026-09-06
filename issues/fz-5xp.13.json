@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.4"
+  ],
   "blocks": [],
   "created": "2026-09-06T23:44:35Z",
   "description": "The cheapest module in the arc: ~25 functions, ZERO allocating externs.\n\nruntime.fz already declares keyword() and keyword(t). Elixir's keyword.ex is 513 code\nlines and every BIF it touches (:lists.keyfind x8, keymember x4, keytake, keydelete,\nmap, filter, foldl, sort, member, reverse x11) is a plain fz recursion over a list of\n2-tuples.\n\nCore: new/0,1 get/2,3 fetch/2 fetch!/2 put/3 put_new/3 delete/2 delete_first/2\nhas_key?/2 keys/1 values/1 get_values/2 merge/2,3 update/4 update!/3 pop/2,3 take/2\ndrop/2 keyword?/1 validate/2 validate!/2\n\nNeeds only type-annotated dispatch (for keyword?/1) and panic for the ! variants.\nBlocked on fz-5xp.4 -- Keyword.get/2 is currently hijacked into a map index.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Keyword module",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:35Z"
+  "updated_at": "2026-09-06T23:44:49Z"
 }
