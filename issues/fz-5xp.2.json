@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.17"
+  ],
   "created": "2026-09-06T23:42:50Z",
   "description": "MEASURED, and the fix is one clause.\n\nenum.fz:46  fn to_list(enumerable), do: reverse(reverse(enumerable))\n\nEvery builder is builder_list(to_list(enumerable), fun): map, filter, reject,\nflat_map, map_reduce, scan, intersperse, with_index, map_every, map_join,\nmap_intersperse, sort, take*, drop*, split*. So the double-reverse tax is paid by\nthe whole building surface.\n\nMeasured N=20, input literal = 20 cells, TOTAL list_cons_allocs:\n  op                        HEAD   with fix   floor\n  Enum.to_list               60       20       20\n  Enum.map                   80       40       40\n  Enum.filter (keeps all)    60       20      \u003c=40\n  Enum.map |\u003e Enum.filter   120       40       40\n  hand-written recursion      -        -       40\n\nThe fix is fz's idiom for Elixir's 'when is_list(x)' -- a type-annotated clause head,\nalready used in kernel.fz for the arithmetic operators:\n\n  fn to_list(list :: [a]), do: list\n  fn to_list(enumerable), do: reverse(reverse(enumerable))\n\nOutputs verified correct across to_list/map/filter/sort/take/with_index/reverse and\nover both List and Range receivers.\n\nKNOWN BLAST RADIUS -- adding a clause changes the dispatch population, so these six\nmove (verified: they pass at HEAD, fail with the patch):\n  canon_test::backend_inventory_width_stays_pinned_on_the_target_fixtures\n  drive_test::compiler2_dispatch_blind_escape_census_is_the_known_population\n  transport_contract_test::positioned_callable_owners_have_observable_obligations\n  work_start_reason_test::root_entries_and_caller_discovered_callees_share_the_activation_frontier\n  public_trace_test::analysis_claims_survive_a_run_that_could_not_re_derive_them\n  public_trace_test::target_fixture_reports_exercise_all_five_request_scenarios\nReductions re-bless. The blind-escape census needs adjudication, not blessing -- a NEW\nescape would be a raise.\n\nAlso fix while here: reverse/2 calls to_list(tail) on an already-list argument\n(enum.fz:52) -- two wasted traversals.\n\nDONE = the table above, plus an allocation-golden fixture pinning the building\nsurface. behavior/enum_list_allocations.fz deliberately excludes map/filter/sort;\nextend it or add a sibling so the builders are actually pinned.",
   "id": "fz-5xp.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stop laundering Enum builders through to_list: add list fast paths",
   "type": "task",
-  "updated_at": "2026-09-06T23:42:50Z"
+  "updated_at": "2026-09-06T23:44:53Z"
 }
