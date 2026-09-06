@@ -9799,7 +9799,7 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     for fixture in [
         "fixtures2/00183_enum_take_list_range.fz",
         "fixtures2/00420_enum_take_drop_split.fz",
-        "fixtures2/00275_enum_count_member_reduce.fz",
+        "fixtures2/behavior/enum_count_member_reduce.fz",
         "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
         "fixtures2/behavior/range_enumerable.fz",
         "fixtures2/behavior/closure_identity_tag_split.fz",
@@ -9972,25 +9972,25 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     );
 
     let types = compiler.world().types();
-    let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<String>> = BTreeMap::new();
+    let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<Ty>> = BTreeMap::new();
     for executable in program.executables() {
         let activation = &executable.key.activation;
         let Some(first) = activation.inputs(types).first().copied() else {
             continue;
         };
-        keys_by_function
-            .entry(activation.function)
-            .or_default()
-            .insert(types.display(&first));
+        keys_by_function.entry(activation.function).or_default().insert(first);
     }
     let forwarders_split_by_capture_type = keys_by_function
         .values()
         .filter(|slots| {
-            slots.len() > 1 && slots.iter().all(|slot| slot.contains("closure")) && {
-                let ints = slots.iter().filter(|slot| slot.contains("int")).count();
-                let floats = slots.iter().filter(|slot| slot.contains("float")).count();
-                ints > 0 && floats > 0
-            }
+            let captures = slots
+                .iter()
+                .flat_map(|slot| types.lit_arrow_shapes(slot))
+                .filter_map(|(_, captures, _, _)| (captures.len() == 1).then_some(captures[0]))
+                .collect::<Vec<_>>();
+            slots.len() > 1
+                && captures.iter().any(|capture| types.is_integer(capture))
+                && captures.iter().any(|capture| types.is_floating(capture))
         })
         .count();
     assert_eq!(
@@ -10842,7 +10842,7 @@ const ARM_ORDER_CENSUS: [&str; 22] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
-    "fixtures2/00275_enum_count_member_reduce.fz",
+    "fixtures2/behavior/enum_count_member_reduce.fz",
     "fixtures2/00277_enum_tier0_fixture.fz",
     "fixtures2/00281_opaque_reducer_closure.fz",
     "fixtures2/behavior/enum_map_family.fz",
@@ -18071,8 +18071,8 @@ fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
 fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
     for (source_name, source) in [
         (
-            "fixtures2/00275_enum_count_member_reduce.fz",
-            include_str!("../../fixtures2/00275_enum_count_member_reduce.fz"),
+            "fixtures2/behavior/enum_count_member_reduce.fz",
+            include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
         ),
         (
             "fixtures2/behavior/enum_list_allocations.fz",

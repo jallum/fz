@@ -494,6 +494,25 @@ capture-free `Enum.all?/1` wrapper apart from the capturing `all?/2` one. Six
 of the thirteen fixtures whose inventory moves are the same-lambda shape this
 erasure exists for; the other seven are that different-lambda population.
 
+The context-free key therefore retains the capture tuple unless flow-sensitive
+evidence proves that layout cannot become observable (fz-kdt.169). Whole-tuple
+and arity-only erasure lose dispatch-free static grounding: after brand erasure
+the key cannot know same-lambda from different-lambda values, and the static
+same-lambda witness needs one-slot `int` and `float` capture layouts to key
+separately or else leave their choice to runtime. Three-door behavior remains
+correct under the measured alternative. This is a conservative
+correct-by-construction and performance law, not a proof that every possible
+tuple component is universally necessary.
+
+A measured flow-sensitive alternative added capture-layout relevance as a
+fourth component of the existing `InputDemand` fact. It safely recovered six
+executables, but added 3,173 work-graph applies across 478 backend-producing
+fixtures while removing only 89 product evaluations. The deterministic
+comparison and complete mover classification are recorded in
+[`fz-kdt.169-capture-key-proof`](../measurements/fz-kdt.169-capture-key-proof.md).
+The recurring read/join/transform cost is disproportionate, so that component
+was rejected and capture relevance remains implicit in the retained tuple.
+
 List-family convergence is coarse at the key exactly where the slot is
 FREIGHT. On a slot both `InputDemand::forwarded_dispatch` and
 `InputDemand::returned` leave at `Ignore`,

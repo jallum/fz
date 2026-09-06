@@ -1084,6 +1084,12 @@ impl Types {
     /// question is "does a clause of THIS body test this slot", and a body that
     /// merely hands a callable to a callee that tests it still cannot tell two
     /// same-shape lambdas apart itself (fz-kdt.183).
+    ///
+    /// Keeping the capture tuple is the conservative context-free rule
+    /// (fz-kdt.169). Whole-tuple or arity-only erasure would also merge one
+    /// lambda closed over one `int` with that lambda closed over one `float`;
+    /// preserving dispatch-free static grounding while erasing more therefore
+    /// requires a flow-sensitive non-observability proof.
     pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;

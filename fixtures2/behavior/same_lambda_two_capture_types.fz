@@ -3,17 +3,13 @@
 # oracle: oracle.exs
 #---
 #
-# fz-kdt.127. `P.run/2` forwards its callable, and the forwarder erasure drops
-# the closure literal, so both calls share ONE `run` body and the choice of
-# `twice` specialization is left to a runtime test. The two values differ only
-# in what they captured -- `#lambda(int)` and `#lambda(float)` -- so the test
-# has to name the CONSTRUCTION each value was minted from, not merely the
-# lambda: a closure's heap word at `+8` is the construction wrapper's address,
-# and a wrapper is one function at one capture layout.
+# fz-kdt.127. `P.run/2` forwards its callable, so its activation key erases the
+# closure brand but retains the capture tuple. The int- and float-capturing
+# constructions therefore key separate `run` and `twice` specializations.
+# Their callable calls are statically grounded and need no runtime dispatch.
 #
 # `Q` is `P` mirrored: the float call first. Arrival order must not decide the
-# answer, and each module has its own forwarder so each order gets its own
-# callsite.
+# answer, and each module has its own forwarder so each order is checked.
 defmodule P do
   fn twice(f, x), do: f.(f.(x))
   fn run(f, x), do: twice(f, x)

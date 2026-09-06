@@ -101,25 +101,6 @@ fn closed_union_protocol_dispatch_selects_correct_impl() {
     // TODO: JIT-execute and assert result == 107 (interpreter and native paths)
 }
 
-// Ported from src/ir_codegen/ir_codegen_test.rs: Enum.count, member?, reduce, and Enumerable.reduce over lists
-#[test]
-fn enum_count_member_reduce_and_enumerable_reduce() {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00275_enum_count_member_reduce.fz".to_string()),
-        text: include_str!("../../fixtures2/00275_enum_count_member_reduce.fz").to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    assert_resolved(compiler.drive(), "enum_count_member_reduce_and_enumerable_reduce");
-    // TODO: JIT-execute and assert output == ["{3, true, 6, {:done, 6}}"]
-}
-
 // Ported from src/ir_codegen/ir_codegen_test.rs: Enum.to_list and Enum.map preserve list structure and elements
 #[test]
 fn enum_to_list_and_map_preserve_structure() {

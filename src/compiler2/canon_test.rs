@@ -395,17 +395,44 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// to `same_lambda_two_capture_types_dynamic`, and two to
 /// `callable_union_capture_containment`, which this same commit rehomes on
 /// that dynamic shape so fz-kdt.167's containment law keeps an end-to-end
-/// witness (fz-kdt.171). Whether capture arity, rather than
-/// capture type, is the right grain for forwarders fed by different lambdas is
-/// fz-kdt.169's measurement; stdout is byte-identical on all three doors over
-/// 597 fixtures.
+/// witness (fz-kdt.171). fz-kdt.169 resolved the remaining question:
+/// context-free arity-only or whole-tuple erasure loses dispatch-free static
+/// grounding. The measured flow-sensitive component preserved behavior, but
+/// was rejected because it added 3,173 work-graph applies to remove only 89
+/// product evaluations. Stdout remained byte-identical on all three doors over
+/// this historical 597-fixture corpus.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
         (
+            "fixtures2/behavior/enum_count_member_reduce.fz",
+            include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
+            26,
+        ),
+        (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
             60,
+        ),
+        (
+            "fixtures2/behavior/enum_map_family.fz",
+            include_str!("../../fixtures2/behavior/enum_map_family.fz"),
+            153,
+        ),
+        (
+            "fixtures2/behavior/mailbox_closure_each.fz",
+            include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
+            31,
+        ),
+        (
+            "fixtures2/behavior/mailbox_closure_reduce.fz",
+            include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
+            41,
+        ),
+        (
+            "fixtures2/behavior/actor_ring.fz",
+            include_str!("../../fixtures2/behavior/actor_ring.fz"),
+            24,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
@@ -422,6 +449,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // and the wrapper surfaces they ground stop sharing.
             237,
         ),
+        (
+            "fixtures2/00420_enum_take_drop_split.fz",
+            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+            237,
+        ),
     ] {
         let (mut compiler, root) = submit(name, text);
         compiler
@@ -430,7 +462,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         assert_eq!(
             compiler.retained_backend_program(root).executables().len(),
             executables,
-            "{name}: the emitted executable inventory moved off its fz-kdt.63 pin; \
+            "{name}: the emitted executable inventory moved off its target-fixture pin; \
              re-measure, name the cause, and re-pin"
         );
     }
