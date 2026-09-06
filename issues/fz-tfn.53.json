@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-tfn.39",
     "fz-tfn.46"
   ],
   "created": "2026-09-06T09:53:28Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Establish explicit source ownership for type declarations",
   "type": "bug",
-  "updated_at": "2026-09-06T09:53:28Z"
+  "updated_at": "2026-09-06T09:53:29Z"
 }
