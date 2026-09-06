@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.183",
     "fz-kdt.199",
@@ -20,8 +20,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Define one exact typed path-aware InputDemand flow relation",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:19Z"
+  "updated_at": "2026-09-06T23:28:12Z"
 }
