@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-5xp.12",
     "fz-5xp.14",
     "fz-5xp.15"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Make 'needs the process heap' a declared extern property, not 31 name-keyed special cases",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:47Z"
+  "updated_at": "2026-09-06T23:44:48Z"
 }
