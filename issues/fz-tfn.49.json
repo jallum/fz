@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.55"
+  ],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Eliminate quadratic product mutation-wave selection",
   "type": "bug",
-  "updated_at": "2026-09-06T11:29:12Z"
+  "updated_at": "2026-09-06T11:36:52Z"
 }
