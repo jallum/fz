@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T23:44:33Z",
+  "description": "Ergonomic tax on every type-dispatching library function.\n\nType-annotated clause heads are fz's answer to Elixir's is_* guards and they work\nstatically AND dynamically -- verified dispatching integer/float/binary/atom/list on\nvalues arriving through a mailbox as any. But :: binds only at top-level parameter\npositions:\n\n  fnp flatten([head :: [any] | rest], tail), ...\n  =\u003e error[internal/post-resolution-leftover]: unsupported quoted pattern head '::'\n\nso nested dispatch needs a helper hop:\n\n  fnp flatten([head | rest], tail), do: prepend(head, flatten(rest, tail))\n  fnp prepend(head :: [any], tail), do: flatten(head, tail)\n  fnp prepend(head, tail), do: [head | tail]\n\nThat version runs natively and matches Elixir's List.flatten on all inputs, so this\nis friction, not a blocker. But it multiplies helper fan-out across the whole port --\nthe same tax that multi-statement -\u003e arm bodies already impose (fz-kdt.151).",
+  "id": "fz-5xp.11",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Allow :: type annotation in nested pattern positions",
+  "type": "task",
+  "updated_at": "2026-09-06T23:44:33Z"
+}
