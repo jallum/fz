@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T13:58:23Z",
+  "description": "## Goal\nRemove the remaining repeated dirty-witness admission walk when many reparented branches enter through an alternate whose own clean witness branch is long. A relevant repair drive must pay for that unchanged alternate branch once, not once per repaired child, while preserving exact admission and wait ordering.\n\n## Discovery evidence\nfz-tfn.51 extended its genuine current-base RED without changing production. Through the retained OwnershipProducers drive seam, a long alternate branch produced admission work (depth=width): 114 at 8, 1,218 at 32, and 4,482 at 64. The exact extra over the already-accepted symmetric shape is 64/1,024/4,096 = K*D. Two long alternate candidates do not alter these admission totals. Immutable log: /tmp/fz-tfn51-asymmetric-red.log, PTY 56667, exit 101. This is preexisting fz-tfn.48 DirtyWitness admission work, distinct from fz-tfn.51 alternate-cycle proof and not caused by its eventual implementation.\n\n## TDD and acceptance\nReproduce the asymmetric drive at 8/32/64 and fail only the causal admission-work bound after semantic assertions. Preserve exact alternate support, wait admission/order, back-edge rejection, generations, allocations, unaffected branches, unchanged/unrelated zero work, and byte-identical artifacts. Collapse the repeated clean alternate-prefix walk into the existing sparse DirtyWitness authority; do not add a second ancestry graph, permanent cache, global scan, display identity, nondeterministic work count, or hide work in uncounted maintenance. Count proof construction, invalidation, cursor maintenance, hashing/cloning/allocation-relevant operations. Delete superseded paths and temporary scaffolding; update docs; full relevant gates, immutable artifact comparison, implementation subagent, ticket-cold review, one commit/close, and prior-CI-gated push.\n\n## Dependency boundary\nThis was discovered while expanding fz-tfn.51 and is intentionally a separate epic-tail issue. fz-tfn.51 must keep the original fz-tfn.48 healthy cap unchanged and report the asymmetric admission cost separately; it may neither raise that cap nor claim this work as its own.",
+  "id": "fz-tfn.56",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 4,
+  "status": "open",
+  "title": "Reuse long alternate prefixes during rooted wait admission",
+  "type": "bug",
+  "updated_at": "2026-09-06T13:58:23Z"
+}
