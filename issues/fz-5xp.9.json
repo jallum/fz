@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T23:43:24Z",
+  "description": "VERIFIED: fz says false, Elixir says true.\n\nElixir's == compares numbers across integer/float; === is the strict form. fz has\nonly the strict behaviour and no === operator at all (lexer rejects it -- 'a === b'\nmis-parses as '(a == b) = ...' with no diagnostic).\n\nBlast radius inside fz-5xp: Enum.member?/2, Enum.uniq, Enum.dedup, List.delete,\nList.subtract, and map key identity.\n\nDecide and document: adopt Elixir's ==/=== split, or keep strict-only as a deliberate\ndivergence. Either way it must be written down -- right now it is neither.",
+  "id": "fz-5xp.9",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "== behaves as ===: 1 == 1.0 is false",
+  "type": "bug",
+  "updated_at": "2026-09-06T23:43:24Z"
+}
