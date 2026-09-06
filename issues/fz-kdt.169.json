@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.127.2",
+    "fz-kdt.185",
     "fz-tfn.30"
   ],
   "blocks": [
@@ -23,5 +24,5 @@
   "status": "in_progress",
   "title": "Brand-erased forwarder keys duplicate activations across seven programs when capture tuples differ; determine the minimal sound capture-sensitive key",
   "type": "task",
-  "updated_at": "2026-09-06T14:29:05Z"
+  "updated_at": "2026-09-06T16:10:23Z"
 }
