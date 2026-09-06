@@ -36,7 +36,7 @@
   ],
   "priority": 3,
   "status": "in_progress",
-  "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
+  "title": "Absorb decidably subsumed list clauses at the Ty interning boundary",
   "type": "task",
-  "updated_at": "2026-09-06T17:15:54Z"
+  "updated_at": "2026-09-06T18:45:51Z"
 }
