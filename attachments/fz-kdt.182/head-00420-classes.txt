@@ -1,0 +1,871 @@
+fp[F] (%Range{:first => int, :last => int, :step => int}) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, int) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {:cont, empty_list()}, closure[?]((a2_p0, a2_p1) -> a2_r)) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {:cont, empty_list()}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[?](int)) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int)) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]()) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (%Range{:first => int, :last => int, :step => int}, {empty_list(), int}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (%Range{}) -> r0
+fp[F] (%Range{}, empty_list(), closure[Enum.reverse/1#lambda@1563-1599/2]()) -> r0
+fp[F] (%Range{}, int) -> r0
+fp[F] (%Range{}, {empty_list(), empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (%Range{}, {empty_list(), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (%Range{}, {empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (%Range{}, {empty_list(), int}, closure[?](int)) -> r0
+fp[F] (%Range{}, {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int)) -> r0
+fp[F] (%Range{}, {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]()) -> r0
+fp[F] (%Range{}, {empty_list(), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (%Range{}, {empty_list(), int}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] () -> r0
+fp[F] (a0) -> a0
+fp[F] (a0_e, a1) -> {:cont, a1} | {:halt, a2_r_u1_1}
+fp[F] (a0_e, a1_u0_1 | a2_p1_v1) -> {:cont | :halt | :suspend, a1_u0_1 | a2_p1_v1}
+fp[F] (a0_e, a1_u0_1) -> {:cont, a1_u0_1} | {:halt, a1_u1_1}
+fp[F] (a0_e, a1_u0_1_v0 | a1_u0_1_v1) -> {:cont | :halt | :suspend, a1_u0_1_v0 | a1_u0_1_v1}
+fp[F] (a0_e, a1_v0 | a1_v1) -> {:cont | :halt | :suspend, a1_v0 | a1_v1}
+fp[F] (a1_p0) -> a1_r
+fp[F] (a2_p0, a1) -> a1
+fp[F] (a2_p0, a1) -> {:cont, a1} | {:halt, a2_r_u1_1}
+fp[F] (a2_p0, a2_p1) -> a2_r
+fp[F] (any) -> int
+fp[F] (any) -> none
+fp[F] (any, any) -> :false | :true
+fp[F] (any, any) -> r0
+fp[F] (binary) -> r0
+fp[F] (closure[Enum.reverse/1#lambda@1563-1599/2](), int, empty_list()) -> r0
+fp[F] (closure[Enum.reverse/1#lambda@1563-1599/2](), int, list(int)) -> r0
+fp[F] (closure[main/0#lambda@1013-1032/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1013-1032/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1013-1032/1](), int, {empty_list(), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1013-1032/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1062-1081/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1062-1081/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1062-1081/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1111-1130/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1111-1130/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1111-1130/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1160-1186/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1160-1186/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1160-1186/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1215-1234/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1215-1234/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1215-1234/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1263-1282/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1263-1282/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1263-1282/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@1319-1438/1](), int, empty_list()) -> r0
+fp[F] (closure[main/0#lambda@1319-1438/1](), int, list(int)) -> r0
+fp[F] (closure[main/0#lambda@1475-1594/1](), int, {empty_list(), :false | :true} | {list(int), :false}) -> r0
+fp[F] (closure[main/0#lambda@1475-1594/1](), int, {empty_list(), :true}) -> r0
+fp[F] (closure[main/0#lambda@1475-1594/1](), int, {list(int), :false | :true}) -> r0
+fp[F] (closure[main/0#lambda@1632-1752/1](), int, {empty_list(), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1632-1752/1](), int, {empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] (closure[main/0#lambda@1632-1752/1](), int, {list(int), list(int)}) -> r0
+fp[F] (closure[main/0#lambda@204-223/1](), int, empty_list()) -> r0
+fp[F] (closure[main/0#lambda@204-223/1](), int, list(int)) -> r0
+fp[F] (closure[main/0#lambda@252-271/1](), int, empty_list()) -> r0
+fp[F] (closure[main/0#lambda@252-271/1](), int, list(int)) -> r0
+fp[F] (closure[main/0#lambda@300-319/1](), int, empty_list()) -> r0
+fp[F] (closure[main/0#lambda@300-319/1](), int, list(int)) -> r0
+fp[F] (closure[main/0#lambda@612-631/1](), int, {empty_list(), :false | :true} | {list(int), :false}) -> r0
+fp[F] (closure[main/0#lambda@612-631/1](), int, {empty_list(), :true}) -> r0
+fp[F] (closure[main/0#lambda@612-631/1](), int, {list(int), :false | :true}) -> r0
+fp[F] (closure[main/0#lambda@612-631/1](), int, {list(int), :false}) -> r0
+fp[F] (closure[main/0#lambda@660-679/1](), int, {empty_list(), :false | :true} | {list(int), :false}) -> r0
+fp[F] (closure[main/0#lambda@660-679/1](), int, {empty_list(), :true}) -> r0
+fp[F] (closure[main/0#lambda@660-679/1](), int, {list(int), :false | :true}) -> r0
+fp[F] (closure[main/0#lambda@708-727/1](), int, {empty_list(), :false | :true} | {list(int), :false}) -> r0
+fp[F] (closure[main/0#lambda@708-727/1](), int, {empty_list(), :true}) -> r0
+fp[F] (closure[main/0#lambda@708-727/1](), int, {list(int), :false | :true}) -> r0
+fp[F] (empty_list()) -> r0
+fp[F] (empty_list(), empty_list()) -> r0
+fp[F] (empty_list(), empty_list(), a2) -> r0
+fp[F] (empty_list(), empty_list(), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (empty_list(), empty_list(), closure[Enum.reverse/1#lambda@1563-1599/2]()) -> r0
+fp[F] (empty_list(), list(a1_e)) -> r0
+fp[F] (empty_list(), {:cont, empty_list()}, closure[?]((a2_p0, a2_p1) -> a2_r)) -> r0
+fp[F] (empty_list(), {:cont, empty_list()}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (float, float) -> float
+fp[F] (float, int) -> float
+fp[F] (int) -> r0
+fp[F] (int, a2_p1_v1 | empty_list()) -> {:cont | :halt | :suspend, a2_p1_v1 | empty_list()}
+fp[F] (int, a3) -> {:cont, a3} | {:halt, a4_r_u1_1}
+fp[F] (int, a3_u0_1 | a4_p1_v1) -> {:cont | :halt | :suspend, a3_u0_1 | a4_p1_v1}
+fp[F] (int, a4) -> {:cont, a4} | {:halt, a5_r_u1_1}
+fp[F] (int, a4_p1_v1 | empty_list()) -> {:cont | :halt | :suspend, a4_p1_v1 | empty_list()}
+fp[F] (int, a4_u0_1) -> {:cont, a4_u0_1} | {:halt, a4_u1_1}
+fp[F] (int, a4_u0_1_v0 | a4_u0_1_v1) -> {:cont | :halt | :suspend, a4_u0_1_v0 | a4_u0_1_v1}
+fp[F] (int, a4_v0 | a4_v1) -> {:cont | :halt | :suspend, a4_v0 | a4_v1}
+fp[F] (int, empty_list()) -> r0
+fp[F] (int, empty_list()) -> {:cont | :halt | :suspend, empty_list()}
+fp[F] (int, empty_list()) -> {:cont, empty_list()} | {:halt, a2_r_u1_1}
+fp[F] (int, float) -> float
+fp[F] (int, int) -> int
+fp[F] (int, int) -> r0
+fp[F] (int, int, int) -> %Range{:first => int, :last => int, :step => int}
+fp[F] (int, int, int) -> int
+fp[F] (int, int, int) -> r0
+fp[F] (int, int, int, a3, (int, a3) -> {:cont, a3} | {:halt, a4_r_u1_1}) -> a3 | a4_r_u1_1
+fp[F] (int, int, int, int, a4, (int, a4) -> {:cont, a4} | {:halt, a5_r_u1_1}) -> a4 | a5_r_u1_1
+fp[F] (int, int, int, int, a4_v0 | a4_v1, (int, a4_v0 | a4_v1) -> {:cont | :halt | :suspend, a4_v0 | a4_v1}) -> {:done | :halted, a4_v0 | a4_v1} | {:suspended, a4_v0 | a4_v1, fun}
+fp[F] (int, int, int, int, empty_list(), a5) -> r0
+fp[F] (int, int, int, int, empty_list(), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (int, int, int, int, list(int), a5) -> r0
+fp[F] (int, int, int, int, list(int), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (int, int, int, int, {:cont | :halt | :suspend, a4_u0_1_v0 | a4_u0_1_v1}, (int, a4_u0_1_v0 | a4_u0_1_v1) -> {:cont | :halt | :suspend, a4_u0_1_v0 | a4_u0_1_v1}) -> {:done | :halted, a4_u0_1_v0 | a4_u0_1_v1} | {:suspended, a4_u0_1_v0 | a4_u0_1_v1, fun}
+fp[F] (int, int, int, int, {:cont | :halt, {list(int), int}}, a5) -> r0
+fp[F] (int, int, int, int, {:cont | :halt, {list(int), int}}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {:cont, a4_u0_1} | {:halt, a4_u1_1}, (int, a4_u0_1) -> {:cont, a4_u0_1} | {:halt, a4_u1_1}) -> a4_u0_1 | a4_u1_1
+fp[F] (int, int, int, int, {:cont, list(int)}, a5) -> r0
+fp[F] (int, int, int, int, {:cont, list(int)}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (int, int, int, int, {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}}, a5) -> r0
+fp[F] (int, int, int, int, {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, int, {:cont, {list(int), int}}, a5) -> r0
+fp[F] (int, int, int, int, {:cont, {list(int), int}}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {:cont, {list(int), int}}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {:cont, {list(int), list(int), int}}, a5) -> r0
+fp[F] (int, int, int, int, {:cont, {list(int), list(int), int}}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, int, {:halt, {list(int), int}}, a5) -> r0
+fp[F] (int, int, int, int, {:halt, {list(int), int}}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {:halt, {list(int), int}}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {empty_list(), empty_list(), int}, a5) -> r0
+fp[F] (int, int, int, int, {empty_list(), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, int, {empty_list(), int}, a5) -> r0
+fp[F] (int, int, int, int, {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {empty_list(), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {empty_list(), int}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {empty_list(), list(int), int} | {list(int), empty_list(), int}, a5) -> r0
+fp[F] (int, int, int, int, {empty_list(), list(int), int} | {list(int), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, int, {list(int), int}, a5) -> r0
+fp[F] (int, int, int, int, {list(int), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {list(int), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, int, {list(int), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, int, {list(int), list(int), int}, a5) -> r0
+fp[F] (int, int, int, int, {list(int), list(int), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, {:cont | :halt | :suspend, a3_u0_1}, (int, a3_u0_1 | a4_p1_v1) -> {:cont | :halt | :suspend, a3_u0_1 | a4_p1_v1}) -> {:done | :halted, a3_u0_1 | a4_p1_v1} | {:suspended, a3_u0_1 | a4_p1_v1, fun}
+fp[F] (int, int, int, {:cont, empty_list()}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (int, int, int, {empty_list(), empty_list(), int}, (int, {empty_list(), empty_list(), int}) -> {:cont, {empty_list(), empty_list(), int}} | {:halt, a4_r_u1_1}) -> r0
+fp[F] (int, int, int, {empty_list(), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (int, int, int, {empty_list(), int}, (int, {empty_list(), int}) -> {:cont, {empty_list(), int}} | {:halt, a4_r_u1_1}) -> r0
+fp[F] (int, int, int, {empty_list(), int}, closure[?](int)) -> r0
+fp[F] (int, int, int, {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, int, {empty_list(), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (int, int, int, {empty_list(), int}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (int, int, {empty_list(), int}) -> r0
+fp[F] (int, int, {list(int), int}) -> r0
+fp[F] (int, list(int)) -> r0
+fp[F] (int, list(int)) -> {:cont | :halt | :suspend, list(int)}
+fp[F] (int, list(int)) -> {:cont | :halt, empty_list()} | {:cont, list(int)}
+fp[F] (int, list(int)) -> {:cont | :halt, list(int)}
+fp[F] (int, list(int)) -> {:cont, list(int)} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), :false | :true} | {list(int), :false}) -> {:cont, {empty_list(), :false | :true} | {list(int), :false}} | {:halt, a1_u1_1}
+fp[F] (int, {empty_list(), :false | :true} | {list(int), :false}) -> {:cont, {empty_list(), :false | :true} | {list(int), :false}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), :true}) -> {:cont, {empty_list(), :true}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), empty_list(), int}) -> r0
+fp[F] (int, {empty_list(), empty_list(), int}) -> {:cont, {empty_list(), empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), empty_list(), int}) -> {:cont, {empty_list(), empty_list(), int}} | {:halt, a4_r_u1_1}
+fp[F] (int, {empty_list(), empty_list(), int}) -> {:cont, {empty_list(), empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[F] (int, {empty_list(), empty_list()}) -> {:cont, {empty_list(), empty_list()}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), int}) -> r0
+fp[F] (int, {empty_list(), int}) -> {:cont | :halt, {empty_list(), int}} | {:halt, {list(int), int}}
+fp[F] (int, {empty_list(), int}) -> {:cont, {empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), int}) -> {:cont, {empty_list(), int}} | {:halt, a4_r_u1_1}
+fp[F] (int, {empty_list(), int}) -> {:cont, {empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[F] (int, {empty_list(), list(int), int} | {list(int), empty_list(), int}) -> r0
+fp[F] (int, {empty_list(), list(int), int} | {list(int), empty_list(), int}) -> {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a1_u1_1}
+fp[F] (int, {empty_list(), list(int), int} | {list(int), empty_list(), int}) -> {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), list(int), int} | {list(int), empty_list(), int}) -> {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a4_u1_1}
+fp[F] (int, {empty_list(), list(int), int} | {list(int), empty_list(), int}) -> {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[F] (int, {empty_list(), list(int)} | {list(int), empty_list()}) -> {:cont, {empty_list(), list(int)} | {list(int), empty_list()}} | {:halt, a1_u1_1}
+fp[F] (int, {empty_list(), list(int)} | {list(int), empty_list()}) -> {:cont, {empty_list(), list(int)} | {list(int), empty_list()}} | {:halt, a2_r_u1_1}
+fp[F] (int, {empty_list(), list(int)}) -> {:cont, {empty_list(), list(int)}} | {:halt, a1_u1_1}
+fp[F] (int, {empty_list(), list(int)}) -> {:cont, {empty_list(), list(int)}} | {:halt, a2_r_u1_1}
+fp[F] (int, {list(int), :false | :true}) -> {:cont, {list(int), :false | :true}} | {:halt, a1_u1_1}
+fp[F] (int, {list(int), :false | :true}) -> {:cont, {list(int), :false | :true}} | {:halt, a2_r_u1_1}
+fp[F] (int, {list(int), int}) -> r0
+fp[F] (int, {list(int), int}) -> {:cont | :halt, {list(int), int}}
+fp[F] (int, {list(int), int}) -> {:cont, {list(int), int}} | {:halt, a1_u1_1}
+fp[F] (int, {list(int), int}) -> {:cont, {list(int), int}} | {:halt, a2_r_u1_1}
+fp[F] (int, {list(int), int}) -> {:cont, {list(int), int}} | {:halt, a4_u1_1}
+fp[F] (int, {list(int), int}) -> {:cont, {list(int), int}} | {:halt, a5_r_u1_1}
+fp[F] (int, {list(int), list(int), int}) -> r0
+fp[F] (int, {list(int), list(int), int}) -> {:cont, {list(int), list(int), int}} | {:halt, a1_u1_1}
+fp[F] (int, {list(int), list(int), int}) -> {:cont, {list(int), list(int), int}} | {:halt, a2_r_u1_1}
+fp[F] (int, {list(int), list(int), int}) -> {:cont, {list(int), list(int), int}} | {:halt, a4_u1_1}
+fp[F] (int, {list(int), list(int), int}) -> {:cont, {list(int), list(int), int}} | {:halt, a5_r_u1_1}
+fp[F] (int, {list(int), list(int)}) -> {:cont, {list(int), list(int)}} | {:halt, a1_u1_1}
+fp[F] (int, {list(int), list(int)}) -> {:cont, {list(int), list(int)}} | {:halt, a2_r_u1_1}
+fp[F] (int, α0 | α1) -> {:cont | :halt | :suspend, α0 | α1}
+fp[F] (int, α0) -> {:cont, α0} | {:halt, α1}
+fp[F] (list(a0_e)) -> list(a0_e)
+fp[F] (list(a0_e), a1, (a0_e, a1) -> {:cont, a1} | {:halt, a2_r_u1_1}) -> a1 | a2_r_u1_1
+fp[F] (list(a0_e), a1_v0 | a1_v1, (a0_e, a1_v0 | a1_v1) -> {:cont | :halt | :suspend, a1_v0 | a1_v1}) -> {:done | :halted, a1_v0 | a1_v1} | {:suspended, a1_v0 | a1_v1, fun}
+fp[F] (list(a0_e), int) -> int
+fp[F] (list(a0_e), list(a1_e)) -> list(a0_e | a1_e)
+fp[F] (list(a0_e), {:cont | :halt | :suspend, a1_u0_1_v0 | a1_u0_1_v1}, (a0_e, a1_u0_1_v0 | a1_u0_1_v1) -> {:cont | :halt | :suspend, a1_u0_1_v0 | a1_u0_1_v1}) -> {:done | :halted, a1_u0_1_v0 | a1_u0_1_v1} | {:suspended, a1_u0_1_v0 | a1_u0_1_v1, fun}
+fp[F] (list(a0_e), {:cont | :halt | :suspend, a1_u0_1}, (a0_e, a1_u0_1 | a2_p1_v1) -> {:cont | :halt | :suspend, a1_u0_1 | a2_p1_v1}) -> {:done | :halted, a1_u0_1 | a2_p1_v1} | {:suspended, a1_u0_1 | a2_p1_v1, fun}
+fp[F] (list(a0_e), {:cont, a1_u0_1} | {:halt, a1_u1_1}, (a0_e, a1_u0_1) -> {:cont, a1_u0_1} | {:halt, a1_u1_1}) -> a1_u0_1 | a1_u1_1
+fp[F] (list(int)) -> r0
+fp[F] (list(int), empty_list()) -> r0
+fp[F] (list(int), empty_list(), a2) -> r0
+fp[F] (list(int), empty_list(), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (list(int), empty_list(), closure[Enum.reverse/1#lambda@1563-1599/2]()) -> r0
+fp[F] (list(int), int) -> r0
+fp[F] (list(int), list(a1_e)) -> r0
+fp[F] (list(int), list(int)) -> r0
+fp[F] (list(int), list(int), a2) -> r0
+fp[F] (list(int), list(int), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (list(int), list(int), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), list(int), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), list(int), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())) -> r0
+fp[F] (list(int), list(int), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, empty_list()} | {:cont, list(int)}, a2) -> r0
+fp[F] (list(int), {:cont | :halt, empty_list()} | {:cont, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, empty_list()} | {:cont, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, empty_list()} | {:cont, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, empty_list()} | {:cont, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, list(int)}, a2) -> r0
+fp[F] (list(int), {:cont | :halt, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, list(int)}, closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())) -> r0
+fp[F] (list(int), {:cont | :halt, {list(int), int}}, a2) -> r0
+fp[F] (list(int), {:cont | :halt, {list(int), int}}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (list(int), {:cont, empty_list()}, closure[?]((a2_p0, a2_p1) -> a2_r)) -> r0
+fp[F] (list(int), {:cont, empty_list()}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (list(int), {:cont, list(int)}, a2) -> r0
+fp[F] (list(int), {:cont, list(int)}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), :false | :true} | {list(int), :false}}, a2) -> r0
+fp[F] (list(int), {:cont, {empty_list(), :false | :true} | {list(int), :false}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), :false | :true} | {list(int), :false}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), :false | :true} | {list(int), :false}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), :false | :true} | {list(int), :false}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}}, a2) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, a2) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)}}, a2) -> r0
+fp[F] (list(int), {:cont, {empty_list(), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), :false | :true}}, a2) -> r0
+fp[F] (list(int), {:cont, {list(int), :false | :true}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), :false | :true}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), :false | :true}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), :false | :true}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), :false}}, a2) -> r0
+fp[F] (list(int), {:cont, {list(int), :false}}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), int}}, a2) -> r0
+fp[F] (list(int), {:cont, {list(int), int}}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (list(int), {:cont, {list(int), int}}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int), int}}, a2) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int), int}}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, a2) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (list(int), {:cont, {list(int), list(int)}}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (list(int), {:halt, {list(int), int}}, a2) -> r0
+fp[F] (list(int), {:halt, {list(int), int}}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (list(int), {:halt, {list(int), int}}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (list(int), {empty_list(), :false | :true} | {list(int), :false}, a2) -> r0
+fp[F] (list(int), {empty_list(), :false | :true} | {list(int), :false}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {empty_list(), :false | :true} | {list(int), :false}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {empty_list(), :false | :true} | {list(int), :false}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (list(int), {empty_list(), :false | :true} | {list(int), :false}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {empty_list(), :true}, a2) -> r0
+fp[F] (list(int), {empty_list(), empty_list(), int}, a2) -> r0
+fp[F] (list(int), {empty_list(), empty_list()}, a2) -> r0
+fp[F] (list(int), {empty_list(), int}, a2) -> r0
+fp[F] (list(int), {empty_list(), list(int), int} | {list(int), empty_list(), int}, a2) -> r0
+fp[F] (list(int), {empty_list(), list(int), int} | {list(int), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, a2) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)} | {list(int), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (list(int), {empty_list(), list(int)}, a2) -> r0
+fp[F] (list(int), {empty_list(), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (list(int), {list(int), :false | :true}, a2) -> r0
+fp[F] (list(int), {list(int), :false | :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {list(int), :false | :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (list(int), {list(int), :false | :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (list(int), {list(int), :false | :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {list(int), :false}, a2) -> r0
+fp[F] (list(int), {list(int), :false}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (list(int), {list(int), int}, a2) -> r0
+fp[F] (list(int), {list(int), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (list(int), {list(int), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (list(int), {list(int), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (list(int), {list(int), list(int), int}, a2) -> r0
+fp[F] (list(int), {list(int), list(int), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (list(int), {list(int), list(int)}, a2) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (list(int), {list(int), list(int)}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (non_empty_list(int)) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1013-1032/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1062-1081/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1111-1130/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1160-1186/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1215-1234/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1263-1282/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1319-1438/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1475-1594/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@1632-1752/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@204-223/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@252-271/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@300-319/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@612-631/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@660-679/1]()) -> r0
+fp[F] (non_empty_list(int), closure[main/0#lambda@708-727/1]()) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[?]((a1_p0) -> a1_r)) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.reverse/1#lambda@1563-1599/2]()) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())) -> r0
+fp[F] (non_empty_list(int), empty_list(), closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())) -> r0
+fp[F] (non_empty_list(int), int) -> r0
+fp[F] (non_empty_list(int), {:cont, empty_list()}, closure[?]((a2_p0, a2_p1) -> a2_r)) -> r0
+fp[F] (non_empty_list(int), {:cont, empty_list()}, closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[?]((a1_p0) -> a1_r)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), :true}, closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list(), int}, (int, {empty_list(), empty_list(), int}) -> {:cont, {empty_list(), empty_list(), int}} | {:halt, a2_r_u1_1}) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list(), int}, closure[Enum.split_positive/2#lambda@16413-16574/2]()) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[?]((a1_p0) -> a1_r)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), empty_list()}, closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, (a2_p0, a2_p1) -> a2_r) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, (int, {empty_list(), int}) -> {:cont, {empty_list(), int}} | {:halt, a2_r_u1_1}) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[?](int)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.drop_every/2#lambda@7765-7899/2](int)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.drop_positive/2#lambda@15807-15934/2]()) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.take_every/2#lambda@6611-6745/2](int)) -> r0
+fp[F] (non_empty_list(int), {empty_list(), int}, closure[Enum.take_positive/2#lambda@15033-15180/2]()) -> r0
+fp[F] (protocol::Enumerable.t) -> int
+fp[F] (protocol::Enumerable.t) -> list(r0_e)
+fp[F] (protocol::Enumerable.t, a1, (a2_p0, a1) -> a1) -> a1
+fp[F] (protocol::Enumerable.t, a1, (a2_p0, a1) -> {:cont, a1} | {:halt, a2_r_u1_1}) -> a1 | a2_r_u1_1
+fp[F] (protocol::Enumerable.t, fun) -> list(a1_p0)
+fp[F] (protocol::Enumerable.t, fun) -> {list(a1_p0), list(a1_p0)}
+fp[F] (protocol::Enumerable.t, int) -> int
+fp[F] (protocol::Enumerable.t, int) -> list(r0_e)
+fp[F] (protocol::Enumerable.t, int) -> {list(r0_0_e), list(r0_0_e)}
+fp[F] ({:done | :halted, a0_u0_1} | {:suspended, a0_u0_1, fun}) -> a0_u0_1
+fp[F] ({:done, empty_list()}) -> r0
+fp[F] ({:done, list(int)}) -> r0
+fp[F] ({:error | :ok, int} | {:error, any}, protocol::Enumerable.t) -> int
+fp[F] ({:ok, int}, %Range{}) -> r0
+fp[F] ({:ok, int}, non_empty_list(int)) -> r0
+fp[F] ({empty_list(), :false | :true} | {list(int), :false}) -> r0
+fp[F] ({empty_list(), empty_list(), int}) -> r0
+fp[F] ({empty_list(), empty_list()}) -> r0
+fp[F] ({empty_list(), int}) -> r0
+fp[F] ({empty_list(), list(int), int} | {list(int), empty_list(), int}) -> r0
+fp[F] ({empty_list(), list(int)} | {list(int), empty_list()}) -> r0
+fp[F] ({empty_list(), list(int)}) -> r0
+fp[F] ({list(a0_0_e), :false | :true}) -> list(a0_0_e)
+fp[F] ({list(a0_0_e), int}) -> list(a0_0_e)
+fp[F] ({list(a0_0_e), list(a0_0_e), int}) -> {list(a0_0_e), list(a0_0_e)}
+fp[F] ({list(a0_0_e), list(a0_0_e)}) -> {list(a0_0_e), list(a0_0_e)}
+fp[F] ({list(int), :false | :true}) -> r0
+fp[F] ({list(int), :false}) -> r0
+fp[F] ({list(int), int}) -> r0
+fp[F] ({list(int), list(int), int}) -> r0
+fp[F] ({list(int), list(int)}) -> r0
+fp[F] (α0, α1 | α2) -> {:cont | :halt | :suspend, α1 | α2}
+fp[F] (α0, α1) -> {:cont, α1} | {:halt, α2}
+fp[F] (α0, α1) -> α1
+fp[F] closure[?]((a1_p0) -> a1_r)
+fp[F] closure[?]((a2_p0, a2_p1) -> a2_r)
+fp[F] closure[?](int)
+fp[F] closure[Enum.drop_every/2#lambda@7765-7899/2](int)
+fp[F] closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_every/2#lambda@6611-6745/2](int) | closure[Enum.take_positive/2#lambda@15033-15180/2]()
+fp[F] closure[Enum.drop_every/2#lambda@7765-7899/2](int) | closure[Enum.take_every/2#lambda@6611-6745/2](int)
+fp[F] closure[Enum.drop_positive/2#lambda@15807-15934/2]()
+fp[F] closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_every/2#lambda@6611-6745/2](int) | closure[Enum.take_positive/2#lambda@15033-15180/2]()
+fp[F] closure[Enum.drop_positive/2#lambda@15807-15934/2]() | closure[Enum.take_positive/2#lambda@15033-15180/2]()
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@1475-1594/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@612-631/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]()) | closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@660-679/1]())
+fp[F] closure[Enum.drop_while/2#lambda@7205-7420/2](closure[main/0#lambda@708-727/1]())
+fp[F] closure[Enum.reduce/3#lambda@439-517/2](closure[Enum.reverse/1#lambda@1563-1599/2]())
+fp[F] closure[Enum.reverse/1#lambda@1563-1599/2]()
+fp[F] closure[Enum.split_positive/2#lambda@16413-16574/2]()
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1013-1032/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]()) | closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]()) | closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1062-1081/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1111-1130/1]())
+fp[F] closure[Enum.split_while/2#lambda@8324-8543/2](closure[main/0#lambda@1632-1752/1]())
+fp[F] closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1160-1186/1]())
+fp[F] closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1215-1234/1]())
+fp[F] closure[Enum.split_with/2#lambda@8720-8850/2](closure[main/0#lambda@1263-1282/1]())
+fp[F] closure[Enum.take_every/2#lambda@6611-6745/2](int)
+fp[F] closure[Enum.take_positive/2#lambda@15033-15180/2]()
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@1319-1438/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@204-223/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]()) | closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@252-271/1]())
+fp[F] closure[Enum.take_while/2#lambda@6167-6266/2](closure[main/0#lambda@300-319/1]())
+fp[F] closure[main/0#lambda@1013-1032/1]()
+fp[F] closure[main/0#lambda@1062-1081/1]()
+fp[F] closure[main/0#lambda@1111-1130/1]()
+fp[F] closure[main/0#lambda@1160-1186/1]()
+fp[F] closure[main/0#lambda@1215-1234/1]()
+fp[F] closure[main/0#lambda@1263-1282/1]()
+fp[F] closure[main/0#lambda@1319-1438/1]()
+fp[F] closure[main/0#lambda@1475-1594/1]()
+fp[F] closure[main/0#lambda@1632-1752/1]()
+fp[F] closure[main/0#lambda@204-223/1]()
+fp[F] closure[main/0#lambda@252-271/1]()
+fp[F] closure[main/0#lambda@300-319/1]()
+fp[F] closure[main/0#lambda@612-631/1]()
+fp[F] closure[main/0#lambda@660-679/1]()
+fp[F] closure[main/0#lambda@708-727/1]()
+fp[F] fun
+fp[L] empty_list()
+fp[L] list
+fp[L] list(a0_0_e)
+fp[L] list(a0_e | a1_e)
+fp[L] list(a0_e)
+fp[L] list(a1_e)
+fp[L] list(a1_p0)
+fp[L] list(int)
+fp[L] list(r0_0_e)
+fp[L] list(r0_e)
+fp[L] list(α0 | α1)
+fp[L] list(α0)
+fp[L] list(α1)
+fp[L] non_empty_list(:Compiler | :Fz)
+fp[L] non_empty_list(:define | {:__aliases__, %{}, non_empty_list(:Compiler | :Fz)})
+fp[L] non_empty_list(any)
+fp[L] non_empty_list(int)
+fp[M] %Range{:first => int, :last => int, :step => int}
+fp[M] %Range{}
+fp[M] %{}
+fp[T] not({any, :first}) & {:cont, any}
+fp[T] {:., %{}, non_empty_list(:define | {:__aliases__, %{}, non_empty_list(:Compiler | :Fz)})}
+fp[T] {:__aliases__, %{}, non_empty_list(:Compiler | :Fz)}
+fp[T] {:cont | :halt | :suspend, a1_u0_1 | a2_p1_v1}
+fp[T] {:cont | :halt | :suspend, a1_u0_1_v0 | a1_u0_1_v1}
+fp[T] {:cont | :halt | :suspend, a1_u0_1}
+fp[T] {:cont | :halt | :suspend, a1_v0 | a1_v1}
+fp[T] {:cont | :halt | :suspend, a2_p1_v1 | empty_list()}
+fp[T] {:cont | :halt | :suspend, a3_u0_1 | a4_p1_v1}
+fp[T] {:cont | :halt | :suspend, a3_u0_1}
+fp[T] {:cont | :halt | :suspend, a4_p1_v1 | empty_list()}
+fp[T] {:cont | :halt | :suspend, a4_u0_1_v0 | a4_u0_1_v1}
+fp[T] {:cont | :halt | :suspend, a4_v0 | a4_v1}
+fp[T] {:cont | :halt | :suspend, any}
+fp[T] {:cont | :halt | :suspend, empty_list()}
+fp[T] {:cont | :halt | :suspend, list(int)}
+fp[T] {:cont | :halt | :suspend, α0 | α1}
+fp[T] {:cont | :halt | :suspend, α0}
+fp[T] {:cont | :halt | :suspend, α1 | α2}
+fp[T] {:cont | :halt | :suspend, α1}
+fp[T] {:cont | :halt, any}
+fp[T] {:cont | :halt, empty_list()} | {:cont, list(int)}
+fp[T] {:cont | :halt, list(int)}
+fp[T] {:cont | :halt, {empty_list(), int}} | {:halt, {list(int), int}}
+fp[T] {:cont | :halt, {list(int), int}}
+fp[T] {:cont | :halt, α0 | α1}
+fp[T] {:cont | :halt, α0}
+fp[T] {:cont | :halt, α1 | α2}
+fp[T] {:cont | :halt, α1}
+fp[T] {:cont, :first}
+fp[T] {:cont, a1_u0_1} | {:halt, a1_u1_1}
+fp[T] {:cont, a1} | {:halt, a2_r_u1_1}
+fp[T] {:cont, a3} | {:halt, a4_r_u1_1}
+fp[T] {:cont, a4_u0_1} | {:halt, a4_u1_1}
+fp[T] {:cont, a4} | {:halt, a5_r_u1_1}
+fp[T] {:cont, any}
+fp[T] {:cont, empty_list()}
+fp[T] {:cont, empty_list()} | {:halt, a2_r_u1_1}
+fp[T] {:cont, list(int)}
+fp[T] {:cont, list(int)} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), :false | :true} | {list(int), :false}}
+fp[T] {:cont, {empty_list(), :false | :true} | {list(int), :false}} | {:halt, a1_u1_1}
+fp[T] {:cont, {empty_list(), :false | :true} | {list(int), :false}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), :true}}
+fp[T] {:cont, {empty_list(), :true}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), empty_list(), int}} | {:halt, a4_r_u1_1}
+fp[T] {:cont, {empty_list(), empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[T] {:cont, {empty_list(), empty_list()}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), int}}
+fp[T] {:cont, {empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), int}} | {:halt, a4_r_u1_1}
+fp[T] {:cont, {empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[T] {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}}
+fp[T] {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a1_u1_1}
+fp[T] {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a4_u1_1}
+fp[T] {:cont, {empty_list(), list(int), int} | {list(int), empty_list(), int}} | {:halt, a5_r_u1_1}
+fp[T] {:cont, {empty_list(), list(int), int}}
+fp[T] {:cont, {empty_list(), list(int)} | {list(int), empty_list()}}
+fp[T] {:cont, {empty_list(), list(int)} | {list(int), empty_list()}} | {:halt, a1_u1_1}
+fp[T] {:cont, {empty_list(), list(int)} | {list(int), empty_list()}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), list(int)}}
+fp[T] {:cont, {empty_list(), list(int)}} | {:halt, a1_u1_1}
+fp[T] {:cont, {empty_list(), list(int)}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {empty_list(), non_empty_list(int)}}
+fp[T] {:cont, {list(int), :false | :true}}
+fp[T] {:cont, {list(int), :false | :true}} | {:halt, a1_u1_1}
+fp[T] {:cont, {list(int), :false | :true}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {list(int), :false}}
+fp[T] {:cont, {list(int), :true}}
+fp[T] {:cont, {list(int), empty_list(), int}}
+fp[T] {:cont, {list(int), empty_list()}}
+fp[T] {:cont, {list(int), int}}
+fp[T] {:cont, {list(int), int}} | {:halt, a1_u1_1}
+fp[T] {:cont, {list(int), int}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {list(int), int}} | {:halt, a4_u1_1}
+fp[T] {:cont, {list(int), int}} | {:halt, a5_r_u1_1}
+fp[T] {:cont, {list(int), list(int), int}}
+fp[T] {:cont, {list(int), list(int), int}} | {:halt, a1_u1_1}
+fp[T] {:cont, {list(int), list(int), int}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {list(int), list(int), int}} | {:halt, a4_u1_1}
+fp[T] {:cont, {list(int), list(int), int}} | {:halt, a5_r_u1_1}
+fp[T] {:cont, {list(int), list(int)}}
+fp[T] {:cont, {list(int), list(int)}} | {:halt, a1_u1_1}
+fp[T] {:cont, {list(int), list(int)}} | {:halt, a2_r_u1_1}
+fp[T] {:cont, {list(int), non_empty_list(int)}}
+fp[T] {:cont, α0 | α1}
+fp[T] {:cont, α0}
+fp[T] {:cont, α0} | {:halt, α1}
+fp[T] {:cont, α1 | α2}
+fp[T] {:cont, α1}
+fp[T] {:cont, α1} | {:halt, α2}
+fp[T] {:done | :halted, a0_u0_1} | {:suspended, a0_u0_1, fun}
+fp[T] {:done | :halted, a1_u0_1 | a2_p1_v1} | {:suspended, a1_u0_1 | a2_p1_v1, fun}
+fp[T] {:done | :halted, a1_u0_1_v0 | a1_u0_1_v1} | {:suspended, a1_u0_1_v0 | a1_u0_1_v1, fun}
+fp[T] {:done | :halted, a1_v0 | a1_v1} | {:suspended, a1_v0 | a1_v1, fun}
+fp[T] {:done | :halted, a2_p1_v1 | empty_list()} | {:suspended, a2_p1_v1 | empty_list(), fun}
+fp[T] {:done | :halted, a3_u0_1 | a4_p1_v1} | {:suspended, a3_u0_1 | a4_p1_v1, fun}
+fp[T] {:done | :halted, a4_p1_v1 | empty_list()} | {:suspended, a4_p1_v1 | empty_list(), fun}
+fp[T] {:done | :halted, a4_u0_1_v0 | a4_u0_1_v1} | {:suspended, a4_u0_1_v0 | a4_u0_1_v1, fun}
+fp[T] {:done | :halted, a4_v0 | a4_v1} | {:suspended, a4_v0 | a4_v1, fun}
+fp[T] {:done | :halted, any}
+fp[T] {:done | :halted, any} | {:suspended, any, fun}
+fp[T] {:done | :halted, empty_list()} | {:suspended, empty_list(), fun}
+fp[T] {:done | :halted, list(int)} | {:suspended, list(int), fun}
+fp[T] {:done | :halted, α0 | α1}
+fp[T] {:done | :halted, α0 | α1} | {:suspended, α0 | α1, fun}
+fp[T] {:done | :halted, α0}
+fp[T] {:done | :halted, α0} | {:suspended, α0, fun}
+fp[T] {:done | :halted, α1 | α2}
+fp[T] {:done | :halted, α1 | α2} | {:suspended, α1 | α2, fun}
+fp[T] {:done, any}
+fp[T] {:done, empty_list()}
+fp[T] {:done, list(int)}
+fp[T] {:done, α0 | α1}
+fp[T] {:done, α0}
+fp[T] {:done, α1 | α2}
+fp[T] {:error | :ok, int} | {:error, any}
+fp[T] {:error, any}
+fp[T] {:halt | :suspend, any}
+fp[T] {:halt, any}
+fp[T] {:halt, empty_list()}
+fp[T] {:halt, list(int)}
+fp[T] {:halt, {list(int), int}}
+fp[T] {:halt, α0 | α1}
+fp[T] {:halt, α0}
+fp[T] {:halt, α1 | α2}
+fp[T] {:halt, α1}
+fp[T] {:halt, α2}
+fp[T] {:halted, any}
+fp[T] {:halted, α0 | α1}
+fp[T] {:halted, α0}
+fp[T] {:halted, α1 | α2}
+fp[T] {:ok, int}
+fp[T] {:suspend, any}
+fp[T] {:suspend, α0 | α1}
+fp[T] {:suspend, α0}
+fp[T] {:suspend, α1 | α2}
+fp[T] {:suspend, α1}
+fp[T] {:suspended, any, fun}
+fp[T] {:suspended, α0 | α1, fun}
+fp[T] {:suspended, α0, fun}
+fp[T] {:suspended, α1 | α2, fun}
+fp[T] {any, :first}
+fp[T] {any, any, any}
+fp[T] {any, any}
+fp[T] {empty_list(), :false | :true} | {list(int), :false}
+fp[T] {empty_list(), :true}
+fp[T] {empty_list(), empty_list(), int}
+fp[T] {empty_list(), empty_list()}
+fp[T] {empty_list(), int}
+fp[T] {empty_list(), list(int), int}
+fp[T] {empty_list(), list(int), int} | {list(int), empty_list(), int}
+fp[T] {empty_list(), list(int)}
+fp[T] {empty_list(), list(int)} | {list(int), empty_list()}
+fp[T] {empty_list(), non_empty_list(int)}
+fp[T] {list(a0_0_e), :false | :true}
+fp[T] {list(a0_0_e), int}
+fp[T] {list(a0_0_e), list(a0_0_e), int}
+fp[T] {list(a0_0_e), list(a0_0_e)}
+fp[T] {list(a1_p0), list(a1_p0)}
+fp[T] {list(int), :false | :true}
+fp[T] {list(int), :false}
+fp[T] {list(int), :true}
+fp[T] {list(int), empty_list(), int}
+fp[T] {list(int), empty_list()}
+fp[T] {list(int), int}
+fp[T] {list(int), list(int), int}
+fp[T] {list(int), list(int)}
+fp[T] {list(int), non_empty_list(int)}
+fp[T] {list(r0_0_e), list(r0_0_e)}
+fp[T] {list(α0), :false | :true}
+fp[T] {list(α0), int}
+fp[T] {list(α0), list(α0), int}
+fp[T] {list(α0), list(α0)}
+fp[T] {list, :false | :true}
+fp[T] {list, int}
+fp[T] {list, list, int}
+fp[T] {list, list}
+fp[T] {{:., %{}, non_empty_list(:define | {:__aliases__, %{}, non_empty_list(:Compiler | :Fz)})}, %{}, non_empty_list(any)}
+fp[a!] atom
+fp[a:.] :.
+fp[a:Compiler+:Fz] :Compiler | :Fz
+fp[a:Compiler] :Compiler
+fp[a:Fz] :Fz
+fp[a:__aliases__] :__aliases__
+fp[a:cont+:halt+:suspend] :cont | :halt | :suspend
+fp[a:cont+:halt] :cont | :halt
+fp[a:cont] :cont
+fp[a:define;T] :define | {:__aliases__, %{}, non_empty_list(:Compiler | :Fz)}
+fp[a:define] :define
+fp[a:done] :done
+fp[a:error+:ok] :error | :ok
+fp[a:error] :error
+fp[a:false+:true] :false | :true
+fp[a:false] :false
+fp[a:first] :first
+fp[a:halt] :halt
+fp[a:halted] :halted
+fp[a:ok] :ok
+fp[a:suspend] :suspend
+fp[a:suspended] :suspended
+fp[a:true] :true
+fp[any] any
+fp[binary] binary
+fp[float] float
+fp[int;ocpointer] int | cpointer
+fp[int] int
+fp[none] none
+fp[ocpointer] cpointer
+fp[oprotocol::Enumerable.t] protocol::Enumerable.t
+fp[va0] a0
+fp[va0_0_e] a0_0_e
+fp[va0_e+a1_e] a0_e | a1_e
+fp[va0_e] a0_e
+fp[va0_u0_1] a0_u0_1
+fp[va1+a2_r_u1_1] a1 | a2_r_u1_1
+fp[va1] a1
+fp[va1_e] a1_e
+fp[va1_p0] a1_p0
+fp[va1_r] a1_r
+fp[va1_u0_1+a1_u1_1] a1_u0_1 | a1_u1_1
+fp[va1_u0_1+a2_p1_v1] a1_u0_1 | a2_p1_v1
+fp[va1_u0_1] a1_u0_1
+fp[va1_u0_1_v0+a1_u0_1_v1] a1_u0_1_v0 | a1_u0_1_v1
+fp[va1_u0_1_v0] a1_u0_1_v0
+fp[va1_u0_1_v1] a1_u0_1_v1
+fp[va1_u1_1;T] a1_u1_1 | {empty_list(), :false | :true} | {list(int), :false}
+fp[va1_u1_1;T] a1_u1_1 | {empty_list(), list(int), int} | {list(int), empty_list(), int}
+fp[va1_u1_1;T] a1_u1_1 | {empty_list(), list(int)}
+fp[va1_u1_1;T] a1_u1_1 | {empty_list(), list(int)} | {list(int), empty_list()}
+fp[va1_u1_1;T] a1_u1_1 | {list(int), :false | :true}
+fp[va1_u1_1;T] a1_u1_1 | {list(int), int}
+fp[va1_u1_1;T] a1_u1_1 | {list(int), list(int), int}
+fp[va1_u1_1;T] a1_u1_1 | {list(int), list(int)}
+fp[va1_u1_1] a1_u1_1
+fp[va1_v0+a1_v1] a1_v0 | a1_v1
+fp[va1_v0] a1_v0
+fp[va1_v1] a1_v1
+fp[va2] a2
+fp[va2_p0] a2_p0
+fp[va2_p1] a2_p1
+fp[va2_p1_v1;L] a2_p1_v1 | empty_list()
+fp[va2_p1_v1] a2_p1_v1
+fp[va2_r] a2_r
+fp[va2_r_u1_1;L] a2_r_u1_1 | empty_list()
+fp[va2_r_u1_1;L] a2_r_u1_1 | list(int)
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), :false | :true} | {list(int), :false}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), :true}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), empty_list(), int}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), empty_list()}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), int}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), list(int), int} | {list(int), empty_list(), int}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), list(int)}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {empty_list(), list(int)} | {list(int), empty_list()}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {list(int), :false | :true}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {list(int), int}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {list(int), list(int), int}
+fp[va2_r_u1_1;T] a2_r_u1_1 | {list(int), list(int)}
+fp[va2_r_u1_1] a2_r_u1_1
+fp[va3+a4_r_u1_1] a3 | a4_r_u1_1
+fp[va3] a3
+fp[va3_u0_1+a4_p1_v1] a3_u0_1 | a4_p1_v1
+fp[va3_u0_1] a3_u0_1
+fp[va4+a5_r_u1_1] a4 | a5_r_u1_1
+fp[va4] a4
+fp[va4_p1_v1;L] a4_p1_v1 | empty_list()
+fp[va4_p1_v1] a4_p1_v1
+fp[va4_r_u1_1;T] a4_r_u1_1 | {empty_list(), empty_list(), int}
+fp[va4_r_u1_1;T] a4_r_u1_1 | {empty_list(), int}
+fp[va4_r_u1_1] a4_r_u1_1
+fp[va4_u0_1+a4_u1_1] a4_u0_1 | a4_u1_1
+fp[va4_u0_1] a4_u0_1
+fp[va4_u0_1_v0+a4_u0_1_v1] a4_u0_1_v0 | a4_u0_1_v1
+fp[va4_u0_1_v0] a4_u0_1_v0
+fp[va4_u0_1_v1] a4_u0_1_v1
+fp[va4_u1_1;T] a4_u1_1 | {empty_list(), list(int), int} | {list(int), empty_list(), int}
+fp[va4_u1_1;T] a4_u1_1 | {list(int), int}
+fp[va4_u1_1;T] a4_u1_1 | {list(int), list(int), int}
+fp[va4_u1_1] a4_u1_1
+fp[va4_v0+a4_v1] a4_v0 | a4_v1
+fp[va4_v0] a4_v0
+fp[va4_v1] a4_v1
+fp[va5] a5
+fp[va5_r_u1_1;T] a5_r_u1_1 | {empty_list(), empty_list(), int}
+fp[va5_r_u1_1;T] a5_r_u1_1 | {empty_list(), int}
+fp[va5_r_u1_1;T] a5_r_u1_1 | {empty_list(), list(int), int} | {list(int), empty_list(), int}
+fp[va5_r_u1_1;T] a5_r_u1_1 | {list(int), int}
+fp[va5_r_u1_1;T] a5_r_u1_1 | {list(int), list(int), int}
+fp[va5_r_u1_1] a5_r_u1_1
+fp[vr0] r0
+fp[vr0_0_e] r0_0_e
+fp[vr0_e] r0_e
+fp[vα0+α1] α0 | α1
+fp[vα0] α0
+fp[vα1+α2] α1 | α2
+fp[vα12096] α12096
+fp[vα12097] α12097
+fp[vα12159] α12159
+fp[vα12160] α12160
+fp[vα12161] α12161
+fp[vα12223] α12223
+fp[vα12224] α12224
+fp[vα12225] α12225
+fp[vα12287] α12287
+fp[vα12288] α12288
+fp[vα12289] α12289
+fp[vα12351] α12351
+fp[vα12352] α12352
+fp[vα12353] α12353
+fp[vα12415] α12415
+fp[vα12416] α12416
+fp[vα12417] α12417
+fp[vα12479] α12479
+fp[vα12544] α12544
+fp[vα12545] α12545
+fp[vα12607] α12607
+fp[vα12608] α12608
+fp[vα12609] α12609
+fp[vα12671] α12671
+fp[vα12672] α12672
+fp[vα12673] α12673
+fp[vα12735] α12735
+fp[vα13056] α13056
+fp[vα13057] α13057
+fp[vα13119] α13119
+fp[vα13120] α13120
+fp[vα13121] α13121
+fp[vα13183] α13183
+fp[vα1] α1
+fp[vα2] α2
+fp[vα4288] α4288
+fp[vα4351] α4351
+fp[vα4416] α4416
+fp[vα4479] α4479
+fp[vα4480] α4480
+fp[vα4543] α4543
+fp[vα4672] α4672
+fp[vα4735] α4735
+fp[vα4800] α4800
+fp[vα4863] α4863
+fp[vα4864] α4864
+fp[vα4927] α4927
+fp[vα5056] α5056
+fp[vα5119] α5119
+fp[vα5184] α5184
+fp[vα5247] α5247
+fp[vα5248] α5248
+fp[vα5311] α5311
+fp[vα5312] α5312
+fp[vα5375] α5375
+fp[vα5440] α5440
+fp[vα5503] α5503
+fp[vα5504] α5504
+fp[vα5567] α5567
+fp[vα5568] α5568
+fp[vα5631] α5631
+fp[vα5632] α5632
+fp[vα5695] α5695
+fp[vα5696] α5696
+fp[vα5759] α5759
