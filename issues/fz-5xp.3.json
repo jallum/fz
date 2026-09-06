@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-5xp.14"
+    "fz-5xp.14",
+    "fz-5xp.15"
   ],
   "created": "2026-09-06T23:42:51Z",
   "description": "PREREQUISITE for String, IO, Integer/Float formatting -- every interesting primitive in those modules allocates.\n\nAn allocating extern needs *mut Process to reach heap.alloc_bitstring. That implicit\nargument is derived from nothing; it is special-cased by symbol name in ~4 places:\n  src/ir_codegen/runtime_syms.rs:69            wire signature\n  src/compiler2/native_codegen/prim.rs:948     lower_extern_fz_binary_concat injects it\n  src/ir_interp/extern_call.rs:190             interpreter call\n  src/ir_interp/extern_call.rs:382             interpreter symbol address\n\nprim.rs already carries 31 such rungs in one name-keyed if-chain before falling\nthrough to lower_extern_generic. Non-allocating externs (fz_map_count,\nfz_bitstring_valid_utf8, libc::close) cost nothing -- they take the generic path.\n\nCost if left alone: String needs 8-11 allocating primitives, Integer/Float/Atom 3,\nMap 1-2, IO 1-2. At ~4 hand-edits each that is ~60-100 edits across three execution\npaths, each an independent chance for three-path drift.\n\nDONE = the extern contract carries the property, the generic path handles it once\nacross interp/JIT/AOT, and the if-chain in prim.rs is materially shorter. This is a\ndeletion as much as an addition -- adding a primitive must stop being a 4-site edit.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Make 'needs the process heap' a declared extern property, not 31 name-keyed special cases",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:46Z"
+  "updated_at": "2026-09-06T23:44:47Z"
 }
