@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T23:42:50Z",
+  "description": "KEYSTONE for every text-processing ticket in fz-5xp.\n\nnative_codegen/receive.rs:654 handles Region::Bitstring by calling emit_bitstring_test\n(receive.rs:1083) -- a complete implementation with emit_bitstring_like_guard, field\nextraction, and variable-size bindings over fz_bs_reader_init_ref / fz_bs_read_field_ref.\n\njobs/native.rs:3092 returns an error for the SAME region:\n  \"native entry-dispatch lowering does not support bitstring tests yet\"\n\nSo native codegen has two dispatch-region lowerings and only one is finished.\n\nPROVEN at 67e09d373 -- the identical pattern, both positions:\n  receive do \u003c\u003clen, payload::binary-size(len), rest::binary\u003e\u003e -\u003e len end  =\u003e 3  (native OK)\n  case m  do \u003c\u003clen, payload::binary-size(len), rest::binary\u003e\u003e -\u003e len end  =\u003e native lowering failure\n\nExtraction already works natively outside dispatch: \u003c\u003ca, b, rest::binary\u003e\u003e = s yields\n{1, 2, \u003c\u003c3, 4\u003e\u003e} on the native path. Only the boolean region TEST is absent.\n\nDONE = one region-test emitter serves both dispatch sites (fold, do not copy), and\nfixtures2/00310_binary_pattern_header.fz + 00311_binary_variable_size.fz pass on run\nand build, not just interp. Those two carry no frontmatter and no defer: today, and\nthe matrix only scans fixtures2/behavior/, so they are currently ungated on native --\nmove or mirror them into behavior/ so the parity gate actually covers this.",
+  "id": "fz-5xp.1",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "Fold the two native bitstring region-test emitters into one",
+  "type": "task",
+  "updated_at": "2026-09-06T23:42:50Z"
+}
