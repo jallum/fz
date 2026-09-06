@@ -212,14 +212,14 @@
   before `Mod` is defined, but a demanded body that calls such a binding waits
   for the provider `ModuleDefined` fact before staged expansion can continue.
   Once the provider surface is known, import binds the real exported symbol
-  kind. Imported macros additionally wait for `MacroExecutable(function)`.
-- `require Mod` waits for the provider surface, selects the requested macro
-  exports (`only:` or all macros minus `except:`), and waits for those exact
-  `MacroExecutable` facts. It records exactly those macro function ids as
+  kind. Invoking an imported macro reads its retained `RootBackendProduct`.
+- `require Mod` selects the requested macro exports from `ModuleInterface`
+  (`only:` or all macros minus `except:`). An exact `only:` list can reserve
+  macro identities before the interface is ready. It records those function ids as
   required in the source session. It does not import bare names; only required
   remote macro calls such as `Mod.m(...)` are available to source expansion.
 - Source-order item macro calls expand through the same
-  `MacroExecutable(function)` fact as expression macros. The returned root is
+  retained `RootBackendProduct(root)` product as expression macros. The returned root is
   read as a source fragment, local definitions are reserved, and the fragment is
   applied immediately in source order.
 - Remote calls to user modules may wait for the provider `ModuleDefined` fact
@@ -238,17 +238,20 @@
 
 ## Macro Runtime
 
-- `FactKey::MacroExecutable(FunctionId)` is the readiness fact for a compiled
-  macro function. `Job::BuildMacroExecutable(function)` waits for
-  `FunctionDefined(function)`, creates one hidden macro root, waits for the
-  ordinary `BackendProgram(root)`, then publishes the executable fact.
+- A macro invocation reads `FunctionDefined(function)` and its hidden root's
+  `RootBackendProduct(root)`. `Compiler2` retains macro and user root sessions
+  in `ProductSessions`; each session's `ProductMemo` owns its backend products.
+  Source consumers record typed product reads and waits in the ordinary
+  scheduler, whose product readiness comes directly from that memo. Equal
+  backend reproduction retains allocation and generation and wakes no consumer.
 - A macro root is `RootKind::Macro`. Its input vector is explicit:
   `__CALLER__` followed by capture inputs and user-visible macro arguments, all
   typed as `Any`. That input vector is part of the activation key and the
   published `Activation` fact value.
 - A runtime root is `RootKind::Runtime`. Runtime roots reject macro entry
   functions during `SeedRoot`. Compile-time macro roots pull
-  `BuildBackendProduct` and stop at the backend interpreter-ready product.
+  `RootBackendProduct` and execute the shared
+  interpreter-ready backend handle.
 - `LowerFunction` and `PlanEntryDispatch` are shared by runtime functions and
   macros. The difference is the hidden compile-time ABI slot, not a second
   macro-only body or dispatch implementation.

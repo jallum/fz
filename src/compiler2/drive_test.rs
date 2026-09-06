@@ -1,12 +1,16 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
-use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
-use crate::compiler2::drive::JobEffects;
+use crate::compiler2::artifact::{
+    NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
+};
+use crate::compiler2::drive::{DependencyKey, JobEffects};
+use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
     FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, Namespace, QuotedSourceHeap,
-    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
+    QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
+    parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
@@ -25,7 +29,7 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
-type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
+type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
@@ -39,6 +43,173 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+
+fn settle_native_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root: crate::compiler2::RootId) {
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        .expect("native product should settle");
+}
+
+#[test]
+fn executable_construction_and_runtime_demand_share_one_world_type_projection() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_runtime_demand_projection.fz".to_string()),
+        text: "fn add_one(x), do: x + 1\nfn twice(x), do: add_one(add_one(x))\nfn main(), do: twice(40)\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("the shared-projection fixture should compile");
+    let world = compiler.world();
+
+    let mut uses = Vec::new();
+    for executable in executables {
+        let facts = world
+            .executable_facts(&executable)
+            .expect("each materialized executable should retain its settled facts");
+        let demand_facts = facts.runtime_demand_facts(world.runtime_demand_type_projections());
+        for &ty in facts.analysis().value_types.values() {
+            if world.types().is_integer(&ty) {
+                uses.push(demand_facts.projection_identity(ty));
+            }
+        }
+    }
+    assert!(
+        uses.len() >= 2,
+        "the fixture should exercise the same integer projection in multiple executable constructions",
+    );
+    assert!(
+        uses.iter().all(|projection| *projection == uses[0]),
+        "construction and formula views must borrow one World-owned projection for an interned type",
+    );
+}
+
+#[test]
+fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads() {
+    let tel = ConfiguredTelemetry::new();
+    let product_lifecycle = Rc::new(RefCell::new(Vec::<(&'static str, String)>::new()));
+    let observed_products = Rc::clone(&product_lifecycle);
+    tel.attach_raw_event3::<
+        crate::compiler2::pull::ProductKey,
+        crate::compiler2::pull::ProductValue,
+        crate::compiler2::pull::ProductSettlement,
+        _,
+    >(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        move |_, _, _, key, _, _| {
+            observed_products
+                .borrow_mut()
+                .push(("settled", key.kind().to_string()))
+        },
+    );
+    for leaf in ["displaced", "cache_hit"] {
+        let observed_products = Rc::clone(&product_lifecycle);
+        tel.attach_raw_event1::<crate::compiler2::pull::ProductKey, _>(
+            &["fz", "compiler2", "pull", "product", leaf],
+            move |_, _, _, key| observed_products.borrow_mut().push((leaf, key.kind().to_string())),
+        );
+    }
+    let demanded_executables = Rc::new(RefCell::new(HashSet::<ExecutableKey>::new()));
+    let observed_demand = Rc::clone(&demanded_executables);
+    tel.attach_raw_event1::<crate::compiler2::PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed_demand
+                .borrow_mut()
+                .extend(session.demanded_executables().iter().cloned());
+        },
+    );
+    let conclusions = Rc::new(RefCell::new(Vec::<(ExecutableKey, Vec<FactKey>)>::new()));
+    let observed_conclusions = Rc::clone(&conclusions);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let Job::DeriveExecutableFacts(executable) = &completion.job else {
+                return;
+            };
+            let outputs = world.job_outputs(&completion.job);
+            if outputs.contains(&FactKey::ExecutableFacts(executable.clone())) {
+                observed_conclusions.borrow_mut().push((executable.clone(), outputs));
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("executable_facts_direct_fact.fz".to_string()),
+        text: "fn add_one(x), do: x + 1\nfn main(), do: add_one(41)\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("the direct executable-facts fixture should compile");
+    let world = compiler.world();
+    assert!(
+        product_lifecycle
+            .borrow()
+            .iter()
+            .all(|(_, kind)| kind != "executable_facts"),
+        "ExecutableFacts must be absent from every product lifecycle leaf: {:?}",
+        product_lifecycle.borrow(),
+    );
+    assert!(!executables.is_empty());
+    let demanded = demanded_executables.borrow().clone();
+    let conclusions = conclusions.borrow();
+    assert_eq!(
+        conclusions
+            .iter()
+            .map(|(executable, _)| executable.clone())
+            .collect::<HashSet<_>>(),
+        demanded,
+        "each demanded executable identity must close through its exact DeriveExecutableFacts work-graph conclusion",
+    );
+    assert_eq!(
+        conclusions.len(),
+        demanded.len(),
+        "each demanded executable must have exactly one concluding executable-fact publication",
+    );
+    for (executable, outputs) in conclusions.iter() {
+        assert_eq!(
+            outputs,
+            &[FactKey::ExecutableFacts(executable.clone())],
+            "the correlated producer conclusion must publish only its exact executable fact",
+        );
+    }
+    for executable in executables {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        let job = Job::DeriveExecutableFacts(executable.clone());
+        let facts = world
+            .executable_facts(&executable)
+            .expect("every materialized executable should have one World-owned fact value");
+        let mut expected_reads = HashSet::from([
+            FactUse::settled(FactKey::ActivationAnalyzed(executable.activation.clone())),
+            FactUse::settled(FactKey::LoweredBody(executable.activation.function)),
+            FactUse::settled(FactKey::EntryDispatch(executable.activation.function)),
+        ]);
+        expected_reads.extend(facts.analysis().callsites.iter().map(|callsite| {
+            FactUse::settled(FactKey::CallSiteSummary(CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            }))
+        }));
+
+        assert_eq!(world.fact_revision(&fact), Some(1));
+        assert_eq!(world.job_reads(&job), expected_reads);
+        assert_eq!(world.job_outputs(&job), vec![fact]);
+    }
+}
 
 // The receive-after join is `int | :timeout`; `bump`'s atom clause diverges
 // through `panic`, so the post-receive call lowers as a two-member dispatch
@@ -99,10 +270,27 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
 }
 
 fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id: crate::compiler2::RootId) {
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "backend product should be explicitly demandable for {root_id:?}",
-    );
+    compiler
+        .drive_root_to_dump_stage(root_id, super::dump::DumpStage::Backend)
+        .expect("the requested backend product should settle");
+}
+
+fn drive_world_backend_product(
+    world: &mut super::World,
+    telemetry: &ConfiguredTelemetry,
+    sessions: &mut super::pull::ProductSessions,
+    root: super::RootId,
+) {
+    super::product_drive::drive_retained_product(
+        world,
+        telemetry,
+        sessions,
+        super::drive::ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        },
+    )
+    .expect("the retained backend product should settle");
 }
 
 #[test]
@@ -534,6 +722,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code_id = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
@@ -553,7 +742,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     );
 
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "source should index protocol and owner modules",
     );
     assert!(
@@ -561,7 +750,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "top-level scope should be demandable"
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "top-level scope should prepare module definitions",
     );
 
@@ -571,7 +760,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "protocol definition should be demandable"
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "protocol definition should publish callback facts first",
     );
 
@@ -581,7 +770,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "owner module definition should be demandable",
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "owner-module remote calls inside defimpl callbacks should use the live source namespace, not wait on ModuleDefined(owner)",
     );
 }
@@ -590,13 +779,14 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code_id = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
 
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
@@ -604,14 +794,14 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "top-level scoping should bind nested definition macros before root demand",
     );
 
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -1285,7 +1475,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         .cloned()
         .expect("t/0 should resolve once Point's defstruct publishes");
     let int_ty = world.types_mut().int();
-    let expected = world.struct_value_ty("Point", &["x".to_string(), "y".to_string()], &[int_ty, int_ty]);
+    let expected = world.struct_value_ty(point, &["x".to_string(), "y".to_string()], &[int_ty, int_ty]);
     assert_eq!(
         def.ty, expected,
         "resolved struct-record type should use Point's schema order (x, y), not the reversed literal order (y, x)"
@@ -2280,12 +2470,9 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
 
 #[test]
 fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_scan() {
-    // The last struct-facts consumer migration: `BackendProgram.struct_schemas`
-    // now reads `World::struct_def_schemas` (the fact-backed `StructDefMap`),
-    // not the deleted `World::struct_schemas`/`ModuleStore::named_struct_schemas`
-    // source scan. Two structs, reached through the two different backend
-    // consumers of the map, prove it is genuinely populated from published
-    // `StructDefined` facts rather than vacuously empty or a stale literal:
+    // Two structs reached through different backend consumers prove the root
+    // product packages exact `StructDefined` dependencies rather than a source
+    // or World inventory:
     // `Point` is only ever dot-field-accessed (`Prim::StructField`'s named
     // lookup), and its schema field ORDER must match the `defstruct`
     // declaration (x, y), not construction-site literal order (the literal
@@ -2337,45 +2524,59 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.struct_schemas.get("Point").map(Vec::as_slice),
+        program.schema("Point").map(Vec::as_slice),
         Some(["x".to_string(), "y".to_string()].as_slice()),
         "Point's schema should be the declared defstruct order, not the literal's write order"
     );
     assert_eq!(
-        program.struct_schemas.get("Pair").map(Vec::as_slice),
+        program.schema("Pair").map(Vec::as_slice),
         Some(["first".to_string(), "second".to_string()].as_slice()),
         "Pair's schema should be present from the fact store even though it is only ever pattern-destructured"
     );
 }
 
 #[test]
-fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driven_macro_root() {
-    // fz-l59: a `defmacro` mints its own hidden compile-time `RootId`
-    // (`World::macro_root`), driven through `Job::BuildMacroExecutable` --
-    // independently of the program's runtime root and its own
-    // `BuildBackendProduct` drive. That is exactly the "multiple
-    // independently-driven RootIds sharing one World" shape the struct-schema
-    // completeness concern named: `struct_def_schemas()` snapshots the
-    // shared `StructDefMap` at whichever moment a root's own backend product
-    // settles, so if one root's snapshot could observe less than the whole
-    // program's struct inventory, this is where it would show.
-    //
-    // `Widget` is declared after the macro and is never touched by the
-    // macro's own body (the macro only multiplies an integer) -- the macro
-    // root's executable is built and driven to completion touching zero
-    // structs. The main root still constructs and dot-accesses `Widget`.
-    // Because struct-schema completeness is a per-root property (a root's
-    // `BackendProgram` cannot settle until every backend executable ITS OWN
-    // reachable call graph needs has packaged, which in turn cannot package a
-    // `MakeStruct`/`StructField` step until that struct's `StructDefined`
-    // fact has settled), the main root's snapshot is complete regardless of
-    // the macro root's presence, drive order, or that it touches no structs
-    // at all. This pins the invariant that makes the cofinite
-    // `is_named_struct`/`matches_runtime_struct` predicate sound today: one
-    // program (`fz2 run`/`interp`/`build`, and each `fz2 test` subprocess)
-    // mints exactly one *runtime* root, so no struct value ever has to cross
-    // from one independently-driven root's product into another's cofinite
-    // check.
+fn compiler2_backend_keeps_a_struct_named_only_by_a_retained_type_predicate() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_schema_from_type_predicate.fz".to_string()),
+        text: concat!(
+            "defmodule Packet do\n",
+            "  defstruct [:value]\n",
+            "  @type t :: %Packet{value: integer}\n",
+            "  fn pass(x :: t), do: x\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("Packet".to_string()),
+        name: "pass".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(
+        compiler.drive(),
+        "a typed root whose body never constructs or destructures Packet should still settle",
+    );
+
+    assert_eq!(
+        backend.last(root).program.schema("Packet").map(Vec::as_slice),
+        Some(["value".to_string()].as_slice()),
+        "the retained entry predicate must carry Packet's typed schema dependency even without a Struct step"
+    );
+}
+
+#[test]
+fn compiler2_main_root_keeps_its_struct_schema_independent_of_a_macro_root() {
+    // A macro owns an independent compile-time root. Its integer-only product
+    // must neither contribute to nor suppress the runtime root's exact Widget
+    // dependency; the runtime root packages Widget because its own pruned body
+    // constructs and reads it.
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -2414,10 +2615,10 @@ fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driv
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.struct_schemas.get("Widget").map(Vec::as_slice),
+        program.schema("Widget").map(Vec::as_slice),
         Some(["label".to_string(), "count".to_string()].as_slice()),
-        "the main root's struct-schema inventory must be complete (declared defstruct order) even though \
-         an independently-driven macro root -- which touches no structs at all -- shares this World",
+        "the runtime root must retain its exact Widget schema (in declaration order) even though an \
+         independently driven macro root touches no structs in the shared World",
     );
 }
 
@@ -2937,20 +3138,6 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
 #[test]
 fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    outputs.install(&tel);
-    let macro_defs = Capture::new();
-    macro_defs.install(&tel, &["fz", "compiler2", "macro_executable"]);
-    let macro_revisions = Rc::new(RefCell::new(Vec::new()));
-    let macro_revision_sink = Rc::clone(&macro_revisions);
-    tel.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
-        &["fz", "compiler2", "macro_executable", "defined"],
-        move |_, _, _, world, function| {
-            if let Some(executable) = world.macro_executable(*function) {
-                macro_revision_sink.borrow_mut().push(executable.backend_revision);
-            }
-        },
-    );
     let functions = FunctionCapture::new();
     functions.install(&tel);
 
@@ -2967,34 +3154,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
 
     let inc = function_id(&functions, "inc", 1);
-    assert!(compiler.demand(Job::BuildMacroExecutable(inc)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should drive the shared backend product",
-    );
-    let macro_outputs = outputs
-        .take(Job::BuildMacroExecutable(inc))
-        .expect("BuildMacroExecutable job effects");
-    assert!(
-        macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), true)),
-        "macro readiness should publish a first-class macro executable fact"
-    );
-    let macro_defined = macro_defs
-        .last(&["fz", "compiler2", "macro_executable", "defined"])
-        .expect("macro readiness should define a backend-backed macro executable");
-    assert!(
-        macro_revisions.borrow().last().is_some_and(|revision| *revision > 0),
-        "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
-    );
-    assert!(macro_defined.measurements.get("backend_revision").is_none());
-    assert!(
-        !outputs
-            .all()
-            .into_iter()
-            .any(|(fact, _)| matches!(fact, FactKey::NativeProgram(_))),
-        "compile-time macro roots should stop at backend interpreter readiness and not enter native codegen"
-    );
-
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let arg = builder.int(41);
@@ -3022,11 +3181,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     assert_eq!(args[1].int_value().expect("literal increment"), 1);
 
     let quoted_var = function_id(&functions, "quoted_var", 0);
-    assert!(compiler.demand(Job::BuildMacroExecutable(quoted_var)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should also handle quoted variables",
-    );
     let quoted = compiler
         .run_macro_on_source(quoted_var, &carrier, caller, &[])
         .expect("macro should return the quoted variable");
@@ -3048,11 +3202,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
 
     let forward_define = function_id(&functions, "forward_define", 1);
-    assert!(compiler.demand(Job::BuildMacroExecutable(forward_define)));
-    assert_resolved(
-        compiler.drive(),
-        "macro executable readiness should lower quoted remote compiler-service calls",
-    );
     let forwarded_source = builder
         .call(
             "fn",
@@ -3211,20 +3360,20 @@ end
 #[test]
 fn compiler2_runtime_roots_reject_macro_entries() {
     let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    outputs.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
     let exceptions = Rc::new(RefCell::new(Vec::new()));
     let exception_sink = Rc::clone(&exceptions);
-    tel.attach_raw_span0_1::<DriveOutcome<Job, FactKey>, _, _, _>(
+    tel.attach_raw_span0_1::<DriveOutcome<Job, DependencyKey>, _, _, _>(
         &["fz", "compiler2", "drive"],
         |_, _, _| {},
         |_, _, _, _, _| {},
         |_, _, _, _| {},
     );
-    tel.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
+    tel.attach_raw_span1_0::<Job, _, _, _>(
         &["fz", "compiler2", "job"],
         |_, _, _, _| {},
-        |_, _, _, _, _, _| {},
+        |_, _, _, _| {},
         move |_, span_id, parent_span_id, _| exception_sink.borrow_mut().push((span_id, parent_span_id)),
     );
 
@@ -3245,12 +3394,8 @@ fn compiler2_runtime_roots_reject_macro_entries() {
         "runtime root seeding should reject macro entries before backend/native execution can gain compiler authority"
     );
     assert!(
-        outputs
-            .stops_matching(
-                |job| matches!(job, Job::BuildBackendProduct(id) | Job::LowerNativeProgram(id) if *id == root),
-            )
-            .is_empty(),
-        "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
+        backend.records(root).is_empty(),
+        "rejected runtime roots must not produce backend content"
     );
     assert_eq!(exceptions.borrow().len(), 1);
     assert_ne!(exceptions.borrow()[0].1, 0);
@@ -3965,13 +4110,14 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let foo_id = function_id(&functions, "foo", 0);
 
     let executable_ids = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
     assert_eq!(
-        program.executables[program.entry].key.activation.function, main_id,
-        "the backend-program entry should still point at the main/0 executable inventory slot",
+        program.entry().activation.function,
+        main_id,
+        "the backend-program entry should still name the main/0 executable",
     );
     assert!(
         executable_ids.contains(&main_id)
@@ -3985,24 +4131,21 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         "backend lowering should keep cold foo/0 out of the backend handoff",
     );
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "quicksort should not manufacture callable constructions in the backend handoff",
     );
 
     let (_, main_exec) = backend_executable(&program, main_id);
-    let call = backend_direct_call(main_exec, &program, qsort_id);
+    let call = backend_direct_call(main_exec, qsort_id);
     match call {
         BackendTail::DirectCall { target, args, .. } => {
             let CallEdge::Direct(direct) = target else {
                 panic!("expected backend direct edge for main/0 -> qsort/1");
             };
             assert_eq!(
-                program.executables[*local_call_target(&direct.callee)]
-                    .key
-                    .activation
-                    .function,
+                local_call_target(&direct.callee).activation.function,
                 qsort_id,
-                "backend direct-call steps should point at settled executable inventory indices",
+                "backend direct-call steps should name settled executable identities",
             );
             assert_eq!(
                 args.len(),
@@ -4017,12 +4160,11 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
         "backend lowering should not wake the legacy planner or codegen pipelines",
     );
+    let settlements = capture.find(&["fz", "compiler2", "pull", "product", "settled"]);
+    assert!(!settlements.is_empty(), "backend compilation must settle products");
     assert!(
-        capture
-            .find(&["fz", "compiler2", "backend_program", "defined"])
-            .into_iter()
-            .all(|event| event.metadata.len() == 0),
-        "generic capture should not durable-copy opaque backend-program metadata",
+        settlements.into_iter().all(|event| event.metadata.len() == 0),
+        "generic capture should not durable-copy opaque product payloads",
     );
 }
 
@@ -4060,7 +4202,7 @@ fn main(), do: inc(41)
     let main_id = function_id(&functions, "main", 0);
     let inc_id = function_id(&functions, "inc", 1);
     let (_, main_exec) = backend_executable(&program, main_id);
-    let call = backend_direct_call(main_exec, &program, inc_id);
+    let call = backend_direct_call(main_exec, inc_id);
     let BackendTail::DirectCall {
         target: CallEdge::Direct(target),
         ..
@@ -4173,7 +4315,7 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
 
     let program = backend.last(root_id).program;
     let mut saw_return_payload_flow = false;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4183,14 +4325,14 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                     target: CallEdge::Direct(target),
                     ..
                 } => {
-                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.return_layout) {
+                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.abi.return_layout) {
                         saw_return_payload_flow = true;
                     }
                 }
                 BackendTail::ClosureCall {
                     return_flow: Some(return_flow),
                     ..
-                } if return_flow_is_distinct_return_payload(return_flow, &executable.return_layout) => {
+                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout) => {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -4247,11 +4389,11 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
 
     let program = backend.last(root_id).program;
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "backend construction-wrapper inventory should stay empty for direct-only reducer transport",
     );
     let executable_functions = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
@@ -4296,7 +4438,7 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4387,19 +4529,16 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
         other => panic!("expected backend extern body for libc::open, got {other:?}"),
     }
 
-    let call = backend_direct_call(main_exec, &program, open_id);
+    let call = backend_direct_call(main_exec, open_id);
     match call {
         BackendTail::DirectCall { target, args, .. } => {
             let CallEdge::Direct(direct) = target else {
                 panic!("expected backend direct edge for libc::open");
             };
             assert_eq!(
-                program.executables[*local_call_target(&direct.callee)]
-                    .key
-                    .activation
-                    .function,
+                local_call_target(&direct.callee).activation.function,
                 open_id,
-                "backend extern calls should still target the settled extern executable inventory slot",
+                "backend extern calls should still target the settled extern executable identity",
             );
             assert_eq!(
                 direct.extern_marshals.as_deref(),
@@ -4442,7 +4581,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4525,7 +4664,7 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(
             compiler.drive(),
             "quicksort native lowering should settle when reading the delivered resume payload shape",
@@ -4602,7 +4741,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(compiler.drive(), "quicksort native lowering should settle");
         let program = native.last(root_id).program;
         let qsort_owners = program
@@ -4643,7 +4782,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        compiler.demand(Job::LowerNativeProgram(root_id));
+        settle_native_product(&mut compiler, root_id);
         assert_resolved(compiler.drive(), "Enum.each native lowering should settle");
         let program = native.last(root_id).program;
         let zero_width = program
@@ -4700,7 +4839,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4817,7 +4956,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4864,8 +5003,300 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs()
-{
+fn compiler2_native_program_shares_boxed_callable_cps_without_erasing_semantic_identity() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let before_sharing = Rc::new(RefCell::new(Vec::<NativeProgram>::new()));
+    let before_sharing_sink = Rc::clone(&before_sharing);
+    tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
+        &["fz", "compiler2", "native_program", "before_sharing"],
+        move |_, _, _, _, program| before_sharing_sink.borrow_mut().push(program.clone()),
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/boxed_callable_cps_sharing.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/boxed_callable_cps_sharing.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    settle_native_product(&mut compiler, root_id);
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should preserve reducer behavior when the same boxed surface captures different predicates: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let make_reducer_id = function_id(&functions, "make_reducer", 1);
+    let predicate_functions = HashSet::from([
+        function_id(&functions, "gt2", 1).as_u32(),
+        function_id(&functions, "even", 1).as_u32(),
+    ]);
+    let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
+        .into_iter()
+        .find(|record| record.arity == 2)
+        .expect("make_reducer/1 should generate the reducer lambda")
+        .function_id;
+
+    let mut unshared_program = before_sharing
+        .borrow()
+        .last()
+        .cloned()
+        .expect("native lowering should expose its complete graph before physical sharing");
+    let unshared_reducers = unshared_program
+        .executable_entries
+        .iter()
+        .filter(|entry| entry.key.activation.function == reducer_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        unshared_reducers
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "the comparison proof must begin with distinct physical reducer graphs",
+    );
+    let left_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[0].key);
+    let right_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[1].key);
+    assert!(
+        left_graph.len() > 1 && left_graph.len() == right_graph.len() && left_graph.is_disjoint(&right_graph),
+        "the distinct proof pair must include equally sized, disjoint owned continuation graphs",
+    );
+    let body = |fn_id| {
+        unshared_program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == fn_id)
+            .expect("executable native body")
+    };
+    let left_body = body(unshared_reducers[0].fn_id);
+    let right_body = body(unshared_reducers[1].fn_id);
+    let differing_value_types = left_body
+        .value_types
+        .iter()
+        .filter_map(|(var, left_ty)| (right_body.value_types.get(var) != Some(left_ty)).then_some(*var))
+        .collect::<HashSet<_>>();
+    let left_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
+        unshared_program.module.fn_by_id(unshared_reducers[0].fn_id),
+    );
+    let right_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
+        unshared_program.module.fn_by_id(unshared_reducers[1].fn_id),
+    );
+    assert!(
+        !differing_value_types.is_empty()
+            && differing_value_types.iter().all(|var| {
+                left_callee_only.contains(var)
+                    && right_callee_only.contains(var)
+                    && left_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+                    && right_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+            }),
+        "the positive pair must exercise only the proven ValueRef indirect-callee type exception",
+    );
+    assert!(
+        unshared_program.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "the distinct boxed reducer and full continuation graphs should normalize as equivalent",
+    );
+    let mut opposite_construction_order = unshared_program.clone();
+    opposite_construction_order.bodies.reverse();
+    opposite_construction_order.module.fns.reverse();
+    opposite_construction_order.module.fn_idx = opposite_construction_order
+        .module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(index, function)| (function.id, index))
+        .collect();
+    assert!(
+        opposite_construction_order.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "structurally equal graphs must compare equally after opposite body construction order",
+    );
+    let mut broken_structure = unshared_program.clone();
+    let mut detached = None;
+    'functions: for function in &mut broken_structure.module.fns {
+        if !right_graph.contains(&function.id) {
+            continue;
+        }
+        for block in &mut function.blocks {
+            let continuation = match &mut block.terminator {
+                IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => {
+                    Some(&mut continuation.fn_id)
+                }
+                _ => None,
+            };
+            if let Some(continuation) = continuation.filter(|continuation| right_graph.contains(continuation)) {
+                detached = Some(*continuation);
+                *continuation = unshared_reducers[0].fn_id;
+                break 'functions;
+            }
+        }
+    }
+    let detached = detached.expect("the structural-role control needs a continuation control edge in the right graph");
+    assert!(
+        !broken_structure.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "an owned continuation detached from the completed IR control graph must make sharing ineligible",
+    );
+    broken_structure.deduplicate_equivalent_sibling_graphs();
+    assert_eq!(
+        unshared_reducers
+            .iter()
+            .map(|entry| broken_structure.executable_fn(&entry.key).expect("reducer executable"))
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "an incomplete ownership graph must not enter equivalence during the sharing fixed point",
+    );
+    let detached_owner = broken_structure
+        .bodies
+        .iter()
+        .find_map(|body| {
+            (body.fn_id == detached).then(|| match body.origin {
+                NativeBodyOrigin::Continuation { owner } => owner,
+                _ => panic!("the detached body must remain a continuation"),
+            })
+        })
+        .expect("an ineligible continuation must not be removed by an unrelated representative remap");
+    assert!(
+        broken_structure.module.fn_idx.contains_key(&detached)
+            && broken_structure.module.fn_idx.contains_key(&detached_owner),
+        "an ineligible continuation and its owner must remain internally valid after other graph remaps",
+    );
+    let representative = unshared_reducers[0].fn_id;
+    let sharing_work = unshared_program.deduplicate_equivalent_sibling_graphs();
+    assert_eq!(
+        sharing_work,
+        NativeGraphSharingWork {
+            passes: 2,
+            indexed_bodies: 95,
+            owned_graph_bodies: 84,
+            graph_comparisons: 3,
+            body_comparisons: 7,
+        },
+        "sharing work must be a deterministic function of indexed graph ownership",
+    );
+    assert!(
+        unshared_reducers
+            .iter()
+            .all(|entry| unshared_program.executable_fn(&entry.key) == Some(representative)),
+        "fixed-point sharing should deterministically retain the first semantic entry's physical graph",
+    );
+    assert!(
+        left_graph
+            .iter()
+            .all(|fn_id| unshared_program.module.fn_idx.contains_key(fn_id))
+            && right_graph
+                .iter()
+                .all(|fn_id| !unshared_program.module.fn_idx.contains_key(fn_id)),
+        "sharing must retain every representative continuation and remove every redundant continuation",
+    );
+    assert!(
+        unshared_program.bodies.iter().all(|body| match body.origin {
+            NativeBodyOrigin::Continuation { owner } => unshared_program.module.fn_idx.contains_key(&owner),
+            _ => true,
+        }),
+        "representative remapping must not leave any retained continuation with a removed owner",
+    );
+
+    let program = native.last(root_id).program;
+    let reducer_executables = program
+        .executable_entries
+        .iter()
+        .filter(|entry| entry.key.activation.function == reducer_id)
+        .collect::<Vec<_>>();
+    let types = compiler.types_for_test();
+    assert!(
+        reducer_executables
+            .iter()
+            .all(|entry| entry.key.activation.input_len(types) != 0),
+        "the reducer executable should still carry a captured predicate identity lane",
+    );
+
+    let capture_identities = reducer_executables
+        .iter()
+        .map(|entry| entry.key.activation.inputs(types)[..1].to_vec())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        capture_identities.len(),
+        2,
+        "the reducer lambda should preserve both semantic activation identities",
+    );
+    assert_eq!(
+        reducer_executables
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        1,
+        "equivalent boxed reducer activations should share one native body graph",
+    );
+    let predicate_words = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .shape
+                .as_ref()
+                .is_some_and(|shape| predicate_functions.contains(&shape.target.0))
+        })
+        .map(|boundary| boundary.identity_fn)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        predicate_words.len(),
+        2,
+        "even and gt2 must keep distinct runtime construction words",
+    );
+    let emitted_predicate_words = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+        .filter_map(|stmt| match stmt {
+            IrStmt::Let(_, IrPrim::MakeFnRef(_, identity_fn) | IrPrim::MakeClosure(_, identity_fn, _))
+                if predicate_words.contains(identity_fn) =>
+            {
+                Some(*identity_fn)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        emitted_predicate_words, predicate_words,
+        "sharing reducer code must not merge the predicate construction words it dispatches through",
+    );
+    let reducer_graph = program.native_graph_fn_ids(&reducer_executables[0].key);
+    assert_eq!(
+        reducer_graph
+            .iter()
+            .flat_map(|fn_id| &program.module.fn_by_id(*fn_id).blocks)
+            .filter(|block| matches!(
+                block.terminator,
+                IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
+            ))
+            .count(),
+        1,
+        "the shared reducer graph must still invoke its captured predicate through the boxed callable word",
+    );
+}
+
+#[test]
+fn compiler2_native_program_keeps_direct_callable_specializations_inequivalent() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -4876,24 +5307,12 @@ fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
+        name: Some("fixtures/direct_callable_capture_identity.fz".to_string()),
         text: r#"
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
-
-fn gt2(x), do: x > 2
-fn even(x), do: (x % 2) == 0
-
-fn make_reducer(predicate) do
-  fn (entry, acc) ->
-    if predicate.(entry), do: acc + 1, else: acc
-  end
-end
-
-fn main() do
-  xs = [1, 2, 3, 4]
-  reduce_plain(xs, 0, make_reducer(gt2)) + reduce_plain(xs, 0, make_reducer(even))
-end
+fn double(n), do: n * 2
+fn triple(n), do: n * 3
+fn mk(g), do: fn (n) -> g.(n) end
+fn main(), do: mk(double).(4) + mk(triple).(4)
 "#
         .to_string(),
     });
@@ -4903,51 +5322,438 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
         let message = capture
             .last(&["fz", "diag", "error"])
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "native lowering should preserve distinct direct callable identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
-        );
+        panic!("direct callable control should lower: {outcome:?}; diagnostic={message}");
     }
 
-    let make_reducer_id = function_id(&functions, "make_reducer", 1);
-    let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
+    let mk_id = function_id(&functions, "mk", 1);
+    let double_id = function_id(&functions, "double", 1);
+    let triple_id = function_id(&functions, "triple", 1);
+    let lambda_id = generated_functions_owned_by(&functions, mk_id)
         .into_iter()
-        .find(|record| record.arity == 2)
-        .expect("make_reducer/1 should generate the reducer lambda")
+        .find(|record| record.arity == 1)
+        .expect("mk/1 should generate its returned lambda")
         .function_id;
-
     let program = native.last(root_id).program;
-    let reducer_executables = program
-        .bodies
+    let lambda_executables = program
+        .executable_entries
         .iter()
-        .filter_map(|body| match &body.origin {
-            NativeBodyOrigin::Executable(key) if key.activation.function == reducer_id => Some(key),
-            _ => None,
-        })
+        .filter(|entry| entry.key.activation.function == lambda_id)
         .collect::<Vec<_>>();
-    let types = compiler.types_for_test();
-    assert!(
-        reducer_executables
-            .iter()
-            .all(|key| key.activation.input_len(types) != 0),
-        "the reducer executable should still carry a captured predicate identity lane",
+    assert_eq!(
+        lambda_executables.len(),
+        2,
+        "double and triple should mint two semantic activations"
     );
-
-    let capture_identities = reducer_executables
+    assert!(
+        !program.native_cps_graphs_equivalent(&lambda_executables[0].key, &lambda_executables[1].key),
+        "the direct-carrier lambda bodies ground to different call targets and must remain inequivalent",
+    );
+    assert_eq!(
+        lambda_executables
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "inequivalent direct specializations must retain separate native bodies",
+    );
+    let direct_target = |entry: &crate::compiler2::artifact::NativeExecutableEntry| {
+        program
+            .native_graph_fn_ids(&entry.key)
+            .into_iter()
+            .flat_map(|fn_id| program.module.fn_by_id(fn_id).blocks.iter())
+            .filter_map(|block| match block.terminator {
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } => Some(target),
+                _ => None,
+            })
+            .find(|target| {
+                program.executable_entries.iter().any(|candidate| {
+                    candidate.fn_id == *target
+                        && matches!(candidate.key.activation.function, function if function == double_id || function == triple_id)
+                })
+            })
+            .expect("each direct-carrier lambda should ground its captured call")
+    };
+    let grounded_targets = lambda_executables
         .iter()
-        .map(|key| key.activation.inputs(types)[..1].to_vec())
+        .map(|entry| direct_target(entry))
+        .collect::<HashSet<_>>();
+    let expected_targets = program
+        .executable_entries
+        .iter()
+        .filter(
+            |entry| matches!(entry.key.activation.function, function if function == double_id || function == triple_id),
+        )
+        .map(|entry| entry.fn_id)
         .collect::<HashSet<_>>();
     assert_eq!(
-        capture_identities.len(),
-        2,
-        "the reducer lambda should keep two distinct captured predicate identities in the direct callable executable frontier",
+        grounded_targets, expected_targets,
+        "double and triple must remain distinct grounded direct targets",
+    );
+}
+
+fn assert_native_helpers_are_referenced(source: &str) {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_helper_references.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let unreachable = super::native_inventory_test::unreachable_native_functions(&program);
+    assert!(
+        unreachable.is_empty(),
+        "native helpers must only be emitted for real references: {:?}",
+        unreachable
+            .iter()
+            .map(|id| &program.module.fn_by_id(*id).name)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn native_dispatch_does_not_emit_unselected_branch_helpers() {
+    assert_native_helpers_are_referenced(include_str!("../../fixtures2/00152_case_wildcard_unreachable.fz"));
+}
+
+#[test]
+fn native_no_return_call_does_not_emit_delivery_resume() {
+    assert_native_helpers_are_referenced("fn main() do\n  panic(:done)\n  42\nend\n");
+}
+
+/// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
+///
+/// `cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture`
+#[test]
+#[ignore = "full-corpus fz-kdt.163 native CPS sharing census"]
+fn measure_native_cps_sharing_corpus() {
+    #[derive(Default, Debug)]
+    struct Totals {
+        candidates: usize,
+        resolved: usize,
+        codegen_pairs: usize,
+        semantic_executables: usize,
+        before_physical_executables: usize,
+        after_physical_executables: usize,
+        sibling_groups: usize,
+        equivalent_groups: usize,
+        redundant_executables: usize,
+        before_bodies: usize,
+        after_bodies: usize,
+        before_continuations: usize,
+        after_continuations: usize,
+        before_native_bytes: usize,
+        after_native_bytes: usize,
+        before_constructions: usize,
+        after_constructions: usize,
+        before_codegen_millis: u128,
+        after_codegen_millis: u128,
+        sharing_passes: usize,
+        indexed_bodies: usize,
+        owned_graph_bodies: usize,
+        graph_comparisons: usize,
+        body_comparisons: usize,
+        sharing_micros: u128,
+        unreachable_functions: usize,
+        before_sharing_unreachable_functions: usize,
+    }
+    #[derive(Debug)]
+    struct Mover {
+        fixture: String,
+        initial_classes: usize,
+        initially_redundant_roots: usize,
+        removed_roots: usize,
+        removed_bodies: usize,
+        removed_native_bytes: usize,
+    }
+
+    let mut paths = ["fixtures2", "fixtures2/behavior"]
+        .into_iter()
+        .flat_map(|directory| {
+            std::fs::read_dir(directory)
+                .unwrap_or_else(|error| panic!("read {directory}: {error}"))
+                .map(|entry| entry.expect("fixture directory entry").path())
+        })
+        .filter(|path| path.extension().is_some_and(|extension| extension == "fz"))
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    let mut totals = Totals::default();
+    let mut drive_panics = Vec::new();
+    let mut unresolved = Vec::new();
+    let mut codegen_failures = Vec::new();
+    let mut movers = Vec::new();
+    for path in paths {
+        let source = std::fs::read_to_string(&path).expect("fixture source");
+        if !source.contains("fn main()") {
+            continue;
+        }
+        totals.candidates += 1;
+
+        let tel = ConfiguredTelemetry::new();
+        let before_sharing = Rc::new(RefCell::new(Vec::<NativeProgram>::new()));
+        let before_sharing_sink = Rc::clone(&before_sharing);
+        tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
+            &["fz", "compiler2", "native_program", "before_sharing"],
+            move |_, _, _, _, program| before_sharing_sink.borrow_mut().push(program.clone()),
+        );
+        let after_sharing = NativeProgramCapture::new();
+        after_sharing.install(&tel);
+        let compiled_bytes = Rc::new(RefCell::new(HashMap::<FnId, usize>::new()));
+        let compiling_functions = Rc::new(RefCell::new(HashMap::<u64, FnId>::new()));
+        let compiling_functions_start = Rc::clone(&compiling_functions);
+        let compiling_functions_stop = Rc::clone(&compiling_functions);
+        let compiled_bytes_sink = Rc::clone(&compiled_bytes);
+        tel.attach_raw_span1_1::<FnId, cranelift_codegen::Context, _, _, _>(
+            &["fz", "codegen", "define_function"],
+            move |_, span_id, _, fn_id| {
+                compiling_functions_start.borrow_mut().insert(span_id, *fn_id);
+            },
+            move |_, span_id, _, _, context| {
+                if let Some(code) = context.compiled_code() {
+                    let fn_id = compiling_functions_stop
+                        .borrow_mut()
+                        .remove(&span_id)
+                        .expect("define stop should pair with its function start");
+                    compiled_bytes_sink.borrow_mut().insert(fn_id, code.code_buffer().len());
+                }
+            },
+            |_, _, _, _| {},
+        );
+
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(path.display().to_string()),
+            text: source,
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compiler.drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        }));
+        let Ok(outcome) = outcome else {
+            drive_panics.push(path.display().to_string());
+            continue;
+        };
+        if outcome.is_err() {
+            unresolved.push((path.display().to_string(), format!("{outcome:?}")));
+            continue;
+        }
+        totals.resolved += 1;
+        let before = before_sharing
+            .borrow()
+            .last()
+            .cloned()
+            .expect("pre-sharing native program");
+        let after = after_sharing.last(root).program;
+        totals.before_sharing_unreachable_functions +=
+            super::native_inventory_test::unreachable_native_functions(&before).len();
+        let unreachable = super::native_inventory_test::unreachable_native_functions(&after);
+        totals.unreachable_functions += unreachable.len();
+        if !unreachable.is_empty() {
+            eprintln!(
+                "native unreachable {}: {:?}",
+                path.display(),
+                unreachable
+                    .iter()
+                    .map(|id| &after.module.fn_by_id(*id).name)
+                    .collect::<Vec<_>>()
+            );
+        }
+        eprintln!(
+            "native inventory {}: before_bodies={} after_bodies={} before_functions={} after_functions={}",
+            path.display(),
+            before.bodies.len(),
+            after.bodies.len(),
+            before.module.fns.len(),
+            after.module.fns.len()
+        );
+        let mut reproduced = before.clone();
+        let sharing_started = std::time::Instant::now();
+        let sharing_work = reproduced.deduplicate_equivalent_sibling_graphs();
+        totals.sharing_micros += sharing_started.elapsed().as_micros();
+        totals.sharing_passes += sharing_work.passes;
+        totals.indexed_bodies += sharing_work.indexed_bodies;
+        totals.owned_graph_bodies += sharing_work.owned_graph_bodies;
+        totals.graph_comparisons += sharing_work.graph_comparisons;
+        totals.body_comparisons += sharing_work.body_comparisons;
+        assert_eq!(reproduced.entry, after.entry);
+        assert_eq!(reproduced.executable_entries, after.executable_entries);
+        assert_eq!(reproduced.bodies, after.bodies);
+        assert_eq!(reproduced.callable_boundaries, after.callable_boundaries);
+        assert_eq!(reproduced.module.fns, after.module.fns);
+        assert_eq!(
+            before
+                .executable_entries
+                .iter()
+                .map(|entry| &entry.key)
+                .collect::<Vec<_>>(),
+            after
+                .executable_entries
+                .iter()
+                .map(|entry| &entry.key)
+                .collect::<Vec<_>>(),
+            "physical sharing must preserve the semantic executable inventory",
+        );
+
+        let count_constructions = |program: &NativeProgram| {
+            program
+                .module
+                .fns
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .flat_map(|block| &block.stmts)
+                .filter(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::MakeClosure(..))))
+                .count()
+        };
+        let before_physical_executables = before
+            .executable_entries
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len();
+        let after_physical_executables = after
+            .executable_entries
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len();
+        totals.semantic_executables += after.executable_entries.len();
+        totals.before_physical_executables += before_physical_executables;
+        totals.after_physical_executables += after_physical_executables;
+        totals.before_bodies += before.bodies.len();
+        totals.after_bodies += after.bodies.len();
+        totals.before_continuations += before
+            .bodies
+            .iter()
+            .filter(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+            .count();
+        totals.after_continuations += after
+            .bodies
+            .iter()
+            .filter(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+            .count();
+        totals.before_constructions += count_constructions(&before);
+        totals.after_constructions += count_constructions(&after);
+
+        let mut siblings = HashMap::<FunctionId, Vec<&crate::compiler2::artifact::NativeExecutableEntry>>::new();
+        for entry in &before.executable_entries {
+            siblings.entry(entry.key.activation.function).or_default().push(entry);
+        }
+        let mut fixture_groups = 0;
+        let mut fixture_redundant = 0;
+        for entries in siblings.values().filter(|entries| entries.len() > 1) {
+            totals.sibling_groups += 1;
+            let mut classes: Vec<Vec<&crate::compiler2::artifact::NativeExecutableEntry>> = Vec::new();
+            for entry in entries {
+                if let Some(class) = classes
+                    .iter_mut()
+                    .find(|class| before.native_cps_graphs_equivalent(&class[0].key, &entry.key))
+                {
+                    class.push(entry);
+                } else {
+                    classes.push(vec![entry]);
+                }
+            }
+            for class in classes.into_iter().filter(|class| class.len() > 1) {
+                totals.equivalent_groups += 1;
+                totals.redundant_executables += class.len() - 1;
+                fixture_groups += 1;
+                fixture_redundant += class.len() - 1;
+            }
+        }
+
+        let mut compile = |label: &str, program: &NativeProgram| {
+            compiled_bytes.borrow_mut().clear();
+            let started = std::time::Instant::now();
+            let result = compiler.compile_native_program_jit_for_test(program);
+            let elapsed = started.elapsed().as_millis();
+            let bytes = compiled_bytes.borrow().values().sum::<usize>();
+            if result.is_err() {
+                codegen_failures.push((path.display().to_string(), label.to_string()));
+            }
+            (result.is_ok(), bytes, elapsed)
+        };
+        let (before_ok, before_bytes, before_millis) = compile("before", &before);
+        let (after_ok, after_bytes, after_millis) = compile("after", &after);
+        eprintln!(
+            "native bytes {}: before={} after={} paired={}",
+            path.display(),
+            before_bytes,
+            after_bytes,
+            before_ok && after_ok
+        );
+        if before_ok && after_ok {
+            totals.codegen_pairs += 1;
+            totals.before_native_bytes += before_bytes;
+            totals.after_native_bytes += after_bytes;
+            totals.before_codegen_millis += before_millis;
+            totals.after_codegen_millis += after_millis;
+        }
+        if fixture_groups != 0 {
+            movers.push(Mover {
+                fixture: path.display().to_string(),
+                initial_classes: fixture_groups,
+                initially_redundant_roots: fixture_redundant,
+                removed_roots: before_physical_executables - after_physical_executables,
+                removed_bodies: before.bodies.len() - after.bodies.len(),
+                removed_native_bytes: before_bytes.saturating_sub(after_bytes),
+            });
+        }
+    }
+
+    let mover_lines = movers
+        .iter()
+        .map(|mover| {
+            format!(
+                "{}: initial_classes={} initially_redundant_roots={} removed_roots={} removed_bodies={} removed_native_bytes={}",
+                mover.fixture,
+                mover.initial_classes,
+                mover.initially_redundant_roots,
+                mover.removed_roots,
+                mover.removed_bodies,
+                mover.removed_native_bytes,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    eprintln!(
+        "fz-kdt.163 census: {totals:#?}\ndrive_panics={drive_panics:#?}\nunresolved={unresolved:#?}\ncodegen_failures={codegen_failures:#?}\nmovers:\n{mover_lines}"
+    );
+    assert_eq!(
+        totals.before_sharing_unreachable_functions, 0,
+        "native lowering must emit only referenced functions"
+    );
+    assert_eq!(
+        totals.unreachable_functions, 0,
+        "physical sharing must retain reference closure"
     );
 }
 
@@ -4972,7 +5778,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5025,7 +5831,7 @@ fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "opaque mapper should lower");
     let each_a_id = function_id(&functions, "each_a", 1);
     let each_b_id = function_id(&functions, "each_b", 1);
@@ -5137,7 +5943,7 @@ fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "mixed public callable should lower");
 
     let program = native.last(root_id).program;
@@ -5220,7 +6026,7 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5273,7 +6079,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5556,31 +6362,13 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
 #[test]
 fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let tel = ConfiguredTelemetry::new();
-    let demand_productions = Rc::new(Cell::new(0_u64));
-    let demand_sink = Rc::clone(&demand_productions);
-    // fz-kdt.34.4: `pull.product.settled` now fires once per settled
-    // PRODUCT (memo-authoritative), not once per `ProductDriver::pull` call
-    // -- so this total is no longer a proxy for "how many cone pulls the
-    // driver ran" (that count WAS a floor: on this same fixture it read 3
-    // before fz-kdt.34.4, undercounting the true settle count by ~20x). The
-    // "without cycling" guarantee this test is named for is now checked
-    // directly: `demand_keys` is the set of DISTINCT settled RuntimeDemand
-    // product keys, so `total == distinct.len()` below is the literal
-    // absence of a re-settle -- a cycling regression would inflate the
-    // total past the distinct count instead.
-    let demand_keys: Rc<RefCell<HashSet<crate::compiler2::ProductKey>>> = Rc::new(RefCell::new(HashSet::new()));
-    let demand_keys_sink = Rc::clone(&demand_keys);
-    tel.attach_raw_event3::<
-        crate::compiler2::ProductKey,
-        crate::compiler2::pull::ProductValue,
-        crate::compiler2::pull::ProductSettlement,
-        _,
-    >(
-        &["fz", "compiler2", "pull", "product", "settled"],
-        move |_, _, _, product, _, _| {
-            if product.kind() == "runtime_demand" {
-                demand_sink.set(demand_sink.get() + 1);
-                demand_keys_sink.borrow_mut().insert(product.clone());
+    let derivations = Rc::new(RefCell::new(Vec::<ExecutableKey>::new()));
+    let derivation_sink = Rc::clone(&derivations);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                derivation_sink.borrow_mut().push(executable.clone());
             }
         },
     );
@@ -5603,23 +6391,21 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
         .expect("the orbit fixture should settle and run");
     assert_eq!(dbg.lines().as_slice(), ["[1, 3, 5, 7]", "[{1, :a}]"]);
 
+    let derivations = derivations.borrow();
+    let distinct_executables = derivations.iter().collect::<HashSet<_>>();
     assert!(
-        demand_productions.get() > 0,
-        "the run should settle at least one demand cone"
+        distinct_executables.len() >= 8,
+        "the fixture should exercise a nontrivial RuntimeDemand fact graph, got {} executables",
+        distinct_executables.len(),
     );
-    let demand_production_count = demand_productions.get();
-    let distinct_demand_products = demand_keys.borrow().len() as u64;
-    assert!(
-        distinct_demand_products >= 8,
-        "RuntimeDemand settles whole cones at once: expected more than a handful of distinct \
-         settled products on this fixture, got {distinct_demand_products}"
-    );
-    assert_eq!(
-        demand_production_count, distinct_demand_products,
-        "without cycling: every settled RuntimeDemand product key should settle exactly once \
-         (total settled events {demand_production_count} vs {distinct_demand_products} distinct \
-         product keys -- a gap would mean some product re-settled, i.e. cycling)"
-    );
+    for executable in distinct_executables {
+        let fact = FactKey::RuntimeDemand(executable.clone());
+        assert!(compiler.world().fact_is_settled(&fact), "{fact:?} must settle");
+        assert!(
+            compiler.world().runtime_demand(executable).is_some(),
+            "{fact:?} must have a value"
+        );
+    }
 }
 
 #[test]
@@ -5643,7 +6429,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5677,63 +6463,6 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
 }
 
 #[test]
-fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    // Native is demand-only: demand it to produce the initial derivation.
-    compiler.demand(Job::LowerNativeProgram(root_id));
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!("initial native lowering should settle for quicksort: {outcome:?}; diagnostic={message}");
-    }
-    assert!(
-        compiler.demand(Job::LowerNativeProgram(root_id)),
-        "explicitly re-demanding unchanged native lowering should enqueue one fresh derivation",
-    );
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "re-lowering unchanged native state should resolve without bumping the revision: {outcome:?}; diagnostic={message}"
-        );
-    }
-
-    let records = native.records(root_id);
-    assert_eq!(
-        records.len(),
-        1,
-        "an unchanged native re-derivation must not emit another definition event",
-    );
-    assert!(
-        records[0].changed,
-        "a native-program definition event represents actual state movement",
-    );
-}
-
-#[test]
 fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -5754,7 +6483,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5817,7 +6546,7 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     let outcome = compiler.drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
@@ -5948,7 +6677,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6042,7 +6771,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "spawned tuple-returning closure should lower");
 
     let program = native.last(root_id).program;
@@ -6083,7 +6812,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6128,7 +6857,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6175,7 +6904,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_exact_reducer_lanes() 
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6223,7 +6952,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6283,7 +7012,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6328,7 +7057,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6364,7 +7093,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -6414,7 +7143,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "tail recursion lowers to a native program");
 
     let program = native.last(root_id).program;
@@ -6463,9 +7192,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Resolved)
-            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
-        "heap_alloc_stats backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+        matches!(outcome, DriveOutcome::Resolved),
+        "heap_alloc_stats backend capture should resolve: {outcome:?}",
     );
 
     let program = backend.last(root_id).program;
@@ -6529,9 +7257,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
 
     let outcome = compiler.drive();
     assert!(
-        matches!(outcome, DriveOutcome::Resolved)
-            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
-        "heap_stats dbg-resume backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+        matches!(outcome, DriveOutcome::Resolved),
+        "heap_stats dbg-resume backend capture should resolve: {outcome:?}",
     );
 
     let program = backend.last(root_id).program;
@@ -6540,12 +7267,13 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let (_, main_exec) = backend_executable(&program, main_id);
     let (_, dbg_exec) = backend_executable(&program, dbg_id);
     assert_eq!(
-        dbg_exec.param_reprs,
+        dbg_exec.abi.param_reprs,
         vec![AbiValueRepr::ValueRef],
         "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
     );
     assert!(
         dbg_exec
+            .abi
             .semantic_inputs
             .iter()
             .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
@@ -6585,6 +7313,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
             let _shape = layout.layout.structural;
             assert!(
                 main_exec
+                    .abi
+                    .materialized
                     .runtime_demand
                     .value_demands
                     .get(value)
@@ -6649,12 +7379,13 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
         "quicksort entry/0 should halt with its explicit scalar result"
     );
     assert_eq!(
-        qsort_exec.param_reprs,
+        qsort_exec.abi.param_reprs,
         vec![AbiValueRepr::ValueRef],
         "entry matching and recursive descent should keep qsort/1's list input as a runtime lane",
     );
     assert!(
         qsort_exec
+            .abi
             .semantic_inputs
             .iter()
             .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
@@ -6761,10 +7492,7 @@ end
         need: ExecutableNeed::Value,
     });
 
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "the backend product should be demandable for the Enum.find root",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "Enum.find semantic analysis should converge with runtime library activations",
@@ -6964,7 +7692,7 @@ fn compiler2_native_program_grounds_exact_carrier_closure_call_returns() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "curried_add should settle before inspecting apply's closure calls",
@@ -7503,7 +8231,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -7758,7 +8486,7 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
         need: ExecutableNeed::Value,
     });
 
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "multi_relay native handoff should settle before checking ReturnPayload continuations",
@@ -7900,7 +8628,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -7944,7 +8672,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
+fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -7960,12 +8688,61 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
         "Enum.take should settle before inspecting delivered-call native adapters",
     );
+
+    let exact_result = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let backend_program = compiler.retained_backend_program(root_id);
+    let count_result = backend_program
+        .executables()
+        .iter()
+        .find(|executable| {
+            compiler.world().function_ref(executable.key.activation.function).name == "count_result"
+                && executable.abi.materialized.runtime_demand.input_demands.first() == Some(&exact_result)
+        })
+        .expect("the selected count-result clause should need only the integer payload");
+    assert!(
+        compiler
+            .world()
+            .executable_facts(&count_result.key)
+            .expect("count-result executable facts should be settled")
+            .entry_dispatch_inputs
+            .is_empty(),
+        "the directly selected ok clause must not consume the omitted variant tag",
+    );
+
+    let count_resume = backend_program
+        .executables()
+        .iter()
+        .filter(|executable| {
+            compiler.world().function_ref(executable.key.activation.function).name == "count"
+                && executable
+                    .abi
+                    .materialized
+                    .runtime_demand
+                    .call_arg_demands
+                    .values()
+                    .flatten()
+                    .any(|demand| demand == &exact_result)
+        })
+        .flat_map(|executable| match &executable.body {
+            BackendBody::Clauses { entries, .. } => entries.iter().collect::<Vec<_>>(),
+            BackendBody::Extern { .. } => Vec::new(),
+        })
+        .find_map(|entry| match &entry.origin {
+            BackendEntryOrigin::DeliveredResume { layout, .. }
+                if layout.layout.reprs.as_ref() == [AbiValueRepr::RawInt] =>
+            {
+                Some(layout)
+            }
+            _ => None,
+        })
+        .expect("the exact count-result demand should project one delivered integer lane");
+    assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
 
     let program = native.last(root_id).program;
     let adapter = program
@@ -7973,11 +8750,15 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
         .iter()
         .find(|body| {
             let function = program.module.fn_by_id(body.fn_id);
+            let NativeBodyOrigin::Continuation { owner } = body.origin else {
+                return false;
+            };
             function.name.starts_with("deliver_lanes__")
-                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 2 })
-                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt]
+                && program.module.fn_by_id(owner).name.starts_with("count__")
+                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
+                && body.param_reprs == [AbiValueRepr::RawInt]
         })
-        .expect("delivered call adapter should expose the callee's full split return lanes");
+        .expect("the native adapter should expose the same exact delivered integer lane");
 
     assert!(
         program
@@ -8007,7 +8788,7 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8218,7 +8999,7 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8254,7 +9035,7 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "enum take/drop/split should lower natively");
 
     let predicate_functions = functions
@@ -8358,7 +9139,7 @@ fn compiler2_variable_callee_is_absence_not_an_earned_any() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "one Enum HOF at three distinct closures should lower without earning `any` at its reducer call",
@@ -8395,7 +9176,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8525,7 +9306,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8595,7 +9376,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -8617,7 +9398,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
 }
 
 #[test]
-fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
+fn compiler2_unchanged_backend_request_emits_no_content_movement() {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -8634,29 +9415,23 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
         need: ExecutableNeed::Value,
     });
 
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "backend product should be explicitly demandable"
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "initial backend product should settle for quicksort");
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "explicitly re-demanding unchanged backend product should enqueue one fresh derivation",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
-        "rebuilding unchanged backend state should resolve without bumping the revision",
+        "rebuilding unchanged backend state should resolve without redefining it",
     );
 
     let records = backend.records(root_id);
     assert_eq!(
         records.len(),
         1,
-        "an unchanged backend re-derivation must not emit another definition event",
+        "an unchanged backend request must not emit another changed settlement",
     );
     assert!(
         records[0].changed,
-        "a backend-program definition event represents actual state movement",
+        "a changed backend settlement represents actual state movement",
     );
 }
 
@@ -8828,10 +9603,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "closed-union protocol fixture should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
@@ -8900,12 +9672,11 @@ end
         .arms
         .iter()
         .map(|arm| {
-            let index = arm
+            let target = arm
                 .callee
                 .local()
-                .copied()
                 .unwrap_or_else(|| panic!("protocol dispatch arms should target local executables"));
-            program.executables[index].key.activation.function
+            target.activation.function
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -9151,7 +9922,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
 
     let types = compiler.world().types();
     let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<String>> = BTreeMap::new();
-    for executable in &program.executables {
+    for executable in program.executables() {
         let activation = &executable.key.activation;
         let Some(first) = activation.inputs(types).first().copied() else {
             continue;
@@ -9195,7 +9966,7 @@ fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
 
 /// Drives one fixture to its backend product, and hands back the program with
 /// the compiler whose world types it.
-fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, BackendProgram) {
+fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<BackendProgram>) {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -9210,10 +9981,7 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Bac
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "{fixture} should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
     assert!(
         matches!(compiler.drive(), DriveOutcome::Resolved),
         "{fixture} should drive to a settled backend product",
@@ -9333,8 +10101,8 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
     // the message meant (fz-kdt.193).
     let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
     let mut plans = Vec::new();
-    for (index, executable) in program.executables.iter().enumerate() {
-        if let Some(entry) = &executable.entry_dispatch {
+    for (index, executable) in program.executables().iter().enumerate() {
+        if let Some(entry) = &executable.abi.materialized.entry_dispatch {
             plans.push(ArtifactPlan {
                 site: PlanSite::Entry { executable: index },
                 plan: entry.plan(),
@@ -9382,14 +10150,14 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
             }
         }
     }
-    for wrapper in &program.construction_wrappers {
+    for (index, wrapper) in program.construction_wrappers().iter().enumerate() {
         let Some(selection) = &wrapper.selection else {
             continue;
         };
         plans.push(ArtifactPlan {
             site: PlanSite::Selection {
-                wrapper: wrapper.identity,
-                canonical: canonical[wrapper.identity as usize],
+                wrapper: index as u32,
+                canonical: canonical[index],
             },
             plan: selection,
             bodies: (0..wrapper.members.len() as u32).collect(),
@@ -10351,21 +11119,24 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// at 62, executables flat at 237, and interp and run stdout byte-identical.
 /// Two evaluations that used to reach a matched `Region::Type` question are
 /// settled by that clause dispatch instead, which is the denominator changing
-/// under the row and not the escape count moving.
+/// under the row and not the escape count moving. fz-tfn.26 then coalesces
+/// fifteen content-caused analyses on this combined stack; eleven of those runs had
+/// reached a matched `Region::Type` question, so each affected row's
+/// observation denominator falls 373 -> 362 while escapes stay at zero.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 373, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 373, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 362, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 373, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 373, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 373, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 362, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
     ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
@@ -10469,7 +11240,7 @@ fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
         .collect::<Vec<_>>();
     assert_eq!(
         heads,
-        (0..program.construction_wrappers.len())
+        (0..program.construction_wrappers().len())
             .map(|canonical| format!("wrapper w{canonical}"))
             .collect::<Vec<_>>(),
         "the dump heads one block per wrapper in canonical order; if it stopped doing that, a label \
@@ -10653,16 +11424,476 @@ fn backend_canon(fixture: &str) -> String {
         .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
     let world = compiler.world();
-    crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
+    crate::compiler2::canon::canon_backend_program(world, &compiler.retained_backend_program(root))
 }
 
-/// fz-kdt.108: the construction wrapper's members carry ONE canonical order --
-/// `Types::cmp_tys` over each member's surface inputs -- so the settled artifact
-/// stops depending on the type interner's mint order (which is the agenda's).
-/// The members and the selection plan's rows both derive positionally from the
-/// same `first_class_edges` list, and that list is ordered by `cmp_tys` where it
-/// is built (`callable_flow_resolution_edges_product`), before either derives;
-/// so a monotone member list is the whole construction authority being monotone.
+#[test]
+fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders() {
+    const FUNCTIONS: [(&str, &str); 5] = [
+        ("left.fz", "fn left(x), do: fn(y) -> x + y end\n"),
+        ("right.fz", "fn right(x), do: fn(y) -> x * y end\n"),
+        (
+            "count.fz",
+            "fn count(0), do: fn(x) -> x end\nfn count(n), do: count(n - 1)\n",
+        ),
+        (
+            "even.fz",
+            "fn even(0), do: fn(x) -> x end\nfn even(n), do: odd(n - 1)\n",
+        ),
+        (
+            "odd.fz",
+            "fn odd(0), do: fn(x) -> x + 1 end\nfn odd(n), do: even(n - 1)\n",
+        ),
+    ];
+    fn settle(order: usize) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+        let tel = ConfiguredTelemetry::new();
+        let runs = Rc::new(RefCell::new(Vec::<(ExecutableKey, String)>::new()));
+        let run_sink = Rc::clone(&runs);
+        tel.attach_raw_event2::<World, super::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, world, completion| {
+                if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                    let name = world.function_ref(executable.activation.function).name.clone();
+                    if ["left", "right", "count", "even", "odd", "main"].contains(&name.as_str()) {
+                        run_sink.borrow_mut().push((executable.clone(), name));
+                    }
+                }
+            },
+        );
+        let mut compiler = Compiler2::new(tel);
+        let dbg = DbgCapture::new();
+        compiler.set_output(dbg.sink());
+        let mut source = String::new();
+        for (_, text) in &FUNCTIONS {
+            source.push_str(text);
+        }
+        source.push_str("fn main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        compiler.submit_code(CodeSubmission {
+            name: Some("runtime_demand_order.fz".to_string()),
+            text: source,
+        });
+        let root_specs = [("left", 1), ("right", 1), ("count", 1), ("even", 1), ("main", 0)];
+        let swapped_root_specs = [("right", 1), ("left", 1), ("count", 1), ("even", 1), ("main", 0)];
+        let rotated_root_specs = [("count", 1), ("even", 1), ("right", 1), ("left", 1), ("main", 0)];
+        let ordered_roots = match order {
+            0 => &root_specs,
+            1 => &swapped_root_specs,
+            2 => &rotated_root_specs,
+            _ => panic!("unknown root order"),
+        };
+        let mut main_root = None;
+        for (name, arity) in ordered_roots {
+            let root = compiler.submit_root(RootSubmission {
+                module_name: None,
+                name: (*name).to_string(),
+                arity: *arity,
+                need: ExecutableNeed::Value,
+            });
+            if *name == "main" {
+                main_root = Some(root);
+            }
+        }
+        let root = main_root.expect("main root");
+        compiler
+            .run_root_interp(root)
+            .expect("the reactive demand graph should settle and run");
+        let world = compiler.world();
+        let runs = runs.borrow();
+        let mut construction_owners = HashSet::new();
+        for (executable, _) in runs.iter() {
+            assert!(
+                world.fact_is_settled(&FactKey::RuntimeDemand(executable.clone())),
+                "every observed RuntimeDemand formula must finish settled",
+            );
+            let job = Job::DeriveRuntimeDemand(executable.clone());
+            let reads = world.job_reads(&job);
+            assert!(
+                reads.contains(&FactUse::current(FactKey::RuntimeDemandInput(executable.clone()))),
+                "each formula must read only its exact caller contribution cell",
+            );
+            let facts = world
+                .executable_facts(executable)
+                .expect("an observed RuntimeDemand formula must retain its executable facts");
+            let mut expected_peers = HashSet::new();
+            for (callsite, summary) in facts.callsites() {
+                let need = facts
+                    .callsite_needs()
+                    .get(callsite)
+                    .copied()
+                    .unwrap_or(ExecutableNeed::Value);
+                expected_peers.extend(
+                    summary
+                        .targets
+                        .iter()
+                        .filter_map(|target| target.runtime_executable(need)),
+                );
+            }
+            expected_peers.extend(
+                world
+                    .runtime_demand(executable)
+                    .expect("an observed RuntimeDemand formula must retain its answer")
+                    .callable_flows
+                    .values()
+                    .flat_map(|flow| flow.resolutions.iter().cloned()),
+            );
+            let actual_peers = reads
+                .iter()
+                .filter_map(|read| match read {
+                    FactUse::Current(FactKey::RuntimeDemandInputs(peer)) => Some(peer.clone()),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            if reads.iter().any(|read| {
+                matches!(
+                    read,
+                    FactUse::Current(FactKey::CallableConstructionTarget(key)) if key.owner == *executable
+                )
+            }) {
+                construction_owners.insert(world.function_ref(executable.activation.function).name.clone());
+            }
+            assert_eq!(
+                actual_peers, expected_peers,
+                "each formula must subscribe to exactly its direct and callable-flow targets",
+            );
+        }
+        assert!(
+            ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
+            "the mutually recursive closure producers must bootstrap through exact construction targets: {construction_owners:?}",
+        );
+        let order = runs.iter().map(|(_, name)| name.clone()).collect();
+        let mut work = runs
+            .iter()
+            .map(|(executable, _)| crate::compiler2::canon::canon_executable_key(world, executable))
+            .collect::<Vec<_>>();
+        work.sort();
+        let mut facts = world
+            .runtime_demand_facts()
+            .map(|(executable, demand)| crate::compiler2::canon::canon_runtime_demand_fact(world, executable, demand))
+            .collect::<Vec<_>>();
+        facts.sort();
+        (
+            crate::compiler2::canon::canon_backend_program(world, &compiler.retained_backend_program(root)),
+            dbg.lines(),
+            order,
+            work,
+            facts,
+        )
+    }
+
+    let baseline = settle(0);
+    let alternatives = [settle(1), settle(2)];
+    assert_eq!(
+        baseline.1,
+        vec!["{4, 8, 1, 1}"],
+        "the settled artifact must execute correctly"
+    );
+    for alternative in alternatives {
+        assert_ne!(
+            baseline.2, alternative.2,
+            "each registration order must perturb reactive arrival"
+        );
+        assert_eq!(
+            baseline.0, alternative.0,
+            "arrival order must not move the canonical backend"
+        );
+        assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
+        assert_eq!(
+            baseline.3, alternative.3,
+            "arrival order must not move the exact executable RuntimeDemand work multiset",
+        );
+        assert_eq!(
+            baseline.4, alternative.4,
+            "arrival order must not move any settled RuntimeDemand semantic fact",
+        );
+    }
+}
+
+#[test]
+fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("nested_runtime_demand_dependencies.fz".to_string()),
+        text: "fn main() do\n  inner = fn (x) -> x + 1 end\n  outer = fn (x) -> inner.(x) end\n  outer.(1)\nend\n"
+            .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+
+    let main = compiler
+        .retained_backend_program(root)
+        .executables()
+        .iter()
+        .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
+        .expect("the main executable should reach the backend")
+        .key
+        .clone();
+    let callable_dependencies = compiler
+        .world()
+        .job_reads(&Job::DeriveRuntimeDemand(main))
+        .into_iter()
+        .filter_map(|read| match read {
+            FactUse::Current(FactKey::RuntimeDemandInputs(key)) => Some(key.activation.function),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_dependencies.len(),
+        2,
+        "loading the outer lambda row must reveal and subscribe to its captured inner lambda",
+    );
+    assert!(
+        callable_dependencies
+            .iter()
+            .all(|function| { compiler.world().function_ref(*function).name.starts_with("#lambda:") })
+    );
+}
+
+#[test]
+fn boxed_callable_members_contribute_their_exact_return_contract() {
+    use crate::compiler2::RuntimeDemand;
+    use crate::compiler2::jobs::runtime_demand::RuntimeDemandFormulaCapture;
+
+    let capture = RuntimeDemandFormulaCapture::install();
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("boxed_partial_return_contribution.fz".to_string()),
+        text: r#"
+fn make_pair(), do: fn (x) -> {:unused, x} end
+fn observe(pair, x) do
+  wrapped = {:wrapped, pair.(x)}
+  {_, {_, value}} = wrapped
+  {pair, value}
+end
+fn main() do
+  pair = make_pair()
+  observe(pair, 1)
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .expect("the boxed structured-return fixture should reach a backend program");
+
+    let program = backend.last(root).program;
+    let evaluations = capture.evaluations();
+    let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let retained = RuntimeDemand::whole();
+    let mut candidates = Vec::new();
+    for owner in &evaluations {
+        for target in owner
+            .demand
+            .callable_flows
+            .values()
+            .flat_map(|flow| &flow.first_class_edges)
+            .map(|edge| &edge.resolution)
+        {
+            if target.need != ExecutableNeed::Value
+                || owner
+                    .contributions
+                    .get(target)
+                    .and_then(|contribution| contribution.return_demand.as_ref())
+                    != Some(&retained)
+            {
+                continue;
+            }
+            for observer in &evaluations {
+                if observer.member == owner.member {
+                    continue;
+                }
+                let observations = observer
+                    .observed_return_contributions
+                    .iter()
+                    .filter(|(observed_target, demand)| observed_target == target && demand == &partial)
+                    .count();
+                if observations == 1
+                    && observer
+                        .contributions
+                        .get(target)
+                        .and_then(|contribution| contribution.return_demand.as_ref())
+                        == Some(&partial)
+                {
+                    candidates.push((owner, target, observer));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the fixture should have one typed target with distinct retained and partial publishers",
+    );
+    let (owner, target, observer) = candidates.pop().unwrap();
+    assert_ne!(
+        owner.member, observer.member,
+        "the retained contract and partial observation need distinct owners"
+    );
+    assert_eq!(
+        owner
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&retained),
+        "the construction owner must publish the target's exact Value contract",
+    );
+    assert_eq!(
+        observer
+            .observed_return_contributions
+            .iter()
+            .filter(|(observed_target, demand)| observed_target == target && demand == &partial)
+            .count(),
+        1,
+        "the distinct observer must map its exact partial return demand to the same target key",
+    );
+    assert_eq!(
+        observer
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&partial),
+        "the observer must publish only its own partial evidence",
+    );
+    let target_publishers = evaluations
+        .iter()
+        .filter(|evaluation| {
+            evaluation
+                .contributions
+                .get(target)
+                .and_then(|contribution| contribution.return_demand.as_ref())
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        target_publishers.len(),
+        2,
+        "only the construction owner and exact observer may publish the selected target",
+    );
+    assert!(
+        target_publishers
+            .iter()
+            .all(|publisher| publisher.member == owner.member || publisher.member == observer.member),
+        "an anchor or unrelated owner must not satisfy the selected target's joined demand",
+    );
+
+    let mut joined = partial;
+    joined.join_assign(&retained);
+    let target_index = program
+        .executables()
+        .iter()
+        .position(|executable| &executable.key == target)
+        .expect("the shared target should reach the backend program");
+    let wrapper = program
+        .construction_wrappers()
+        .iter()
+        .find(|wrapper| wrapper.members.iter().any(|member| &member.target == target))
+        .expect("the shared target should remain behind its construction wrapper");
+    let member = wrapper
+        .members
+        .iter()
+        .find(|member| &member.target == target)
+        .expect("the selected wrapper should contain the shared target");
+    let executable = &program.executables()[target_index];
+    assert_eq!(executable.abi.materialized.runtime_demand.return_demand, joined);
+    assert_eq!(member.target_return, executable.abi.return_layout);
+    assert_eq!(
+        wrapper.return_form,
+        BackendCallableReturn::ValueRef,
+        "the joined structured return must materialize through the wrapper's public value carrier",
+    );
+}
+
+#[test]
+fn direct_only_callable_flow_does_not_contribute_a_retained_return_contract() {
+    use crate::compiler2::RuntimeDemand;
+    use crate::compiler2::jobs::runtime_demand::RuntimeDemandFormulaCapture;
+
+    let capture = RuntimeDemandFormulaCapture::install();
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("direct_only_partial_return.fz".to_string()),
+        text: r#"
+fn pair(x), do: {:unused, x}
+fn main() do
+  wrapped = {:wrapped, pair(1)}
+  {_, {_, value}} = wrapped
+  value
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .expect("the direct-only structured-return fixture should reach a backend program");
+
+    let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let evaluations = capture.evaluations();
+    let mut candidates = evaluations
+        .iter()
+        .flat_map(|evaluation| {
+            evaluation
+                .observed_return_contributions
+                .iter()
+                .filter(|(_, demand)| demand == &partial)
+                .map(move |(target, _)| (evaluation, target))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the fixture should derive one exact direct-only partial-return target",
+    );
+    let (observer, target) = candidates.pop().unwrap();
+    assert_eq!(
+        observer
+            .contributions
+            .get(target)
+            .and_then(|contribution| contribution.return_demand.as_ref()),
+        Some(&partial),
+        "without a first-class construction, the exact production contribution must remain partial",
+    );
+    assert!(
+        evaluations.iter().all(|evaluation| {
+            evaluation
+                .demand
+                .callable_flows
+                .values()
+                .flat_map(|flow| &flow.first_class_edges)
+                .all(|edge| &edge.resolution != target)
+        }),
+        "the direct-only target must be absent from every first-class resolution",
+    );
+}
+
+/// fz-kdt.47 / fz-kdt.179: callable construction has distinct authorities for
+/// exact target production and semantic selection; RuntimeDemand never mutates
+/// the interner.
+/// `plan_callable_flows` orders first-class surfaces with the typed activation
+/// relation and resolves each edge directly from the callable-flow plan.
+/// `finish_callable_flows` exposes the finished edges at the wrapper stress
+/// point. Finally `construction_member_selection` is the sole semantic member
+/// authority: it drops and seats the finished edges, and transport builds both
+/// the member list and selection rows from that one result.
 ///
 /// `enum_take_drop_split` is the subject. `enum_map_family` was, and it stopped
 /// carrying a multi-surface member list at all under fz-kdt.199: its wrapper's
@@ -10670,11 +11901,34 @@ fn backend_canon(fixture: &str) -> String {
 /// accumulator, and keying the returned accumulator gives each cross its own
 /// activation, so every wrapper there is now single-member. The gate is aimed
 /// at a fixture that still exercises the order rather than re-blessed to
-/// nothing. The order is non-strict: two members whose surfaces are
-/// `cmp_tys`-equal are `Equal`, never `Greater`.
+/// nothing. The end-to-end formula-order and wrapper-stress gates prove the
+/// dynamic result; this source assertion prevents the deleted mutating builder
+/// from returning as a second construction path.
 #[test]
-fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
-    use std::cmp::Ordering;
+fn compiler2_construction_target_precedes_seated_wrapper_selection() {
+    let runtime_demand = include_str!("jobs/runtime_demand.rs");
+    assert!(
+        !runtime_demand.contains(concat!("callable_flow_resolution_edges_", "product")),
+        "the deleted mutating edge builder must not return"
+    );
+    for authority in [
+        "fn plan_callable_flows(",
+        "ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs))",
+        "let key = CallableConstructionTargetKey {",
+        "construction_flow_edge(world, input, &key, producer, surface)",
+        "fn finish_callable_flows(",
+        "dispatch_stress::perturbed_construction_edges(plan.first_class_edges)",
+    ] {
+        assert!(
+            runtime_demand.contains(authority),
+            "runtime demand must retain the read-only callable-resolution step {authority}"
+        );
+    }
+    let transport = include_str!("jobs/transport.rs");
+    assert!(
+        transport.contains("construction_member_selection(world.types_mut(), &flow.first_class_edges)"),
+        "transport must derive the member list and selection plan from the seated edges"
+    );
 
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
@@ -10691,25 +11945,13 @@ fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
     compiler
         .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
-    let world = compiler.world();
-    let program = world.backend_program(root);
+    let program = compiler.retained_backend_program(root);
 
-    let mut multi_member_wrappers = 0;
-    for wrapper in &program.construction_wrappers {
-        if wrapper.members.len() > 1 {
-            multi_member_wrappers += 1;
-        }
-        for pair in wrapper.members.windows(2) {
-            assert_ne!(
-                world.types().cmp_tys(&pair[0].surface_inputs, &pair[1].surface_inputs),
-                Ordering::Greater,
-                "construction members must be non-decreasing under cmp_tys, so the settled artifact \
-                 no longer inherits the interner's mint order: {:?} came before {:?}",
-                pair[0].surface_inputs,
-                pair[1].surface_inputs,
-            );
-        }
-    }
+    let multi_member_wrappers = program
+        .construction_wrappers()
+        .iter()
+        .filter(|wrapper| wrapper.members.len() > 1)
+        .count();
     assert!(
         multi_member_wrappers > 0,
         "{fixture} must exercise at least one multi-surface construction wrapper for this gate to \
@@ -10874,10 +12116,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert!(
-        compiler.demand(Job::BuildBackendProduct(root_id)),
-        "membership operator fixture should explicitly demand the backend product",
-    );
+    demand_backend_product(&mut compiler, root_id);
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
@@ -10893,7 +12132,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let program = backend.last(root_id).program;
     let summaries = callsites.all();
     let mut found = false;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -10932,14 +12171,15 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "quicksort root should settle to a finite semantic frontier",
     );
 
@@ -11085,14 +12325,15 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "initial quicksort root should settle",
     );
 
@@ -11108,14 +12349,46 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
         functions_before.contains(&qsort_id) && !functions_before.contains(&foo_id),
         "the initial quicksort frontier should reach qsort and never the uncalled foo/0"
     );
+    let executable_facts_before = frontier_before
+        .iter()
+        .cloned()
+        .map(|activation| ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        })
+        .collect::<Vec<_>>();
+    let mut demanded_missing_fact = false;
+    for executable in &executable_facts_before {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        if world.fact_revision(&fact).is_none() {
+            demanded_missing_fact |= world.demand(Job::DeriveExecutableFacts(executable.clone()));
+        }
+    }
+    if demanded_missing_fact {
+        assert_resolved(
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+            "the rooted executable-fact frontier should settle before the unrelated edit",
+        );
+    }
+    let executable_fact_revisions = executable_facts_before
+        .iter()
+        .map(|executable| {
+            (
+                executable.clone(),
+                world
+                    .fact_revision(&FactKey::ExecutableFacts(executable.clone()))
+                    .expect("the demanded rooted executable fact should be present"),
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     world.submit_code(
         Some("quicksort_plus_foo_v2.fz".to_string()),
         include_str!("../../fixtures2/00027_foo_99.fz").to_string(),
     );
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "redefining uncalled foo/0 should not reopen the quicksort root",
     );
 
@@ -11124,6 +12397,13 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
         frontier_after, frontier_before,
         "uncalled foo/0 redefinition should leave the rooted reachable activation frontier unchanged"
     );
+    for (executable, revision) in executable_fact_revisions {
+        assert_eq!(
+            world.fact_revision(&FactKey::ExecutableFacts(executable)),
+            Some(revision),
+            "an uncalled function redefinition must not move any demanded executable fact in the selected root",
+        );
+    }
 }
 
 #[test]
@@ -11132,26 +12412,22 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     // the old recursive frontier: the rooted reachable frontier must become
     // exactly {main, foo} and no longer reach qsort/partition/append.
     //
-    // The retraction is observed by re-walking the settled call graph from the
-    // entry, NOT by re-reading the raw `activation_analysis` snapshot. The activation store
-    // is a monotone GLOBAL cache: qsort/partition/append are still defined (00008
-    // only redefines `main`+`foo`), so their first-drive analysis facts stay live
-    // and un-pruned there — and the backend product is not rebuilt on this
-    // redefinition. Reachability from the (re-analyzed) entry is what prunes the
-    // live frontier.
+    // Observe the root's reached activation frontier after replacing main's
+    // body, independently of retained definitions for the former callees.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "initial quicksort root should settle",
     );
 
@@ -11177,9 +12453,9 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
         Some("quicksort_plus_foo_v2.fz".to_string()),
         include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
     );
-    world.demand(Job::BuildBackendProduct(root_id));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root_id);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "redefining main/0 should retract the old quicksort root frontier",
     );
 
@@ -11223,15 +12499,20 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
         DriveOutcome::Unresolved { waits } => {
             assert!(
                 waits.iter().any(|wait| {
-                    wait.fact == settled_fact(FactKey::FunctionDefined(function_id))
+                    wait.fact == super::drive::fact_dependency(settled_fact(FactKey::FunctionDefined(function_id)))
                         && wait.jobs.contains(&Job::SeedRoot(root_id))
                 }),
                 "unresolved drive should report SeedRoot waiting on the entry definition"
             );
             assert!(
-                work_graph.all().into_iter().any(|step| step
-                    .blocked
-                    .contains(&settled_fact(FactKey::FunctionDefined(function_id)))),
+                work_graph
+                    .all()
+                    .into_iter()
+                    .any(
+                        |step| step.blocked.contains(&super::drive::fact_dependency(settled_fact(
+                            FactKey::FunctionDefined(function_id)
+                        )))
+                    ),
                 "work-graph telemetry should carry the exact fact that blocked the seed job"
             );
         }
@@ -12157,7 +13438,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -12235,7 +13516,7 @@ fn main(), do: rebuild([1, 2])
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -12717,7 +13998,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
         let program = backend.last(root).program;
 
         let mut checked = 0;
-        for executable in &program.executables {
+        for executable in program.executables() {
             let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
                 continue;
             };
@@ -12733,11 +14014,9 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                 };
                 // A grounded callee is lowered as a direct edge and aliases its
                 // target's own return fact; only a boxed one reaches a wrapper.
-                if !executable
-                    .value_layouts
-                    .get(callee)
-                    .is_some_and(|layout| matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef))
-                {
+                if !executable.abi.value_layouts.get(callee).is_some_and(|layout| {
+                    matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef(_))
+                }) {
                     continue;
                 }
                 let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
@@ -12745,7 +14024,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                 };
                 let delivered = source.layout.reprs.len();
                 for wrapper in program
-                    .construction_wrappers
+                    .construction_wrappers()
                     .iter()
                     .filter(|wrapper| wrapper.call_arity == args.len())
                     .filter(|wrapper| {
@@ -12764,7 +14043,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                         published,
                         delivered,
                         "{name}: a boxed closure call taking {} argument(s) delivers {delivered} lane(s) while \
-                         wrapper {} it can reach publishes {published} ({:?})",
+                         wrapper {:?} it can reach publishes {published} ({:?})",
                         args.len(),
                         wrapper.identity,
                         wrapper.return_form,
@@ -12820,13 +14099,13 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     let program = backend.last(root).program;
 
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "a lambda named where it is used never crosses the boxed seam, so the program builds no \
          construction wrapper at all: {:?}",
         program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
-            .map(|wrapper| (wrapper.identity, wrapper.return_form))
+            .map(|wrapper| (&wrapper.identity, wrapper.return_form))
             .collect::<Vec<_>>(),
     );
 
@@ -12834,7 +14113,7 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     // result away; the reducer calls around it legitimately use theirs.
     let each_step_id = function_id(&functions, "each_step", 3);
     let mut checked = 0;
-    for executable in &program.executables {
+    for executable in program.executables() {
         if executable.key.activation.function != each_step_id {
             continue;
         }
@@ -12869,13 +14148,14 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
 /// a function that neither calls through a callable nor captures one into a
 /// lambda it constructs treats closure brands as freight, and every
 /// same-surface brand shares its activation. Identity-CONSUMING functions
-/// deliberately stay split: `find/3` captures the predicate into its wrapper
-/// lambda, and the wrapper calls it, so those two specialize per brand —
-/// that is the direct-dispatch trade
-/// `compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs`
-/// pins. The marginal cost of a call site is therefore three executables
-/// (its lambda, the constructor's split, the wrapper's split), not the
-/// seven it was when the pure transporters `find/2` and three
+/// deliberately retain separate semantic activations: `find/3` captures the
+/// predicate into its wrapper lambda, and the wrapper calls it, so both remain
+/// keyed per brand. Native lowering may map equivalent boxed-call activations
+/// to one physical CPS graph; grounded direct targets remain distinct, as
+/// `compiler2_native_program_keeps_direct_callable_specializations_inequivalent`
+/// pins. The semantic marginal cost of a call site is therefore three
+/// executables (its lambda, the constructor's split, the wrapper's split), not
+/// the seven it was when the pure transporters `find/2` and three
 /// `reduce_while/3`s respecialized too. This pins the
 /// correlation-preserving regime below `ACTIVATION_INPUT_ROW_BUDGET`; past
 /// the budget the evidence rows collapse to their join and the
@@ -12919,7 +14199,7 @@ fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
                 .run_root_interp(root)
                 .expect("compiler2 backend interpreter should run same-shape lambda literals");
         }
-        (dbg.lines(), backend.last(root).program.executables.len())
+        (dbg.lines(), backend.last(root).program.executables().len())
     };
 
     let (one_site_out, one_site_executables) = run_lane(1, true);
@@ -14576,14 +15856,13 @@ pub(crate) struct CallsiteDefinedRecord {
 struct BackendProgramRecord {
     root_id: crate::compiler2::RootId,
     changed: bool,
-    program: BackendProgram,
+    program: Rc<BackendProgram>,
 }
 
 #[derive(Debug, Clone)]
 struct NativeProgramRecord {
     root_id: crate::compiler2::RootId,
-    changed: bool,
-    program: NativeProgram,
+    program: Rc<NativeProgram>,
 }
 
 #[derive(Debug, Clone)]
@@ -14676,21 +15955,25 @@ impl OutputCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let outputs = Rc::clone(&self.outputs);
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
-            &["fz", "compiler2", "job"],
-            |_, _, _, _| {},
-            move |_, _, _, _, world, completion| {
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, world, completion| {
                 let job = completion.job.clone();
                 let changed = completion
                     .changed
                     .iter()
                     .filter(|change| change.content_changed())
-                    .map(|change| change.key.clone())
+                    .filter_map(|change| change.key.fact().cloned())
                     .collect();
                 let effects = JobEffects {
                     reads: world.job_reads(&job).into_iter().collect(),
-                    waits: completion.blocked.clone(),
-                    outputs: completion.outputs.iter().cloned().collect(),
+                    waits: completion
+                        .blocked
+                        .iter()
+                        .cloned()
+                        .filter_map(super::drive::as_fact_use)
+                        .collect(),
+                    outputs: world.job_outputs(&job),
                     changed,
                     ..JobEffects::default()
                 };
@@ -14705,7 +15988,6 @@ impl OutputCapture {
                     .or_default()
                     .push(output_facts(&effects));
             },
-            |_, _, _, _| {},
         );
     }
 
@@ -14717,15 +15999,6 @@ impl OutputCapture {
             outputs.remove(&job);
         }
         output
-    }
-
-    fn all(&self) -> Vec<(FactKey, bool)> {
-        self.outputs
-            .borrow()
-            .values()
-            .flat_map(|outputs| outputs.iter())
-            .flat_map(|facts| facts.iter().cloned())
-            .collect()
     }
 
     fn stop(&self, job: Job) -> JobSpanStop {
@@ -14769,7 +16042,7 @@ impl WorkGraphCapture {
         );
     }
 
-    fn all(&self) -> Vec<AppliedStep<Job, FactKey>> {
+    fn all(&self) -> Vec<AppliedStep<Job, DependencyKey>> {
         self.steps.borrow().clone()
     }
 }
@@ -15064,14 +16337,18 @@ impl BackendProgramCapture {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
-            &["fz", "compiler2", "backend_program", "defined"],
-            move |_, _, _, world, root| {
-                defs.borrow_mut().push(BackendProgramRecord {
-                    root_id: *root,
-                    changed: true,
-                    program: world.backend_program(*root),
-                });
+        telemetry.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |_, _, _, key, value, settlement| {
+                if let (ProductKey::RootBackendProduct(root), ProductValue::RootBackendProduct(answer)) = (key, value)
+                    && settlement.changed
+                {
+                    defs.borrow_mut().push(BackendProgramRecord {
+                        root_id: *root,
+                        changed: settlement.changed,
+                        program: Rc::clone(answer),
+                    });
+                }
             },
         );
     }
@@ -15083,7 +16360,7 @@ impl BackendProgramCapture {
             .rev()
             .find(|record| record.root_id == root_id)
             .cloned()
-            .unwrap_or_else(|| panic!("backend_program.defined for {root_id:?}"))
+            .unwrap_or_else(|| panic!("RootBackendProduct settlement for {root_id:?}"))
     }
 
     fn records(&self, root_id: crate::compiler2::RootId) -> Vec<BackendProgramRecord> {
@@ -15105,13 +16382,17 @@ impl NativeProgramCapture {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let defs = Rc::clone(&self.defs);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
-            &["fz", "compiler2", "native_program", "defined"],
-            move |_, _, _, world, root| {
+        telemetry.attach_raw_event3::<crate::compiler2::ProductKey, ProductValue, ProductSettlement, _>(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |_, _, _, key, value, _settlement| {
+                let (crate::compiler2::ProductKey::NativeProgram(root), ProductValue::NativeProgram(program)) =
+                    (key, value)
+                else {
+                    return;
+                };
                 defs.borrow_mut().push(NativeProgramRecord {
                     root_id: *root,
-                    changed: true,
-                    program: world.native_program(*root),
+                    program: Rc::clone(program),
                 });
             },
         );
@@ -15124,16 +16405,7 @@ impl NativeProgramCapture {
             .rev()
             .find(|record| record.root_id == root_id)
             .cloned()
-            .unwrap_or_else(|| panic!("native_program.defined for {root_id:?}"))
-    }
-
-    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<NativeProgramRecord> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.root_id == root_id)
-            .cloned()
-            .collect()
+            .unwrap_or_else(|| panic!("NativeProgram product settlement for {root_id:?}"))
     }
 }
 
@@ -15260,7 +16532,7 @@ struct SourceNoteCapture {
 fn reusable_cons_counts(program: &BackendProgram) -> (u64, u64) {
     let mut birth_count = 0_u64;
     let mut transport_count = 0_u64;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };
@@ -15391,23 +16663,20 @@ fn local_call_target<T>(target: &CallTarget<T>) -> &T {
 
 fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
     program
-        .executables
+        .executables()
         .iter()
         .enumerate()
         .find(|(_, executable)| executable.key.activation.function == function)
+        .map(|(index, executable)| (index, executable.as_ref()))
         .unwrap_or_else(|| panic!("backend executable for {function:?}"))
 }
 
-fn backend_direct_call<'a>(
-    executable: &'a crate::compiler2::BackendExecutable,
-    program: &'a BackendProgram,
-    callee: FunctionId,
-) -> &'a BackendTail {
+fn backend_direct_call(executable: &crate::compiler2::BackendExecutable, callee: FunctionId) -> &BackendTail {
     match &executable.body {
         crate::compiler2::BackendBody::Extern { .. } => panic!("expected clause body with a direct call"),
         crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
-                if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, program, callee) {
+                if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, callee) {
                     return found;
                 }
             }
@@ -15416,29 +16685,21 @@ fn backend_direct_call<'a>(
     }
 }
 
-fn backend_direct_call_in_entry<'a>(
-    entries: &'a [BackendEntry],
+fn backend_direct_call_in_entry(
+    entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
-    program: &'a BackendProgram,
     callee: FunctionId,
-) -> Option<&'a BackendTail> {
+) -> Option<&BackendTail> {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
         BackendTail::DirectCall {
             target: CallEdge::Direct(target),
             ..
-        } if program.executables[*local_call_target(&target.callee)]
-            .key
-            .activation
-            .function
-            == callee =>
-        {
-            Some(&entry.tail)
-        }
+        } if local_call_target(&target.callee).activation.function == callee => Some(&entry.tail),
         BackendTail::If {
             then_entry, else_entry, ..
-        } => backend_direct_call_in_entry(entries, *then_entry, program, callee)
-            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
+        } => backend_direct_call_in_entry(entries, *then_entry, callee)
+            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, callee)),
         _ => None,
     }
 }
@@ -15481,7 +16742,7 @@ fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert!(
         matches!(compiler.drive(), DriveOutcome::Resolved),
         "native lowering of {fixture} must settle",
@@ -15784,7 +17045,7 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     }
 }
 
-pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
+pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, DependencyKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
@@ -15992,14 +17253,15 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     functions.install(&tel);
 
     let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("forever.fz".to_string()),
         concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    world.demand(Job::BuildBackendProduct(root));
+    drive_world_backend_product(&mut world, &tel, &mut sessions, root);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "a never-returning program still quiesces",
     );
 
@@ -16243,14 +17505,15 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
 
         let mut world = crate::compiler2::World::new();
+        let mut sessions = super::pull::ProductSessions::default();
         world.submit_code(
             Some("quicksort.fz".to_string()),
             include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-        world.demand(Job::BuildBackendProduct(root));
+        drive_world_backend_product(&mut world, &tel, &mut sessions, root);
         assert_resolved(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             "every schedule converges",
         );
         let entry = world.root_function(root);
@@ -16974,7 +18237,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -17033,7 +18296,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(compiler.drive(), "connected callable returns should lower natively");
 
     let program = native.last(root_id).program;
@@ -17112,7 +18375,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root));
+    settle_native_product(&mut compiler, root);
     assert_resolved(compiler.drive(), "published captured closure should lower natively");
     let program = native.last(root).program;
     let [boundary] = program.callable_boundaries.as_slice() else {
@@ -17227,7 +18490,7 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "native program lowering must settle for a shared reducer body named by two boundaries with differing \
@@ -17309,9 +18572,9 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     );
 
     let program = backend.last(root_id).program;
-    let mut by_target: HashMap<usize, Vec<Vec<AbiValueRepr>>> = HashMap::new();
+    let mut by_target: HashMap<&ExecutableKey, Vec<Vec<AbiValueRepr>>> = HashMap::new();
     for member in program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .flat_map(|wrapper| wrapper.members.iter())
     {
@@ -17327,11 +18590,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
                     .flat_map(|input| input.layout.reprs.iter().copied())
             })
             .collect::<Vec<_>>();
-        by_target.entry(member.target).or_default().push(capture_reprs);
+        by_target.entry(&member.target).or_default().push(capture_reprs);
     }
 
     let saw_multi_member_construction = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .any(|wrapper| wrapper.members.len() > 1);
     let mut saw_physical_capture = false;
@@ -17346,7 +18609,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
         for capture_surface in &capture_surfaces[1..] {
             assert_eq!(
                 capture_surface, first,
-                "construction members naming target {target} should use its one settled capture surface",
+                "construction members naming target {target:?} should use its one settled capture surface",
             );
         }
     }
@@ -17377,7 +18640,7 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
+    settle_native_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
         "enum_predicate_search should settle native lowering with construction-owned callable wrappers",
@@ -17412,122 +18675,179 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
     }
 }
 
-/// fz-k22.21 regression: `ContributionMap::apply` pins its fold order by
-/// sorting contributing publishers on a deterministic key
-/// (`semantic::StableSortKey`). `Job::SeedActivation`/`AnalyzeActivation`
-/// carry an `ActivationKey` whose `arrow` is a bare interned `Ty` --
-/// `types/mod.rs::Ty(u32)`, assigned by first-intern order -- so sorting on
-/// its raw `Debug` text would make the fold order (and therefore which
-/// equivalent-but-differently-interned representative a union settles on) a
-/// function of *which run interned the arrow first*, reintroducing exactly
-/// the nondeterminism this fold order exists to remove. This proves the fix:
-/// two `Types` stores that intern the same semantic arrow to two different
-/// raw ids still produce the identical `stable_sort_key` string, because it
-/// renders `arrow` through `Types::display` (the interner's own canonical
-/// renderer) instead of its numeric id.
 #[test]
-fn job_stable_sort_key_is_immune_to_which_run_interned_the_arrow_first() {
-    use crate::compiler2::semantic::StableSortKey;
+fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
+    use crate::compiler2::semantic::SemanticOrd;
 
-    let root = crate::compiler2::RootId::for_test(0);
-    let function = FunctionId::for_test(0);
+    let ordered = |non_empty_first: bool| {
+        let mut types = Types::new();
+        let int = types.int();
+        let root = crate::compiler2::RootId::for_test(0);
+        let function = FunctionId::for_test(0);
+        let (list, non_empty, list_key, non_empty_key) = if non_empty_first {
+            let non_empty = types.non_empty_list(int);
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            let list = types.list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            (list, non_empty, list_key, non_empty_key)
+        } else {
+            let list = types.list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            let non_empty = types.non_empty_list(int);
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            (list, non_empty, list_key, non_empty_key)
+        };
+        assert_eq!(types.display(&list), types.display(&non_empty));
+        let raw_order = list_key.arrow < non_empty_key.arrow;
 
-    // Store A: intern the activation's own input type first.
-    let mut types_a = Types::new();
-    let int_a = types_a.int();
-    let key_a = ActivationKey::from_inputs(root, function, &[int_a], &mut types_a);
+        let jobs = [
+            Job::AnalyzeActivation(list_key.clone()),
+            Job::AnalyzeActivation(non_empty_key.clone()),
+        ];
+        let facts = [
+            FactKey::ReturnType(list_key.clone()),
+            FactKey::ReturnType(non_empty_key.clone()),
+        ];
+        let uses = [
+            FactUse::settled(FactKey::ReturnType(list_key)),
+            FactUse::settled(FactKey::ReturnType(non_empty_key)),
+        ];
 
-    // Store B: burn a few unrelated ids first, so the same semantic arrow
-    // lands on a different raw `Ty` number than in store A.
-    let mut types_b = Types::new();
-    let _filler_1 = types_b.atom_lit("filler_one");
-    let _filler_2 = types_b.atom_lit("filler_two");
-    let _filler_3 = types_b.none();
-    let int_b = types_b.int();
-    let key_b = ActivationKey::from_inputs(root, function, &[int_b], &mut types_b);
+        let before = types.comparison_cache_stats();
+        let job_order = jobs[0].semantic_cmp(&jobs[1], &types);
+        let after_job = types.comparison_cache_stats();
+        assert_eq!(after_job.semantic_order_misses, before.semantic_order_misses + 1);
+        assert_eq!(after_job.semantic_order_hits, before.semantic_order_hits);
+        let fact_order = facts[0].semantic_cmp(&facts[1], &types);
+        let use_order = uses[0].semantic_cmp(&uses[1], &types);
+        let reverse_order = jobs[1].semantic_cmp(&jobs[0], &types);
+        let after_repeats = types.comparison_cache_stats();
+        assert_eq!(after_repeats.semantic_order_misses, after_job.semantic_order_misses);
+        assert_eq!(after_repeats.semantic_order_hits, after_job.semantic_order_hits + 3);
+        assert_eq!(
+            reverse_order,
+            job_order.reverse(),
+            "the normalized pair must reuse its inverse"
+        );
+        assert_ne!(job_order, std::cmp::Ordering::Equal);
+        assert_ne!(fact_order, std::cmp::Ordering::Equal);
+        assert_ne!(use_order, std::cmp::Ordering::Equal);
+        (raw_order, job_order, fact_order, use_order)
+    };
 
+    let list_first = ordered(false);
+    let non_empty_first = ordered(true);
     assert_ne!(
-        key_a.arrow, key_b.arrow,
-        "the guard fixture must actually exercise two different raw arrow ids"
+        list_first.0, non_empty_first.0,
+        "the fixture must reverse raw activation-arrow order"
     );
-
-    let sort_key_a = Job::SeedActivation(key_a).stable_sort_key(&types_a);
-    let sort_key_b = Job::SeedActivation(key_b).stable_sort_key(&types_b);
     assert_eq!(
-        sort_key_a, sort_key_b,
-        "stable_sort_key must render the same activation identically regardless of which \
-         store interned its arrow to which raw id"
+        (list_first.1, list_first.2, list_first.3),
+        (non_empty_first.1, non_empty_first.2, non_empty_first.3),
+        "Job, FactKey, and FactUse must retain one semantic order"
     );
 }
 
-/// fz-k22.21 companion to the immunity test above: that test proves the SAME
-/// arrow renders the same sort key across intern orders; this one proves the
-/// converse -- DISTINCT types render DISTINCT `Types::display` strings, the
-/// injectivity `ContributionMap::apply`'s fold-order tie-break relies on (a
-/// display collision between two live publisher keys would silently fall
-/// back to `HashMap` iteration order). Each pair is structurally close by
-/// construction, differing in exactly one of the rendering components the
-/// key leans on: a leaf basic type inside an addressed arrow, a closure
-/// literal's capture type or target under one function id, an address-var's
-/// parameter slot (`a0` vs `a1`), the result-position leaf, and a free
-/// (non-address) variable's declaration id.
 #[test]
-fn types_display_distinguishes_structurally_close_types() {
-    use crate::types::ClosureTarget;
+fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
+    use crate::compiler2::facts::DerivationId;
+    use crate::compiler2::scheduler::{DerivationEffects, Scheduler};
+    use crate::compiler2::semantic::SemanticOrd;
 
     let mut types = Types::new();
+    let int = types.int();
     let root = crate::compiler2::RootId::for_test(0);
     let function = FunctionId::for_test(0);
-
-    let arrow = |types: &mut Types, inputs: &[Ty]| ActivationKey::from_inputs(root, function, inputs, types).arrow;
-
-    // One leaf differs inside the same arrow shape: (int) -> r0 vs (float) -> r0.
-    let int = types.int();
-    let float = types.float();
-    let int_arrow = arrow(&mut types, &[int]);
-    let float_arrow = arrow(&mut types, &[float]);
-
-    // Same function id, closure lits differing only in the capture type.
-    let atom = types.atom_lit("captured");
-    let closure_int_capture = types.closure_lit(ClosureTarget(7), vec![int], 1);
-    let closure_atom_capture = types.closure_lit(ClosureTarget(7), vec![atom], 1);
-
-    // Same shape, different closure target (the `#N` lit suffix).
-    let closure_other_target = types.closure_lit(ClosureTarget(8), vec![int], 1);
-
-    // Arrows differing only in which address-var slot the input names: the
-    // `a0`/`a1` path rendering, not any concrete leaf.
-    let a0 = types.param_alpha(0);
-    let a1 = types.param_alpha(1);
-    let result = types.result_alpha();
-    let a0_arrow = types.arrow(&[a0], result);
-    let a1_arrow = types.arrow(&[a1], result);
-
-    // Arrows differing only in the result position.
-    let int_ret_arrow = types.arrow(&[a0], int);
-    let float_ret_arrow = types.arrow(&[a0], float);
-
-    // Free (non-address) vars differing only in declaration id.
-    let free_var_3 = types.type_var(TypeVarId(3));
-    let free_var_4 = types.type_var(TypeVarId(4));
-
-    let pairs: [(&str, Ty, Ty); 6] = [
-        ("arg leaf int vs float", int_arrow, float_arrow),
-        ("closure capture type", closure_int_capture, closure_atom_capture),
-        ("closure lit target suffix", closure_int_capture, closure_other_target),
-        ("address-var slot a0 vs a1", a0_arrow, a1_arrow),
-        ("result leaf int vs float", int_ret_arrow, float_ret_arrow),
-        ("free var declaration id", free_var_3, free_var_4),
+    let list = types.list(int);
+    let non_empty = types.non_empty_list(int);
+    let mut jobs = vec![
+        Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[non_empty], &mut types)),
+        Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[list], &mut types)),
     ];
-    for (what, left, right) in pairs {
-        assert_ne!(left, right, "{what}: the fixture pair must be genuinely distinct types");
-        assert_ne!(
-            types.display(&left),
-            types.display(&right),
-            "{what}: distinct types must render distinct display strings, or the \
-             stable sort key degenerates to a hash-order tie"
+    jobs.sort_by(|left, right| left.semantic_cmp(right, &types));
+    let shared = FactKey::CodeIndexed(crate::compiler2::CodeId::ZERO);
+    let writer = Job::IndexCode(crate::compiler2::CodeId::ZERO);
+
+    let complete = |scheduler: &mut Scheduler<Job, FactKey>,
+                    job: &Job,
+                    reads: HashSet<FactUse<FactKey>>,
+                    waits: HashSet<FactUse<FactKey>>,
+                    outputs: Vec<FactKey>,
+                    changed: Vec<FactKey>| {
+        scheduler.complete_ordered(
+            job,
+            waits.clone(),
+            vec![DerivationEffects {
+                derivation: DerivationId::SOLE,
+                reads,
+                outputs,
+                changed,
+                concluded: waits.is_empty(),
+            }],
+            &types,
+        )
+    };
+
+    let reader_run = |registration: &[Job]| {
+        let mut scheduler = Scheduler::new();
+        for job in registration {
+            complete(
+                &mut scheduler,
+                job,
+                HashSet::from([FactUse::current(shared.clone())]),
+                HashSet::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        let step = complete(
+            &mut scheduler,
+            &writer,
+            HashSet::new(),
+            HashSet::new(),
+            vec![shared.clone()],
+            vec![shared.clone()],
         );
-    }
+        let wakes = step
+            .wakes
+            .into_iter()
+            .map(|wake| (wake.job, wake.disposition))
+            .collect::<Vec<_>>();
+        let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
+        (wakes, popped)
+    };
+    assert_eq!(reader_run(&jobs), reader_run(&[jobs[1].clone(), jobs[0].clone()]));
+
+    let waiter_run = |registration: &[Job]| {
+        let mut scheduler = Scheduler::new();
+        for job in registration {
+            complete(
+                &mut scheduler,
+                job,
+                HashSet::new(),
+                HashSet::from([FactUse::current(shared.clone())]),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        let unresolved = scheduler.unresolved(&types);
+        let step = complete(
+            &mut scheduler,
+            &writer,
+            HashSet::new(),
+            HashSet::new(),
+            vec![shared.clone()],
+            vec![shared.clone()],
+        );
+        let wakes = step
+            .wakes
+            .into_iter()
+            .map(|wake| (wake.job, wake.disposition))
+            .collect::<Vec<_>>();
+        let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
+        (unresolved, wakes, popped)
+    };
+    assert_eq!(waiter_run(&jobs), waiter_run(&[jobs[1].clone(), jobs[0].clone()]));
 }
 
 /// The fixtures whose backend products carry the `[] -> [τ]` ascent ladder,
@@ -17586,7 +18906,7 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         let labels = |fn_id| crate::compiler2::canon::function_label(world, FunctionId::from_fn_id(fn_id));
         let mut canon = crate::compiler2::TyCanon::new(&labels);
         let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::new();
-        for executable in &program.executables {
+        for executable in program.executables() {
             let activation = &executable.key.activation;
             let columns = activation
                 .inputs(types)
@@ -17904,7 +19224,7 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
         let program = backend.last(root_id).program;
         let world = compiler.world();
         let keyed = program
-            .executables
+            .executables()
             .iter()
             .filter(|executable| {
                 crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label

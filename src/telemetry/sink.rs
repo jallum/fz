@@ -68,6 +68,11 @@ pub trait Telemetry {
         self.is_enabled(name)
     }
 
+    /// Returns whether a typed raw-event or raw-lifecycle subscriber observes `name`.
+    fn is_raw_event_enabled(&self, name: &[&'static str]) -> bool {
+        self.is_enabled(name)
+    }
+
     /// Emit a single event. `name` is the hierarchical path
     /// (e.g. `&["fz", "lexer", "tokens_built"]`); `measurements` carry
     /// numeric data fit for aggregation; `metadata` carries everything else.
@@ -123,7 +128,6 @@ pub trait Telemetry {
 
     raw_span_stop_core!(stop_raw_span0);
     raw_span_stop_core!(stop_raw_span1, _a);
-    raw_span_stop_core!(stop_raw_span2, _a, _b);
 
     fn exception_raw_span(
         &self,
@@ -157,10 +161,6 @@ pub trait RawSpanStop1<P1: Any>: RawSpanGuard {
     fn stop1(self, value: &P1);
 }
 
-pub trait RawSpanStop2<P1: Any, P2: Any>: RawSpanGuard {
-    fn stop2(self, first: &P1, second: &P2);
-}
-
 pub trait RawSpanTelemetry: Telemetry {
     type Span0_0<'a>: RawSpanStop0
     where
@@ -172,9 +172,6 @@ pub trait RawSpanTelemetry: Telemetry {
     where
         Self: 'a;
     type Span1_1<'a, S1: Any, P1: Any>: RawSpanStop1<P1>
-    where
-        Self: 'a;
-    type Span1_2<'a, S1: Any, P1: Any, P2: Any>: RawSpanStop2<P1, P2>
     where
         Self: 'a;
     type Span2_0<'a, S1: Any, S2: Any>: RawSpanStop0
@@ -189,11 +186,6 @@ pub trait RawSpanTelemetry: Telemetry {
         name: &'a [&'static str],
         span_id: u64,
     ) -> Self::Span1_1<'a, S1, P1>;
-    fn make_span1_2<'a, S1: Any, P1: Any, P2: Any>(
-        &'a self,
-        name: &'a [&'static str],
-        span_id: u64,
-    ) -> Self::Span1_2<'a, S1, P1, P2>;
     fn make_span2_0<'a, S1: Any, S2: Any>(
         &'a self,
         name: &'a [&'static str],
@@ -249,10 +241,6 @@ impl<P1: Any> RawSpanStop1<P1> for NullSpan {
     fn stop1(self, _value: &P1) {}
 }
 
-impl<P1: Any, P2: Any> RawSpanStop2<P1, P2> for NullSpan {
-    fn stop2(self, _first: &P1, _second: &P2) {}
-}
-
 impl RawSpanTelemetry for NullTelemetry {
     type Span0_0<'a>
         = NullSpan
@@ -267,10 +255,6 @@ impl RawSpanTelemetry for NullTelemetry {
     where
         Self: 'a;
     type Span1_1<'a, S1: Any, P1: Any>
-        = NullSpan
-    where
-        Self: 'a;
-    type Span1_2<'a, S1: Any, P1: Any, P2: Any>
         = NullSpan
     where
         Self: 'a;
@@ -300,15 +284,6 @@ impl RawSpanTelemetry for NullTelemetry {
         _name: &'a [&'static str],
         _span_id: u64,
     ) -> Self::Span1_1<'a, S1, P1> {
-        NullSpan
-    }
-
-    #[inline(always)]
-    fn make_span1_2<'a, S1: Any, P1: Any, P2: Any>(
-        &'a self,
-        _name: &'a [&'static str],
-        _span_id: u64,
-    ) -> Self::Span1_2<'a, S1, P1, P2> {
         NullSpan
     }
 
@@ -496,25 +471,6 @@ impl<T: Telemetry + ?Sized, S1: Any, S2: Any> Span<'_, T, S1, S2> {
     }
 }
 
-impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'_, T, S1, S2, P1, P2> {
-    pub fn stop2(mut self, first: &P1, second: &P2) {
-        if let Some(active) = self.active.as_mut() {
-            active.tel.stop_raw_span2(
-                active.name,
-                active.span_id,
-                Self::elapsed(active),
-                TypeId::of::<S1>(),
-                TypeId::of::<S2>(),
-                TypeId::of::<P1>(),
-                TypeId::of::<P2>(),
-                first,
-                second,
-            );
-            active.closed = true;
-        }
-    }
-}
-
 impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Drop for Span<'_, T, S1, S2, P1, P2> {
     fn drop(&mut self) {
         if let Some(active) = self.active.as_mut() {
@@ -599,12 +555,6 @@ impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any> RawSpanStop1<P1> for Span
             );
             active.closed = true;
         }
-    }
-}
-
-impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> RawSpanStop2<P1, P2> for Span<'_, T, S1, S2, P1, P2> {
-    fn stop2(self, first: &P1, second: &P2) {
-        Span::stop2(self, first, second);
     }
 }
 
@@ -719,7 +669,6 @@ pub trait TelemetryExt: Telemetry {
     );
     raw_span_ext!(raw_span1_0, make_span1_0, Span1_0, start_raw_span1, [S1], [S1 first], [S1], S1, Infallible, Infallible, Infallible);
     raw_span_ext!(raw_span1_1, make_span1_1, Span1_1, start_raw_span1, [S1, P1], [S1 first], [S1, P1], S1, Infallible, P1, Infallible);
-    raw_span_ext!(raw_span1_2, make_span1_2, Span1_2, start_raw_span1, [S1, P1, P2], [S1 first], [S1, P1, P2], S1, Infallible, P1, P2);
     raw_span_ext!(raw_span2_0, make_span2_0, Span2_0, start_raw_span2, [S1, S2], [S1 first, S2 second], [S1, S2], S1, S2, Infallible, Infallible);
 }
 

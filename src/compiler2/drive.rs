@@ -6,31 +6,137 @@
 
 use std::time::{Duration, Instant};
 
-use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
+use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
 use super::code::CodeId;
 use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
+use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
-use super::semantic::{CallSiteKey, StableSortKey};
+use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
 use super::types::Types;
 use super::world::World;
 
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
     pub(crate) world: &'a mut World,
     pub(crate) telemetry: &'a T,
+    pub(crate) product_sessions: Option<&'a mut super::pull::ProductSessions>,
 }
 
 impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn new(world: &'a mut World, telemetry: &'a T) -> Self {
-        Self { world, telemetry }
+        Self::with_optional_product_sessions(world, telemetry, None)
+    }
+
+    pub(crate) fn with_product_sessions(
+        world: &'a mut World,
+        telemetry: &'a T,
+        product_sessions: &'a mut super::pull::ProductSessions,
+    ) -> Self {
+        Self::with_optional_product_sessions(world, telemetry, Some(product_sessions))
+    }
+
+    pub(crate) fn with_optional_product_sessions(
+        world: &'a mut World,
+        telemetry: &'a T,
+        product_sessions: Option<&'a mut super::pull::ProductSessions>,
+    ) -> Self {
+        Self {
+            world,
+            telemetry,
+            product_sessions,
+        }
     }
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
-        let completion = self.world.complete_job(job, effects);
+        let completion = self.apply_completion(job, effects);
         self.emit_job_completion(&completion);
         self.emit_activation_input_budget_collapses();
         completion
+    }
+
+    fn apply_completion(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
+        let previous_products = self
+            .world
+            .work_graph
+            .dependency_uses(&job)
+            .filter_map(|usage| match usage.fact() {
+                DependencyKey::Product(address) => Some(address.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let Some(sessions) = self.product_sessions.as_deref_mut() else {
+            assert!(
+                effects.product_reads.is_empty() && effects.product_waits.is_empty(),
+                "product consumers require retained sessions"
+            );
+            return self.world.complete_job(job, effects);
+        };
+        for address in effects.product_reads.iter().chain(&effects.product_waits) {
+            sessions.observe(address);
+        }
+        let completion = self.world.complete_job_with_external(job, effects, sessions);
+        for address in previous_products {
+            if !self
+                .world
+                .work_graph
+                .has_dependency_consumers(&DependencyKey::Product(address.clone()))
+            {
+                sessions.unobserve(&address);
+            }
+        }
+        self.publish_dependency_movements(&completion.step.movements);
+        completion
+    }
+
+    pub(crate) fn publish_dependency_movements(&mut self, movements: &[super::facts::FactMovement<DependencyKey>]) {
+        let Some(sessions) = self.product_sessions.as_deref_mut() else {
+            return;
+        };
+        let mut pending = movements
+            .iter()
+            .filter_map(|movement| {
+                movement.key.fact().map(|key| super::facts::FactMovement {
+                    key: key.clone(),
+                    state: movement.state,
+                })
+            })
+            .collect::<Vec<_>>();
+        while !pending.is_empty() {
+            let changes = sessions.publish(self.telemetry, self.world.types(), &pending);
+            if changes.is_empty() {
+                break;
+            }
+            let (graph, types) = self.world.work_graph_and_types();
+            let step = graph.apply_external_changes_ordered(changes, sessions, types);
+            self.telemetry
+                .raw_event1(&["fz", "compiler2", "work_graph", "dependencies_moved"], &step);
+            pending = step
+                .movements
+                .into_iter()
+                .filter_map(|movement| {
+                    movement.key.fact().map(|key| super::facts::FactMovement {
+                        key: key.clone(),
+                        state: movement.state,
+                    })
+                })
+                .collect();
+        }
+    }
+
+    pub(crate) fn apply_product_changes(&mut self, changes: Vec<super::facts::FactChange<DependencyKey>>) {
+        if changes.is_empty() {
+            return;
+        }
+        let sessions = self
+            .product_sessions
+            .as_deref()
+            .expect("product movement requires retained sessions");
+        let (graph, types) = self.world.work_graph_and_types();
+        let step = graph.apply_external_changes_ordered(changes, sessions, types);
+        self.telemetry
+            .raw_event1(&["fz", "compiler2", "work_graph", "dependencies_moved"], &step);
+        self.publish_dependency_movements(&step.movements);
     }
 
     /// Report the correlated-input row sets this completion widened to their
@@ -82,34 +188,77 @@ pub enum Job {
     LowerFunction(FunctionId),
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
-    BuildMacroExecutable(FunctionId),
     DeriveStaticCallees(FunctionId),
     DeriveCallGraphComponent(FunctionId),
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
-    BuildBackendProduct(RootId),
-    LowerNativeProgram(RootId),
+    DeriveExecutableFacts(ExecutableKey),
+    DeriveCallableConstructionTarget(CallableConstructionTargetKey),
+    DeriveRuntimeDemand(ExecutableKey),
 }
 
-impl StableSortKey<Types> for Job {
-    /// Every variant but `SeedActivation`/`AnalyzeActivation` carries only
-    /// ids assigned by deterministic parse/scope traversal (`CodeId`,
-    /// `ModuleId`, `FunctionId`, `RootId`), so their `Debug` text is already a
-    /// stable key. Those two carry an `ActivationKey`, whose `arrow` is a bare
-    /// interned `Ty` — rendered through `Types::display` instead of `{:?}` so
-    /// the key does not depend on which run happened to intern it first.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        match self {
-            Job::SeedActivation(key) => format!("SeedActivation({})", key.stable_sort_key(types)),
-            Job::AnalyzeActivation(key) => format!("AnalyzeActivation({})", key.stable_sort_key(types)),
-            other => format!("{other:?}"),
-        }
+impl SemanticOrd<Types> for Job {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        job_order_rank(self)
+            .cmp(&job_order_rank(other))
+            .then_with(|| match (self, other) {
+                (Job::IndexCode(left), Job::IndexCode(right)) => left.cmp(right),
+                (Job::ScopeCode(left), Job::ScopeCode(right)) => left.cmp(right),
+                (Job::DefineModule(left), Job::DefineModule(right)) => left.cmp(right),
+                (Job::DefineModuleInterface(left), Job::DefineModuleInterface(right)) => left.cmp(right),
+                (Job::PublishFunctionSource(left), Job::PublishFunctionSource(right)) => left.cmp(right),
+                (Job::ExpandFunctionSource(left), Job::ExpandFunctionSource(right)) => left.cmp(right),
+                (Job::DefineFunction(left), Job::DefineFunction(right)) => left.cmp(right),
+                (Job::DeriveTypeDef(left), Job::DeriveTypeDef(right)) => left.cmp(right),
+                (Job::DeriveFunctionContract(left), Job::DeriveFunctionContract(right)) => left.cmp(right),
+                (Job::DeriveInputDemand(left), Job::DeriveInputDemand(right)) => left.cmp(right),
+                (Job::LowerFunction(left), Job::LowerFunction(right)) => left.cmp(right),
+                (Job::ReifyGuardDispatch(left), Job::ReifyGuardDispatch(right)) => left.cmp(right),
+                (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
+                (Job::DeriveStaticCallees(left), Job::DeriveStaticCallees(right)) => left.cmp(right),
+                (Job::DeriveCallGraphComponent(left), Job::DeriveCallGraphComponent(right)) => left.cmp(right),
+                (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
+                (Job::SeedActivation(left), Job::SeedActivation(right))
+                | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
+                (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right))
+                | (Job::DeriveRuntimeDemand(left), Job::DeriveRuntimeDemand(right)) => left.semantic_cmp(right, types),
+                (Job::DeriveCallableConstructionTarget(left), Job::DeriveCallableConstructionTarget(right)) => {
+                    left.semantic_cmp(right, types)
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+fn job_order_rank(job: &Job) -> u8 {
+    match job {
+        Job::AnalyzeActivation(_) => 0,
+        Job::DefineFunction(_) => 3,
+        Job::DefineModule(_) => 4,
+        Job::DefineModuleInterface(_) => 5,
+        Job::DeriveCallGraphComponent(_) => 6,
+        Job::DeriveExecutableFacts(_) => 7,
+        Job::DeriveFunctionContract(_) => 8,
+        Job::DeriveInputDemand(_) => 9,
+        Job::DeriveStaticCallees(_) => 10,
+        Job::DeriveTypeDef(_) => 11,
+        Job::ExpandFunctionSource(_) => 12,
+        Job::IndexCode(_) => 13,
+        Job::LowerFunction(_) => 14,
+        Job::PlanEntryDispatch(_) => 15,
+        Job::PublishFunctionSource(_) => 16,
+        Job::ReifyGuardDispatch(_) => 17,
+        Job::ScopeCode(_) => 18,
+        Job::SeedActivation(_) => 19,
+        Job::SeedRoot(_) => 20,
+        Job::DeriveCallableConstructionTarget(_) => 21,
+        Job::DeriveRuntimeDemand(_) => 22,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
     CodeIndexed(CodeId),
     CodeScoped(CodeId),
@@ -128,7 +277,6 @@ pub enum FactKey {
     LoweredBody(FunctionId),
     GuardDispatch(FunctionId),
     EntryDispatch(FunctionId),
-    MacroExecutable(FunctionId),
     StaticCallees(FunctionId),
     CallGraphComponent(FunctionId),
     Recursive(FunctionId),
@@ -141,8 +289,107 @@ pub enum FactKey {
     CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
-    BackendProgram(RootId),
-    NativeProgram(RootId),
+    ExecutableFacts(ExecutableKey),
+    CallableConstructionTarget(CallableConstructionTargetKey),
+    RuntimeDemandInput(ExecutableKey),
+    RuntimeDemand(ExecutableKey),
+    RuntimeDemandInputs(ExecutableKey),
+    IncomingInputSlot(super::incoming_inputs::InputSlot),
+}
+
+impl SemanticOrd<Types> for FactKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        fact_diagnostic_rank(self)
+            .cmp(&fact_diagnostic_rank(other))
+            .then_with(|| self.cmp_same_variant(other, types))
+    }
+}
+
+impl FactKey {
+    fn cmp_same_variant(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        match (self, other) {
+            (FactKey::CodeIndexed(left), FactKey::CodeIndexed(right))
+            | (FactKey::CodeScoped(left), FactKey::CodeScoped(right)) => left.cmp(right),
+            (FactKey::ModuleIndexed(left), FactKey::ModuleIndexed(right))
+            | (FactKey::ModuleDefined(left), FactKey::ModuleDefined(right))
+            | (FactKey::ModuleInterface(left), FactKey::ModuleInterface(right))
+            | (FactKey::StructDefined(left), FactKey::StructDefined(right))
+            | (FactKey::ProtocolDispatch(left), FactKey::ProtocolDispatch(right))
+            | (FactKey::ProtocolImplProviders(left), FactKey::ProtocolImplProviders(right)) => left.cmp(right),
+            (FactKey::FunctionSource(left), FactKey::FunctionSource(right))
+            | (FactKey::FunctionSourceStash(left), FactKey::FunctionSourceStash(right))
+            | (FactKey::ExpandedFunctionSource(left), FactKey::ExpandedFunctionSource(right))
+            | (FactKey::FunctionDefined(left), FactKey::FunctionDefined(right))
+            | (FactKey::FunctionContract(left), FactKey::FunctionContract(right))
+            | (FactKey::LoweredBody(left), FactKey::LoweredBody(right))
+            | (FactKey::GuardDispatch(left), FactKey::GuardDispatch(right))
+            | (FactKey::EntryDispatch(left), FactKey::EntryDispatch(right))
+            | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
+            | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
+            | (FactKey::InputDemand(left), FactKey::InputDemand(right))
+            | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
+            (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
+            (FactKey::IncomingInputSlot(left), FactKey::IncomingInputSlot(right)) => left.semantic_cmp(right, types),
+            (FactKey::RootEntry(left), FactKey::RootEntry(right)) => left.cmp(right),
+            (FactKey::Activation(left), FactKey::Activation(right))
+            | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
+            | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
+            | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
+            (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
+            | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
+            (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
+                left.semantic_cmp(right, types)
+            }
+            (FactKey::Executable(left), FactKey::Executable(right))
+            | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right))
+            | (FactKey::RuntimeDemandInput(left), FactKey::RuntimeDemandInput(right))
+            | (FactKey::RuntimeDemand(left), FactKey::RuntimeDemand(right))
+            | (FactKey::RuntimeDemandInputs(left), FactKey::RuntimeDemandInputs(right)) => {
+                left.semantic_cmp(right, types)
+            }
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
+    match fact {
+        FactKey::Activation(_) => 0,
+        FactKey::ActivationAnalyzed(_) => 1,
+        FactKey::ActivationInputs(_) => 2,
+        FactKey::CallGraphComponent(_) => 4,
+        FactKey::CallSiteSummary(_) => 5,
+        FactKey::CallSiteTargets(_) => 6,
+        FactKey::CallableConstructionTarget(_) => 36,
+        FactKey::CodeIndexed(_) => 7,
+        FactKey::CodeScoped(_) => 8,
+        FactKey::EntryDispatch(_) => 9,
+        FactKey::Executable(_) => 10,
+        FactKey::ExecutableFacts(_) => 11,
+        FactKey::ExpandedFunctionSource(_) => 12,
+        FactKey::FunctionContract(_) => 13,
+        FactKey::FunctionDefined(_) => 14,
+        FactKey::FunctionSource(_) => 15,
+        FactKey::FunctionSourceStash(_) => 16,
+        FactKey::GuardDispatch(_) => 17,
+        FactKey::InputDemand(_) => 18,
+        FactKey::LoweredBody(_) => 19,
+        FactKey::ModuleDefined(_) => 21,
+        FactKey::ModuleIndexed(_) => 22,
+        FactKey::ModuleInterface(_) => 23,
+        FactKey::ProtocolDispatch(_) => 24,
+        FactKey::ProtocolImplProviders(_) => 25,
+        FactKey::Recursive(_) => 26,
+        FactKey::ReturnType(_) => 27,
+        FactKey::RootEntry(_) => 28,
+        FactKey::StaticCallees(_) => 29,
+        FactKey::StructDefined(_) => 30,
+        FactKey::TypeDefined(_) => 31,
+        FactKey::RuntimeDemand(_) => 32,
+        FactKey::RuntimeDemandInput(_) => 33,
+        FactKey::RuntimeDemandInputs(_) => 34,
+        FactKey::IncomingInputSlot(_) => 37,
+    }
 }
 
 impl ClaimShape for FactKey {
@@ -151,11 +398,73 @@ impl ClaimShape for FactKey {
     /// its body-input evidence ascends by the cross-publisher widen
     /// (`ActivationInputMap`). Every other fact's content overwrites.
     fn is_cumulative(&self) -> bool {
-        matches!(self, FactKey::ReturnType(_) | FactKey::ActivationInputs(_))
+        matches!(
+            self,
+            FactKey::ReturnType(_)
+                | FactKey::ActivationInputs(_)
+                | FactKey::RuntimeDemandInput(_)
+                | FactKey::IncomingInputSlot(_)
+        )
     }
 }
 
-pub type WorkGraph = Scheduler<Job, FactKey>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProductAddress {
+    pub(crate) root: RootId,
+    pub(crate) key: ProductKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DependencyKey {
+    Fact(FactKey),
+    Product(ProductAddress),
+}
+
+impl DependencyKey {
+    pub(crate) fn fact(&self) -> Option<&FactKey> {
+        match self {
+            Self::Fact(fact) => Some(fact),
+            Self::Product(_) => None,
+        }
+    }
+}
+
+impl super::facts::ClaimShape for DependencyKey {
+    fn is_cumulative(&self) -> bool {
+        self.fact().is_some_and(super::facts::ClaimShape::is_cumulative)
+    }
+}
+
+impl SemanticOrd<Types> for DependencyKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Fact(left), Self::Fact(right)) => left.semantic_cmp(right, types),
+            (Self::Product(left), Self::Product(right)) => left
+                .root
+                .cmp(&right.root)
+                .then_with(|| left.key.semantic_cmp(&right.key, types)),
+            (Self::Fact(_), Self::Product(_)) => std::cmp::Ordering::Less,
+            (Self::Product(_), Self::Fact(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+pub(crate) fn fact_dependency(fact: FactUse<FactKey>) -> FactUse<DependencyKey> {
+    match fact {
+        FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
+        FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
+    }
+}
+
+pub(crate) fn as_fact_use(usage: FactUse<DependencyKey>) -> Option<FactUse<FactKey>> {
+    match usage {
+        FactUse::Current(DependencyKey::Fact(fact)) => Some(FactUse::current(fact)),
+        FactUse::Settled(DependencyKey::Fact(fact)) => Some(FactUse::settled(fact)),
+        _ => None,
+    }
+}
+
+pub type WorkGraph = Scheduler<Job, DependencyKey>;
 
 /// One independently-keyed answer a job reached, beside the whole-body one.
 /// `reads`/`outputs`/`changed` are that answer's alone, and `concluded` says
@@ -181,9 +490,14 @@ pub(crate) struct JobDerivation {
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactUse<FactKey>>,
     pub(crate) waits: Vec<FactUse<FactKey>>,
+    pub(crate) product_reads: Vec<ProductAddress>,
+    pub(crate) product_waits: Vec<ProductAddress>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
+    pub(crate) incoming_input_contributions:
+        std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
     pub(crate) derivations: Vec<JobDerivation>,
 }
 
@@ -217,8 +531,8 @@ impl World {
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
-    /// `ProtocolImplProviders`, `Executable`, `BackendProgram`,
-    /// `NativeProgram`, `FunctionSourceStash`) have no arm: their demand rides
+    /// `ProtocolImplProviders`, `Executable`,
+    /// `FunctionSourceStash`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
     /// with a single sole-producing job gets an arm here, even when that job
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
@@ -266,7 +580,6 @@ impl World {
             }
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
-            FactKey::MacroExecutable(function) => Some(Job::BuildMacroExecutable(*function)),
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
@@ -283,6 +596,12 @@ impl World {
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
+            FactKey::ExecutableFacts(executable) => Some(Job::DeriveExecutableFacts(executable.clone())),
+            FactKey::CallableConstructionTarget(key) => Some(Job::DeriveCallableConstructionTarget(key.clone())),
+            FactKey::RuntimeDemand(executable) | FactKey::RuntimeDemandInputs(executable) => {
+                Some(Job::DeriveRuntimeDemand(executable.clone()))
+            }
+            FactKey::IncomingInputSlot(slot) => Some(Job::DeriveRuntimeDemand(slot.executable.clone())),
             _ => None,
         };
         job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
@@ -293,9 +612,10 @@ impl World {
     /// when the activation is not its to mint (fz-kdt.69.1).
     ///
     /// Seeding reconstructs an activation's inputs from the key's own arrow
-    /// (`jobs::root::seed_activation`). That is the truth only where nothing
-    /// else describes them: a root entry, or a key the runtime-demand frontier
-    /// minted from a callable surface no analysis ever walked. Once
+    /// (`jobs::root::seed_activation`). That is the truth only for a key the
+    /// runtime-demand frontier minted from a callable surface no analysis ever
+    /// walked. `SeedRoot` owns root entries, and callers own the keys they
+    /// discover. Once
     /// `ActivationInputs(activation)` has a publisher, those inputs are that
     /// publisher's evidence -- a caller's call edge -- and re-minting them from
     /// the arrow would both fabricate the caller's contribution and undo the
@@ -337,7 +657,11 @@ impl World {
             self.work_graph.enqueue(job, reason);
             return true;
         }
-        if self.work_graph.output_keys(&job).contains(target_fact) {
+        if self
+            .work_graph
+            .output_keys(&job)
+            .contains(&DependencyKey::Fact(target_fact.clone()))
+        {
             // The producer claims the fact and its ground stands: a
             // re-run would republish byte-identically.
             return false;
@@ -362,8 +686,17 @@ impl World {
     /// sweep — nothing is arbitrated that nobody asked about — and the step it
     /// produces is stashed for the execution context to emit, so the wake it
     /// causes always has a movement on the public stream to name.
-    pub(crate) fn settle_quiescent(&mut self, facts: &[FactKey]) {
-        let step = self.work_graph.settle_quiescent(facts);
+    pub(crate) fn settle_quiescent_with_sessions(
+        &mut self,
+        facts: &[FactKey],
+        sessions: Option<&super::pull::ProductSessions>,
+    ) {
+        let (work_graph, types) = self.work_graph_and_types();
+        let keys = facts.iter().cloned().map(DependencyKey::Fact).collect::<Vec<_>>();
+        let step = match sessions {
+            Some(sessions) => work_graph.settle_quiescent_ordered_with_external(&keys, sessions, types),
+            None => work_graph.settle_quiescent_ordered(&keys, types),
+        };
         self.note_quiescence_step(step);
     }
 
@@ -374,10 +707,15 @@ impl World {
     /// pins the arbitration order deterministically. The scan-shaped drain
     /// pass itself is fz-kdt.46's remaining target: the edge-triggered form
     /// arbitrates the exact wait a completion left standing instead.
-    pub(crate) fn settle_quiescent_waits(&mut self) {
-        let mut facts = self.work_graph.waited_settled_facts();
-        facts.sort();
-        self.settle_quiescent(&facts);
+    pub(crate) fn settle_quiescent_waits(&mut self, sessions: Option<&super::pull::ProductSessions>) {
+        let mut facts = self
+            .work_graph
+            .waited_settled_facts()
+            .into_iter()
+            .filter_map(|key| key.fact().cloned())
+            .collect::<Vec<_>>();
+        facts.sort_by(|left, right| left.semantic_cmp(right, self.types()));
+        self.settle_quiescent_with_sessions(&facts, sessions);
     }
 
     /// Expands every blocked waiter's missing fact to its producer through
@@ -392,15 +730,14 @@ impl World {
     /// the order these calls happen in decides the order those jobs actually
     /// run — and a job that observes another job's published fact can join
     /// it under a keep-first merge, so run order is not free to vary.
-    /// `unresolved()` hands back its waits ordered by the fact's `Debug`
-    /// rendering, so one fact's several uses arrive adjacent and dropping the
+    /// `unresolved_waits()` hands back its waits in typed `FactUse` semantic
+    /// order, so one fact's several uses arrive adjacent and dropping the
     /// repeats leaves each fact once, in that same order.
     pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
         let mut facts: Vec<FactKey> = self
-            .work_graph
-            .unresolved()
+            .unresolved_waits()
             .into_iter()
-            .map(|wait| wait.fact.into_fact())
+            .filter_map(|wait| wait.fact.into_fact().fact().cloned())
             .collect();
         facts.dedup();
         facts
@@ -409,44 +746,12 @@ impl World {
             .sum()
     }
 
-    /// Expands the standing demand every submitted root carries: a root is an
-    /// external request that its entry activation be analyzed, exactly as the
-    /// product boundary treats `RootBackendProduct(root)`. The expansion only
-    /// ignites first-run analysis — once `AnalyzeActivation(entry)` has run, the
-    /// graph's own wakes carry every later revision — and it can only fire once
-    /// the seed has settled the facts that make the entry key derivable.
-    /// Returns how many entry analyses were demanded.
-    pub(crate) fn demand_root_entry_analyses(&mut self) -> u64 {
-        let roots: Vec<RootId> = self.root_ids().collect();
-        let mut demanded = 0_u64;
-        for root_id in roots {
-            let root = self.root_entry(root_id);
-            let gates = [FactKey::Recursive(root.function), FactKey::InputDemand(root.function)];
-            // A direct settled query is a settled question too: arbitrate it
-            // before answering, or a quiesced cone would gate the root's own
-            // entry analysis forever.
-            self.settle_quiescent(&gates);
-            if !gates.iter().all(|gate| self.fact_is_settled(gate)) {
-                continue;
-            }
-            let entry = self.activation_key(root_id, root.function, &root.input);
-            if self.work_graph.has_run(&Job::AnalyzeActivation(entry.clone())) {
-                continue;
-            }
-            demanded += self.demand_fact_producer(
-                &FactKey::ActivationAnalyzed(entry),
-                WorkStartReason::StandingRootFrontier,
-            );
-        }
-        demanded
-    }
-
-    /// Expands the standing demand every discovered callee activation
-    /// carries: an `Activation(key)` fact published without a settled
-    /// `ActivationAnalyzed(key)` is a standing demand for that activation's
-    /// analysis, the non-root analogue of `demand_root_entry_analyses`. Like
-    /// the root expansion, this only ignites first-run analysis — the
-    /// `has_run` check is load-bearing, not an optimization: a callee whose
+    /// Expands the standing demand every published activation carries: an
+    /// `Activation(key)` fact without a settled `ActivationAnalyzed(key)` is a
+    /// standing demand for that activation's analysis. This includes root
+    /// entries published by `SeedRoot` and caller-discovered callees published
+    /// by semantic analysis. The expansion only ignites first-run analysis —
+    /// the `has_run` check is load-bearing, not an optimization: a callee whose
     /// first run blocked (waiting on some other fact, never claiming
     /// `ActivationAnalyzed`) stays perpetually `rebased` while blocked, and
     /// `demand_fact_producer`'s rebased branch re-enqueues unconditionally on
@@ -454,49 +759,53 @@ impl World {
     /// callee would be re-run every stall pass forever. Once a callee has
     /// run at all, its own read/wait subscriptions (an unresolved wait's
     /// fact is separately covered by `demand_blocked_wait_producers`) carry
-    /// every later revision, exactly as `demand_root_entry_analyses` relies
-    /// on for roots. Retires each such key from the frontier so the working
-    /// set stays bounded. Returns how many analyses were demanded.
+    /// every later revision. Retires each such key from the frontier so the
+    /// working set stays bounded. Returns how many analyses were demanded.
     pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
         let mut demanded = 0_u64;
         let mut keys = self.activation_frontier_keys();
         // `activation_frontier` is a `HashSet<ActivationKey>` (`world.rs`):
         // its iteration order is `RandomState`-dependent. `AnalyzeActivation`
         // mints fresh `Ty` combinations (interned call-site arrows) as a side
-        // effect of running, so demanding two ready callee activations in a
+        // effect of running, so demanding two ready activations in a
         // different relative order between runs mints their arrows in a
-        // different relative order too. Sort by `StableSortKey`
-        // (`Types::display`, not raw `Ty`/`{:?}`) so the demand order is a
-        // function of the activations' own structure, not of which run's
-        // hasher happened to bucket them first.
-        keys.sort_by_cached_key(|key| key.stable_sort_key(self.types()));
+        // different relative order too. Compare the addressed arrows through
+        // their owning `Types`, never through raw intern ids, so demand order
+        // is a function of the activations' structure rather than hash buckets.
+        keys.sort_by(|left, right| left.semantic_cmp(right, self.types()));
         for key in keys {
             if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
                 self.retire_activation_frontier(&key);
                 continue;
             }
-            demanded +=
+            #[cfg(test)]
+            let traced_key = key.clone();
+            let started =
                 self.demand_fact_producer(&FactKey::ActivationAnalyzed(key), WorkStartReason::ActivationFrontier);
+            #[cfg(test)]
+            if started > 0 {
+                self.note_activation_frontier_start(traced_key);
+            }
+            demanded += started;
         }
         demanded
     }
 
-    /// Pops the next ready job, expanding the three standing demand sources
-    /// when the agenda has drained: the roots' entry-analysis demands, the
-    /// discovered callees' activation-frontier demands, and the blocked
-    /// waiters' fact->producer expansions. Every job loop (the bare drive and
-    /// the product fact-wait loops) pulls through this, so first-run
-    /// ignition is owned by the scheduler boundary, not by any job's
-    /// follow-up.
-    pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
+    /// Pops the next ready job, expanding the two standing demand sources when
+    /// the agenda has drained: published root-entry/caller-discovered-callee
+    /// activations and blocked waiters' fact->producer expansions. Every job
+    /// loop (the bare drive and the product fact-wait loops) pulls through this,
+    /// so first-run ignition is owned by the scheduler boundary, not by any
+    /// job's follow-up.
+    pub(crate) fn next_ready_job(&mut self, sessions: Option<&super::pull::ProductSessions>) -> Option<Job> {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        self.settle_quiescent_waits();
+        self.settle_quiescent_waits(sessions);
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        let ignited = self.demand_root_entry_analyses() + self.demand_activation_frontier_analyses();
+        let ignited = self.demand_activation_frontier_analyses();
         if ignited > 0
             && let Some(job) = self.work_graph.pop()
         {
@@ -510,27 +819,56 @@ impl World {
 }
 
 impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
-    pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
+    pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, DependencyKey> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
-        self.drive_until(deadline, timeout)
+        self.drive_until(deadline, timeout, true)
+    }
+
+    /// Applies only work already on the agenda (including exact wakes it
+    /// causes). Root-product reconciliation uses this boundary to publish
+    /// queued edits without expanding unrelated standing demand. It leaves
+    /// quiescent questions indexed, not half-arbitrated: the requested
+    /// product's exact fact wait settles and immediately publishes any
+    /// readiness movement it needs. Fatal or timed-out execution still exits
+    /// before the queue is drained, so the caller cannot assume edit
+    /// visibility and must reject the request.
+    pub(crate) fn drain_pending_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, DependencyKey> {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        self.drive_until(deadline, timeout, false)
     }
 
     /// Runs queued jobs until the work graph has no ready work.
     ///
-    /// Each job gets one telemetry span that closes with the job's raw effects
-    /// borrowed in place; the applied graph step rides the separate
-    /// `work_graph.applied` event that `complete_job` emits. A fatal job closes
-    /// its span, closes the drive span as fatal, and stops the loop.
+    /// Each job gets one telemetry span whose start owns job identity and whose
+    /// payload-free stop records elapsed time. The separate
+    /// `work_graph.applied` event that `complete_job` emits owns the raw
+    /// `World` and `JobCompletion` causal payload. A fatal job records the
+    /// span's exception lifecycle, closes the drive span as fatal, and stops
+    /// the loop.
     #[cfg(test)]
-    pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
-        self.drive_until(None, None)
+    pub fn drive(&mut self) -> DriveOutcome<Job, DependencyKey> {
+        if self.product_sessions.is_none() {
+            let mut sessions = super::pull::ProductSessions::default();
+            return ExecutionContext::with_product_sessions(self.world, self.telemetry, &mut sessions)
+                .drive_until(None, None, true);
+        }
+        self.drive_until(None, None, true)
     }
 
-    fn drive_until(&mut self, deadline: Option<Instant>, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
-        let ExecutionContext { world, telemetry } = self;
+    fn drive_until(
+        &mut self,
+        deadline: Option<Instant>,
+        timeout: Option<Duration>,
+        discover_standing_demand: bool,
+    ) -> DriveOutcome<Job, DependencyKey> {
+        let ExecutionContext {
+            world,
+            telemetry,
+            product_sessions,
+        } = self;
         let tel = *telemetry;
         world.clear_reported_warnings();
-        let span = tel.raw_span0_1::<DriveOutcome<Job, FactKey>>(&["fz", "compiler2", "drive"]);
+        let span = tel.raw_span0_1::<DriveOutcome<Job, DependencyKey>>(&["fz", "compiler2", "drive"]);
         let mut jobs_ran = 0_u64;
         // Facts whose producers were already demanded at a stall with no fact
         // change since: re-demanding them would re-run byte-identical jobs.
@@ -552,12 +890,24 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         break;
                     };
                     let job_span = start_job_span(tel, &job);
-                    let result = super::jobs::run(&mut ExecutionContext::new(world, tel), &job);
+                    let result = super::jobs::run(
+                        &mut ExecutionContext::with_optional_product_sessions(
+                            world,
+                            tel,
+                            product_sessions.as_deref_mut(),
+                        ),
+                        &job,
+                    );
                     match result {
                         Ok(effects) => {
                             jobs_ran += 1;
-                            let completion = ExecutionContext::new(world, tel).complete_job(job, effects);
-                            stop_job_span(job_span, world, &completion);
+                            let completion = ExecutionContext::with_optional_product_sessions(
+                                world,
+                                tel,
+                                product_sessions.as_deref_mut(),
+                            )
+                            .complete_job(job, effects);
+                            stop_job_span(job_span);
                             changed_since_stall |= !completion.changed.is_empty();
                         }
                         Err(_) => {
@@ -568,10 +918,25 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         }
                     }
                 }
-                // The agenda drained. Three standing demand sources remain, all
-                // pulls: every submitted root demands its entry analysis, every
-                // discovered callee activation not yet analyzed demands its own
-                // analysis (`demand_activation_frontier_analyses`), and every
+                match ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
+                    .drive_product_requests()
+                {
+                    Ok(true) => continue 'drive,
+                    Ok(false) => {}
+                    Err((address, _)) => {
+                        break 'outcome DriveOutcome::DependencyFailed {
+                            dependency: DependencyKey::Product(address),
+                        };
+                    }
+                }
+                if !discover_standing_demand {
+                    world.clear_unresolved_diagnostics();
+                    ExecutionContext::new(world, tel).flush_reported_warnings();
+                    break 'outcome DriveOutcome::Resolved;
+                }
+                // The agenda drained. Two standing demand sources remain, both
+                // pulls: every published activation not yet analyzed demands its
+                // own analysis (`demand_activation_frontier_analyses`), and every
                 // blocked waiter's fact names its single producer through the
                 // fact->producer map — the same expansion the product drivers
                 // perform when a fact wait finds an empty agenda. Only a genuine
@@ -583,31 +948,41 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // a keep-first merge, so the order this loop pokes producers in
                 // is still observable downstream — which is why `unresolved()`
                 // orders its waits by data rather than by map order.
+                if !world.has_drain_demand() {
+                    break 'drive;
+                }
+                world.work_graph.note_drain_discovery_sweep();
                 if std::mem::take(&mut changed_since_stall) {
                     stall_demanded.clear();
                 }
                 // The agenda is empty, so every settled question standing over
                 // a quiesced cone can be answered now (fz-kdt.44). Doing it
-                // before the demand expansions is what lets a root's own
-                // recursion gate — a direct settled query — pass.
-                world.settle_quiescent_waits();
-                let mut producer_pokes =
-                    world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
-                let unresolved = world.work_graph.unresolved();
+                // before the demand expansions answers any settled questions
+                // left by the work that just quiesced.
+                world.settle_quiescent_waits(product_sessions.as_deref());
+                let mut producer_pokes = world.demand_activation_frontier_analyses();
+                let unresolved = world.unresolved_waits();
                 for wait in &unresolved {
-                    if stall_demanded.insert(wait.fact.fact().clone()) {
-                        producer_pokes +=
-                            world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
+                    if let DependencyKey::Fact(fact) = wait.fact.fact()
+                        && stall_demanded.insert(fact.clone())
+                    {
+                        producer_pokes += world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion);
                     }
                 }
                 if producer_pokes > 0 {
+                    let mut demanded_facts = stall_demanded.iter().cloned().collect::<Vec<_>>();
+                    demanded_facts.sort_by(|left, right| left.semantic_cmp(right, world.types()));
                     tel.raw_event2(
                         &["fz", "compiler2", "drive", "demand_on_stall"],
                         &producer_pokes,
-                        &stall_demanded,
+                        &demanded_facts,
                     );
                 }
                 let quiesced = flush_quiescence(world, tel);
+                for step in &quiesced {
+                    ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
+                        .publish_dependency_movements(&step.movements);
+                }
                 if quiescence_woke_work(&quiesced) {
                     // The arbiter satisfied a standing settled wait: real work
                     // is queued, so this drain is not a stall however few
@@ -625,8 +1000,17 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Resolved
             } else {
-                let waits = world.work_graph.unresolved();
-                ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&waits);
+                let waits = world.unresolved_waits();
+                let fact_waits = waits
+                    .iter()
+                    .filter_map(|wait| {
+                        as_fact_use(wait.fact.clone()).map(|fact| super::deps::UnresolvedWait {
+                            fact,
+                            jobs: wait.jobs.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&fact_waits);
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Unresolved { waits }
             }
@@ -644,7 +1028,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
 pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
-) -> Vec<super::AppliedStep<Job, FactKey>> {
+) -> Vec<super::AppliedStep<Job, DependencyKey>> {
     let steps = world.take_quiescence_steps();
     for step in &steps {
         tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
@@ -653,7 +1037,7 @@ pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
 }
 
 /// Whether any of `steps` started work.
-pub(super) fn quiescence_woke_work(steps: &[super::AppliedStep<Job, FactKey>]) -> bool {
+pub(super) fn quiescence_woke_work(steps: &[super::AppliedStep<Job, DependencyKey>]) -> bool {
     steps.iter().any(|step| !step.wakes.is_empty())
 }
 
@@ -664,14 +1048,10 @@ fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option
 pub(super) fn start_job_span<'a, T: RawSpanTelemetry>(
     tel: &'a T,
     job: &Job,
-) -> <T as RawSpanTelemetry>::Span1_2<'a, Job, World, super::JobCompletion> {
-    tel.raw_span1_2::<Job, World, super::JobCompletion>(&["fz", "compiler2", "job"], job)
+) -> <T as RawSpanTelemetry>::Span1_0<'a, Job> {
+    tel.raw_span1_0::<Job>(&["fz", "compiler2", "job"], job)
 }
 
-pub(super) fn stop_job_span(
-    span: impl RawSpanStop2<World, super::JobCompletion>,
-    world: &World,
-    completion: &super::JobCompletion,
-) {
-    span.stop2(world, completion);
+pub(super) fn stop_job_span(span: impl RawSpanStop0) {
+    span.stop0();
 }

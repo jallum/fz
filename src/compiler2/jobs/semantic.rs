@@ -13,15 +13,12 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::body::{
-    CallSiteId, ControlDestination, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
-    ValueId,
+    CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::super::identity::{
-    ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
-};
+use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -234,6 +231,7 @@ pub(super) fn analyze_activation(
     analysis_calls = coalesce_call_emissions(world, tel, activation, analysis_calls, &mut reads, &mut waits)?;
 
     let mut emitted_activations = HashSet::new();
+    let mut emitted_activation_inputs = HashSet::new();
     let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
@@ -257,9 +255,14 @@ pub(super) fn analyze_activation(
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
                 outputs.push(FactKey::Activation(callee_activation.key.clone()));
+                outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
             }
-            outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
-            activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
+            // One analysis is one publisher. The same exact evidence reached
+            // through several rows or arms is therefore one contribution,
+            // while another row for this key remains a distinct alternative.
+            if emitted_activation_inputs.insert((&callee_activation.key, callee_activation.inputs.as_slice())) {
+                activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
+            }
             // No wait+push pair here: `prepare_function_call` only `reads`
             // the callee's `ReturnType` (so mutual recursion cannot
             // deadlock), so nothing ever blocks on the callee's analysis
@@ -296,6 +299,7 @@ pub(super) fn analyze_activation(
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
+            input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
             entry_reachability,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
@@ -1250,6 +1254,7 @@ fn call_emission_for_function(
                     surface_inputs: input_types,
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty,
                 }],
                 return_ty,
@@ -1272,6 +1277,7 @@ fn call_emission_for_function(
                 surface_inputs: input_types.clone(),
                 activation: Some(activation),
                 activation_inputs: Some(input_types),
+                extern_params: callee_extern_params(world, function),
                 return_ty,
             }],
             return_ty,
@@ -1318,6 +1324,7 @@ fn resolve_function_call(
         return Ok((
             CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
+                    world,
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
                     None,
@@ -1339,6 +1346,7 @@ fn resolve_function_call(
                 surface_inputs: input_types.clone(),
                 activation: Some(activation.clone()),
                 activation_inputs: Some(input_types.clone()),
+                extern_params: callee_extern_params(world, function),
                 return_ty,
             }],
             return_ty,
@@ -1460,6 +1468,7 @@ fn resolve_protocol_call(
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
+            world,
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
             Some(activation.clone()),
@@ -1624,6 +1633,7 @@ fn resolve_closure_call(
                 let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
                 return_ty = join_evidence(world, return_ty, target_return);
                 let rebuilt_target = call_target_summary(
+                    world,
                     target.callee,
                     arg_types.clone(),
                     target.activation,
@@ -1702,7 +1712,14 @@ fn require_callee_prerequisites(
 ) -> bool {
     let contract_ready = require_function_contract(world, function, reads, waits);
     let keying_ready = world.require_activation_key_facts(function, reads, waits);
-    contract_ready && keying_ready
+    let lowered = FactKey::LoweredBody(function);
+    let lowered_ready = world.has_fact(&lowered);
+    if lowered_ready {
+        reads.push(lowered);
+    } else {
+        waits.insert(lowered);
+    }
+    contract_ready && keying_ready && lowered_ready
 }
 
 /// Which call a named callee becomes once its prerequisites are in.
@@ -2066,185 +2083,34 @@ fn refine_protocol_target_inputs(world: &mut World, input_types: &[Ty], receiver
 }
 
 fn call_target_summary(
+    world: &World,
     callee: SelectedCallee,
     surface_inputs: Vec<Ty>,
     activation: Option<ActivationKey>,
     activation_inputs: Option<Vec<Ty>>,
     return_ty: Option<Ty>,
 ) -> CallTargetSummary {
+    let extern_params = match callee {
+        SelectedCallee::Function(function) => callee_extern_params(world, function),
+        SelectedCallee::ProviderBoundary(_) => None,
+    };
     CallTargetSummary {
         callee,
         surface_inputs,
         activation,
         activation_inputs,
+        extern_params,
         return_ty,
     }
 }
 
-pub(super) fn executable_callsite_needs(
-    body: &LoweredBody,
-    reachable_clauses: &[u32],
-    executable_need: ExecutableNeed,
-) -> HashMap<CallSiteId, ExecutableNeed> {
-    let mut needs = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return needs;
-    };
-    for clause_id in reachable_clauses {
-        collect_clause_callsite_needs(&clauses[*clause_id as usize], entries, executable_need, &mut needs);
-    }
-    needs
-}
-
-fn collect_clause_callsite_needs(
-    clause: &LoweredClause,
-    entries: &[LoweredEntry],
-    executable_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) {
-    collect_entry_callsite_needs(entries, clause.entry, executable_need, out);
-}
-
-fn collect_entry_callsite_needs(
-    entries: &[LoweredEntry],
-    entry_id: super::super::body::ControlEntryId,
-    outgoing_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) -> Option<usize> {
-    let entry = &entries[entry_id.as_u32() as usize];
-    let mut tuple_demands = HashMap::new();
-    match &entry.tail {
-        LoweredTail::Value { value, dest } => {
-            if let Some(arity) = destination_need(entries, dest, outgoing_need, out) {
-                tuple_demands.insert(*value, arity);
-            }
-        }
-        LoweredTail::DirectCall {
-            value, callsite, dest, ..
-        }
-        | LoweredTail::ClosureCall {
-            value, callsite, dest, ..
-        } => {
-            let need = destination_need(entries, dest, outgoing_need, out)
-                .map(ExecutableNeed::TupleFields)
-                .unwrap_or(ExecutableNeed::Value);
-            record_callsite_need(out, *callsite, need);
-            if let ExecutableNeed::TupleFields(arity) = need {
-                tuple_demands.insert(*value, arity);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
-            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_callsite_needs(entries, *arm_entry, outgoing_need, out);
-            }
-            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
-        }
-        LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                let _ = collect_entry_callsite_needs(entries, clause.entry, outgoing_need, out);
-            }
-            if let Some(after) = &receive.after {
-                let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-    for step in entry.steps.iter().rev() {
-        match step {
-            LoweredStep::AssertTuple { source, arity } => {
-                tuple_demands.insert(*source, *arity);
-            }
-            LoweredStep::Const { value, .. }
-            | LoweredStep::Tuple { value, .. }
-            | LoweredStep::List { value, .. }
-            | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
-            | LoweredStep::Struct { value, .. }
-            | LoweredStep::Bitstring { value, .. }
-            | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::Lambda { value, .. }
-            | LoweredStep::BinaryOp { value, .. }
-            | LoweredStep::UnaryOp { value, .. }
-            | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
-                tuple_demands.remove(value);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                tuple_demands.remove(head);
-                tuple_demands.remove(tail);
-            }
-            LoweredStep::BitstringInit { reader, .. } => {
-                tuple_demands.remove(reader);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                tuple_demands.remove(ok);
-                tuple_demands.remove(value);
-                tuple_demands.remove(next_reader);
-            }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-    entry
-        .origin
-        .input_value()
-        .and_then(|value| tuple_demands.remove(&value))
-}
-
-fn destination_need(
-    entries: &[LoweredEntry],
-    dest: &ControlDestination,
-    outgoing_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) -> Option<usize> {
-    match dest {
-        ControlDestination::Return => match outgoing_need {
-            ExecutableNeed::Value => None,
-            ExecutableNeed::TupleFields(arity) => Some(arity),
-        },
-        ControlDestination::Deliver(entry_id) => collect_entry_callsite_needs(entries, *entry_id, outgoing_need, out),
+fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
+    match world.lowered_body(function) {
+        LoweredBody::Extern { signature } => Some(signature.params.len()),
+        LoweredBody::Clauses { .. } => None,
     }
 }
 
-fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite: CallSiteId, observed: ExecutableNeed) {
-    use std::collections::hash_map::Entry;
-
-    match out.entry(callsite) {
-        Entry::Vacant(entry) => {
-            entry.insert(observed);
-        }
-        Entry::Occupied(mut entry) => match (*entry.get(), observed) {
-            (ExecutableNeed::Value, ExecutableNeed::Value)
-            | (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => {}
-            (ExecutableNeed::Value, tuple_fields @ ExecutableNeed::TupleFields(_)) => {
-                entry.insert(tuple_fields);
-            }
-            (ExecutableNeed::TupleFields(existing), ExecutableNeed::TupleFields(observed)) => {
-                assert_eq!(
-                    existing, observed,
-                    "one callsite cannot require two different tuple-field return arities"
-                );
-            }
-        },
-    }
-}
-
-/// Read one value's evidence. `None` means the path that defines it has
-/// produced no evidence this round — the reader contributes nothing and is
-/// re-run when the evidence lands. Absence never defaults to a type.
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
     values.get(&value).copied()
 }
@@ -2478,6 +2344,120 @@ fn none_ty(world: &mut World) -> Ty {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler2::drive::ExecutionContext;
+    use crate::compiler2::{DriveOutcome, ExecutableNeed};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn analyze_activation_emits_each_exact_callee_input_once_per_publisher() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("activation_contribution_owners.fz".to_string()),
+            r#"
+fn sink(value), do: if value == :recur, do: sink(value), else: 0
+fn other(_value), do: 0
+
+fn first() do
+  sink([1])
+  sink([1])
+  other([1])
+  sink([:ok])
+end
+
+fn second(), do: sink([1])
+
+fn main() do
+  first()
+  second()
+end
+"#
+            .to_string(),
+        );
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        assert!(
+            matches!(ExecutionContext::new(&mut world, &tel).drive(), DriveOutcome::Resolved),
+            "the production semantic pipeline should settle the ownership fixture",
+        );
+
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom_lit("ok");
+        let int_list = world.types_mut().non_empty_list(int);
+        let atom_list = world.types_mut().non_empty_list(atom);
+        let first = world.reference_function(ModuleId::GLOBAL, "first", 0);
+        let second = world.reference_function(ModuleId::GLOBAL, "second", 0);
+        let sink = world.reference_function(ModuleId::GLOBAL, "sink", 1);
+        let other = world.reference_function(ModuleId::GLOBAL, "other", 1);
+        let first_activation = world.activation_key(root, first, &[]);
+        let second_activation = world.activation_key(root, second, &[]);
+        let sink_activation = world.activation_key(root, sink, &[int_list]);
+        let other_activation = world.activation_key(root, other, &[int_list]);
+
+        let first_effects = analyze_activation(&mut world, &tel, &first_activation)
+            .expect("the actual AnalyzeActivation job should conclude");
+        assert_eq!(
+            first_effects.activation_input_contributions,
+            vec![
+                (sink_activation.clone(), vec![int_list]),
+                (other_activation, vec![int_list]),
+                (sink_activation.clone(), vec![atom_list]),
+            ],
+            "the emission boundary should remove only the repeated key+row and preserve first-observed order",
+        );
+
+        let first_job = Job::AnalyzeActivation(first_activation.clone());
+        let second_job = Job::AnalyzeActivation(second_activation.clone());
+        world.complete_job(first_job.clone(), first_effects);
+        let mut replacement = world.lowered_body(first);
+        let LoweredBody::Clauses { entries, .. } = &mut replacement else {
+            panic!("the source fixture should lower first/0 to clauses");
+        };
+        for entry in entries {
+            entry.steps.clear();
+            entry.tail = LoweredTail::Halt {
+                atom: "withdrawn".to_string(),
+            };
+        }
+        assert!(world.define_lowered_body(first, replacement));
+        world.complete_job(
+            Job::LowerFunction(first),
+            JobEffects {
+                outputs: vec![FactKey::LoweredBody(first)],
+                changed: vec![FactKey::LoweredBody(first)],
+                ..JobEffects::default()
+            },
+        );
+        assert!(
+            world.work_graph.rebased(&first_job),
+            "a shifted body should rebase its AnalyzeActivation publisher",
+        );
+        let withdrawn_effects = analyze_activation(&mut world, &tel, &first_activation)
+            .expect("the rebased AnalyzeActivation job should conclude from its replacement body");
+        assert!(
+            withdrawn_effects.activation_input_contributions.is_empty(),
+            "the replacement body reaches no callee contributions",
+        );
+        world.complete_job(first_job.clone(), withdrawn_effects);
+
+        let second_effects = analyze_activation(&mut world, &tel, &second_activation)
+            .expect("the second actual AnalyzeActivation job should conclude after the first rebases");
+        assert_eq!(
+            second_effects.activation_input_contributions,
+            vec![(sink_activation.clone(), vec![int_list])],
+            "another AnalyzeActivation publisher must retain ownership of the same exact contribution",
+        );
+        world.complete_job(second_job.clone(), second_effects);
+
+        let shared_activation = FactKey::Activation(sink_activation.clone());
+        let shared_inputs = FactKey::ActivationInputs(sink_activation);
+        assert!(
+            !world.job_outputs(&first_job).contains(&shared_activation)
+                && world.job_outputs(&second_job).contains(&shared_activation)
+                && world.job_outputs(&second_job).contains(&shared_inputs),
+            "with the rebased publisher withdrawn, the second publisher should independently keep the shared activation and its input contribution",
+        );
+        assert!(world.has_fact(&shared_activation) && world.has_fact(&shared_inputs));
+    }
 
     /// The three answers a closure callee can give, and why they are three and
     /// not two.

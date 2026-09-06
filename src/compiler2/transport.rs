@@ -1,9 +1,8 @@
 //! Shared transport descriptor vocabulary.
 //!
-//! This module is deliberately below the root-scoped `MaterializedTransportPlan`
-//! (`artifact.rs`): it owns immutable descriptor interners and root-independent
-//! symbols only. Positions may mention semantic body evidence, but descriptor
-//! keys must not.
+//! This module owns immutable descriptor interners and root-independent symbols.
+//! Position-owned products retain these descriptors in each executable's ABI.
+//! Positions may mention semantic body evidence, but descriptor keys must not.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -12,7 +11,8 @@ use std::ops::Range;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId};
-use super::types::Ty;
+use super::semantic::SemanticOrd;
+use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,13 +32,32 @@ impl ShapeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransportCarrier {
     Absent,
-    ValueRef,
+    ValueRef(LaneId),
+}
+
+impl TransportCarrier {
+    pub const fn is_value_ref(self) -> bool {
+        matches!(self, Self::ValueRef(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransportLayout {
     pub structural: ShapeId,
     pub carrier: TransportCarrier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalLane {
+    pub structural: ShapeId,
+    pub lane: LaneId,
+    pub source: PhysicalLaneSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalLaneSource {
+    Structural,
+    Carrier,
 }
 
 impl TransportLayout {
@@ -56,6 +75,11 @@ pub struct LaneId(u32);
 impl LaneId {
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
     }
 }
 
@@ -136,7 +160,7 @@ impl InternedId for BoundaryId {
 pub enum ShapeDescr {
     Nothing,
     Lane(LaneId),
-    Tuple(Box<[ShapeId]>),
+    Tuple(Box<[TransportLayout]>),
     Callable(CallableId),
 }
 
@@ -180,79 +204,15 @@ pub struct ExecutableSymbol {
     pub need: ExecutableNeed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CodegenLaneRepr {
-    ValueRef,
-    RawInt,
-    RawF64,
-    RawAtom,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CodegenSeam {
-    FunctionEntry {
-        executable: ExecutableSymbol,
-        semantic_index: usize,
-    },
-    BlockParam {
-        executable: ExecutableSymbol,
-        entry: ControlEntryId,
-    },
-    EntryCapture {
-        executable: ExecutableSymbol,
-        entry: ControlEntryId,
-        capture_index: usize,
-    },
-    ReturnDelivery {
-        executable: ExecutableSymbol,
-    },
-    ContinuationEntry {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-        entry: ControlEntryId,
-    },
-    ReturnContinuation {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-    },
-    TailCall {
-        executable: ExecutableSymbol,
-        callsite: CallSiteId,
-    },
-    CallableBoundary {
-        boundary: BoundaryId,
-    },
-    ExternBoundary {
-        executable: ExecutableSymbol,
-    },
-    FirstClassPublication {
-        boundary: BoundaryId,
-    },
-}
-
-impl CodegenSeam {
-    #[cfg(test)]
-    pub(crate) fn executable(&self) -> Option<&ExecutableSymbol> {
-        match self {
-            Self::FunctionEntry { executable, .. }
-            | Self::BlockParam { executable, .. }
-            | Self::EntryCapture { executable, .. }
-            | Self::ReturnDelivery { executable }
-            | Self::ContinuationEntry { executable, .. }
-            | Self::ReturnContinuation { executable, .. }
-            | Self::TailCall { executable, .. }
-            | Self::ExternBoundary { executable } => Some(executable),
-            Self::CallableBoundary { .. } | Self::FirstClassPublication { .. } => None,
-        }
+impl SemanticOrd<Types> for ExecutableSymbol {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        self.activation
+            .function
+            .cmp(&other.activation.function)
+            .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
+            .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
+            .then_with(|| self.need.cmp(&other.need))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CodegenSeamFact {
-    pub seam: CodegenSeam,
-    pub shape: Option<ShapeId>,
-    pub lane: LaneId,
-    pub repr: CodegenLaneRepr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -260,16 +220,15 @@ pub struct CallableDescr {
     pub function: Option<FunctionId>,
     /// The callable's user-visible parameter count — what a rendered fun
     /// reports (`#fn<id/arity>`, Elixir's `#Function<.../arity>`). It is fixed
-    /// by the source, unlike the capture lanes below, which demand may elide
-    /// to nothing. Functionally determined by `function`, so it never splits
-    /// an interner pool (fz-gk4).
+    /// by the source, unlike the physical capture layouts below, which demand
+    /// may elide to nothing. Functionally determined by `function`, so it
+    /// never splits an interner pool (fz-gk4).
     pub arity: u16,
     /// The settled types of the closure's lexical captures. They remain part
     /// of callable identity even when demand elides every physical capture
     /// lane, preventing distinct groundings from pooling at the interner.
     pub capture_tys: Box<[Ty]>,
-    pub capture_shapes: Box<[ShapeId]>,
-    pub capture_lanes: Box<[LaneId]>,
+    pub capture_layouts: Box<[TransportLayout]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,7 +248,8 @@ pub struct CallableConstructionFact {
     pub(crate) selection: Option<PatternDispatchPlan<Ty>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct CallableConstructionOwner {
     pub layout: TransportLayout,
     pub construction: Option<CallableConstructionFact>,
@@ -325,10 +285,8 @@ pub struct CallableDirectEdge {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BoundaryDescr {
     pub callable: CallableId,
-    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub surface_arg_layouts: Box<[TransportLayout]>,
     pub published_value_lane: LaneId,
-    pub published_capture_lanes: Box<[LaneId]>,
-    pub published_arg_lanes: Box<[LaneId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,6 +344,84 @@ impl TransportPosition {
     }
 }
 
+impl SemanticOrd<Types> for TransportPosition {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        transport_position_rank(self)
+            .cmp(&transport_position_rank(other))
+            .then_with(|| self.executable().semantic_cmp(other.executable(), types))
+            .then_with(|| match (self, other) {
+                (
+                    Self::ExecutableInput {
+                        semantic_index: left, ..
+                    },
+                    Self::ExecutableInput {
+                        semantic_index: right, ..
+                    },
+                ) => left.cmp(right),
+                (
+                    Self::ResumePayload {
+                        callsite: left_callsite,
+                        entry: left_entry,
+                        ..
+                    },
+                    Self::ResumePayload {
+                        callsite: right_callsite,
+                        entry: right_entry,
+                        ..
+                    },
+                ) => left_callsite
+                    .cmp(right_callsite)
+                    .then_with(|| left_entry.as_u32().cmp(&right_entry.as_u32())),
+                (Self::ReturnPayload { callsite: left, .. }, Self::ReturnPayload { callsite: right, .. }) => {
+                    left.cmp(right)
+                }
+                (
+                    Self::CallArg {
+                        callsite: left_callsite,
+                        semantic_index: left_index,
+                        ..
+                    },
+                    Self::CallArg {
+                        callsite: right_callsite,
+                        semantic_index: right_index,
+                        ..
+                    },
+                ) => left_callsite
+                    .cmp(right_callsite)
+                    .then_with(|| left_index.cmp(right_index)),
+                (
+                    Self::EntryCapture {
+                        entry: left_entry,
+                        capture_index: left_index,
+                        ..
+                    },
+                    Self::EntryCapture {
+                        entry: right_entry,
+                        capture_index: right_index,
+                        ..
+                    },
+                ) => left_entry
+                    .as_u32()
+                    .cmp(&right_entry.as_u32())
+                    .then_with(|| left_index.cmp(right_index)),
+                (Self::Value { value: left, .. }, Self::Value { value: right, .. }) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+fn transport_position_rank(position: &TransportPosition) -> u8 {
+    match position {
+        TransportPosition::CallArg { .. } => 0,
+        TransportPosition::EntryCapture { .. } => 1,
+        TransportPosition::ExecutableInput { .. } => 2,
+        TransportPosition::ExecutableReturn { .. } => 3,
+        TransportPosition::ResumePayload { .. } => 4,
+        TransportPosition::ReturnPayload { .. } => 5,
+        TransportPosition::Value { .. } => 6,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TransportStore {
     interners: TransportInterners,
@@ -422,50 +458,104 @@ impl TransportInterners {
         self.shapes.get(id)
     }
 
+    pub fn shape_contains_callable(&self, shape: ShapeId) -> bool {
+        match self.shape(shape) {
+            ShapeDescr::Callable(_) => true,
+            ShapeDescr::Tuple(fields) => fields
+                .iter()
+                .any(|field| self.shape_contains_callable(field.structural)),
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+        }
+    }
+
     pub fn shape_width(&self, shape: ShapeId) -> usize {
-        self.shape_lane_ids(shape).len()
+        match self.shape(shape) {
+            ShapeDescr::Nothing => 0,
+            ShapeDescr::Lane(_) => 1,
+            ShapeDescr::Tuple(fields) => fields.iter().copied().map(|field| self.layout_width(field)).sum(),
+            ShapeDescr::Callable(callable) => self
+                .callable(*callable)
+                .capture_layouts
+                .iter()
+                .copied()
+                .map(|capture| self.layout_width(capture))
+                .sum(),
+        }
+    }
+
+    pub fn layout_width(&self, layout: TransportLayout) -> usize {
+        match layout.carrier {
+            TransportCarrier::Absent => self.shape_width(layout.structural),
+            TransportCarrier::ValueRef(_) => 1,
+        }
     }
 
     pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
+        self.shape_physical_lanes(shape)
+            .into_iter()
+            .map(|physical| physical.lane)
+            .collect()
+    }
+
+    pub fn layout_lane_ids(&self, layout: TransportLayout) -> Vec<LaneId> {
+        self.layout_physical_lanes(layout)
+            .into_iter()
+            .map(|physical| physical.lane)
+            .collect()
+    }
+
+    pub fn shape_physical_lanes(&self, shape: ShapeId) -> Vec<PhysicalLane> {
+        let mut lanes = Vec::new();
+        self.push_shape_physical_lanes(shape, &mut lanes);
+        lanes
+    }
+
+    pub fn layout_physical_lanes(&self, layout: TransportLayout) -> Vec<PhysicalLane> {
+        let mut lanes = Vec::new();
+        self.push_layout_physical_lanes(layout, &mut lanes);
+        lanes
+    }
+
+    fn push_shape_physical_lanes(&self, shape: ShapeId, lanes: &mut Vec<PhysicalLane>) {
         match self.shape(shape) {
-            ShapeDescr::Nothing => Vec::new(),
-            ShapeDescr::Lane(lane) => vec![*lane],
-            ShapeDescr::Tuple(fields) => fields
-                .iter()
-                .copied()
-                .flat_map(|field| self.shape_lane_ids(field))
-                .collect(),
-            ShapeDescr::Callable(callable) => self.callable(*callable).capture_lanes.to_vec(),
+            ShapeDescr::Nothing => {}
+            ShapeDescr::Lane(lane) => lanes.push(PhysicalLane {
+                structural: shape,
+                lane: *lane,
+                source: PhysicalLaneSource::Structural,
+            }),
+            ShapeDescr::Tuple(fields) => {
+                for field in fields.iter().copied() {
+                    self.push_layout_physical_lanes(field, lanes);
+                }
+            }
+            ShapeDescr::Callable(callable) => {
+                for capture in self.callable(*callable).capture_layouts.iter().copied() {
+                    self.push_layout_physical_lanes(capture, lanes);
+                }
+            }
         }
     }
 
-    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-        match self.shape(shape) {
-            ShapeDescr::Nothing => Vec::new(),
-            ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-            ShapeDescr::Tuple(fields) => fields
-                .iter()
-                .copied()
-                .flat_map(|field| self.shape_leaf_lanes(field))
-                .collect(),
-            ShapeDescr::Callable(callable) => self
-                .callable(*callable)
-                .capture_lanes
-                .iter()
-                .copied()
-                .map(|lane| (shape, lane))
-                .collect(),
+    fn push_layout_physical_lanes(&self, layout: TransportLayout, lanes: &mut Vec<PhysicalLane>) {
+        match layout.carrier {
+            TransportCarrier::Absent => self.push_shape_physical_lanes(layout.structural, lanes),
+            TransportCarrier::ValueRef(lane) => lanes.push(PhysicalLane {
+                structural: layout.structural,
+                lane,
+                source: PhysicalLaneSource::Carrier,
+            }),
         }
     }
 
-    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, Range<usize>)>> {
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, Range<usize>)>> {
         let ShapeDescr::Tuple(fields) = self.shape(shape) else {
             return None;
         };
         let mut offset = 0_usize;
         let mut spans = Vec::with_capacity(fields.len());
         for field in fields.iter().copied() {
-            let width = self.shape_width(field);
+            let width = self.layout_width(field);
             let end = offset
                 .checked_add(width)
                 .expect("transport tuple field lane span overflow");

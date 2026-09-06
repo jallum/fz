@@ -10,7 +10,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
@@ -23,22 +23,21 @@ use crate::source::Span;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::CodeId;
-use super::artifact::{
-    BackendProgram, BackendProgramMap, MacroExecutable, MacroExecutableMap, NativeProgram, NativeProgramMap,
-};
+use super::artifact::BackendProgram;
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
+use super::drive::{DependencyKey, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
-#[cfg(test)]
 use super::facts::FactUse;
 use super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
+use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{
     BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
 };
@@ -54,11 +53,14 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
+use super::scheduler::ExternalDependencyStates;
 use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
+    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, CallableConstructionTargetKey,
+    ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
+    TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -68,7 +70,8 @@ use super::structdef::{
     StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
 };
 use super::transport::{
-    BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
+    BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportLayout,
+    TransportStore,
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
@@ -139,9 +142,12 @@ pub struct World {
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
-    backend: BackendProgramMap,
-    macro_executables: MacroExecutableMap,
-    native: NativeProgramMap,
+    executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
+    callable_construction_targets: HashMap<CallableConstructionTargetKey, ExecutableKey>,
+    runtime_demand_type_projections: HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>>,
+    runtime_demands: HashMap<ExecutableKey, std::rc::Rc<ExecutableRuntimeDemand>>,
+    runtime_demand_input_contributions: RuntimeDemandInputMap<Job>,
+    incoming_input_contributions: ContributionMap<InputSlot, Job, IncomingInputSources>,
     roots: RootMap,
     macro_roots: HashMap<FunctionId, RootId>,
     namespaces: NamespaceStore,
@@ -160,19 +166,22 @@ pub struct World {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
-    /// Discovered callee activations whose `ActivationAnalyzed` fact is not
-    /// yet settled: the standing demand `drive::demand_activation_frontier_analyses`
-    /// expands, the non-root analogue of the roots' own standing demand.
+    /// Published activations whose `ActivationAnalyzed` fact is not yet
+    /// settled: the standing demand `drive::demand_activation_frontier_analyses`
+    /// expands. Root entries and caller-discovered callees share this one
+    /// frontier.
     /// `complete_job` is the sole maintenance site — it inserts a key when a
     /// job outputs `Activation(key)` (unless already settled) and removes it
     /// once `ActivationAnalyzed(key)` settles.
     activation_frontier: HashSet<ActivationKey>,
+    #[cfg(test)]
+    activation_frontier_starts: Vec<ActivationKey>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
     /// what lets a settled question be arbitrated from a `World` method that
     /// holds no telemetry handle.
-    quiescence_steps: Vec<super::AppliedStep<Job, FactKey>>,
+    quiescence_steps: Vec<super::AppliedStep<Job, DependencyKey>>,
     pub(crate) work_graph: WorkGraph,
     #[cfg(test)]
     telemetry_query_count: Cell<u64>,
@@ -180,13 +189,13 @@ pub struct World {
 
 pub(crate) struct JobCompletion {
     pub(crate) job: Job,
-    pub(crate) step: super::AppliedStep<Job, FactKey>,
+    pub(crate) step: super::AppliedStep<Job, DependencyKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
     pub(crate) rebased: bool,
 }
 
 impl std::ops::Deref for JobCompletion {
-    type Target = super::AppliedStep<Job, FactKey>;
+    type Target = super::AppliedStep<Job, DependencyKey>;
 
     fn deref(&self) -> &Self::Target {
         &self.step
@@ -223,6 +232,10 @@ impl Default for World {
 }
 
 impl World {
+    pub(crate) fn work_graph_and_types(&mut self) -> (&mut WorkGraph, &Types) {
+        (&mut self.work_graph, &self.types)
+    }
+
     #[cfg(test)]
     pub(crate) fn telemetry_query_count(&self) -> u64 {
         self.telemetry_query_count.get()
@@ -257,9 +270,12 @@ impl World {
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
-            backend: BackendProgramMap::new(),
-            macro_executables: MacroExecutableMap::new(),
-            native: NativeProgramMap::new(),
+            executable_facts: HashMap::new(),
+            callable_construction_targets: HashMap::new(),
+            runtime_demand_type_projections: HashMap::new(),
+            runtime_demands: HashMap::new(),
+            runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
+            incoming_input_contributions: ContributionMap::new(),
             roots: RootMap::new(),
             macro_roots: HashMap::new(),
             namespaces: NamespaceStore::new(),
@@ -272,6 +288,8 @@ impl World {
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             activation_frontier: HashSet::new(),
+            #[cfg(test)]
+            activation_frontier_starts: Vec::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -294,15 +312,41 @@ impl World {
     }
 
     pub(crate) fn telemetry_counts(&self) -> (usize, usize, usize) {
-        (
-            self.code.len(),
-            self.roots.ids().count(),
-            self.activation_frontier.len(),
-        )
+        (self.code.len(), self.roots.len(), self.activation_frontier.len())
     }
 
     pub(crate) fn types_mut(&mut self) -> &mut Types {
         &mut self.types
+    }
+
+    pub(crate) fn runtime_demand_type_projection(&self, ty: Ty) -> Option<&std::rc::Rc<RuntimeDemandTypeProjection>> {
+        self.runtime_demand_type_projections.get(&ty)
+    }
+
+    pub(crate) fn runtime_demand_type_projections(&self) -> &HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>> {
+        &self.runtime_demand_type_projections
+    }
+
+    pub(crate) fn memoize_runtime_demand_type_projection(
+        &mut self,
+        ty: Ty,
+        projection: RuntimeDemandTypeProjection,
+    ) -> std::rc::Rc<RuntimeDemandTypeProjection> {
+        match self.runtime_demand_type_projections.entry(ty) {
+            std::collections::hash_map::Entry::Occupied(current) => {
+                assert_eq!(
+                    current.get().as_ref(),
+                    &projection,
+                    "one interned type has one runtime-demand projection"
+                );
+                std::rc::Rc::clone(current.get())
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let projection = std::rc::Rc::new(projection);
+                entry.insert(std::rc::Rc::clone(&projection));
+                projection
+            }
+        }
     }
 
     /// The runtime boundary: hand the backend interpreter the types and the
@@ -334,15 +378,31 @@ impl World {
         self.transport.interners().shape_width(shape)
     }
 
+    pub fn layout_width(&self, layout: TransportLayout) -> usize {
+        self.transport.interners().layout_width(layout)
+    }
+
     pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
         self.transport.interners().shape_lane_ids(shape)
     }
 
-    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-        self.transport.interners().shape_leaf_lanes(shape)
+    pub fn layout_lane_ids(&self, layout: TransportLayout) -> Vec<LaneId> {
+        self.transport.interners().layout_lane_ids(layout)
     }
 
-    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, std::ops::Range<usize>)>> {
+    pub fn shape_physical_lanes(&self, shape: ShapeId) -> Vec<super::transport::PhysicalLane> {
+        self.transport.interners().shape_physical_lanes(shape)
+    }
+
+    pub fn shape_contains_callable(&self, shape: ShapeId) -> bool {
+        self.transport.interners().shape_contains_callable(shape)
+    }
+
+    pub fn layout_physical_lanes(&self, layout: TransportLayout) -> Vec<super::transport::PhysicalLane> {
+        self.transport.interners().layout_physical_lanes(layout)
+    }
+
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, std::ops::Range<usize>)>> {
         self.transport.interners().tuple_field_spans(shape)
     }
 
@@ -422,8 +482,37 @@ impl World {
     }
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> JobCompletion {
-        let reads = effects.reads.into_iter().collect();
-        let waits: HashSet<_> = effects.waits.into_iter().collect();
+        self.complete_job_with_external(job, effects, &super::scheduler::NoExternalDependencyStates)
+    }
+
+    pub(crate) fn complete_job_with_external(
+        &mut self,
+        job: Job,
+        effects: JobEffects,
+        external: &impl ExternalDependencyStates<DependencyKey>,
+    ) -> JobCompletion {
+        let reads = effects
+            .reads
+            .into_iter()
+            .map(fact_dependency)
+            .chain(
+                effects
+                    .product_reads
+                    .into_iter()
+                    .map(|address| FactUse::current(DependencyKey::Product(address))),
+            )
+            .collect();
+        let waits: HashSet<_> = effects
+            .waits
+            .into_iter()
+            .map(fact_dependency)
+            .chain(
+                effects
+                    .product_waits
+                    .into_iter()
+                    .map(|address| FactUse::settled(DependencyKey::Product(address))),
+            )
+            .collect();
         // Waiting completions extend: a blocked job's prior contributions
         // stand untouched (the scheduler likewise keeps its claims standing).
         // A wait-free conclusion normally replaces the contribution key set.
@@ -435,13 +524,25 @@ impl World {
         let rebased = self.work_graph.rebased(&job);
         // The work graph is the single source of truth for each publisher's
         // prior output frontier (it tracks every job's facts under the identical
-        // accumulate-on-extend / replace-on-conclude rule). Both contribution
+        // accumulate-on-extend / replace-on-conclude rule). The contribution
         // stores read their retraction frontier from it, filtered to their fact.
-        let previous_output_keys = self.work_graph.output_keys(&job);
+        let previous_output_keys = self
+            .work_graph
+            .output_keys(&job)
+            .iter()
+            .filter_map(|key| key.fact().cloned())
+            .collect::<OrderedSet<FactKey>>();
         let previous_activation_input_outputs = previous_output_keys
             .iter()
             .filter_map(|fact| match fact {
                 FactKey::ActivationInputs(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let previous_runtime_demand_input_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::RuntimeDemandInput(key) => Some(key.clone()),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -458,14 +559,66 @@ impl World {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
+        let runtime_demand_input_contributions = effects
+            .runtime_demand_input_contributions
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let ContributionReplace {
+            output_keys: runtime_demand_input_outputs,
+            changed_keys: runtime_demand_input_changed,
+        } = if waits.is_empty() {
+            self.runtime_demand_input_contributions.conclude_exact(
+                &mut self.types,
+                job.clone(),
+                previous_runtime_demand_input_outputs,
+                runtime_demand_input_contributions,
+            )
+        } else {
+            self.runtime_demand_input_contributions.extend(
+                &mut self.types,
+                job.clone(),
+                runtime_demand_input_contributions,
+            )
+        };
+        let previous_incoming = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::IncomingInputSlot(slot) => Some(slot.clone()),
+                _ => None,
+            })
+            .collect();
+        let incoming = if waits.is_empty() {
+            self.incoming_input_contributions.conclude_exact(
+                &mut self.types,
+                job.clone(),
+                previous_incoming,
+                effects.incoming_input_contributions,
+            )
+        } else {
+            self.incoming_input_contributions
+                .extend(&mut self.types, job.clone(), effects.incoming_input_contributions)
+        };
         let mut outputs = effects.outputs;
+        outputs.extend(incoming.output_keys.into_iter().map(FactKey::IncomingInputSlot));
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        outputs.extend(
+            runtime_demand_input_outputs
+                .into_iter()
+                .map(FactKey::RuntimeDemandInput),
+        );
         if waits.is_empty() && !rebased {
             outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
         }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
+        changed.extend(incoming.changed_keys.into_iter().map(FactKey::IncomingInputSlot));
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
+        changed.extend(
+            runtime_demand_input_changed
+                .iter()
+                .cloned()
+                .map(FactKey::RuntimeDemandInput),
+        );
         let changed = dedupe_job_facts(changed);
         // Captured before `outputs` moves into `complete`: the two record
         // sites keep `activation_frontier` in lockstep with the fact table.
@@ -487,15 +640,30 @@ impl World {
         // any further answers the same run reached independently. Every job
         // today reports none, so this is exactly one `DerivationId::SOLE`
         // completion — the ledger sees what it always saw.
-        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, waits.is_empty())];
-        derivations.extend(effects.derivations.into_iter().map(|derivation| DerivationEffects {
-            derivation: derivation.derivation,
-            reads: derivation.reads.into_iter().collect(),
-            outputs: dedupe_job_facts(derivation.outputs),
-            changed: dedupe_job_facts(derivation.changed),
-            concluded: derivation.concluded,
+        let mut derivations = vec![DerivationEffects::sole(
+            reads,
+            outputs.into_iter().map(DependencyKey::Fact).collect(),
+            changed.into_iter().map(DependencyKey::Fact).collect(),
+            waits.is_empty(),
+        )];
+        derivations.extend(effects.derivations.into_iter().map(|derivation| {
+            DerivationEffects {
+                derivation: derivation.derivation,
+                reads: derivation.reads.into_iter().map(fact_dependency).collect(),
+                outputs: dedupe_job_facts(derivation.outputs)
+                    .into_iter()
+                    .map(DependencyKey::Fact)
+                    .collect(),
+                changed: dedupe_job_facts(derivation.changed)
+                    .into_iter()
+                    .map(DependencyKey::Fact)
+                    .collect(),
+                concluded: derivation.concluded,
+            }
         }));
-        let step = self.work_graph.complete(&job, waits, derivations);
+        let step = self
+            .work_graph
+            .complete_ordered_with_external(&job, waits, derivations, external, &self.types);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -526,8 +694,18 @@ impl World {
         &self,
         job: &Job,
     ) -> (Vec<FactKey>, HashSet<super::facts::FactUse<FactKey>>) {
-        let claims = self.work_graph.output_keys(job).iter().cloned().collect();
-        let reads = self.work_graph.reads(job);
+        let claims = self
+            .work_graph
+            .output_keys(job)
+            .iter()
+            .filter_map(|key| key.fact().cloned())
+            .collect();
+        let reads = self
+            .work_graph
+            .reads(job)
+            .into_iter()
+            .filter_map(super::drive::as_fact_use)
+            .collect();
         (claims, reads)
     }
 
@@ -541,10 +719,17 @@ impl World {
     }
 
     /// The activations `drive::demand_activation_frontier_analyses` still
-    /// owes a first-run demand. Order carries no meaning — demanding
-    /// producers is commutative — so no sort applies.
+    /// owes a first-run demand. The set has no order; its reader sorts the
+    /// snapshot before those demands enter the ordered agenda.
     pub(crate) fn activation_frontier_keys(&self) -> Vec<ActivationKey> {
         self.activation_frontier.iter().cloned().collect()
+    }
+
+    /// Whether an empty agenda still has standing demand to discover. Both
+    /// sources maintain exact nonempty indexes, so the common drained case is
+    /// O(1) and does not clone or order either inventory.
+    pub(crate) fn has_drain_demand(&self) -> bool {
+        !self.activation_frontier.is_empty() || self.work_graph.has_unresolved()
     }
 
     /// Drops a key `demand_activation_frontier_analyses` has determined no
@@ -570,6 +755,16 @@ impl World {
     /// whole-fact-table-scan count. See `WorkStartReason` for the taxonomy.
     pub fn work_start_tally(&self) -> WorkStartTally {
         self.work_graph.work_start_tally()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activation_frontier_starts(&self) -> &[ActivationKey] {
+        &self.activation_frontier_starts
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_activation_frontier_start(&mut self, key: ActivationKey) {
+        self.activation_frontier_starts.push(key);
     }
 
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
@@ -607,10 +802,6 @@ impl World {
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
         self.roots.get(id).clone()
-    }
-
-    pub(crate) fn root_ids(&self) -> impl Iterator<Item = RootId> + use<> {
-        self.roots.ids()
     }
 
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
@@ -760,13 +951,42 @@ impl World {
         self.callsite_targets.get(key)
     }
 
-    pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
-        #[cfg(test)]
-        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
-        self.backend
-            .get(root)
-            .cloned()
-            .expect("backend programs should only be read after their fact is defined")
+    pub(crate) fn executable_facts(
+        &self,
+        key: &ExecutableKey,
+    ) -> Option<&std::rc::Rc<super::executable_facts::ExecutableFacts>> {
+        self.fact_revision(&FactKey::ExecutableFacts(key.clone()))?;
+        self.executable_facts.get(key)
+    }
+
+    pub(crate) fn callable_construction_target(&self, key: &CallableConstructionTargetKey) -> Option<&ExecutableKey> {
+        self.fact_revision(&FactKey::CallableConstructionTarget(key.clone()))?;
+        self.callable_construction_targets.get(key)
+    }
+
+    pub(crate) fn runtime_demand(&self, key: &ExecutableKey) -> Option<&std::rc::Rc<ExecutableRuntimeDemand>> {
+        self.fact_revision(&FactKey::RuntimeDemand(key.clone()))?;
+        self.runtime_demands.get(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_demand_facts(
+        &self,
+    ) -> impl Iterator<Item = (&ExecutableKey, &std::rc::Rc<ExecutableRuntimeDemand>)> {
+        self.runtime_demands
+            .iter()
+            .filter(|(key, _)| self.fact_revision(&FactKey::RuntimeDemand((*key).clone())).is_some())
+    }
+
+    pub(crate) fn runtime_demand_inputs(&self, key: &ExecutableKey) -> Option<&[super::semantic::RuntimeDemand]> {
+        self.fact_revision(&FactKey::RuntimeDemandInputs(key.clone()))?;
+        self.runtime_demands
+            .get(key)
+            .map(|demand| demand.input_demands.as_slice())
+    }
+
+    pub(crate) fn runtime_demand_input(&self, key: &ExecutableKey) -> Option<&TargetDemandContribution> {
+        self.runtime_demand_input_contributions.get(key)
     }
 
     pub(crate) fn macro_root(&mut self, function: FunctionId) -> RootId {
@@ -784,17 +1004,6 @@ impl World {
         });
         self.macro_roots.insert(function, root);
         root
-    }
-
-    pub(crate) fn macro_executable(&self, function: FunctionId) -> Option<&MacroExecutable> {
-        self.macro_executables.get(function)
-    }
-
-    pub(crate) fn native_program(&self, root: RootId) -> NativeProgram {
-        self.native
-            .get(root)
-            .cloned()
-            .expect("native programs should only be read after their fact is defined")
     }
 
     pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
@@ -997,8 +1206,7 @@ impl World {
     /// This store is the single source of truth for struct schemas:
     /// `resolve.rs`'s `TypeExpr::StructRecord` path (via `struct_def_fields`),
     /// struct-literal/pattern lowering, protocol-impl-target classification,
-    /// `struct_assertion_ty`, and the backend's whole-program schema
-    /// inventory (`struct_def_schemas`) all read it.
+    /// `struct_assertion_ty`, and root packaging all read it.
     /// The precise, durable reader over `defstruct`'s ordered fields:
     /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this once
     /// it needs the schema. This never has an opinion when the fact has not
@@ -1400,25 +1608,6 @@ impl World {
         self.modules.name(module)
     }
 
-    /// Every `defstruct` published so far, named by module, for the
-    /// backend's whole-program schema inventory (`Prim::MakeStruct`'s schema
-    /// registration and the interpreter's `AssertStruct`/`is_named_struct`
-    /// checks both need every struct that might be constructed or matched
-    /// against, not just the ones a single executable happens to construct
-    /// literally). Fact-backed: this reads `StructDefMap` directly, replacing
-    /// the old `ModuleStore::named_struct_schemas` source scan — a struct
-    /// declared through a macro-emitted `defstruct` now appears here exactly
-    /// like a source-written one.
-    pub(crate) fn struct_def_schemas(&self) -> BTreeMap<String, Vec<String>> {
-        self.struct_defs
-            .iter()
-            .filter_map(|(module, def)| {
-                self.module_name(module)
-                    .map(|name| (name.to_string(), def.fields.clone()))
-            })
-            .collect()
-    }
-
     pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
         self.code.index(id, source)
     }
@@ -1431,11 +1620,11 @@ impl World {
         if !matches!(self.modules.get(module), ModuleState::Defined { .. }) {
             return None;
         }
-        self.work_graph.facts().revision(&FactKey::ModuleDefined(module))
+        self.fact_revision(&FactKey::ModuleDefined(module))
     }
 
     pub fn module_interface_revision(&self, module: ModuleId) -> Option<u64> {
-        self.work_graph.facts().revision(&FactKey::ModuleInterface(module))
+        self.fact_revision(&FactKey::ModuleInterface(module))
     }
 
     pub fn function_defined_revision(&self, function: FunctionId) -> Option<u64> {
@@ -1445,11 +1634,11 @@ impl World {
         ) {
             return None;
         }
-        self.work_graph.facts().revision(&FactKey::FunctionDefined(function))
+        self.fact_revision(&FactKey::FunctionDefined(function))
     }
 
     pub(crate) fn function_contract_revision(&self, function: FunctionId) -> Option<u64> {
-        self.work_graph.facts().revision(&FactKey::FunctionContract(function))
+        self.fact_revision(&FactKey::FunctionContract(function))
     }
 
     pub(crate) fn function_definition(&self, function: FunctionId) -> (FunctionSource, FunctionSurface) {
@@ -1587,20 +1776,47 @@ impl World {
     /// waits on `CodeIndexed(code_id)` (producer arm `Job::IndexCode`), so the
     /// whole chain reaches the minting job through `demand_fact_producer`.
     pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {
-        self.work_graph.facts().revision(key)
+        self.work_graph.facts().revision(&DependencyKey::Fact(key.clone()))
     }
 
     #[cfg(test)]
     pub(crate) fn job_reads(&self, job: &Job) -> HashSet<FactUse<FactKey>> {
-        self.work_graph.reads(job)
+        self.work_graph
+            .reads(job)
+            .into_iter()
+            .filter_map(super::drive::as_fact_use)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn job_outputs(&self, job: &Job) -> Vec<FactKey> {
+        self.work_graph
+            .output_keys(job)
+            .iter()
+            .filter_map(|key| key.fact().cloned())
+            .collect()
     }
 
     pub fn has_fact(&self, key: &FactKey) -> bool {
-        self.work_graph.facts().revision(key).is_some()
+        self.work_graph
+            .facts()
+            .revision(&DependencyKey::Fact(key.clone()))
+            .is_some()
+    }
+
+    pub(crate) fn incoming_input_sources(&self, slot: &InputSlot) -> Option<&std::rc::Rc<[IncomingInputSource]>> {
+        self.incoming_input_contributions.get(slot).map(|sources| &sources.0)
     }
 
     pub fn fact_is_settled(&self, key: &FactKey) -> bool {
-        self.work_graph.facts().is_settled(key)
+        self.work_graph.facts().is_settled(&DependencyKey::Fact(key.clone()))
+    }
+
+    /// Terminal standing waits in the same faithful semantic order used by
+    /// every live fact-wait boundary. `FactKey` deliberately has no raw `Ord`:
+    /// only the owning World can interpret activation arrows through `Types`.
+    pub(crate) fn unresolved_waits(&self) -> Vec<UnresolvedWait<Job, DependencyKey>> {
+        self.work_graph.unresolved(&self.types)
     }
 
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
@@ -1939,23 +2155,22 @@ impl World {
         self.module_impl_target_ty_with(module, reads)
     }
 
-    pub(crate) fn struct_value_ty(&mut self, module_name: &str, field_names: &[String], field_tys: &[Ty]) -> Ty {
+    pub(crate) fn struct_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
         debug_assert_eq!(
             field_names.len(),
             field_tys.len(),
             "struct type fields must be ordered against their schema"
         );
-        let tag = format!("impl-target::{}", module_name.rsplit('.').next().unwrap_or(module_name));
-        let nominal = self.types.opaque_of(&tag);
-        let tuple = self.types.tuple(field_tys);
+        let module_name = self
+            .module_name(module)
+            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+            .to_string();
         let map_fields = field_names
             .iter()
             .zip(field_tys.iter().copied())
             .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
             .collect::<Vec<_>>();
-        let map = self.types.map(&map_fields);
-        let structural = self.types.union(tuple, map);
-        self.types.union(nominal, structural)
+        self.types.struct_map(module, &module_name, &map_fields)
     }
 
     pub(crate) fn resolve_module_name(
@@ -2065,11 +2280,7 @@ impl World {
     /// type inference (schema read from the lowered field list, already
     /// ordered against `struct_def_fields` by body lowering).
     pub(crate) fn struct_module_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
-        let name = self
-            .module_name(module)
-            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-            .to_string();
-        self.struct_value_ty(&name, field_names, field_tys)
+        self.struct_value_ty(module, field_names, field_tys)
     }
 
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
@@ -2431,7 +2642,7 @@ fn module_name_segments(name: &str) -> Vec<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImplTargetKind {
     /// `StructDefined(module)` published a schema: the dispatch target is
-    /// this struct's nominal identity plus tuple/map field evidence.
+    /// one tagged-record leaf carrying both nominal identity and fields.
     Struct,
     /// One of the compiler's built-in ground value families. These carry no
     /// module facts at all — the name is their entire identity.
@@ -2542,13 +2753,13 @@ impl World {
 
     /// Records one drain-arbiter step for the execution context to emit.
     /// A step that moved nothing is not news and is dropped here.
-    pub(crate) fn note_quiescence_step(&mut self, step: super::AppliedStep<Job, FactKey>) {
+    pub(crate) fn note_quiescence_step(&mut self, step: super::AppliedStep<Job, DependencyKey>) {
         if !step.changed.is_empty() {
             self.quiescence_steps.push(step);
         }
     }
 
-    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<super::AppliedStep<Job, FactKey>> {
+    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<super::AppliedStep<Job, DependencyKey>> {
         std::mem::take(&mut self.quiescence_steps)
     }
 
@@ -2611,34 +2822,50 @@ impl World {
         self.callsites.define(&mut self.types, key, resolution)
     }
 
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
-        self.backend.define(root, program)
-    }
-
-    pub(crate) fn define_macro_executable(
+    pub(crate) fn define_executable_facts(
         &mut self,
-        function: FunctionId,
-        root: RootId,
-        backend_revision: u64,
-        program: BackendProgram,
+        key: ExecutableKey,
+        facts: std::rc::Rc<super::executable_facts::ExecutableFacts>,
     ) -> bool {
-        self.macro_executables.define(
-            function,
-            MacroExecutable {
-                root,
-                backend_revision,
-                program,
-            },
-        )
+        if self.executable_facts.get(&key) == Some(&facts) {
+            return false;
+        }
+        self.executable_facts.insert(key, facts);
+        true
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
-        self.native.define(root, program)
+    pub(crate) fn define_callable_construction_target(
+        &mut self,
+        key: CallableConstructionTargetKey,
+        target: ExecutableKey,
+    ) -> bool {
+        if self.callable_construction_targets.get(&key) == Some(&target) {
+            return false;
+        }
+        self.callable_construction_targets.insert(key, target);
+        true
+    }
+
+    pub(crate) fn define_runtime_demand(
+        &mut self,
+        key: ExecutableKey,
+        demand: std::rc::Rc<ExecutableRuntimeDemand>,
+    ) -> (bool, bool) {
+        if self.runtime_demands.get(&key) == Some(&demand) {
+            return (false, false);
+        }
+        let inputs_changed = self
+            .runtime_demands
+            .get(&key)
+            .is_none_or(|previous| previous.input_demands != demand.input_demands);
+        self.runtime_demands.insert(key, demand);
+        (true, inputs_changed)
     }
 
     pub(crate) fn run_macro_on_source_with(
         &mut self,
         function: FunctionId,
+        program: &BackendProgram,
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
         args: &[AnyValueRef],
@@ -2650,24 +2877,13 @@ impl World {
             Vec<RuntimeValue>,
         ) -> (fz_runtime::process::Process, Result<RuntimeValue, String>),
     ) -> Result<QuotedSourceRoot, String> {
-        let executable = self
-            .macro_executable(function)
-            .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
-            .clone();
         let mut semantic_values = Vec::with_capacity(1 + args.len());
         semantic_values.push(RuntimeValue::Ref(caller));
         semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
         let runtime_args =
-            crate::ir_interp::encode_macro_entry_inputs(&executable.program, &self.transport, &semantic_values)?;
-        let value = source.lend_process(|process| {
-            run(
-                &mut self.types,
-                &self.transport,
-                &executable.program,
-                process,
-                runtime_args,
-            )
-        })?;
+            crate::ir_interp::encode_macro_entry_inputs(program, &self.types, &self.transport, &semantic_values)?;
+        let value =
+            source.lend_process(|process| run(&mut self.types, &self.transport, program, process, runtime_args))?;
         match value {
             RuntimeValue::Ref(root) => Ok(source.subroot(root)),
             other => Err(format!(
@@ -3066,39 +3282,17 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
-        let changed = self.world.define_backend_program(root, program);
-        if changed {
-            self.emit_world_key(&["fz", "compiler2", "backend_program", "defined"], &root);
-        }
-        changed
-    }
-
-    pub(crate) fn define_macro_executable(
-        &mut self,
-        function: FunctionId,
-        root: RootId,
-        backend_revision: u64,
-        program: BackendProgram,
-    ) -> bool {
-        let changed = self
-            .world
-            .define_macro_executable(function, root, backend_revision, program);
-        if changed {
-            self.emit_world_key(&["fz", "compiler2", "macro_executable", "defined"], &function);
-        }
-        changed
-    }
-
     pub(crate) fn run_macro_on_source(
         &mut self,
         function: FunctionId,
+        program: &BackendProgram,
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
         args: &[AnyValueRef],
     ) -> Result<QuotedSourceRoot, String> {
         self.world.run_macro_on_source_with(
             function,
+            program,
             source,
             caller,
             args,
@@ -3114,14 +3308,6 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 )
             },
         )
-    }
-
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
-        let changed = self.world.define_native_program(root, program);
-        if changed {
-            self.emit_world_key(&["fz", "compiler2", "native_program", "defined"], &root);
-        }
-        changed
     }
 
     pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {

@@ -1,9 +1,8 @@
-//! Regression coverage for the shared `RootBackendProduct` pull-drive seam:
-//! one loop (`product_drive::drive_root_backend_product`) reports its four
-//! failure shapes through a `ProductDriveError` hook so the interp front door
-//! (`String`) and the backend product job (`FatalError`) keep their distinct
-//! error surfaces byte-for-byte, even though the loop that discovers the
-//! failure lives once.
+//! Regression coverage for the shared root-product request and pull-drive
+//! seam. Backend and native front doors retain one session lifecycle; the
+//! stack loop reports failures through `ProductDriveError`, so production
+//! `String` and scheduler `FatalError` surfaces remain distinct without
+//! duplicating the loop.
 //!
 //! The first block of tests calls the trait implementations directly rather
 //! than forcing a genuine product-pull stall through a fixture: the loop
@@ -22,24 +21,63 @@
 //! their direct-call tests were redundant and are deleted.
 //!
 //! The second block (`*_end_to_end` below) proves the wiring itself: that a
-//! genuine failure inside `drive_root_backend_product` reaches the hook with
+//! genuine failure inside the product drive reaches the hook with
 //! the right `root`/`fact`/`job` arguments, not just that the hook formats
 //! them correctly in isolation. `fact_wait_budget_exceeded` and
 //! `did_not_settle` go through `drive_root_backend_product_with_budgets`, a
-//! test-only budget seam (`product_drive.rs`) — the production entry point
-//! always calls it with the real 50,000-job budget for both parameters, so
-//! this changes no production behavior.
+//! test-only budget seam (`product_drive.rs`). The retained production drive
+//! calls the same inner loop with the real 50,000-job budgets.
 
 use super::World;
-use super::drive::FactKey;
 use super::drive::Job;
+use super::drive::{DependencyKey, FactKey};
+use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
-use super::pull::{ProductKey, PullWait};
+use super::pull::{
+    ProductFailure, ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
+    WorldProductProducers,
+};
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+fn drive_retained_backend_fatal(
+    world: &mut World,
+    tel: &ConfiguredTelemetry,
+    root: RootId,
+) -> Result<std::rc::Rc<super::BackendProgram>, FatalError> {
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::with_retained_root_request(
+        world,
+        tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, _| {
+            super::product_drive::drive_active_root_backend_product(world, tel, sessions, root, driver)
+        },
+    )
+}
+
+fn apply_world_fact_movements(
+    driver: &mut super::pull::ProductDriver<'_, ConfiguredTelemetry>,
+    movements: &[super::FactMovement<DependencyKey>],
+) {
+    let facts = movements
+        .iter()
+        .map(|movement| {
+            let DependencyKey::Fact(key) = &movement.key else {
+                panic!("this semantic completion must move only World facts");
+            };
+            super::FactMovement {
+                key: key.clone(),
+                state: movement.state,
+            }
+        })
+        .collect::<Vec<_>>();
+    driver.apply_fact_movements(&facts);
+}
 
 fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
     event
@@ -50,7 +88,1423 @@ fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
 }
 
 fn some_fact() -> FactUse<FactKey> {
-    FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
+    FactUse::settled(FactKey::RootEntry(RootId::for_test(7)))
+}
+
+struct FailingNativeProducers {
+    types: super::Types,
+    backend: std::rc::Rc<super::BackendProgram>,
+    fail_once: bool,
+}
+
+impl ProductProducers for FailingNativeProducers {
+    fn product_types(&self) -> &super::Types {
+        &self.types
+    }
+
+    fn produce(&mut self, context: &mut super::pull::ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+        let telemetry = ConfiguredTelemetry::new();
+        match key {
+            ProductKey::RootBackendProduct(_) => {
+                PullOutcome::Produced(ProductValue::RootBackendProduct(std::rc::Rc::clone(&self.backend)))
+            }
+            ProductKey::NativeProgram(root) => {
+                let dependency = ProductKey::RootBackendProduct(*root);
+                if context
+                    .read_product(&telemetry, dependency.clone(), &self.types)
+                    .is_none()
+                {
+                    return PullOutcome::wait_on_product(dependency);
+                }
+                if std::mem::take(&mut self.fail_once) {
+                    PullOutcome::Failed(ProductFailure::NativeLowering)
+                } else {
+                    PullOutcome::Produced(ProductValue::NativeProgram(std::rc::Rc::new(super::NativeProgram {
+                        entry: crate::fz_ir::FnId(0),
+                        module: crate::fz_ir::Module::default(),
+                        executable_entries: Vec::new(),
+                        bodies: Vec::new(),
+                        callable_boundaries: Vec::new(),
+                    })))
+                }
+            }
+            key => panic!("scripted native request reached unrelated product {key:?}"),
+        }
+    }
+}
+
+#[test]
+fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry() {
+    let root = RootId::for_test(0);
+    let tel = ConfiguredTelemetry::new();
+    let backend_requests = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed_backend_requests = std::rc::Rc::clone(&backend_requests);
+    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
+        &["fz", "compiler2", "pull", "product", "requested"],
+        move |_, _, _, key, _| {
+            if key == &ProductKey::RootBackendProduct(root) {
+                observed_backend_requests.set(observed_backend_requests.get() + 1);
+            }
+        },
+    );
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed_finished = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed_finished.borrow_mut().push(session.id()),
+    );
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let backend = std::rc::Rc::new(super::BackendProgram::empty_for_test());
+    let mut producers = FailingNativeProducers {
+        types: super::Types::new(),
+        backend: std::rc::Rc::clone(&backend),
+        fail_once: true,
+    };
+    let failed = super::product_drive::with_retained_root_request(
+        &mut world,
+        &tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, retained| {
+            assert!(!retained);
+            super::product_drive::drive_root_product_with_producers::<_, String>(
+                world,
+                tel,
+                root,
+                ProductKey::NativeProgram(root),
+                driver,
+                Some(sessions),
+                &mut producers,
+            )
+            .map(|_| ())
+        },
+    );
+    assert!(failed.is_err());
+    assert_eq!(sessions.counts().0, 1);
+    let session = sessions.get(root).expect("failed session must be restored");
+    let session_id = session.id().expect("observed retained session identity");
+    assert_eq!(finished.borrow().as_slice(), [Some(session_id)]);
+    assert_eq!(session.memo().get(&ProductKey::NativeProgram(root)), None);
+    let Some(ProductValue::RootBackendProduct(answer)) = session.memo().get(&ProductKey::RootBackendProduct(root))
+    else {
+        panic!("failed native production must retain its completed backend prerequisite");
+    };
+    assert!(std::rc::Rc::ptr_eq(answer, &backend));
+    drop(session);
+
+    let retry = super::product_drive::with_retained_root_request(
+        &mut world,
+        &tel,
+        &mut sessions,
+        root,
+        |world, tel, sessions, driver, retained| {
+            assert!(retained);
+            super::product_drive::drive_root_product_with_producers::<_, String>(
+                world,
+                tel,
+                root,
+                ProductKey::NativeProgram(root),
+                driver,
+                Some(sessions),
+                &mut producers,
+            )
+            .map(|_| ())
+        },
+    );
+    assert_eq!(retry, Ok(()));
+    assert_eq!(sessions.counts().0, 1);
+    assert_eq!(sessions.get(root).and_then(|session| session.id()), Some(session_id));
+    assert_eq!(finished.borrow().as_slice(), [Some(session_id), Some(session_id)]);
+    assert_eq!(
+        backend_requests.get(),
+        1,
+        "retry must not open a second backend request or cache hit",
+    );
+    assert_eq!(
+        sessions
+            .get(root)
+            .and_then(|session| session.memo().generation(&ProductKey::NativeProgram(root))),
+        Some(1),
+    );
+}
+
+#[test]
+fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
+    let observed_evaluations = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, outcome| observed_evaluations.borrow_mut().push((key.clone(), outcome.clone())),
+    );
+    let cache_hits = std::rc::Rc::new(std::cell::RefCell::new(Vec::<ProductKey>::new()));
+    let observed_cache_hits = std::rc::Rc::clone(&cache_hits);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "cache_hit"],
+        move |_, _, _, key| observed_cache_hits.borrow_mut().push(key.clone()),
+    );
+    let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed_lowerings = std::rc::Rc::clone(&lowerings);
+    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        move |_, _, _, _, _| observed_lowerings.set(observed_lowerings.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_cache.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let before_cold_work = compiler.world().work_start_tally();
+    compiler.compile_root_jit(root).expect("cold native product");
+    let cold_work = compiler.world().work_start_tally().delta_since(before_cold_work);
+    assert_eq!(
+        cold_work,
+        super::WorkStartTally {
+            ignition: 0,
+            changed_revision_wake: 20,
+            activation_frontier: 2,
+            blocked_waiter_expansion: 24,
+            unclassified: 0,
+            root_scans: 0,
+            drain_discovery_sweeps: 0,
+        },
+        "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
+    );
+    let native_key = ProductKey::NativeProgram(root);
+    let cold = compiler.retained_native_program(root);
+    let generation = compiler
+        .retained_product_generation(root, &native_key)
+        .expect("cold native generation");
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        evaluations.borrow().len(),
+        54,
+        "main and its definition macro consume backend products directly, removing their four content-projection evaluations",
+    );
+    let materialized_roots = evaluations
+        .borrow()
+        .iter()
+        .filter_map(|(key, outcome)| match (key, outcome) {
+            (ProductKey::MaterializedExecutable(executable), PullOutcome::Produced(_)) => {
+                Some(executable.activation.root)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(materialized_roots.len(), 2);
+    assert!(materialized_roots.contains(&root));
+    assert_ne!(materialized_roots[0], materialized_roots[1]);
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| {
+                matches!(key, ProductKey::RootBackendProduct(owner) if *owner != root)
+                    && matches!(outcome, PullOutcome::Produced(_))
+            })
+            .count(),
+        1,
+        "the definition macro produces its exact backend dependency once",
+    );
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| *key == native_key && matches!(outcome, PullOutcome::Produced(_)))
+            .count(),
+        1,
+        "cold native production must complete successfully once",
+    );
+
+    evaluations.borrow_mut().clear();
+    cache_hits.borrow_mut().clear();
+    lowerings.set(0);
+    let before_work = compiler.world().work_start_tally();
+    compiler.compile_root_jit(root).expect("retained native product");
+    assert!(evaluations.borrow().is_empty());
+    assert_eq!(cache_hits.borrow().as_slice(), std::slice::from_ref(&native_key));
+    assert_eq!(lowerings.get(), 0);
+    assert_eq!(compiler.world().work_start_tally(), before_work);
+    assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        Some(generation)
+    );
+
+    let before_unreachable_work = compiler.world().work_start_tally();
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_unreachable.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    compiler.compile_root_jit(root).expect("native after unreachable edit");
+    let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
+    assert_eq!(
+        unreachable_work,
+        super::WorkStartTally {
+            ignition: 2,
+            ..super::WorkStartTally::default()
+        },
+        "an unreachable edit starts only its two source-ingestion jobs",
+    );
+    assert!(evaluations.borrow().is_empty());
+    assert_eq!(lowerings.get(), 0);
+    assert!(std::rc::Rc::ptr_eq(&cold, &compiler.retained_native_program(root)));
+
+    let before_reached_backend_work = compiler.world().work_start_tally();
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_product_cache.fz".to_string()),
+        text: "fn main(), do: 8\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(8));
+    let reached_backend_work = compiler
+        .world()
+        .work_start_tally()
+        .delta_since(before_reached_backend_work);
+    assert_eq!(
+        reached_backend_work,
+        super::WorkStartTally {
+            ignition: 2,
+            changed_revision_wake: 21,
+            ..super::WorkStartTally::default()
+        },
+        "a reached edit starts source ingestion and only exact changed-revision readers",
+    );
+    evaluations.borrow_mut().clear();
+    lowerings.set(0);
+    let before_reached_native_work = compiler.world().work_start_tally();
+    compiler
+        .compile_root_jit(root)
+        .expect("native after reached backend refresh");
+    assert_eq!(
+        compiler.world().work_start_tally(),
+        before_reached_native_work,
+        "refreshing a moved product dependency starts no scheduler work",
+    );
+    let evaluated_keys = evaluations
+        .borrow()
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        evaluated_keys,
+        std::collections::HashSet::from([native_key.clone()]),
+        "the interpreter already refreshed the backend; native evaluates only its recorded reader",
+    );
+    assert_eq!(
+        evaluations.borrow().len(),
+        1,
+        "native consumes the already refreshed backend exactly once",
+    );
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        evaluations
+            .borrow()
+            .iter()
+            .filter(|(key, outcome)| *key == native_key && matches!(outcome, PullOutcome::Produced(_)))
+            .count(),
+        1,
+    );
+    let moved = compiler.retained_native_program(root);
+    assert!(!std::rc::Rc::ptr_eq(&cold, &moved));
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        Some(generation + 1)
+    );
+
+    let weak = std::rc::Rc::downgrade(&moved);
+    drop(moved);
+    drop(cold);
+    evaluations.borrow_mut().clear();
+    assert!(compiler.retire_root_products(root));
+    assert!(
+        weak.upgrade().is_none(),
+        "retiring the root must release its native product"
+    );
+}
+
+#[test]
+fn jit_and_aot_share_one_retained_native_product() {
+    let tel = ConfiguredTelemetry::new();
+    let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = std::rc::Rc::clone(&lowerings);
+    tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        move |_, _, _, _, _| observed.set(observed.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_native_front_doors.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.compile_root_jit(root).expect("JIT native product");
+    compiler
+        .compile_root_aot(root, "shared_native_front_doors")
+        .expect("AOT native product");
+
+    assert_eq!(lowerings.get(), 1);
+    assert_eq!(
+        compiler.retained_product_generation(root, &ProductKey::NativeProgram(root)),
+        Some(1)
+    );
+}
+
+#[test]
+fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_retirement() {
+    let tel = ConfiguredTelemetry::new();
+    let product_settlements = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, ProductSettlement)>::new()));
+    let observed_product_settlements = std::rc::Rc::clone(&product_settlements);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductValue, ProductSettlement, _>(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        move |_, _, _, product, _, settlement| {
+            observed_product_settlements
+                .borrow_mut()
+                .push((product.clone(), *settlement));
+        },
+    );
+    let runtime_demand_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::ExecutableKey>::new()));
+    let observed_runtime_demand_runs = std::rc::Rc::clone(&runtime_demand_runs);
+    let runtime_demand_wakes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
+        super::ExecutableKey,
+        FactUse<DependencyKey>,
+    )>::new()));
+    let observed_runtime_demand_wakes = std::rc::Rc::clone(&runtime_demand_wakes);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            for wake in &completion.wakes {
+                if let Job::DeriveRuntimeDemand(executable) = &wake.job {
+                    observed_runtime_demand_wakes
+                        .borrow_mut()
+                        .push((executable.clone(), wake.cause.clone()));
+                }
+            }
+            if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                observed_runtime_demand_runs.borrow_mut().push(executable.clone());
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_initial.fz".to_string()),
+        text: "fn leaf(x), do: 1\n\
+               fn other(), do: leaf(3)\n\
+               fn main(), do: leaf(2)\n\
+               fn unused(), do: 0\n"
+            .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let other = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "other".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    let cold_main = compiler.retained_backend_program(main);
+    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
+    let (sessions, subscriptions) = compiler.retained_product_counts();
+    assert!(
+        sessions >= 1,
+        "the requested root and any demanded macro roots are retained"
+    );
+    assert!(subscriptions > 0, "a settled root must retain exact fact subscriptions");
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    assert!(
+        runtime_demand_runs.borrow().is_empty(),
+        "an unchanged retained request must evaluate no RuntimeDemand formula",
+    );
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
+        "an unchanged request must return the memo-owned backend handle"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "an unchanged retained request must not enter global scheduler discovery"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_irrelevant.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    assert!(
+        runtime_demand_runs.borrow().is_empty(),
+        "an unreachable edit must evaluate no RuntimeDemand formula",
+    );
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
+        "an irrelevant queued edit must leave the retained answer standing"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "an irrelevant edit must drain its exact queued work without a global discovery sweep"
+    );
+
+    assert_eq!(compiler.run_root_interp(other), Ok(1));
+    let cold_other = compiler.retained_backend_program(other);
+    let cold_leafs = [main, other]
+        .into_iter()
+        .flat_map(|root| {
+            compiler
+                .retained_backend_program(root)
+                .executables()
+                .iter()
+                .filter(|executable| compiler.world().function_ref(executable.key.activation.function).name == "leaf")
+                .map(|executable| executable.key.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(cold_leafs.len(), 2);
+    for leaf in &cold_leafs {
+        let demand = compiler.world().runtime_demand(leaf).expect("cold leaf demand");
+        assert!(demand.input_demands[0].is_ignore());
+        let executable = [main, other]
+            .into_iter()
+            .find_map(|root| {
+                compiler
+                    .retained_backend_program(root)
+                    .executables()
+                    .iter()
+                    .find(|executable| &executable.key == leaf)
+                    .cloned()
+            })
+            .expect("cold leaf backend executable");
+        assert!(executable.abi.param_reprs.is_empty());
+    }
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_relevant.fz".to_string()),
+        text: "fn leaf(x), do: x\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(other), Ok(3));
+    assert_eq!(compiler.run_root_interp(main), Ok(2));
+    let observed_runtime_demand_readers = runtime_demand_runs
+        .borrow()
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut exact_woken_reader_counts = std::collections::HashMap::new();
+    for (executable, _) in runtime_demand_wakes.borrow().iter() {
+        *exact_woken_reader_counts.entry(executable.clone()).or_insert(0) += 1;
+    }
+    for (executable, cause) in runtime_demand_wakes.borrow().iter() {
+        let final_reads = compiler
+            .world()
+            .job_reads(&Job::DeriveRuntimeDemand(executable.clone()))
+            .into_iter()
+            .map(|read| match read {
+                FactUse::Current(fact) => FactUse::current(DependencyKey::Fact(fact)),
+                FactUse::Settled(fact) => FactUse::settled(DependencyKey::Fact(fact)),
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let same_fact_after_presence = match cause {
+            FactUse::Settled(fact) => final_reads.contains(&FactUse::current(fact.clone())),
+            FactUse::Current(_) => false,
+        };
+        assert!(
+            final_reads.contains(cause) || same_fact_after_presence,
+            "each RuntimeDemand wake must name an exact final read or that same fact's one-way settled-to-current presence transition: {cause:?}",
+        );
+    }
+    let reached_names = observed_runtime_demand_readers
+        .iter()
+        .map(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .name
+                .as_str()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        reached_names,
+        std::collections::HashSet::from(["leaf", "main", "other"]),
+        "only the transitive exact reader closure should re-evaluate",
+    );
+    let mut reached_counts = std::collections::HashMap::<String, usize>::new();
+    for executable in runtime_demand_runs.borrow().iter() {
+        *reached_counts
+            .entry(
+                compiler
+                    .world()
+                    .function_ref(executable.activation.function)
+                    .name
+                    .clone(),
+            )
+            .or_default() += 1;
+    }
+    let mut observed_runtime_demand_counts = std::collections::HashMap::new();
+    for executable in runtime_demand_runs.borrow().iter() {
+        *observed_runtime_demand_counts.entry(executable.clone()).or_insert(0) += 1;
+    }
+    assert_eq!(
+        observed_runtime_demand_counts
+            .keys()
+            .collect::<std::collections::HashSet<_>>(),
+        exact_woken_reader_counts
+            .keys()
+            .collect::<std::collections::HashSet<_>>(),
+        "a reached edit must evaluate only RuntimeDemand jobs reached through exact scheduler subscriptions",
+    );
+    assert!(
+        observed_runtime_demand_counts
+            .iter()
+            .all(|(executable, runs)| *runs <= exact_woken_reader_counts[executable]),
+        "coalesced wakes may save evaluations, but no evaluation may exist without a causal wake",
+    );
+    assert_eq!(
+        reached_counts,
+        std::collections::HashMap::from([
+            ("leaf".to_string(), 2),
+            ("main".to_string(), 1),
+            ("other".to_string(), 1),
+        ]),
+        "each root retains its own leaf; co-output finality lets both callers observe the changed input demand once",
+    );
+    assert!(
+        observed_runtime_demand_counts.values().all(|runs| *runs == 1),
+        "every distinct executable in the exact subscription closure evaluates once, including each root's leaf",
+    );
+    let moved_main = compiler.retained_backend_program(main);
+    let moved_other = compiler.retained_backend_program(other);
+    assert!(!std::rc::Rc::ptr_eq(&cold_main, &moved_main));
+    assert!(!std::rc::Rc::ptr_eq(&cold_other, &moved_other));
+    for leaf in &cold_leafs {
+        let demand = compiler.world().runtime_demand(leaf).expect("moved leaf demand");
+        assert_eq!(demand.input_demands[0].shape, super::ShapeDemand::Whole);
+        let executable = [&moved_main, &moved_other]
+            .into_iter()
+            .find_map(|program| program.executables().iter().find(|executable| &executable.key == leaf))
+            .expect("moved leaf backend executable");
+        assert_eq!(executable.abi.param_reprs, vec![super::AbiValueRepr::RawInt]);
+        for expected in [
+            ProductKey::MaterializedExecutable(leaf.clone()),
+            ProductKey::AbiExecutable(leaf.clone()),
+            ProductKey::BackendExecutable(leaf.clone()),
+        ] {
+            assert!(
+                product_settlements
+                    .borrow()
+                    .iter()
+                    .any(|(product, settlement)| product == &expected
+                        && settlement.changed
+                        && settlement.generation > 1),
+                "the exact Whole-dependent product must reproject at a later generation: {expected:?}",
+            );
+        }
+    }
+
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    assert!(runtime_demand_runs.borrow().is_empty());
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(product_settlements.borrow().is_empty());
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_main,
+        &compiler.retained_backend_program(main)
+    ));
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_other,
+        &compiler.retained_backend_program(other)
+    ));
+
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_equal.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(2));
+    assert_eq!(compiler.run_root_interp(other), Ok(3));
+    assert!(runtime_demand_runs.borrow().is_empty());
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(product_settlements.borrow().is_empty());
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_main,
+        &compiler.retained_backend_program(main)
+    ));
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_other,
+        &compiler.retained_backend_program(other)
+    ));
+    let retired_leaf_executables = compiler
+        .product_executable_inventory(main)
+        .expect("main inventory before replacing its reached callee")
+        .iter()
+        .filter(|executable| compiler.world().function_ref(executable.activation.function).name == "leaf")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!retired_leaf_executables.is_empty());
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_replacement.fz".to_string()),
+        text: "fn replacement(), do: 3\nfn main(), do: replacement()\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(3));
+    let inventory = compiler
+        .product_executable_inventory(main)
+        .expect("replacement root inventory");
+    let names = inventory
+        .iter()
+        .map(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .name
+                .as_str()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert!(names.contains("main") && names.contains("replacement"));
+    assert!(
+        !names.contains("leaf"),
+        "the replaced callee must leave the root artifact"
+    );
+    for executable in retired_leaf_executables {
+        assert!(
+            compiler
+                .world()
+                .runtime_demand(&executable)
+                .is_some_and(|demand| demand.return_demand.is_ignore()),
+            "a formerly reached executable must return to bottom after its last owner retracts",
+        );
+        assert!(
+            compiler.world().runtime_demand_input(&executable).is_none(),
+            "a formerly reached executable must retract its last owner contribution",
+        );
+    }
+
+    let (sessions_before_retirement, subscriptions_before_retirement) = compiler.retained_product_counts();
+    assert!(compiler.retire_root_products(main));
+    let (sessions, subscriptions_after_retirement) = compiler.retained_product_counts();
+    assert_eq!(sessions + 1, sessions_before_retirement);
+    assert!(subscriptions_after_retirement < subscriptions_before_retirement);
+    assert!(!compiler.retire_root_products(main));
+    assert_eq!(compiler.run_root_interp(main), Ok(3));
+    assert_eq!(compiler.retained_product_counts().0, sessions_before_retirement);
+    assert_eq!(
+        compiler.retained_product_generation(main, &ProductKey::RootBackendProduct(main)),
+        Some(1)
+    );
+}
+
+#[test]
+fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hit() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluated = std::rc::Rc::new(std::cell::RefCell::new(Vec::<ProductKey>::new()));
+    let observed_evaluated = std::rc::Rc::clone(&evaluated);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| observed_evaluated.borrow_mut().push(key.clone()),
+    );
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00111_macro_quote_unquote.fz".to_string()),
+        text: include_str!("../../fixtures2/00111_macro_quote_unquote.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root).expect("nested macro request");
+    let cold_sessions = finished.borrow().len();
+    assert!(cold_sessions > 1, "the fixture must exercise nested retained roots");
+    let macro_roots = finished
+        .borrow()
+        .iter()
+        .filter_map(|(candidate, _, _)| (*candidate != root).then_some(*candidate))
+        .collect::<std::collections::HashSet<_>>();
+    assert!(
+        !macro_roots.is_empty(),
+        "the fixture must open a retained macro-root session"
+    );
+    assert!(
+        macro_roots.iter().all(|macro_root| evaluated
+            .borrow()
+            .iter()
+            .any(|key| key == &ProductKey::RootBackendProduct(*macro_root))),
+        "each nested macro root must evaluate its backend product",
+    );
+    assert!(
+        evaluated
+            .borrow()
+            .iter()
+            .all(|key| !matches!(key, ProductKey::NativeProgram(native_root) if macro_roots.contains(native_root))),
+        "typed product telemetry must show that macro roots never evaluate NativeProgram",
+    );
+    let mut cold_work = super::WorkStartTally::default();
+    for (_, _, work) in finished.borrow().iter().copied() {
+        cold_work.add(work);
+    }
+    assert_eq!(cold_work, compiler.world().work_start_tally());
+
+    compiler.run_root_interp(root).expect("unchanged nested-macro request");
+    let finished = finished.borrow();
+    let unchanged = &finished[cold_sessions..];
+    assert!(!unchanged.is_empty());
+    assert!(
+        unchanged
+            .iter()
+            .all(|(_, pokes, work)| { *pokes == 0 && *work == super::WorkStartTally::default() })
+    );
+}
+
+#[test]
+fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_before_standalone_drive.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+    let before_drive = compiler.world().work_start_tally();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_standalone_drive.fz".to_string()),
+        text: "fn unrelated(), do: 9\n".to_string(),
+    });
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    let bare_drive_delta = compiler.world().work_start_tally().delta_since(before_drive);
+    assert_ne!(bare_drive_delta, super::WorkStartTally::default());
+    assert_eq!(finished.borrow().len(), cold_events);
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), cold_events + 1);
+    assert_eq!(
+        finished.borrow()[cold_events],
+        super::WorkStartTally::default(),
+        "a retained cache hit must not inherit work consumed by a standalone drive"
+    );
+}
+
+#[test]
+fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed.borrow_mut().push((session.root(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_before_nested_standalone_drive.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_before_nested_product.fz".to_string()),
+        text: "defmacro define_answer() do\n  {:fn, %{}, [{:answer, %{}, []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
+            .to_string(),
+    });
+    let before_drive = compiler.world().work_start_tally();
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    let nested_events = finished.borrow().len();
+    assert!(
+        nested_events > cold_events,
+        "the item macro must enter a nested retained product session"
+    );
+    let mut nested_work = super::WorkStartTally::default();
+    for (nested_root, work) in &finished.borrow()[cold_events..] {
+        assert_ne!(*nested_root, root, "the unrelated runtime root must stay cold");
+        nested_work.add(*work);
+    }
+    let total_work = compiler.world().work_start_tally().delta_since(before_drive);
+    assert_ne!(nested_work, super::WorkStartTally::default());
+    assert_ne!(
+        total_work.delta_since(nested_work),
+        super::WorkStartTally::default(),
+        "standalone source work before macro demand must remain outside nested session attribution"
+    );
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), nested_events + 1);
+    assert_eq!(
+        finished.borrow()[nested_events],
+        (root, super::WorkStartTally::default()),
+        "the next direct cache hit must not inherit completed standalone work"
+    );
+}
+
+#[test]
+fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_reconcile_failure.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+    let before_failure = compiler.world().work_start_tally();
+    compiler.submit_code(CodeSubmission {
+        name: Some("fatal_reconcile_edit.fz".to_string()),
+        text: "fn broken(\n".to_string(),
+    });
+    assert!(compiler.run_root_interp(root).is_err());
+    let after_failure = compiler.world().work_start_tally();
+    let failed_delta = after_failure.delta_since(before_failure);
+    let after_failure_events = finished.borrow().len();
+    assert_eq!(after_failure_events, cold_events + 1);
+    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_ne!(failed_delta, super::WorkStartTally::default());
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), after_failure_events + 1);
+    assert_eq!(
+        finished.borrow()[after_failure_events],
+        (root, 0, super::WorkStartTally::default()),
+        "the next successful request must not inherit failed reconciliation work"
+    );
+    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
+}
+
+#[test]
+fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_zero_timeout.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let before_failure = compiler.world().work_start_tally();
+    let cold_events = finished.borrow().len();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_zero_timeout.fz".to_string()),
+        text: "fn main(), do: 8\n".to_string(),
+    });
+    compiler.set_drive_timeout(std::time::Duration::ZERO);
+    assert!(compiler.run_root_interp(root).is_err());
+    let after_failure = compiler.world().work_start_tally();
+    let failed_delta = after_failure.delta_since(before_failure);
+    let after_failure_events = finished.borrow().len();
+    assert_eq!(after_failure_events, cold_events + 1);
+    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_ne!(failed_delta, super::WorkStartTally::default());
+
+    compiler.set_drive_timeout(std::time::Duration::from_secs(30));
+    assert_eq!(compiler.run_root_interp(root), Ok(8));
+    let success = finished.borrow()[after_failure_events];
+    assert_ne!(success.2, failed_delta);
+    assert_eq!(
+        success.2.ignition, 0,
+        "the edit's ignition belongs to the failed request, not its retry"
+    );
+}
+
+#[test]
+fn an_unresolved_unrelated_root_does_not_poison_a_retained_root_hit() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::Cell::new(0));
+    let evaluated = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, _| evaluated.set(evaluated.get() + 1),
+    );
+    let displacements = std::rc::Rc::new(std::cell::Cell::new(0));
+    let displaced = std::rc::Rc::clone(&displacements);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "displaced"],
+        move |_, _, _, _| displaced.set(displaced.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_root_isolation.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    evaluations.set(0);
+    displacements.set(0);
+    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
+
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "missing".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(evaluations.get(), 0, "the retained product must remain a cache hit");
+    assert_eq!(
+        displacements.get(),
+        0,
+        "the unrelated wait must displace no root product"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "the unrelated wait must not enter global scheduler discovery"
+    );
+}
+
+#[test]
+fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("reachable_struct_schemas.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    assert!(compiler.retained_backend_program(main).struct_schemas.is_empty());
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_struct_root.fz".to_string()),
+        text: "defmodule Spare do\n  defstruct [:value]\nend\n\
+               fn other() do\n  spare = %Spare{value: 9}\n  spare.value\nend\n"
+            .to_string(),
+    });
+    let other = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "other".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(other), Ok(9));
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    let retained = compiler.retained_backend_program(main);
+    assert!(
+        retained.struct_schemas.is_empty(),
+        "an independently reached struct must not enter an unrelated retained root"
+    );
+
+    assert!(compiler.retire_root_products(main));
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    let fresh = compiler.retained_backend_program(main);
+    assert!(
+        !std::rc::Rc::ptr_eq(&retained, &fresh),
+        "retirement releases memo ownership; a new session builds a fresh canonical handle"
+    );
+    assert_eq!(
+        retained.struct_schemas, fresh.struct_schemas,
+        "retained and fresh calculations must derive the same root-reachable schema inventory"
+    );
+    assert!(fresh.struct_schemas.is_empty());
+}
+
+#[test]
+fn a_newly_reached_callee_adds_its_exact_struct_schema() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("schema_callee_initial.fz".to_string()),
+        text: concat!(
+            "defmodule Added do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "fn leaf(), do: 1\n",
+            "fn main(), do: leaf()\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    assert!(compiler.retained_backend_program(root).struct_schemas.is_empty());
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("schema_callee_replacement.fz".to_string()),
+        text: concat!(
+            "fn replacement(), do: %Added{value: 2}\n",
+            "fn main() do\n",
+            "  added = replacement()\n",
+            "  added.value\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    assert_eq!(
+        compiler
+            .retained_backend_program(root)
+            .schema("Added")
+            .map(Vec::as_slice),
+        Some(["value".to_string()].as_slice()),
+        "the retained root must gain the schema carried by its newly reached callee"
+    );
+}
+
+#[test]
+fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("exact_struct_dependencies.fz".to_string()),
+        concat!(
+            "defmodule Needed do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "defmodule Spare do\n",
+            "  defstruct [:other]\n",
+            "end\n",
+            "fn main(), do: %Needed{value: 3}.value\n",
+        )
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the exact struct dependency fixture should settle");
+    let session = driver.session();
+    let needed = world.reference_module("Needed");
+    let spare = world.reference_module("Spare");
+    assert!(program.schema("Needed").is_some());
+    assert_eq!(program.struct_schemas.len(), 1, "only the reached schema is packaged");
+    let dependencies = session
+        .memo()
+        .fact_dependencies(&ProductKey::StructSchema(needed))
+        .expect("the exact schema contribution should retain its fact dependencies");
+    let structs = dependencies
+        .keys()
+        .filter(|dependency| matches!(dependency.fact(), FactKey::StructDefined(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        structs,
+        vec![FactUse::settled(FactKey::StructDefined(needed))],
+        "the packaged schema contribution depends on its own definition"
+    );
+    assert!(!structs.contains(&FactUse::settled(FactKey::StructDefined(spare))));
+    assert!(
+        session.memo().get(&ProductKey::StructSchema(spare)).is_none(),
+        "the unrelated schema is never requested"
+    );
+}
+
+#[test]
+fn nested_structs_with_the_same_leaf_name_keep_distinct_runtime_schemas() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("same_leaf_struct_schemas.fz".to_string()),
+        text: concat!(
+            "defmodule A do\n",
+            "  defmodule Item do\n",
+            "    defstruct [:left]\n",
+            "    fn new(value), do: %Item{left: value}\n",
+            "  end\n",
+            "end\n",
+            "defmodule B do\n",
+            "  defmodule Item do\n",
+            "    defstruct [:right]\n",
+            "    fn new(value), do: %Item{right: value}\n",
+            "  end\n",
+            "end\n",
+            "fn main() do\n",
+            "  a = A.Item.new(2)\n",
+            "  b = B.Item.new(3)\n",
+            "  a.left + b.right\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(5));
+    let program = compiler.retained_backend_program(root);
+    assert_eq!(
+        program.schema("A.Item").map(Vec::as_slice),
+        Some(["left".to_string()].as_slice())
+    );
+    assert_eq!(
+        program.schema("B.Item").map(Vec::as_slice),
+        Some(["right".to_string()].as_slice())
+    );
+    assert!(
+        program.schema("Item").is_none(),
+        "runtime schema keys must remain fully qualified"
+    );
+}
+
+#[test]
+fn a_struct_used_only_by_pruned_control_does_not_enter_the_root_artifact() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("pruned_struct_schema.fz".to_string()),
+        text: concat!(
+            "defmodule Spare do\n",
+            "  defstruct [:value]\n",
+            "  @type t :: %Spare{value: integer}\n",
+            "end\n",
+            "fn choose(x :: integer), do: x + 6\n",
+            "fn choose(x :: Spare.t), do: x.value\n",
+            "fn main(), do: choose(1)\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert!(
+        compiler.retained_backend_program(root).struct_schemas.is_empty(),
+        "a struct present only in an eliminated typed clause must not survive through unpruned value types"
+    );
+}
+
+#[test]
+fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mirror() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 1\nfn main(), do: leaf()\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("cold native request");
+    let content_key = ProductKey::RootBackendProduct(root);
+    let native_key = ProductKey::NativeProgram(root);
+    let cold_content_generation = compiler.retained_product_generation(root, &content_key);
+    let cold_native = compiler.retained_native_program(root);
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("unchanged native request");
+    assert_eq!(
+        compiler.retained_product_generation(root, &content_key),
+        cold_content_generation
+    );
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_native, &compiler.retained_native_program(root)),
+        "an unchanged backend request must not replace the native artifact"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 2\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("warm native request");
+    assert_eq!(
+        compiler.retained_product_generation(root, &content_key),
+        cold_content_generation.map(|generation| generation + 1),
+    );
+    assert!(
+        !std::rc::Rc::ptr_eq(&cold_native, &compiler.retained_native_program(root)),
+        "the backend movement must invalidate and replace the native artifact"
+    );
+
+    let interp_native = compiler.retained_native_program(root);
+    let interp_native_generation = compiler.retained_product_generation(root, &native_key);
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 3\n".to_string(),
+    });
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("native-only refresh");
+    assert_eq!(
+        compiler.retained_product_generation(root, &native_key),
+        interp_native_generation.map(|generation| generation + 1),
+    );
+    assert!(!std::rc::Rc::ptr_eq(
+        &interp_native,
+        &compiler.retained_native_program(root)
+    ));
+}
+
+#[test]
+fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
+    let order = |non_empty_first: bool| {
+        let mut world = World::new();
+        let root = RootId::for_test(0);
+        let function = world.reference_function(super::ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list_key, non_empty_key) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list_key, non_empty_key)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list_key, non_empty_key)
+        };
+        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let list_fact = FactKey::ReturnType(list_key);
+        let non_empty_fact = FactKey::ReturnType(non_empty_key);
+        let mut waits = if non_empty_first {
+            vec![
+                PullWait::Fact(FactUse::settled(non_empty_fact.clone())),
+                PullWait::Fact(FactUse::settled(list_fact.clone())),
+            ]
+        } else {
+            vec![
+                PullWait::Fact(FactUse::settled(list_fact.clone())),
+                PullWait::Fact(FactUse::settled(non_empty_fact.clone())),
+            ]
+        };
+        super::product_drive::sort_product_waits(world.types(), &mut waits);
+        let labels = waits
+            .iter()
+            .map(|wait| match wait {
+                PullWait::Fact(fact) if fact.fact() == &list_fact => "list",
+                PullWait::Fact(fact) if fact.fact() == &non_empty_fact => "non_empty_list",
+                other => panic!("unexpected product wait: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        (raw_order, labels)
+    };
+
+    let list_first = order(false);
+    let non_empty_first = order(true);
+    assert_ne!(list_first.0, non_empty_first.0, "the fixture must reverse raw Ty order");
+    assert_eq!(
+        list_first.1, non_empty_first.1,
+        "product fact waits must use the same semantic order"
+    );
 }
 
 /// fz-k22.13 regression: JIT-compiling one fixed root twice, in two
@@ -103,14 +1557,14 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
 /// contract: the ordered sequence of jobs the drive actually ran (observed
 /// through the production `fz.compiler2.job` span, not a test-only hook) and
 /// the `BackendProgram` it published.
-fn compile_enum_predicate_search() -> (Vec<Job>, super::BackendProgram) {
+fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::BackendProgram>) {
     let tel = ConfiguredTelemetry::new();
     let jobs: std::rc::Rc<std::cell::RefCell<Vec<Job>>> = Default::default();
     let recorded = std::rc::Rc::clone(&jobs);
-    tel.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+    tel.attach_raw_span1_0::<Job, _, _, _>(
         &["fz", "compiler2", "job"],
         move |_, _, _, job| recorded.borrow_mut().push(job.clone()),
-        |_, _, _, _, _, _| {},
+        |_, _, _, _| {},
         |_, _, _, _| {},
     );
     let mut compiler = Compiler2::new(tel);
@@ -127,7 +1581,7 @@ fn compile_enum_predicate_search() -> (Vec<Job>, super::BackendProgram) {
     compiler
         .compile_root_jit(root)
         .unwrap_or_else(|error| panic!("expected the fixture to compile, got {error}"));
-    let program = compiler.world().backend_program(root);
+    let program = compiler.retained_backend_program(root);
     (jobs.take(), program)
 }
 
@@ -191,9 +1645,9 @@ fn compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order() {
 ///
 /// fz-k22.21 raised this past bare success/failure (the JIT-outcome check
 /// above), and fz-k22.28 pinned the folds that minted types AS THEY ITERATED
-/// (`jobs/runtime_demand.rs`'s per-cone member list and per-value
-/// callable-flow list, `World::demand_activation_frontier_analyses`'s
-/// frontier). fz-f98.19 is the same disease one layer down: the folds that
+/// (`jobs/runtime_demand.rs`'s direct-peer and per-value callable-flow lists,
+/// `World::demand_activation_frontier_analyses`'s frontier). fz-f98.19 is the
+/// same disease one layer down: the folds that
 /// reorder JOB WAKES, whose effect on the interner is second-order. Its cause
 /// is named by the sibling test above; this one additionally catches a
 /// nondeterminism that never reaches job order -- an unordered fold inside a
@@ -209,6 +1663,101 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
         "compiling the same root twice must publish a byte-identical BackendProgram -- \
          including raw Ty numbering, not just the same executable inventory"
     );
+}
+
+#[test]
+fn live_executable_order_distinguishes_noninjective_display_pairs() {
+    use super::semantic::SemanticOrd;
+    use std::collections::BTreeMap;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("fixture must compile");
+    let types = compiler.types_for_test();
+    let mut by_display = BTreeMap::<String, Vec<super::Ty>>::new();
+    for ty in types.interned_tys() {
+        by_display.entry(types.display(&ty)).or_default().push(ty);
+    }
+    let reachable_by_executable = executables
+        .iter()
+        .map(|executable| types.activation_reachable_tys(executable.activation.arrow))
+        .collect::<Vec<_>>();
+    let mut measured_pairs = Vec::new();
+    for tys in by_display.into_values().filter(|tys| tys.len() > 1) {
+        for (index, left) in tys.iter().enumerate() {
+            for right in &tys[index + 1..] {
+                let distinct_executable_owners = reachable_by_executable.iter().enumerate().any(|(left_index, tys)| {
+                    tys.contains(left)
+                        && reachable_by_executable
+                            .iter()
+                            .enumerate()
+                            .any(|(right_index, tys)| right_index != left_index && tys.contains(right))
+                });
+                if !distinct_executable_owners {
+                    continue;
+                }
+                let activation_forward = types.cmp_activation_ty(*left, *right);
+                let activation_reverse = types.cmp_activation_ty(*right, *left);
+                let storage_forward = types.cmp_ty(*left, *right);
+                let storage_reverse = types.cmp_ty(*right, *left);
+                assert_ne!(
+                    activation_forward,
+                    std::cmp::Ordering::Equal,
+                    "distinct live types must not collapse in activation order: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_eq!(
+                    activation_forward,
+                    activation_reverse.reverse(),
+                    "activation order must be antisymmetric: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_ne!(
+                    storage_forward,
+                    std::cmp::Ordering::Equal,
+                    "distinct live types must not collapse in storage order: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_eq!(
+                    storage_forward,
+                    storage_reverse.reverse(),
+                    "storage order must be antisymmetric: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                measured_pairs.push((*left, *right));
+            }
+        }
+    }
+    assert_eq!(
+        measured_pairs.len(),
+        6,
+        "fixture must retain the six live empty/non-empty list pairs that display conflates"
+    );
+    for (index, left) in executables.iter().enumerate() {
+        for right in &executables[index + 1..] {
+            assert_ne!(
+                left, right,
+                "executable inventory must be deduplicated by exact identity"
+            );
+            assert_ne!(
+                left.semantic_cmp(right, types),
+                std::cmp::Ordering::Equal,
+                "typed executable order must be total for distinct live keys: left={left:?}; right={right:?}"
+            );
+        }
+    }
 }
 
 /// The `add1` fixture, submitted and rooted at `main/0`: the shared "ordinary,
@@ -325,7 +1874,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             fact,
             // Read after the fact so the assertion mirrors exactly what the
             // hook itself reports, not a separately reconstructed guess.
-            compiler.world().work_graph.unresolved()
+            compiler.world().unresolved_waits()
         ),
         "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
     );
@@ -339,11 +1888,10 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let mut world = World::new();
     let root = world.submit_root(None, "totally_undefined_entry".to_string(), 0, ExecutableNeed::Value);
 
-    world.demand(Job::BuildBackendProduct(root));
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
+    let outcome = drive_retained_backend_fatal(&mut world, &tel, root);
     assert!(
-        matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
-        "the backend product job should fail fatally when its entry is never defined, got: {outcome:?}"
+        matches!(&outcome, Err(FatalError)),
+        "the retained backend product should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
     let fact = FactUse::settled(FactKey::RootEntry(root));
@@ -363,9 +1911,9 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
 }
 
 /// `fact_wait_budget_exceeded`: an ordinary, fully resolvable root (`add1`),
-/// driven through the test-only budget seam with the inner per-fact-wait job
-/// budget forced to zero. `drive_product_fact_wait`'s budget check runs after
-/// every job unconditionally, so the very first job any real fact-wait runs
+/// driven through the test-only budget seam with the per-prerequisite job
+/// budget forced to zero. The exact prerequisite-set loop's budget check runs
+/// after every job unconditionally, so the very first job any real prerequisite runs
 /// already exceeds a budget of zero -- this is the same check production
 /// hits at 50,001 jobs, just forced early so the test stays fast.
 #[test]
@@ -390,6 +1938,84 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
             root.as_u32()
         )),
         "should report the fact-wait budget exceeded template, got: {error}"
+    );
+}
+
+#[test]
+fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_changes() {
+    let tel = ConfiguredTelemetry::new();
+    let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&steps);
+    tel.attach_raw_event1::<super::AppliedStep<Job, DependencyKey>, _>(
+        &["fz", "compiler2", "work_graph", "quiesced"],
+        move |_, _, _, step| observed.borrow_mut().push(step.clone()),
+    );
+    let mut world = World::new();
+    let root = RootId::for_test(88);
+    let code = super::CodeId::ZERO;
+    let left = FactKey::CodeIndexed(code);
+    let right = FactKey::CodeScoped(code);
+    let left_job = Job::IndexCode(code);
+    let right_job = Job::ScopeCode(code);
+
+    let complete = |world: &mut World, job, reads, outputs, changed| {
+        super::drive::ExecutionContext::new(world, &tel).complete_job(
+            job,
+            super::drive::JobEffects {
+                reads,
+                outputs,
+                changed,
+                ..super::drive::JobEffects::default()
+            },
+        )
+    };
+    complete(
+        &mut world,
+        left_job.clone(),
+        vec![FactUse::current(right.clone())],
+        vec![left.clone()],
+        vec![left.clone()],
+    );
+    complete(
+        &mut world,
+        right_job,
+        vec![FactUse::current(left.clone())],
+        vec![right.clone()],
+        vec![right.clone()],
+    );
+    assert_eq!(world.work_graph.pop(), Some(left_job.clone()));
+    complete(
+        &mut world,
+        left_job,
+        vec![FactUse::current(right.clone())],
+        vec![left.clone()],
+        Vec::new(),
+    );
+    while world.work_graph.pop().is_some() {}
+    assert!(!world.fact_is_settled(&left));
+    assert!(!world.fact_is_settled(&right));
+
+    let mut driver = super::pull::ProductDriver::new(&tel, root);
+    super::product_drive::drive_product_fact_waits::<_, String>(
+        &mut world,
+        &tel,
+        root,
+        &mut driver,
+        &[FactUse::settled(left.clone()), FactUse::settled(right.clone())],
+        super::product_drive::PRODUCT_DRIVE_BUDGET,
+    )
+    .expect("the locally clean prerequisite cycle should settle at the drain");
+
+    let steps = steps.borrow();
+    assert_eq!(steps.len(), 1, "one prerequisite set must cross one arbiter boundary");
+    assert_eq!(
+        steps[0]
+            .changed
+            .iter()
+            .map(|change| change.key.clone())
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([DependencyKey::Fact(left), DependencyKey::Fact(right)]),
+        "the atomic step must retain both typed readiness changes"
     );
 }
 
@@ -469,6 +2095,12 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 #[test]
 fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+    );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_only_root.fz".to_string()),
@@ -506,6 +2138,16 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         ),
         "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
     );
+    let mut finished_work = super::WorkStartTally::default();
+    for work in finished.borrow().iter().copied() {
+        finished_work.add(work);
+    }
+    assert_eq!(finished_work, compiler.world().work_start_tally());
+    assert_eq!(
+        compiler.retained_product_counts().0,
+        finished.borrow().len(),
+        "every failed nested activation must finish and restore its retained session"
+    );
 }
 
 #[test]
@@ -520,11 +2162,10 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     );
     let root = world.submit_root(None, "inc".to_string(), 1, ExecutableNeed::Value);
 
-    world.demand(Job::BuildBackendProduct(root));
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
+    let outcome = drive_retained_backend_fatal(&mut world, &tel, root);
     assert!(
-        matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
-        "the backend product job should fail fatally when its root targets a macro, got: {outcome:?}"
+        matches!(&outcome, Err(FatalError)),
+        "the retained backend product should fail fatally when its root targets a macro, got: {outcome:?}"
     );
 
     // `job_failed` forwards the failed job's own `FatalError` unchanged, so
@@ -604,7 +2245,8 @@ fn settled_products_depend_only_on_settled_products() {
 
     let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the reducer root should settle");
-    let memo = driver.session().memo();
+    let session = driver.session();
+    let memo = session.memo();
 
     let unsettled = memo
         .dependency_edges()
@@ -634,86 +2276,525 @@ fn settled_products_depend_only_on_settled_products() {
     }
 }
 
-/// The demand ascent's height and its per-member re-derivation count do not
-/// grow with the size of the program.
-///
-/// `RuntimeDemand(E)` is settled by a Jacobi ascent over a whole cone of
-/// executables, so it has three independent ways to get expensive: the cone can
-/// be too big, the ascent can climb too far, or members can re-derive too often.
-/// The last two are properties of the lattice and the dirty-set skipping, not of
-/// the program, and they must stay that way -- if either started scaling with
-/// program size, demand would be super-linear and no amount of scoping the cone
-/// would fix it. Doubling the number of identical call sites doubles the cone
-/// and must leave both alone.
-///
-/// The cone SIZE is deliberately not asserted here. A cone is collected
-/// transitively and stops only at executables whose demand already settled, so
-/// from a cold root it spans the whole reachable call graph and grows with the
-/// program by construction. That is what `fz-zg4` is about; this test guards the
-/// two numbers that are supposed to be flat so that ticket can be judged by the
-/// one that is not.
 #[test]
-fn the_demand_ascent_height_does_not_grow_with_the_program() {
-    fn tallest_cone(call_sites: usize) -> crate::compiler2::DemandConeSettlement {
-        let tel = ConfiguredTelemetry::new();
-        let tallest = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::compiler2::DemandConeSettlement>));
-        let sink = std::rc::Rc::clone(&tallest);
-        tel.attach_raw_event1::<crate::compiler2::DemandConeSettlement, _>(
-            &["fz", "compiler2", "demand", "cone", "settled"],
-            move |_, _, _, cone| {
-                let mut sink = sink.borrow_mut();
-                if sink.is_none_or(|tallest| cone.members > tallest.members) {
-                    *sink = Some(*cone);
-                }
-            },
-        );
+fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_dependency() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("executable_fact_consumers.fz".to_string()),
+        "fn left(x), do: fn(y) -> x + y end\n\
+         fn right(x), do: fn(y) -> x * y end\n\
+         fn count(0), do: fn(x) -> x end\n\
+         fn count(n), do: count(n - 1)\n\
+         fn even(0), do: fn(x) -> x end\n\
+         fn even(n), do: odd(n - 1)\n\
+         fn odd(0), do: fn(x) -> x + 1 end\n\
+         fn odd(n), do: even(n - 1)\n\
+         fn main() do\n\
+           l = left(1)\n\
+           r = right(2)\n\
+           c = count(3)\n\
+           e = even(4)\n\
+           dbg({l.(3), r.(4), c.(1), e.(1)})\n\
+         end\n"
+            .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the executable-fact consumer fixture should settle");
+    let session = driver.session();
+    let memo = session.memo();
 
-        let mut source = String::from("fn main() do\n  xs = [1, 2, 3, 4]\n");
-        for bound in 0..call_sites {
-            source.push_str(&format!("  dbg(Enum.find(xs, fn (x) -> x > {bound} end))\n"));
+    let mut observed = std::collections::BTreeSet::new();
+    for key in memo.produced_keys() {
+        if !matches!(
+            key.kind(),
+            "materialized_executable" | "transport_shape" | "callable_construction"
+        ) {
+            continue;
         }
-        source.push_str("end\n");
+        observed.insert(key.kind());
+        let dependencies = memo
+            .fact_dependencies(key)
+            .unwrap_or_else(|| panic!("settled product should expose dependencies: {key:?}"));
+        assert!(
+            dependencies
+                .keys()
+                .any(|fact| matches!(fact, FactUse::Settled(FactKey::ExecutableFacts(_)))),
+            "{} must record its ExecutableFacts read directly: {dependencies:?}",
+            key.kind(),
+        );
+    }
+    for expected in ["materialized_executable", "transport_shape", "callable_construction"] {
+        assert!(
+            observed.contains(expected),
+            "fixture did not exercise {expected}; observed {observed:?}"
+        );
+    }
+}
 
-        let mut world = World::new();
-        world.submit_code(Some("demand_ascent.fz".to_string()), source);
-        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-            .expect("the call-site root should settle");
+#[test]
+fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_without_touching_products() {
+    let tel = ConfiguredTelemetry::new();
+    let executable_fact_trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(
+        Job,
+        bool,
+        Vec<super::FactChange<DependencyKey>>,
+        Vec<super::FactMovement<DependencyKey>>,
+        Vec<FactUse<DependencyKey>>,
+    )>::new()));
+    let observed_trace = std::rc::Rc::clone(&executable_fact_trace);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if matches!(completion.job, Job::DeriveExecutableFacts(_)) {
+                observed_trace.borrow_mut().push((
+                    completion.job.clone(),
+                    completion.rebased,
+                    completion.changed.clone(),
+                    completion.movements.clone(),
+                    completion.blocked.clone(),
+                ));
+            }
+        },
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("equal_executable_facts.fz".to_string()),
+        "fn main(), do: 42\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_program, mut driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the equal-reproduction fixture should settle");
+    let generations = driver
+        .session()
+        .memo()
+        .produced_keys()
+        .map(|key| (key.clone(), driver.session().memo().generation(key)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let executable = generations
+        .keys()
+        .find_map(|key| match key {
+            ProductKey::MaterializedExecutable(executable)
+                if executable.activation.function == world.root_function(root) =>
+            {
+                Some(executable.clone())
+            }
+            _ => None,
+        })
+        .expect("the settled root should contain a materialized executable");
+    let fact = FactKey::ExecutableFacts(executable.clone());
+    let revision = world
+        .fact_revision(&fact)
+        .expect("the executable fact should already be published");
+    let producer = Job::DeriveExecutableFacts(executable.clone());
+    let prerequisite = FactKey::LoweredBody(executable.activation.function);
+    let prerequisite_revision = world
+        .fact_revision(&prerequisite)
+        .expect("the lowered body prerequisite should already be published");
+    let prerequisite_job = Job::LowerFunction(executable.activation.function);
+    let observer = Job::DefineFunction(super::FunctionId::for_test(u32::MAX));
+    let observer_completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
+        observer.clone(),
+        super::drive::JobEffects {
+            reads: vec![FactUse::current(fact.clone()), FactUse::settled(fact.clone())],
+            ..super::drive::JobEffects::default()
+        },
+    );
+    assert!(observer_completion.changed.is_empty());
+    executable_fact_trace.borrow_mut().clear();
 
-        let cone = tallest.borrow().expect("a demand cone should settle for this root");
-        assert!(cone.members > 0, "a settled cone should report its members");
-        cone
+    let (prerequisite_outputs, prerequisite_reads) = world.standing_claims_and_reads(&prerequisite_job);
+    assert!(prerequisite_outputs.contains(&prerequisite));
+    let dirtied = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(
+        prerequisite_job.clone(),
+        super::drive::JobEffects {
+            reads: prerequisite_reads.into_iter().collect(),
+            waits: vec![FactUse::settled(FactKey::RootEntry(RootId::for_test(u32::MAX)))],
+            outputs: prerequisite_outputs,
+            ..super::drive::JobEffects::default()
+        },
+    );
+    let executable_fact_dirtied = dirtied
+        .movements
+        .iter()
+        .find(|movement| movement.key == DependencyKey::Fact(fact.clone()))
+        .unwrap_or_else(|| {
+            panic!(
+                "dirtying a settled prerequisite must make its executable-fact reader unready: {:?}",
+                dirtied.movements
+            )
+        });
+    assert_eq!(
+        executable_fact_dirtied.state,
+        super::facts::FactState {
+            revision: Some(revision),
+            settled: false,
+        },
+        "the executable fact must move only in readiness while its settled prerequisite can move",
+    );
+    assert!(
+        dirtied
+            .wakes
+            .iter()
+            .any(|wake| wake.job == producer
+                && wake.cause == FactUse::settled(DependencyKey::Fact(prerequisite.clone()))),
+        "the moved settled prerequisite must wake its exact executable-fact producer: {:?}",
+        dirtied.wakes,
+    );
+    assert!(
+        dirtied
+            .wakes
+            .iter()
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(prerequisite.clone()))),
+        "the readiness-only prerequisite movement must not wake a Current reader: {:?}",
+        dirtied.wakes,
+    );
+    assert!(
+        dirtied
+            .wakes
+            .iter()
+            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
+        "the downstream executable-fact readiness movement must wake its Settled reader: {:?}",
+        dirtied.wakes,
+    );
+    assert!(
+        dirtied
+            .wakes
+            .iter()
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
+        "the downstream executable-fact readiness movement must not wake its Current reader: {:?}",
+        dirtied.wakes,
+    );
+    assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
+    assert_eq!(world.fact_revision(&fact), Some(revision));
+    assert!(!world.fact_is_settled(&prerequisite));
+    assert!(!world.fact_is_settled(&fact));
+
+    let unrelated_root = RootId::for_test(u32::MAX);
+    let unrelated_content = ProductKey::NativeProgram(unrelated_root);
+    assert_eq!(driver.session().memo().generation(&unrelated_content), None);
+    apply_world_fact_movements(&mut driver, &dirtied.movements);
+    assert_eq!(
+        driver.pull(
+            &mut WorldProductProducers::new(&mut world, &tel),
+            unrelated_content.clone()
+        ),
+        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(unrelated_root)),
+        "reconciling through an unrelated request must not validate the dirty root"
+    );
+    for (key, generation) in &generations {
+        assert_eq!(
+            driver.session().memo().generation(key),
+            *generation,
+            "reconciling the unready movement must retain {key:?} while the fact can settle equal",
+        );
     }
 
-    let small = tallest_cone(2);
-    let large = tallest_cone(4);
+    let effects = super::jobs::run(
+        &mut super::drive::ExecutionContext::new(&mut world, &tel),
+        &prerequisite_job,
+    )
+    .expect("the unchanged prerequisite should reproduce");
+    let prerequisite_settled =
+        super::drive::ExecutionContext::new(&mut world, &tel).complete_job(prerequisite_job, effects);
+    assert_eq!(world.fact_revision(&prerequisite), Some(prerequisite_revision));
+    assert!(
+        world.fact_is_settled(&prerequisite),
+        "the equal prerequisite conclusion must restore settledness before its reader reruns"
+    );
+    assert!(
+        !world.fact_is_settled(&fact),
+        "the executable fact must remain dirty until its own producer concludes"
+    );
+    apply_world_fact_movements(&mut driver, &prerequisite_settled.movements);
+
+    let mut settled = None;
+    while let Some(ready) = world.next_ready_job(None) {
+        if ready == observer {
+            continue;
+        }
+        let effects = super::jobs::run(&mut super::drive::ExecutionContext::new(&mut world, &tel), &ready)
+            .expect("the unchanged prerequisite cone should reproduce");
+        let completion = super::drive::ExecutionContext::new(&mut world, &tel).complete_job(ready.clone(), effects);
+        apply_world_fact_movements(&mut driver, &completion.movements);
+        if ready == producer
+            && completion
+                .changed
+                .iter()
+                .any(|change| change.key == DependencyKey::Fact(fact.clone()) && change.new_settled)
+        {
+            settled = Some(completion);
+        }
+    }
+    let settled = settled.expect("the equal prerequisite cone must restore the target executable fact");
+    let executable_fact_settled = settled
+        .changed
+        .iter()
+        .find(|change| change.key == DependencyKey::Fact(fact.clone()))
+        .unwrap_or_else(|| {
+            panic!(
+                "the equal conclusion must restore executable-fact readiness: changed={:?}, movements={:?}",
+                settled.changed, settled.movements,
+            )
+        });
+    assert_eq!(
+        (
+            executable_fact_settled.old_revision,
+            executable_fact_settled.new_revision,
+            executable_fact_settled.old_settled,
+            executable_fact_settled.new_settled,
+        ),
+        (Some(revision), Some(revision), false, true),
+        "equal reproduction must restore readiness without moving content",
+    );
+    assert_eq!(world.fact_revision(&fact), Some(revision));
+    assert!(world.fact_is_settled(&fact));
+    assert!(
+        settled
+            .wakes
+            .iter()
+            .any(|wake| wake.job == observer && wake.cause == FactUse::settled(DependencyKey::Fact(fact.clone()))),
+        "equal settlement must trace the downstream Settled executable-fact wake: {:?}",
+        settled.wakes,
+    );
+    assert!(
+        settled
+            .wakes
+            .iter()
+            .all(|wake| wake.cause != FactUse::current(DependencyKey::Fact(fact.clone()))),
+        "equal settlement must not trace a downstream Current executable-fact wake: {:?}",
+        settled.wakes,
+    );
+
+    assert_eq!(
+        driver.pull(&mut WorldProductProducers::new(&mut world, &tel), unrelated_content),
+        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(unrelated_root)),
+        "reconciling equal readiness must leave the unrelated dependency unresolved"
+    );
+    let root_outcome = driver.pull(
+        &mut WorldProductProducers::new(&mut world, &tel),
+        ProductKey::RootBackendProduct(root),
+    );
+    assert!(
+        matches!(root_outcome, PullOutcome::Produced(_)),
+        "the reconciled root must remain a cache hit: {root_outcome:?}"
+    );
+    for (key, generation) in &generations {
+        assert_eq!(
+            driver.session().memo().generation(key),
+            *generation,
+            "after both readiness movements reconcile, {key:?} must remain standing",
+        );
+    }
+
+    let trace = executable_fact_trace.borrow();
+    assert!(
+        trace.iter().any(|(job, _, _, _, blocked)| {
+            job == &producer
+                && blocked.iter().any(|fact| {
+                    matches!(
+                        fact,
+                        FactUse::Settled(DependencyKey::Fact(FactKey::ActivationAnalyzed(_)))
+                    )
+                })
+        }),
+        "the moved prerequisite cone must trace a non-initial executable-fact run blocked on its exact unsettled input: {trace:?}",
+    );
+    let (traced_job, rebased, changes, movements, blocked) = trace
+        .iter()
+        .find(|(job, _, changes, _, _)| {
+            job == &producer
+                && changes
+                    .iter()
+                    .any(|change| change.key == DependencyKey::Fact(fact.clone()))
+        })
+        .expect("the trace must carry the equal executable-fact conclusion");
+    assert_eq!(traced_job, &producer);
+    assert!(!rebased, "a readiness-only input movement is not a ground shift");
+    assert!(blocked.is_empty(), "the equal executable-fact conclusion must be final");
+    assert!(
+        changes.iter().any(|change| {
+            change.key == DependencyKey::Fact(fact.clone())
+                && change.old_revision == Some(revision)
+                && change.new_revision == Some(revision)
+                && !change.old_settled
+                && change.new_settled
+        }),
+        "the work-graph trace must retain the equal readiness change: {changes:?}",
+    );
+    assert!(
+        movements
+            .iter()
+            .any(|movement| movement.key == DependencyKey::Fact(fact.clone())
+                && movement.state.revision == Some(revision)
+                && movement.state.settled),
+        "the work-graph trace must retain the fact's restored settled state: {movements:?}",
+    );
+}
+
+#[test]
+fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_roots_standing() {
+    fn materialized_executables(
+        world: &mut World,
+        tel: &ConfiguredTelemetry,
+        root: RootId,
+    ) -> Vec<super::ExecutableKey> {
+        let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(world, tel, root)
+            .expect("the root should settle");
+        driver
+            .session()
+            .memo()
+            .produced_keys()
+            .filter_map(|key| match key {
+                ProductKey::MaterializedExecutable(executable) => Some(executable.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("executable_fact_movement.fz".to_string()),
+        "fn add_one(x), do: x + 1\n\
+         fn main(), do: add_one(41)\n\
+         fn quiet(), do: :unchanged\n"
+            .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let other_root = world.submit_root(None, "quiet".to_string(), 0, ExecutableNeed::Value);
+    let root_executables = materialized_executables(&mut world, &tel, root);
+    let other_executables = materialized_executables(&mut world, &tel, other_root);
+    let main = root_executables
+        .iter()
+        .find(|executable| executable.activation.function == world.root_function(root))
+        .expect("the root inventory should contain main")
+        .clone();
+    let alternate = super::ExecutableKey {
+        activation: main.activation.clone(),
+        need: ExecutableNeed::TupleFields(2),
+    };
+    let alternate_job = Job::DeriveExecutableFacts(alternate.clone());
+    assert!(world.demand(alternate_job));
+    assert!(
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
+        "the second executable need should derive on the same activation"
+    );
+
+    let exact_readers = [main.clone(), alternate];
+    let revisions = exact_readers
+        .iter()
+        .map(|executable| {
+            let fact = FactKey::ExecutableFacts(executable.clone());
+            (executable.clone(), world.fact_revision(&fact).expect("fact revision"))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let unrelated_revisions = root_executables
+        .iter()
+        .filter(|executable| executable.activation != main.activation)
+        .chain(other_executables.iter())
+        .map(|executable| {
+            let fact = FactKey::ExecutableFacts(executable.clone());
+            (
+                executable.clone(),
+                world.fact_revision(&fact).expect("unrelated fact revision"),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let analysis = world
+        .activation_analysis(&main.activation)
+        .expect("main analysis should be settled");
+    let callsite = *analysis.callsites.first().expect("main should contain one callsite");
+    let callsite_key = super::CallSiteKey {
+        activation: main.activation.clone(),
+        callsite,
+    };
+    let mut summary = world
+        .callsite_summary(&callsite_key)
+        .expect("main callsite summary should be settled")
+        .clone();
+    summary.return_ty = Some(world.types_mut().atom());
+    assert!(world.define_callsite_summary(
+        callsite_key.clone(),
+        super::semantic::CallSiteResolution::Resolved(summary),
+    ));
+    let callsite_fact = FactKey::CallSiteSummary(callsite_key);
+    let analyze = Job::AnalyzeActivation(main.activation.clone());
+    let (outputs, reads) = world.standing_claims_and_reads(&analyze);
+    let movement = world.complete_job(
+        analyze,
+        super::drive::JobEffects {
+            reads: reads.into_iter().collect(),
+            outputs,
+            changed: vec![callsite_fact.clone()],
+            ..super::drive::JobEffects::default()
+        },
+    );
+    let moved_readers = movement
+        .wakes
+        .iter()
+        .filter(|wake| wake.cause == FactUse::settled(DependencyKey::Fact(callsite_fact.clone())))
+        .filter_map(|wake| match &wake.job {
+            Job::DeriveExecutableFacts(executable) => Some(executable.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(moved_readers, exact_readers.into_iter().collect());
 
     assert!(
-        large.members > small.members,
-        "doubling the call sites should grow the cone, or this is not measuring what it thinks: \
-         {} vs {} members",
-        small.members,
-        large.members
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
+        "the exact executable-fact readers should rederive"
+    );
+    for (executable, revision) in revisions {
+        assert_eq!(
+            world.fact_revision(&FactKey::ExecutableFacts(executable)),
+            Some(revision + 1),
+            "each need sharing the moved activation should publish changed facts"
+        );
+    }
+    for (executable, revision) in unrelated_revisions {
+        assert_eq!(
+            world.fact_revision(&FactKey::ExecutableFacts(executable)),
+            Some(revision),
+            "unrelated executable keys and roots should remain standing"
+        );
+    }
+}
+
+#[test]
+fn runtime_demand_is_a_settled_world_fact_for_the_exact_executable() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("runtime_demand_fact.fz".to_string()),
+        "fn main(), do: 42\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the root should settle");
+    let executable = world.root_entry_executable(root);
+    let fact = FactKey::RuntimeDemand(executable.clone());
+    assert!(
+        world.fact_is_settled(&fact),
+        "artifact completion must consume settled demand"
+    );
+    let input_fact = FactKey::RuntimeDemandInput(executable.clone());
+    assert!(
+        world.job_outputs(&Job::SeedRoot(root)).contains(&input_fact),
+        "the root seed must own the entry executable's liveness contribution",
     );
     assert_eq!(
-        small.rounds, large.rounds,
-        "the ascent climbs a lattice, not a program: its round count should not move when the \
-         program grows ({} members took {} rounds, {} members took {})",
-        small.members, small.rounds, large.members, large.rounds
-    );
-
-    // Re-derivations per member is what the dirty set buys: a member whose reads
-    // did not move that round is skipped, so the ratio reflects how often a
-    // member's inputs actually move -- a lattice property. Compared as a ratio
-    // rather than a total, since the total is expected to grow with the cone.
-    let ratio = |cone: crate::compiler2::DemandConeSettlement| cone.derivations as f64 / cone.members as f64;
-    assert!(
-        (ratio(large) - ratio(small)).abs() < 1.0,
-        "per-member re-derivation should not grow with the program: {:.2} at {} members vs \
-         {:.2} at {} members",
-        ratio(small),
-        small.members,
-        ratio(large),
-        large.members
+        world
+            .runtime_demand_input(&executable)
+            .and_then(|contribution| contribution.return_demand.clone()),
+        Some(super::RuntimeDemand::whole()),
     );
 }

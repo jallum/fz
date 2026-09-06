@@ -258,12 +258,11 @@ pub(super) fn lower_function(
         // Same wait, `StructDefined` side: an extern contract that names
         // `%Mod{...}` resolves through the shared `TypeExpr::StructRecord` arm
         // (`resolve_extern_signature` -> `resolve_spec_decl`), which needs
-        // `Mod`'s precise field order -- the struct value type's tuple
-        // component is order-sensitive, so resolving before the defstruct
-        // settles would bake in literal write order (fz-rh2.17.5.6.10). This
-        // waits on the extern spec's struct refs, mirroring the `TypeDefined`
-        // loop above; it is spec-type resolution, distinct from the
-        // struct-literal/pattern lowering wait recorded below.
+        // `Mod`'s settled schema. Resolving before the defstruct lands would
+        // validate and type the tagged record against an incomplete field set.
+        // This waits on the extern spec's struct refs, mirroring the
+        // `TypeDefined` loop above; it is spec-type resolution, distinct from
+        // the struct-literal/pattern lowering wait recorded below.
         for module in world.function_type_struct_refs(function).iter().copied() {
             let fact = FactKey::StructDefined(module);
             if world.has_fact(&fact) {
@@ -3639,6 +3638,37 @@ fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
         LoweredTail::Halt { .. } => {}
     }
     out
+}
+
+/// Every value identity retained by a lowered body's executable surface.
+/// Running this after artifact pruning gives downstream products the exact
+/// value-type subset that can still be interpreted or lowered.
+pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return HashSet::new();
+    };
+    let mut retained = HashSet::new();
+    for clause in clauses {
+        retained.extend(clause.params.iter().copied());
+        retained.extend(values_defined_by_steps(&clause.projections));
+        collect_used_values(&clause.projections, &mut retained);
+    }
+    for entry in entries {
+        retained.extend(entry.params.iter().copied());
+        retained.extend(entry.captures.iter().copied());
+        retained.extend(
+            entry
+                .reusable_cons_captures
+                .iter()
+                .flat_map(|capture| [capture.head, capture.source]),
+        );
+        if let Some(value) = entry.origin.input_value() {
+            retained.insert(value);
+        }
+        retained.extend(values_defined_by_steps(&entry.steps));
+        retained.extend(used_values_in_entry(entry));
+    }
+    retained
 }
 
 fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {

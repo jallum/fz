@@ -1,4 +1,5 @@
 use crate::telemetry::{RawSpanTelemetry, Telemetry, TelemetryExt as _};
+use std::rc::Rc;
 use std::time::Duration;
 
 use super::NativeProgram;
@@ -8,11 +9,21 @@ use super::drive::ExecutionContext;
 use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
-use super::pull::{ProductDriver, ProductKey, PullWait};
+use super::pull::{ProductKey, ProductSessions, PullWait};
 use super::scheduler::DriveOutcome;
 use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
 use super::{FactKey, Job};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendRequestEvent {
+    Started,
+    Succeeded {
+        executables: usize,
+        construction_wrappers: usize,
+    },
+    Failed,
+}
 
 /// Public front door for the side-by-side incremental compiler.
 ///
@@ -25,6 +36,7 @@ pub struct Compiler2<T: Telemetry> {
     output: Box<dyn fz_runtime::output::OutputSink>,
     requested_output: Box<dyn super::dump::RequestedOutputSink>,
     drive_timeout: Option<Duration>,
+    product_sessions: ProductSessions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +61,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             output: Box::new(fz_runtime::output::StdoutOutput),
             requested_output: Box::new(super::dump::NullRequestedOutput),
             drive_timeout: None,
+            product_sessions: ProductSessions::default(),
         }
     }
 
@@ -118,44 +131,28 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         self.world.demand(job)
     }
 
-    pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
-        super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).drive_for(self.drive_timeout)
+    pub fn drive(&mut self) -> DriveOutcome<Job, super::DependencyKey> {
+        self.product_sessions
+            .begin_standalone_drive(self.world.work_start_tally());
+        let outcome = super::drive::ExecutionContext::with_product_sessions(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
+        )
+        .drive_for(self.drive_timeout);
+        self.product_sessions
+            .finish_standalone_drive(self.world.work_start_tally());
+        outcome
     }
 
-    fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
-        // Native/JIT/AOT reach the backend through the SAME product boundary as
-        // interp. `LowerNativeProgram` builds the `BackendProgram` via the
-        // product driver (`build_backend_product`), then consumes only that
-        // product fact plus compiler-owned stores.
-        self.abort_on_zero_drive_timeout(root)?;
-        let job = Job::LowerNativeProgram(root);
-        let mut context = super::drive::ExecutionContext::new(&mut self.world, &self.telemetry);
-        let effects = super::jobs::run(&mut context, &job).map_err(|_| {
-            format!(
-                "compiler2 root {} native lowering failed before backend execution",
-                root.as_u32()
-            )
-        })?;
-        super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).complete_job(job, effects);
-        Ok(self.world.native_program(root))
-    }
-
-    /// Honors a zero-length drive budget before any product work runs, matching
-    /// the guarded interp/backend boundary. A configured `Duration::ZERO` aborts
-    /// the compile up front instead of building the backend product.
-    fn abort_on_zero_drive_timeout(&mut self, root: RootId) -> Result<(), String> {
-        if self.drive_timeout == Some(Duration::ZERO)
-            && let DriveOutcome::TimedOut { jobs_ran, pending_jobs } =
-                super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).drive_for(self.drive_timeout)
-        {
-            return Err(format!(
-                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
-                root.as_u32(),
-                jobs_ran,
-                pending_jobs,
-            ));
-        }
-        Ok(())
+    fn native_program_for_root(&mut self, root: RootId) -> Result<Rc<NativeProgram>, String> {
+        super::product_drive::drive_retained_root_native_program(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
+            root,
+            self.drive_timeout,
+        )
     }
 
     fn compile_native_backend<B>(
@@ -182,13 +179,27 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         )
     }
 
-    pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
+    pub(crate) fn drive_root_to_dump_stage(
+        &mut self,
+        root: RootId,
+        stage: DumpStage,
+    ) -> Result<(Rc<BackendProgram>, Option<Rc<NativeProgram>>), String> {
         match stage {
-            DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
-            // Native dumps share the front-door routing: the guarded product
-            // boundary plus a single `LowerNativeProgram` job, never the legacy
-            // root-wide planning ladder.
-            DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
+            DumpStage::Backend => self
+                .product_backend_program_for_root(root)
+                .map(|backend| (backend, None)),
+            DumpStage::Native => {
+                let native = self.native_program_for_root(root)?;
+                let backend = match self
+                    .product_sessions
+                    .get(root)
+                    .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
+                {
+                    Some(super::pull::ProductValue::RootBackendProduct(backend)) => backend,
+                    _ => panic!("native product must retain its exact backend content dependency"),
+                };
+                Ok((backend, Some(native)))
+            }
         }
     }
 
@@ -209,8 +220,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         Ok(())
     }
 
-    pub(crate) fn emit_requested_program_dumps(&mut self, root: RootId) {
-        self.requested_output.program(&self.world, root);
+    pub(crate) fn emit_requested_program_dumps(
+        &mut self,
+        root: RootId,
+        backend: &BackendProgram,
+        native: Option<&NativeProgram>,
+    ) {
+        self.requested_output.program(&self.world, root, backend, native);
     }
 
     /// Drives one root to its backend product and returns the settled
@@ -239,29 +255,25 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// is the canonical source of the semantic executable/activation metrics the
     /// fixture contract harness asserts.
     pub(crate) fn product_executable_inventory(&mut self, root: RootId) -> Result<Vec<ExecutableKey>, String> {
-        let (_program, driver) = self.drive_root_backend_product(root)?;
-        let executables = driver
-            .session()
-            .materialized_executables()
-            .keys()
-            .cloned()
+        let program = self.drive_root_backend_product(root)?;
+        let executables = program
+            .executables()
+            .iter()
+            .map(|executable| executable.key.clone())
             .collect::<Vec<_>>();
-        driver.finish_session();
         Ok(executables)
     }
 
-    /// Drives one root to its backend product and returns the finished
-    /// session's work-start attribution snapshot, read back through the
-    /// session's own accessor. The running pull-only guard
-    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`
-    /// and `root_scans` must be zero, and `ignition` must equal the true
-    /// external front-door count (one `submit_code` + one `submit_root`).
+    /// Drives one root to its backend product and returns the World's
+    /// cumulative work-start attribution. The running pull-only guard
+    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`,
+    /// `root_scans`, and `drain_discovery_sweeps` must be zero, and `ignition`
+    /// must equal the true external front-door count (one `submit_code` + one
+    /// `submit_root`).
     #[cfg(test)]
     pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
-        let (_program, driver) = self.drive_root_backend_product(root)?;
-        let tally = driver.session().work_starts();
-        driver.finish_session();
-        Ok(tally)
+        self.drive_root_backend_product(root)?;
+        Ok(self.world.work_start_tally())
     }
 
     /// Read-only access to the compiler's settled world, so tests can read the
@@ -270,6 +282,11 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     #[cfg(test)]
     pub(crate) fn world(&self) -> &World {
         &self.world
+    }
+
+    #[cfg(test)]
+    pub(crate) fn world_mut(&mut self) -> &mut World {
+        &mut self.world
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared
@@ -281,22 +298,93 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         crate::ir_interp::run_backend_main(types, transport, tel, self.output.as_ref(), &program)
     }
 
-    fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
-        let (program, driver) = self.drive_root_backend_product(root)?;
-        driver.finish_session();
-        Ok(program)
+    fn product_backend_program_for_root(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
+        const STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
+        const FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
+        let emit_lifecycle =
+            self.telemetry.is_raw_event_enabled(STARTED) || self.telemetry.is_raw_event_enabled(FINISHED);
+        if emit_lifecycle {
+            self.telemetry
+                .raw_event3(STARTED, &self.world, &root, &BackendRequestEvent::Started);
+        }
+        let result = self.drive_root_backend_product(root);
+        if emit_lifecycle {
+            let event = match &result {
+                Ok(program) => BackendRequestEvent::Succeeded {
+                    executables: program.executables().len(),
+                    construction_wrappers: program.construction_wrappers().len(),
+                },
+                Err(_) => BackendRequestEvent::Failed,
+            };
+            self.telemetry.raw_event3(FINISHED, &self.world, &root, &event);
+        }
+        result
     }
 
-    /// Drives one root to its `BackendProgram` through the guarded product
-    /// boundary and returns the program together with the finished-but-not-yet
-    /// emitted driver, so callers can also read the demanded activation/executable
-    /// inventory the drive accumulated (the CLI dump path reads it).
-    fn drive_root_backend_product<'a>(
-        &'a mut self,
-        root: RootId,
-    ) -> Result<(BackendProgram, ProductDriver<'a, T>), String> {
-        self.abort_on_zero_drive_timeout(root)?;
-        super::product_drive::drive_root_backend_product(&mut self.world, &self.telemetry, root)
+    /// Drives one root to its memo-owned, shared `BackendProgram`.
+    fn drive_root_backend_product(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
+        super::product_drive::drive_retained_root_backend_product(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
+            root,
+            self.drive_timeout,
+        )
+    }
+
+    /// Releases one root's retained product spreadsheet and every exact fact
+    /// subscription that routes movements to it. Requesting the known root
+    /// again begins a fresh product calculation over the same semantic World.
+    pub fn retire_root_products(&mut self, root: RootId) -> bool {
+        let changes = self.product_sessions.retirement_changes(root);
+        let retired = self.product_sessions.retire(root, self.world.types());
+        ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions)
+            .apply_product_changes(changes);
+        retired
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_product_counts(&self) -> (usize, usize) {
+        self.product_sessions.counts()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_backend_program(&self, root: RootId) -> Rc<BackendProgram> {
+        match self
+            .product_sessions
+            .get(root)
+            .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)).cloned())
+        {
+            Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer),
+            _ => panic!("root product must be retained after a successful request"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_native_program(&self, root: RootId) -> Rc<NativeProgram> {
+        match self
+            .product_sessions
+            .get(root)
+            .and_then(|session| session.memo().get(&ProductKey::NativeProgram(root)).cloned())
+        {
+            Some(super::pull::ProductValue::NativeProgram(program)) => program,
+            _ => panic!("native product must be retained after a successful request"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_product_generation(&self, root: RootId, key: &ProductKey) -> Option<u64> {
+        self.product_sessions.get(root)?.memo().generation(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reproduce_job_for_test(&mut self, job: Job, changed: Vec<FactKey>) -> super::JobCompletion {
+        let mut context =
+            ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions);
+        let mut effects =
+            super::jobs::run(&mut context, &job).expect("test producer must reproduce its existing answer");
+        effects.changed.extend(changed);
+        context.complete_job(job, effects)
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the
@@ -351,7 +439,26 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         caller: fz_runtime::any_value::AnyValueRef,
         args: &[fz_runtime::any_value::AnyValueRef],
     ) -> Result<super::QuotedSourceRoot, String> {
-        ExecutionContext::new(&mut self.world, &self.telemetry).run_macro_on_source(function, source, caller, args)
+        if self.world.function_defined_revision(function).is_none() {
+            self.world.demand_fact_producer(
+                &FactKey::FunctionDefined(function),
+                super::scheduler::WorkStartReason::BlockedWaiterExpansion,
+            );
+            let outcome = self.drive();
+            if !matches!(outcome, DriveOutcome::Resolved) || self.world.function_defined_revision(function).is_none() {
+                return Err(format!(
+                    "compiler2 macro {} could not resolve its definition: {outcome:?}",
+                    function.as_u32()
+                ));
+            }
+        }
+        if !self.world.function_definition(function).1.is_macro {
+            return Err(format!("compiler2 function {} is not a macro", function.as_u32()));
+        }
+        let root = self.world.macro_root(function);
+        let program = self.product_backend_program_for_root(root)?;
+        ExecutionContext::new(&mut self.world, &self.telemetry)
+            .run_macro_on_source(function, &program, source, caller, args)
     }
 
     #[cfg(test)]
@@ -405,6 +512,24 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
 /// this path does not emit a diagnostic — it never has, and the drive-loop
 /// unification is not the place to change that.
 impl super::product_drive::ProductDriveError for String {
+    fn dependency_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        address: super::drive::ProductAddress,
+        _source: super::scheduler::FatalError,
+    ) -> Self {
+        format!("compiler2 product dependency {address:?} failed")
+    }
+    fn product_failed<T: Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: RootId,
+        product: &ProductKey,
+        _failure: super::pull::ProductFailure,
+    ) -> Self {
+        format!("compiler2 root {} failed producing {product:?}", root.as_u32())
+    }
+
     fn job_failed<T: Telemetry>(
         _world: &World,
         _tel: &T,
@@ -426,7 +551,7 @@ impl super::product_drive::ProductDriveError for String {
             "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
             root.as_u32(),
             fact,
-            world.work_graph.unresolved()
+            world.unresolved_waits()
         )
     }
 

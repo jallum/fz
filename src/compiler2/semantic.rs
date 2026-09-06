@@ -4,10 +4,12 @@
 //! the work graph owns: observed input shapes, reachable callsites, settled
 //! return types, and the semantic closure each root has reached.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
+use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
@@ -71,6 +73,9 @@ pub struct CallTargetSummary {
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
     pub activation_inputs: Option<Vec<Ty>>,
+    /// Fixed positional inputs consumed by an extern body; absent for ordinary
+    /// executables and provider boundaries.
+    pub extern_params: Option<usize>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -101,7 +106,7 @@ impl CallTargetSummary {
     ///
     /// A provider boundary names no compiler2 activation, so it has no
     /// executable. Everything downstream that turns a settled call target into
-    /// something the backend can emit — demand cones, transport positions,
+    /// something the backend can emit — runtime-demand facts, transport positions,
     /// artifact call edges — comes through this one door, so the mapping is
     /// stated once (fz-f98.18).
     pub fn runtime_executable(&self, need: ExecutableNeed) -> Option<ExecutableKey> {
@@ -263,6 +268,22 @@ impl CallableSurface {
         Self {
             inputs: types.address_inputs(&inputs),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallableConstructionTargetKey {
+    pub(crate) owner: ExecutableKey,
+    pub(crate) value: ValueId,
+    pub(crate) surface: CallableSurface,
+}
+
+impl SemanticOrd<Types> for CallableConstructionTargetKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.owner
+            .semantic_cmp(&other.owner, types)
+            .then_with(|| self.value.cmp(&other.value))
+            .then_with(|| types.cmp_activation_tys(&self.surface.inputs, &other.surface.inputs))
     }
 }
 
@@ -428,6 +449,13 @@ impl RuntimeDemand {
         }
     }
 
+    pub(crate) fn for_executable_need(need: ExecutableNeed) -> Self {
+        match need {
+            ExecutableNeed::Value => Self::whole(),
+            ExecutableNeed::TupleFields(arity) => Self::tuple_fields(vec![Self::whole(); arity]),
+        }
+    }
+
     pub fn tuple_fields(fields: Vec<RuntimeDemand>) -> Self {
         Self {
             shape: ShapeDemand::TupleFields(fields).normalized(),
@@ -510,6 +538,62 @@ pub struct CallableFlowEdge {
     pub resolution: ExecutableKey,
     pub capture_semantic_inputs: Box<[usize]>,
     pub surface_semantic_inputs: Box<[usize]>,
+    pub boundary_input_demands: Box<[Option<RuntimeDemand>]>,
+}
+
+/// One authoritative activation-input row projected into the callable frame:
+/// addressed captures followed by the standalone addressed call surface.
+/// Runtime-demand formulas compare these immutable identities; they never
+/// re-address activation evidence in the shared type world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableActivationInput {
+    pub captures: Vec<Ty>,
+    pub surface: CallableSurface,
+    /// Whether each capture is invoked with this callable's own parameters.
+    pub capture_called_with_own_surface: Box<[bool]>,
+}
+
+/// Canonical type-bearing inputs settled before RuntimeDemand runs.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeDemandTypeInputs {
+    pub(crate) any: Ty,
+    pub(crate) surfaces: HashMap<Vec<Ty>, CallableSurface>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeDemandTypeProjection {
+    pub(crate) boundary: RuntimeDemand,
+    pub(crate) dispatch: RuntimeDemand,
+    pub(crate) callable_value_demand: Option<RuntimeDemand>,
+}
+
+impl RuntimeDemandTypeProjection {
+    pub(crate) fn informative_boundary_demand(&self, types: &Types, ty: Ty) -> Option<RuntimeDemand> {
+        if types.is_empty(&ty) {
+            return None;
+        }
+        if !matches!(self.boundary.shape, ShapeDemand::Whole) || !self.boundary.callable.is_empty() {
+            return Some(self.boundary.clone());
+        }
+        (types.is_integer(&ty) || types.is_floating(&ty) || types.is_nil(&ty) || types.is_atom_type(&ty))
+            .then(|| self.boundary.clone())
+    }
+}
+
+impl RuntimeDemandTypeInputs {
+    pub(crate) fn new(any: Ty) -> Self {
+        Self {
+            any,
+            surfaces: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn surface(&self, inputs: &[Ty]) -> CallableSurface {
+        self.surfaces
+            .get(inputs)
+            .unwrap_or_else(|| panic!("settled executable facts omitted callable surface for {inputs:?}"))
+            .clone()
+    }
 }
 
 /// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
@@ -566,8 +650,10 @@ pub(crate) fn ground_dispatch_surfaces(
 }
 
 /// The full runtime-demand projection for one analyzed executable.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct ExecutableRuntimeDemand {
+    pub callable_activation_inputs: Vec<CallableActivationInput>,
     pub return_demand: RuntimeDemand,
     pub input_demands: Vec<RuntimeDemand>,
     pub value_demands: HashMap<ValueId, RuntimeDemand>,
@@ -575,6 +661,37 @@ pub struct ExecutableRuntimeDemand {
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
     pub callable_flows: HashMap<ValueId, CallableFlowFact>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TargetDemandContribution {
+    pub(crate) return_demand: Option<RuntimeDemand>,
+    pub(crate) input_demands: HashMap<usize, RuntimeDemand>,
+}
+
+impl JoinContribution for TargetDemandContribution {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Self::default()
+    }
+
+    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
+        if let Some(other_return) = &other.return_demand {
+            match &mut self.return_demand {
+                Some(current) => current.join_assign(other_return),
+                None => self.return_demand = Some(other_return.clone()),
+            }
+        }
+        for (index, demand) in &other.input_demands {
+            self.input_demands
+                .entry(*index)
+                .and_modify(|current| current.join_assign(demand))
+                .or_insert_with(|| demand.clone());
+        }
+    }
+}
+
+pub(crate) type RuntimeDemandInputMap<P> = ContributionMap<ExecutableKey, P, TargetDemandContribution>;
 
 impl ExecutableRuntimeDemand {
     /// Ground every callable dispatch surface this demand carries to the concrete
@@ -642,6 +759,8 @@ impl EntryReachability {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
+    /// Correlated rows already read by the activation analysis.
+    pub input_rows: Vec<Vec<Ty>>,
     pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
@@ -680,44 +799,56 @@ pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
 }
 
-/// A publisher identity rendered deterministically for fold-order tie-breaks,
-/// without leaking a bare interned `Ty`'s first-intern-order number. `Job`
-/// embeds `ActivationKey.arrow` (`types/mod.rs::Ty(u32)`) in `SeedActivation`/
-/// `AnalyzeActivation`; sorting those by `{:?}` would fold two runs' equal-but-
-/// differently-interned arrows in different orders, reintroducing exactly the
-/// order-dependence the determinism-pinning work (`ContributionMap::apply`)
-/// exists to remove. `Ctx` carries whatever the rendering needs — the shared
-/// type store, so `arrow` renders through `Types::display`, the interner's own
-/// canonical renderer, not a second hand-rolled one.
-pub trait StableSortKey<Ctx> {
-    fn stable_sort_key(&self, ctx: &Ctx) -> String;
+/// A total, owner-aware semantic order for identities that cannot derive
+/// `Ord`: activation arrows contain World-local intern handles, so only the
+/// owning `Types` can compare what they mean.
+pub trait SemanticOrd<Ctx> {
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
 }
 
-impl StableSortKey<Types> for ActivationKey {
-    /// `root`/`function` are ids assigned by deterministic parse/scope
-    /// traversal; `arrow` is the one field that is a bare interned `Ty`, so it
-    /// renders through `Types::display` (the same idiom `Job` uses for its
-    /// `SeedActivation`/`AnalyzeActivation` variants) instead of `{:?}`.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        format!(
-            "ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }}",
-            self.root,
-            self.function,
-            types.display(&self.arrow)
-        )
+impl<Ctx, F> SemanticOrd<Ctx> for FactUse<F>
+where
+    F: SemanticOrd<Ctx>,
+{
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering {
+        let readiness_rank = |fact: &FactUse<F>| match fact {
+            FactUse::Current(_) => 0,
+            FactUse::Settled(_) => 1,
+        };
+        self.fact()
+            .semantic_cmp(other.fact(), ctx)
+            .then_with(|| readiness_rank(self).cmp(&readiness_rank(other)))
     }
 }
 
-impl StableSortKey<Types> for ExecutableKey {
-    /// `need` carries no `Ty` (`ExecutableNeed` is `Value` or
-    /// `TupleFields(usize)`), so only `activation` needs the `Ty`-blind
-    /// rendering above.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        format!(
-            "ExecutableKey {{ activation: {}, need: {:?} }}",
-            self.activation.stable_sort_key(types),
-            self.need
-        )
+impl SemanticOrd<Types> for ActivationKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.root
+            .cmp(&other.root)
+            .then_with(|| self.function.cmp(&other.function))
+            .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+    }
+}
+
+impl SemanticOrd<Types> for FunctionId {
+    fn semantic_cmp(&self, other: &Self, _types: &Types) -> Ordering {
+        self.cmp(other)
+    }
+}
+
+impl SemanticOrd<Types> for CallSiteKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.activation
+            .semantic_cmp(&other.activation, types)
+            .then_with(|| self.callsite.cmp(&other.callsite))
+    }
+}
+
+impl SemanticOrd<Types> for ExecutableKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.activation
+            .semantic_cmp(&other.activation, types)
+            .then_with(|| self.need.cmp(&other.need))
     }
 }
 
@@ -925,13 +1056,12 @@ impl ActivationInputAlternatives {
         self.rows.push(row);
     }
 
-    /// Restore the canonical form: rows in a deterministic, representative-
-    /// stable order (the same `Types::display` idiom `StableSortKey` uses, so
-    /// two runs that intern equal types under different ids fold identically),
-    /// the budget widening applied, and the joined projection recomputed.
+    /// Restore the row-set form: surviving incomparable rows in the type
+    /// store's semantic order, the budget widening applied, and the joined
+    /// projection recomputed.
     fn rebuild(&mut self, types: &mut Types) {
         self.rows
-            .sort_by_cached_key(|row| row.columns.iter().map(|ty| types.display(ty)).collect::<Vec<_>>());
+            .sort_by(|left, right| types.cmp_activation_tys(&left.columns, &right.columns));
         let mut joined = Vec::new();
         for row in &self.rows {
             joined.join_assign(&row.columns, types);
@@ -1110,8 +1240,8 @@ impl ActivationMap {
 
 impl<K, P, V> ContributionMap<K, P, V>
 where
-    K: Clone + Eq + Hash,
-    P: Clone + Eq + Hash + std::fmt::Debug + StableSortKey<V::Ctx>,
+    K: Clone + Eq + Hash + SemanticOrd<V::Ctx>,
+    P: Clone + Eq + Hash + SemanticOrd<V::Ctx>,
     V: JoinContribution,
 {
     pub fn new() -> Self {
@@ -1148,11 +1278,14 @@ where
         rebased: bool,
     ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
-        let touched = previous_output_keys
+        let mut touched = previous_output_keys
             .iter()
             .cloned()
             .chain(next_output_keys.iter().cloned())
-            .collect::<HashSet<_>>();
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        touched.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
         for key in touched {
             let entry = match next.get(&key) {
@@ -1169,6 +1302,17 @@ where
         }
     }
 
+    /// Replace this publisher's complete frontier and each listed value.
+    pub fn conclude_exact(
+        &mut self,
+        ctx: &mut V::Ctx,
+        publisher: P,
+        previous_output_keys: HashSet<K>,
+        next: HashMap<K, V>,
+    ) -> ContributionReplace<K> {
+        self.conclude(ctx, publisher, previous_output_keys, next, true)
+    }
+
     /// A cumulative concluding-completion arm for evidence whose absence in a
     /// rerun is not a proof of impossibility. New entries join with the
     /// publisher's prior entries; previous output keys stay in the publisher's
@@ -1180,10 +1324,12 @@ where
         previous_output_keys: HashSet<K>,
         next: HashMap<K, V>,
     ) -> ContributionReplace<K> {
+        let mut ordered_next = next.into_iter().collect::<Vec<_>>();
+        ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut output_keys = previous_output_keys;
-        output_keys.extend(next.keys().cloned());
+        output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
         let mut changed_keys = HashSet::new();
-        for (key, value) in next {
+        for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);
             }
@@ -1202,8 +1348,10 @@ where
             return ContributionReplace::default();
         }
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
+        let mut ordered_next = next.into_iter().collect::<Vec<_>>();
+        ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
-        for (key, value) in next {
+        for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);
             }
@@ -1241,22 +1389,19 @@ where
         // same contributor set in a different order can settle on
         // equivalent-but-differently-interned `Ty`s — so pin the fold order
         // itself to a deterministic, publisher-identity-derived key.
-        // `StableSortKey` (not raw `Debug`) is load-bearing here: `Job` embeds
+        // `SemanticOrd` (not raw `Debug`) is load-bearing here: `Job` embeds
         // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
         // on an equal-but-differently-numbered arrow for the same activation —
         // sorting by its raw id would reintroduce the very order-dependence
         // this fold order exists to remove.
-        // On a sort-key collision the (stable) sort preserves `HashMap`
-        // iteration order — nondeterministic — so the key is relied on to be
-        // injective over live publishers (proven by
-        // `types_display_distinguishes_structurally_close_types`); a genuine
-        // collision would need a secondary structural discriminator here.
         let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
-        ordered_contributors.sort_by_cached_key(|(publisher, _)| publisher.stable_sort_key(&*ctx));
+        ordered_contributors.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
-            slot.joined = joined;
+            if moved {
+                slot.joined = joined;
+            }
             self.slots.insert(key.clone(), slot);
         }
         moved
@@ -1481,9 +1626,11 @@ impl JoinContribution for RuntimeDemand {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::rc::Rc;
 
     use super::*;
-    use crate::compiler2::{ExecutableNeed, Job, World};
+    use crate::compiler2::drive::JobEffects;
+    use crate::compiler2::{ExecutableNeed, FactKey, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
     use crate::types::{ClosureTarget, Sigma};
 
@@ -1492,6 +1639,334 @@ mod tests {
         let any = world.types_mut().any();
         let function = world.root_function(root);
         ActivationKey::from_inputs(root, function, &[any, any], world.types_mut())
+    }
+
+    #[test]
+    fn runtime_demand_contributions_replace_and_retract_one_exact_publisher() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let target = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let left = Job::DeriveRuntimeDemand(target.clone());
+        let right = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let mut contributions = RuntimeDemandInputMap::new();
+
+        let returning = TargetDemandContribution {
+            return_demand: Some(RuntimeDemand::whole()),
+            ..TargetDemandContribution::default()
+        };
+        let first = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            HashSet::new(),
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert_eq!(first.changed_keys, HashSet::from([target.clone()]));
+
+        let equal = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            first.output_keys,
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert!(equal.changed_keys.is_empty(), "an equal exact answer must not move");
+
+        let second = contributions.conclude_exact(
+            world.types_mut(),
+            right.clone(),
+            HashSet::new(),
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert!(
+            second.changed_keys.is_empty(),
+            "an equal second publisher must not move the join"
+        );
+
+        let narrowed = TargetDemandContribution {
+            input_demands: HashMap::from([(0, RuntimeDemand::whole())]),
+            ..TargetDemandContribution::default()
+        };
+        let replacement = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            equal.output_keys,
+            HashMap::from([(target.clone(), narrowed.clone())]),
+        );
+        assert_eq!(replacement.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(
+            contributions.get(&target).unwrap().return_demand,
+            returning.return_demand
+        );
+        assert_eq!(
+            contributions.get(&target).unwrap().input_demands,
+            narrowed.input_demands
+        );
+
+        let left_retraction =
+            contributions.conclude_exact(world.types_mut(), left, replacement.output_keys, HashMap::new());
+        assert_eq!(left_retraction.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(contributions.get(&target), Some(&returning));
+
+        let right_retraction =
+            contributions.conclude_exact(world.types_mut(), right, second.output_keys, HashMap::new());
+        assert_eq!(right_retraction.changed_keys, HashSet::from([target.clone()]));
+        assert!(contributions.get(&target).is_none());
+    }
+
+    #[test]
+    fn equal_runtime_demand_conclusions_do_not_revise_or_wake_exact_readers() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let target = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let writer = Job::DeriveRuntimeDemand(target.clone());
+        let reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let input_fact = FactKey::RuntimeDemandInput(target.clone());
+        let reads = vec![FactUse::current(input_fact.clone())];
+        world.complete_job(
+            reader.clone(),
+            JobEffects {
+                reads: reads.clone(),
+                ..JobEffects::default()
+            },
+        );
+        let target_contribution = TargetDemandContribution {
+            return_demand: Some(RuntimeDemand::whole()),
+            ..TargetDemandContribution::default()
+        };
+        let first = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                runtime_demand_input_contributions: vec![(target.clone(), target_contribution.clone())],
+                ..JobEffects::default()
+            },
+        );
+        assert!(
+            first
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(input_fact.clone()))
+        );
+        assert!(first.wakes.iter().any(|wake| wake.job == reader));
+        let input_revision = world.fact_revision(&input_fact);
+
+        world.complete_job(
+            reader,
+            JobEffects {
+                reads,
+                ..JobEffects::default()
+            },
+        );
+        let equal = world.complete_job(
+            writer,
+            JobEffects {
+                runtime_demand_input_contributions: vec![(target, target_contribution)],
+                ..JobEffects::default()
+            },
+        );
+        assert!(
+            equal.changed.is_empty(),
+            "equal semantic answers must not move either fact"
+        );
+        assert!(
+            equal.wakes.is_empty(),
+            "equal semantic answers must not wake exact readers"
+        );
+        assert_eq!(world.fact_revision(&input_fact), input_revision);
+    }
+
+    #[test]
+    fn runtime_demand_input_subfact_moves_only_with_the_stored_input_vector() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let executable = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let fact = FactKey::RuntimeDemand(executable.clone());
+        let inputs_fact = FactKey::RuntimeDemandInputs(executable.clone());
+        let writer = Job::DeriveRuntimeDemand(executable.clone());
+        let full_reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let input_reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(2),
+        });
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+
+        let first_value = Rc::new(ExecutableRuntimeDemand::default());
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), first_value),
+            (true, true)
+        );
+        let first = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(first.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(first.wakes.iter().any(|wake| wake.job == input_reader));
+        let first_inputs_revision = world.fact_revision(&inputs_fact);
+
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        let return_only = Rc::new(ExecutableRuntimeDemand {
+            return_demand: RuntimeDemand::whole(),
+            ..ExecutableRuntimeDemand::default()
+        });
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), return_only),
+            (true, false)
+        );
+        let return_change = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(return_change.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(!return_change.wakes.iter().any(|wake| wake.job == input_reader));
+        assert_eq!(world.fact_revision(&inputs_fact), first_inputs_revision);
+
+        let input_change = Rc::new(ExecutableRuntimeDemand {
+            return_demand: RuntimeDemand::whole(),
+            input_demands: vec![RuntimeDemand::whole()],
+            ..ExecutableRuntimeDemand::default()
+        });
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), input_change),
+            (true, true)
+        );
+        let input_change = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(input_change.wakes.iter().any(|wake| wake.job == input_reader));
+
+        let retained = Rc::clone(world.runtime_demand(&executable).unwrap());
+        let stored_inputs = retained.input_demands.as_ptr();
+        assert_eq!(
+            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
+            stored_inputs,
+            "the input fact must project the one stored RuntimeDemand allocation",
+        );
+        let equal_value = Rc::new((*retained).clone());
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), equal_value),
+            (false, false)
+        );
+        assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
+
+        let retracted = world.complete_job(writer.clone(), JobEffects::default());
+        assert!(
+            retracted
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
+        );
+        assert!(
+            retracted
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
+        );
+        assert!(world.runtime_demand(&executable).is_none());
+        assert!(world.runtime_demand_inputs(&executable).is_none());
+
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), Rc::new((*retained).clone())),
+            (false, false),
+            "reappearance must reuse the equal stored semantic value",
+        );
+        let reappeared = world.complete_job(
+            writer,
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(
+            reappeared
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(fact.clone()))
+        );
+        assert!(
+            reappeared
+                .changed
+                .iter()
+                .any(|change| change.key == crate::compiler2::drive::DependencyKey::Fact(inputs_fact.clone()))
+        );
+        assert!(reappeared.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(reappeared.wakes.iter().any(|wake| wake.job == input_reader));
+        assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
+        assert_eq!(
+            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
+            stored_inputs
+        );
     }
 
     #[test]
@@ -1510,6 +1985,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(activation.clone()),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1520,6 +1996,7 @@ mod tests {
                 surface_inputs: vec![any],
                 activation: Some(activation),
                 activation_inputs: Some(vec![any]),
+                extern_params: None,
                 return_ty: Some(atom),
             }],
             return_ty: Some(atom),
@@ -1563,6 +2040,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(callee_activation.clone()),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1573,6 +2051,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(callee_activation),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,
@@ -1621,6 +2100,7 @@ mod tests {
                 surface_inputs: vec![input],
                 activation: Some(activation),
                 activation_inputs: Some(vec![input]),
+                extern_params: None,
                 return_ty: Some(input),
             }],
             return_ty: Some(input),
@@ -1679,6 +2159,7 @@ mod tests {
                     surface_inputs: vec![int],
                     activation: Some(int_activation.clone()),
                     activation_inputs: Some(vec![int]),
+                    extern_params: None,
                     return_ty: Some(int),
                 },
                 CallTargetSummary {
@@ -1686,6 +2167,7 @@ mod tests {
                     surface_inputs: vec![float],
                     activation: Some(float_activation.clone()),
                     activation_inputs: Some(vec![float]),
+                    extern_params: None,
                     return_ty: Some(float),
                 },
             ],
@@ -1740,6 +2222,7 @@ mod tests {
                 surface_inputs: vec![ty],
                 activation: Some(callee_activation.clone()),
                 activation_inputs: Some(vec![ty]),
+                extern_params: None,
                 return_ty: Some(ty),
             }],
             return_ty: Some(ty),
@@ -1811,6 +2294,67 @@ mod tests {
             "preserving an unchanged frontier should not mark the activation input dirty"
         );
         assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
+    }
+
+    #[test]
+    fn contribution_key_waves_allocate_identically_across_reverse_insertion() {
+        let run = |reverse: bool| {
+            let mut world = World::new();
+            let root = RootId::for_test(92);
+            let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "contribution_order", 1);
+            let int = world.types_mut().int();
+            let float = world.types_mut().float();
+            let atom_a = world.types_mut().atom_lit("a");
+            let atom_b = world.types_mut().atom_lit("b");
+            let list = world.types_mut().list(int);
+            let non_empty = world.types_mut().non_empty_list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let mut map = ActivationInputMap::new();
+            let publisher_a = Job::SeedRoot(root);
+            let publisher_b = Job::AnalyzeActivation(list_key.clone());
+            let first = HashMap::from([
+                (list_key.clone(), ActivationInputAlternatives::from_row(vec![int])),
+                (
+                    non_empty_key.clone(),
+                    ActivationInputAlternatives::from_row(vec![float]),
+                ),
+            ]);
+            map.conclude(world.types_mut(), publisher_a, HashSet::new(), first, false);
+            let second = if reverse {
+                [
+                    (
+                        non_empty_key.clone(),
+                        ActivationInputAlternatives::from_row(vec![atom_b]),
+                    ),
+                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
+                ]
+                .into_iter()
+                .collect()
+            } else {
+                HashMap::from([
+                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
+                    (
+                        non_empty_key.clone(),
+                        ActivationInputAlternatives::from_row(vec![atom_b]),
+                    ),
+                ])
+            };
+            map.conclude(
+                world.types_mut(),
+                publisher_b,
+                HashSet::from([list_key.clone(), non_empty_key.clone()]),
+                second,
+                false,
+            );
+            (
+                map.get(&list_key).expect("list contribution").rows()[0].columns()[0],
+                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].columns()[0],
+                world.types().identity_inventory(),
+            )
+        };
+
+        assert_eq!(run(false), run(true));
     }
 
     #[test]

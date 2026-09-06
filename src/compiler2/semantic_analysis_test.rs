@@ -111,8 +111,8 @@ fn main(), do: Greet.hello([1, 2, 3])
 /// the receiver (a `Shadow.List` struct) would then never overlap the
 /// (wrong) list-shaped target type, `Peek.first` would never find a
 /// matching arm, and `main` would never settle. The fact-backed classifier
-/// checks `StructDefined(Shadow.List)` first, so the struct's own declared
-/// field types (nominal identity + tuple/map evidence) reach the dispatch,
+/// checks `StructDefined(Shadow.List)` first, so the struct's typed `ModuleId`
+/// and declared fields reach dispatch together in one tagged record,
 /// and `l.head`'s field access resolves to the declared `integer` — not
 /// `any`.
 #[test]
@@ -201,27 +201,23 @@ fn main(), do: Peek.first(Shadow.List.new(1, 2))
 /// mis-typed — nothing would re-wake the reader that concluded on the absent
 /// fact. The construction forces exactly that ordering:
 ///
-/// * `main(x)` dispatches `Peek.first(x)` on its `any` parameter — a receiver
-///   that overlaps the impl target in *either* classification (both share the
-///   `impl-target::Boxy` runtime predicate; the difference between nominal and
-///   struct lives only in the *intersected* type, not in whether a match
-///   fires). The callback `first(b), do: b` returns that intersected receiver
-///   unchanged, so `main`'s settled return type IS the impl target's shape.
+/// * `main(x)` dispatches `Peek.first(x)` on its `any` parameter. The callback
+///   `first(b), do: b` returns the intersected receiver unchanged, so `main`'s
+///   settled return type retains the impl target's typed identity.
 /// * `Boxy` is forward-referenced only as the impl target in unit 1, and its
 ///   `defstruct` lands in a second unit pulled by an unrelated `probe` root.
 ///
-/// So `main` resolves in *both* drives, and the observable is the *shape* of
-/// its return: a bare opaque `impl-target::Boxy` while `Boxy` is nominal, versus
-/// one carrying tuple/map field evidence once it is a struct. We probe that with
-/// `intersect(main_return, %{val: any})`: empty against the opaque nominal tag
-/// (a struct value keeps its nominal identity out of the plain-map kind), and
-/// non-empty against the struct's map evidence.
+/// So `main` resolves in *both* drives, and the observable is the typed struct
+/// module retained by its return after `Boxy` settles. A struct is one tagged
+/// record leaf, disjoint from a plain map even when their fields agree; probing
+/// it by intersecting with `%{val: any}` would incorrectly demand that the tag
+/// and fields be independent union summands.
 ///
 /// Non-vacuous: against a classifier that pushed `StructDefined(Boxy)` only in
 /// the struct-present branch, `main`'s drive-1 conclusion (nominal target,
-/// return intersects no map) records no subscription on `StructDefined(Boxy)`,
-/// so drive 2's publication has no subscriber to re-wake — `main`'s return
-/// stays the opaque nominal shape and the final `non-empty` assertion fails.
+/// no typed struct module) records no subscription on `StructDefined(Boxy)`,
+/// so drive 2's publication has no subscriber to re-wake and the final typed
+/// module assertion fails.
 /// `ProtocolImplProviders(Peek)` is settled in drive 1 and unchanged in drive 2,
 /// so it is not an alternate re-wake path.
 #[test]
@@ -230,10 +226,11 @@ fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefin
 
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
 
-    // A `%{val: any}` probe type: disjoint from a struct's opaque nominal tag,
-    // overlapping its structural map evidence. This is what tells the two
-    // classifications apart in `main`'s settled return.
+    // A same-shaped plain-map probe remains disjoint before and after the
+    // struct definition. This guards the atomic tag+fields representation while
+    // typed schema extraction below observes reclassification.
     let any = world.types_mut().any();
     let map_probe = world.types_mut().map(&[(MapKey::Atom("val".to_string()), any)]);
 
@@ -257,7 +254,7 @@ fn main(x), do: Peek.first(x)
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "drive 1: the protocol and caller settle even though Boxy's defstruct has not landed",
     );
 
@@ -269,10 +266,11 @@ fn main(x), do: Peek.first(x)
     let drive1_map_overlap = world.types_mut().intersect(drive1_return, map_probe);
     assert!(
         world.types().is_empty(&drive1_map_overlap),
-        "drive 1: Boxy is only forward-referenced, so its impl target is the opaque nominal tag; \
-         main's return carries no struct map evidence (intersect with %{{val: any}} is empty), got `{}`",
+        "drive 1: Boxy is only forward-referenced, so its impl target is the opaque nominal tag \
+         and remains disjoint from a plain map, got `{}`",
         world.types().display(&drive1_return),
     );
+    assert!(world.types().struct_modules([drive1_return]).is_empty());
 
     // Unit 2: `Boxy`'s real definition (defstruct + declared field types), pulled
     // into the program by an unrelated root that calls one of its functions —
@@ -293,7 +291,7 @@ fn probe(), do: Boxy.ident(1)
     );
     world.submit_root(None, "probe".to_string(), 0, ExecutableNeed::Value);
     assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "drive 2: defining Boxy publishes StructDefined(Boxy), which must re-wake main's classifier",
     );
 
@@ -302,11 +300,15 @@ fn probe(), do: Boxy.ident(1)
         .expect("drive 2: main still resolves after Boxy is defined");
     let drive2_map_overlap = world.types_mut().intersect(drive2_return, map_probe);
     assert!(
-        !world.types().is_empty(&drive2_map_overlap),
+        world.types().is_empty(&drive2_map_overlap),
+        "a named struct must stay disjoint from a same-shaped plain map"
+    );
+    let boxy = world.reference_module("Boxy");
+    assert_eq!(
+        world.types().struct_modules([drive2_return]),
+        [boxy].into_iter().collect(),
         "drive 2: the standing StructDefined(Boxy) subscription must have re-woken main's analysis, \
-         reclassifying the impl target from nominal to struct so main's return now carries the \
-         struct's tuple/map field evidence (intersect with %{{val: any}} is non-empty), got `{}`",
-        world.types().display(&drive2_return),
+         reclassifying the impl target from an opaque nominal to the typed tagged-record identity",
     );
 }
 
@@ -450,8 +452,9 @@ fn main(), do: 1
 /// product. A resolved drive proves every reachable analysis converged before
 /// packaging.
 fn drive_until_semantic_closure(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
-    world.demand(Job::BuildBackendProduct(root));
-    assert_resolved(super::drive::ExecutionContext::new(world, tel).drive(), message);
+    let mut sessions = super::pull::ProductSessions::default();
+    super::product_drive::drive_retained_root_backend_product(world, tel, &mut sessions, root, None)
+        .unwrap_or_else(|error| panic!("{message}: {error}"));
 }
 
 fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool {
@@ -763,7 +766,7 @@ fn a_published_call_edge_names_every_activation_the_walk_took_evidence_from() {
             .facts()
             .keys()
             .filter_map(|key| match key {
-                FactKey::ActivationAnalyzed(activation) => Some(activation.clone()),
+                super::drive::DependencyKey::Fact(FactKey::ActivationAnalyzed(activation)) => Some(activation.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();

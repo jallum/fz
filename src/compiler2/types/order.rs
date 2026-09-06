@@ -16,12 +16,11 @@
 //! becomes a function of the clause MULTISET, so same-denotation unions carved
 //! the same way intern to ONE `Ty`.
 //!
-//! The order has a second consumer, reached through `Types::cmp_ty`: the
-//! artifact's final-packaging sorts (fz-kdt.101). They used to compare raw `Ty`
-//! ids, which is interning order, so a re-ordered pull renumbered
-//! `entry x<N>` / `construction=w<N>` on artifacts that said the same thing.
-//! The two residuals below bound what that buys: schedule-independence WITHIN
-//! one compile, which is what those sorts need.
+//! This storage order is private to descriptor canonicalization. Production
+//! activation and artifact order instead use `Types::cmp_activation_ty`, whose
+//! field precedence is the established activation order. The test-only
+//! `Types::cmp_ty` accessor exists solely to prove those two relations remain
+//! distinct.
 //!
 //! # What the order is
 //!
@@ -30,10 +29,11 @@
 //! leads an arrow here while canon renders it last, and canon normalizes
 //! before rendering while this walks the descriptor as stored. Compared in
 //! place rather than materialized as text, so a comparison stops at the first
-//! difference and nothing is allocated or cached. Two `Ty`s are compared by their descriptors,
-//! recursively; the recursion terminates because a descriptor can only name
-//! `Ty`s that were interned before it, so every step moves to strictly smaller
-//! ids.
+//! difference and nothing is allocated. Two `Ty`s are compared by their
+//! descriptors, recursively; the recursion terminates because a descriptor can
+//! only name `Ty`s that were interned before it, so every step moves to strictly
+//! smaller ids. `Types` memoizes repeated activation-order verdicts; storage
+//! canonicalization remains a direct walk.
 //!
 //! # Why it is injective
 //!
@@ -88,11 +88,35 @@ trait OrderedSig: Sized {
 pub(super) struct ClauseOrder<'a> {
     cx: TyCtx<'a>,
     labels: &'a CallableLabels,
+    purpose: OrderPurpose,
+}
+
+#[derive(Clone, Copy)]
+enum OrderPurpose {
+    Storage,
+    Activation,
 }
 
 impl<'a> ClauseOrder<'a> {
     pub(super) fn new(cx: TyCtx<'a>, labels: &'a CallableLabels) -> Self {
-        Self { cx, labels }
+        Self {
+            cx,
+            labels,
+            purpose: OrderPurpose::Storage,
+        }
+    }
+
+    /// The activation-facing relation preserves the established callable
+    /// surface precedence (arguments, return, literal) while reading each
+    /// field structurally. Storage canonicalization deliberately puts the
+    /// literal first so equal-callable clauses group together; the two orders
+    /// answer different questions and must not be conflated.
+    pub(super) fn for_activation(cx: TyCtx<'a>, labels: &'a CallableLabels) -> Self {
+        Self {
+            cx,
+            labels,
+            purpose: OrderPurpose::Activation,
+        }
     }
 
     /// Put every DNF axis of `d` in canonical order.
@@ -137,7 +161,10 @@ impl<'a> ClauseOrder<'a> {
     }
 
     pub(super) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> Ordering {
-        lex(a, b, |x, y| self.cmp_ty(*x, *y))
+        match self.purpose {
+            OrderPurpose::Storage => lex(a, b, |x, y| self.cmp_ty(*x, *y)),
+            OrderPurpose::Activation => lex_elements_first(a, b, |x, y| self.cmp_ty(*x, *y)),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -160,7 +187,10 @@ impl<'a> ClauseOrder<'a> {
     }
 
     fn cmp_axis<T: OrderedSig>(&self, a: &[Conj<T>], b: &[Conj<T>]) -> Ordering {
-        lex(a, b, |x, y| self.cmp_conj(x, y))
+        match self.purpose {
+            OrderPurpose::Storage => lex(a, b, |x, y| self.cmp_conj(x, y)),
+            OrderPurpose::Activation => lex_elements_then_longer(a, b, |x, y| self.cmp_conj(x, y)),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -179,9 +209,16 @@ impl<'a> ClauseOrder<'a> {
     /// The closure literal leads, so a union of many callables over one surface
     /// lands grouped by callable rather than interleaved by arrow shape.
     fn cmp_arrow_sig(&self, a: &ArrowSig, b: &ArrowSig) -> Ordering {
-        self.cmp_lit(a.lit.as_ref(), b.lit.as_ref())
-            .then_with(|| self.cmp_tys(&a.args, &b.args))
-            .then_with(|| self.cmp_ty(a.ret, b.ret))
+        match self.purpose {
+            OrderPurpose::Storage => self
+                .cmp_lit(a.lit.as_ref(), b.lit.as_ref())
+                .then_with(|| self.cmp_tys(&a.args, &b.args))
+                .then_with(|| self.cmp_ty(a.ret, b.ret)),
+            OrderPurpose::Activation => self
+                .cmp_tys(&a.args, &b.args)
+                .then_with(|| self.cmp_ty(a.ret, b.ret))
+                .then_with(|| self.cmp_lit(a.lit.as_ref(), b.lit.as_ref())),
+        }
     }
 
     fn cmp_lit(&self, a: Option<&ClosureLit>, b: Option<&ClosureLit>) -> Ordering {
@@ -200,32 +237,46 @@ impl<'a> ClauseOrder<'a> {
         }
     }
 
-    /// Two callables order by their stable labels. `function_label` is
-    /// injective, so the trailing id comparison should be unreachable for
-    /// distinct labelled callables; it is there because the order must stay
-    /// TOTAL even if that ever stopped being true, and it is what an unlabelled
-    /// `Types` (unit tests) falls back to.
+    /// Activation identities order only by their registered stable labels.
+    /// Storage canonicalization retains its local-id fallback because types can
+    /// be interned before an owner exists; activation comparison asserts the
+    /// stronger owner contract instead of caching a mint-order tie-break.
     fn cmp_callable(&self, a: FnId, b: FnId) -> Ordering {
         if a == b {
             return Ordering::Equal;
         }
-        match (self.labels.get(&a), self.labels.get(&b)) {
-            (Some(x), Some(y)) => x.cmp(y).then_with(|| a.0.cmp(&b.0)),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => a.0.cmp(&b.0),
+        if matches!(self.purpose, OrderPurpose::Activation) {
+            let a_label = self.labels.get(&a).expect("activation callable has a registered label");
+            let b_label = self.labels.get(&b).expect("activation callable has a registered label");
+            let order = a_label.cmp(b_label);
+            assert_ne!(
+                order,
+                Ordering::Equal,
+                "distinct activation callables must have distinct stable labels"
+            );
+            order
+        } else {
+            match (self.labels.get(&a), self.labels.get(&b)) {
+                (Some(x), Some(y)) => x.cmp(y).then_with(|| a.0.cmp(&b.0)),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => a.0.cmp(&b.0),
+            }
         }
     }
 
     fn cmp_map_sig(&self, a: &MapSig, b: &MapSig) -> Ordering {
-        a.fields.len().cmp(&b.fields.len()).then_with(|| {
-            first_difference(
-                a.fields
-                    .iter()
-                    .zip(b.fields.iter())
-                    .map(|((ka, va), (kb, vb))| ka.cmp(kb).then_with(|| self.cmp_ty(*va, *vb))),
-            )
-        })
+        a.tag
+            .cmp(&b.tag)
+            .then_with(|| a.fields.len().cmp(&b.fields.len()))
+            .then_with(|| {
+                first_difference(
+                    a.fields
+                        .iter()
+                        .zip(b.fields.iter())
+                        .map(|((ka, va), (kb, vb))| ka.cmp(kb).then_with(|| self.cmp_ty(*va, *vb))),
+                )
+            })
     }
 
     // ------------------------------------------------------------------
@@ -292,6 +343,18 @@ fn lex<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Ordering) -> Ordering
     a.len()
         .cmp(&b.len())
         .then_with(|| first_difference(a.iter().zip(b.iter()).map(|(x, y)| cmp(x, y))))
+}
+
+/// Ordinary lexicographic order: compare shared elements first and use arity
+/// only when one slice is an exact prefix of the other. Activation surfaces
+/// historically expose arguments in this order; storage clauses use `lex`
+/// above because canonicalization intentionally groups arities first.
+fn lex_elements_first<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Ordering) -> Ordering {
+    first_difference(a.iter().zip(b.iter()).map(|(x, y)| cmp(x, y))).then_with(|| a.len().cmp(&b.len()))
+}
+
+fn lex_elements_then_longer<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Ordering) -> Ordering {
+    first_difference(a.iter().zip(b.iter()).map(|(x, y)| cmp(x, y))).then_with(|| b.len().cmp(&a.len()))
 }
 
 /// The first non-`Equal` verdict, or `Equal` if there is none. The iterator is

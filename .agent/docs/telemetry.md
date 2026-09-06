@@ -105,20 +105,22 @@ copying the static name. `ConfiguredTelemetry` returns the RAII `Span<'_, T,
 ...>` and starts it only when an exact typed handler or a matching lifecycle
 observer exists. The active guard owns the id and timestamp; drop emits a
 payload-free stop for zero-stop-payload signatures or an exception during
-unwinding. Explicit `stop1` and `stop2` lend their raw stop authorities
-synchronously. `NullTelemetry` returns `NullSpan`, which has no state and no
-drop glue.
+unwinding. Explicit `stop0` and `stop1` close successfully; `stop1` lends its
+raw stop authority synchronously. `NullTelemetry` returns `NullSpan`, which has
+no state and no drop glue.
 
 While an active span is open, raw events receive its id and its parent id.
 Lifecycle observers receive the same structure without registering interest in
 the span payload.
 
 ```text
-let span = tel.raw_span1_1(["fz", "compiler2", "job"], job)
+let span = tel.raw_span1_0(["fz", "compiler2", "job"], job)
   exact handler → start(id=7, parent=0, &Job)
   ... raw child events carry span_id=7 ...
-span.stop1(completion)
-  exact handler → stop(id=7, elapsed_ns, &JobCompletion)
+tel.raw_event2(["fz", "compiler2", "work_graph", "applied"], world, completion)
+  exact handler → event(parent=7, &World, &JobCompletion)
+span.stop0()
+  exact handler → stop(id=7, elapsed_ns)
   lifecycle observer → stop(id=7, elapsed_ns)
 ```
 
@@ -228,17 +230,22 @@ If a handler wants a rendered type, it must derive that rendering on its side.
 **Drive and job spans are the execution spine.** `ExecutionContext::drive()` opens one
 `[fz, compiler2, drive]` span. Each popped job opens one
 `[fz, compiler2, job]` span. The drive span has no start payload and closes once
-at the return boundary with the raw `DriveOutcome<Job, FactKey>` that the caller
+at the return boundary with the raw `DriveOutcome<Job, DependencyKey>` that the caller
 receives. Successful job spans start with the raw `Job` already popped from the
-agenda and close with raw `World` and `JobCompletion`; the same completion rides
-the separate `[fz, compiler2, work_graph, applied]` event. Returned job failures
-and panics close as payloadless exceptions under the start/stop signature. JSONL
+agenda and close with elapsed time but no payload. The raw `World` and
+`JobCompletion` ride only the separate `[fz, compiler2, work_graph, applied]`
+event, which observes every job completion. Returned job failures and panics close as payloadless
+exceptions under the start/stop signature. JSONL
 handlers derive timing and presentation fields only after matching these raw
 signatures. There is no separate per-outcome drive stop schema, extra
 `job_fatal` event, or redundant `fact_published` stream.
 
+`DriveOutcome::DependencyFailed` identifies a failed direct product request.
+Its JSON status is `dependency_failed` and its `dependency` field carries the
+typed address. `Fatal` identifies an actual failed scheduler job.
+
 The public JSONL projection (`jsonl.rs::write_opaque`) renders `Job`,
-`FactKey`, `ProductKey`, `CallSiteKey`, and `TransportPosition` as
+`DependencyKey`, `FactKey`, `ProductKey`, `CallSiteKey`, and `TransportPosition` as
 within-run identity, not a bare variant name: each carries its raw payload
 ids (`root_id`, `function_id`, `arrow`, `code_id`, `module_id`, `callsite`,
 `entry`, `semantic_index`, `need`, ...) alongside `kind`. `arrow` is the
@@ -250,13 +257,24 @@ to a reader in another process. This is what lets a reader of the public log
 distinguish, for example, the many separate `AnalyzeActivation` evaluations
 one real compile can produce, each a different `(root, function, arrow)`
 triple where the projection used to render only `"kind":"AnalyzeActivation"`
-for all of them alike. `ExecutableKey` and `TransportPosition`'s
+for all of them alike. `DeriveExecutableFacts(E)` and
+`FactKey::ExecutableFacts(E)` likewise render the complete executable identity;
+the value is owned by `World` and its lifecycle is visible through the normal
+`work_graph.applied` projection. There is deliberately no
+`pull.product` event whose kind is `executable_facts`.
+`ExecutableKey` and `TransportPosition`'s
 `ExecutableSymbol` render the same way nested inside a `ProductKey`
 (`BackendExecutable`, `TransportShape`, ...): activation identity plus
 `need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists
-on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
-own identity object, sorted as rendered strings (a presentation-boundary
-sort) rather than as bare kind strings.
+on `AppliedStep` and `JobCompletion` render each waited-on `DependencyKey` as its
+own identity object in the typed order established by the scheduler owner.
+Rendering does not reorder identities.
+`DependencyKey::Fact` uses the fact's flat `kind` and identity fields.
+`DependencyKey::Product` uses `kind: "Product"`, its owning `root_id`, and a
+nested `product` object containing the product's `kind` and typed identity.
+This keeps the session owner distinct from the identity inside the product
+key. Reads and wake causes additionally carry their `current` or `settled`
+use marker.
 
 `[fz, compiler2, activation_inputs, budget_collapsed]` is public (fz-0xp,
 allowlisted in `is_public_compiler2_trace_event`). It fires from
@@ -281,29 +299,25 @@ path that could return a count to its caller, `push_row`, produced none of the
 store makes it per-`World` by construction, so an undrained collapse dies with
 the `World` that produced it instead of leaking into the next reader.
 
-`[fz, compiler2, work_graph, applied]` is public (fz-kdt.34.3). It fires
-unconditionally on every job completion — all five `ExecutionContext::
-complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
-`jobs/native.rs`, `jobs/macro_runtime.rs`) route through `emit_job_completion`
-(`drive.rs`), which always emits it — carrying the raw `JobCompletion` under
+`[fz, compiler2, work_graph, applied]` is public. Every
+`ExecutionContext::complete_job` call routes through `emit_job_completion`
+(`drive.rs`), carrying the raw `JobCompletion` under
 `metadata.completion`. `write_applied_step_body` (`jsonl.rs`) renders the
 shared `AppliedStep` body once and both the standalone `AppliedStep` opaque
 arm and the `JobCompletion` arm call it, so the two can never drift apart:
 `"changed"` is every `FactChange` as a full identity object (`kind` + ids,
-`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the
-completion's own emission order; `"wakes"` is every `Wake` this completion
+`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the typed
+completion order; `"wakes"` is every `Wake` this completion
 caused, in wake order, each `{"cause": <FactUse identity>, "job": <Job
 identity>, "disposition": "enqueued"|"coalesced", "shift": bool}` —
 `AppliedStep::wakes` replaced the old deduped `enqueued`/`coalesced` job
 lists, so a job coalesced by two distinct causes in the same `Scheduler::
 complete` call now renders as two `Wake` records, not one; `"movements"` is
-the full post-wave `FactMovement` report, each entry a full identity object.
-Both `"movements"` and the event's own `"semantic":{"reads":[...]}` (the
-completed job's current `deps.reads`, read directly off
-`World.work_graph.reads` at render time — nothing new is stored) are
-rendered as presentation-sorted strings, because their source in both cases
-is a `HashSet` with no meaningful iteration order — the same
-presentation-boundary sort the blocked-wait lists already used.
+the full typed owner-ordered `FactMovement` report, each entry a full identity
+object. The event's `"semantic":{"reads":[...]}` projection reads the
+completed job's current `deps.reads` directly from `World.work_graph` and
+typed-sorts the actual `FactUse` keys with `World::types()` before rendering.
+No rendered string determines public event order.
 
 `old_settled`/`new_settled` and `movements[].settled` render TRANSITIVE
 finality (fz-kdt.44): `true` means the fact's whole upstream cone is
@@ -319,20 +333,35 @@ job completion behind it, so it gets its own event.
 `AppliedStep` under `metadata.step`, rendered by the same
 `write_applied_step_body`, and fires when the drain arbiter
 (`Scheduler::settle_quiescent`) discharges the settled questions standing at an
-empty agenda. `outputs` and `blocked` are always empty and every `changed`
-entry is readiness-only: `old_revision == new_revision`, `old_settled !=
-new_settled`. Without this event a fact's `settled` bit would change between
+empty agenda. `blocked` is always empty and every `changed` entry is
+readiness-only: `old_revision == new_revision`, `old_settled != new_settled`.
+Without this event a fact's `settled` bit would change between
 two `movements` renderings with nothing on the log to explain it, and any
 evaluation woken by such a flip would classify as `Cause::Uncaused`.
 
-Measured today the arbiter wakes NOTHING: the settled waits it answers belong
-to the product pull (`jobs::artifact`, `jobs::backend`, `jobs::transport`,
-`jobs::runtime_demand`, `jobs::root`), and the pull driver polls the fact
-rather than registering a scheduler waiter. So `Cause::Readiness` remains
-unobserved (fz-kdt.59) — but now for a stated reason, with the movement
-already on the log the day a scheduler waiter does stand on one of these
-facts. `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
-(`tests/fz2_cli.rs`) asserts the zero rather than assuming it.
+`[fz, compiler2, work_graph, dependencies_moved]` carries a bare
+`AppliedStep<Job, DependencyKey>` under `metadata.step`. It records external
+product changes and their propagated readiness and wakes. Product memos own
+the values and generations; the scheduler observes these through the exact
+root/product address. `write_applied_step_body` renders this causal report
+once, with the same fields as job completion and quiescence steps.
+
+Fact waits returned by product producers in `jobs::artifact`, `jobs::backend`,
+`jobs::transport`, and `jobs::runtime_demand` are polled by the pull driver, so
+they do not register scheduler waiters. Scheduler jobs are different:
+`SeedRoot`, for example, returns settled `JobEffects` waits that
+`World::complete_job` registers with the work graph. fz-kdt.45 added another
+scheduler formula, `DeriveExecutableFacts(E)`, for the direct
+`ExecutableFacts(E)` World fact. It stands directly on settled semantic facts;
+in this fixture, `ActivationAnalyzed` and `CallSiteSummary` finality flips wake
+that exact producer and exercise `Cause::Readiness`. This signal comes from
+direct `ExecutableFacts` scheduling and is independent of how root analysis is
+ignited. On
+`00181_enum_reduce_operator_ref`, the 21 recorded wakes are 18 enqueues and 3
+coalesces, producing 18 readiness-caused evaluations and no uncaused work.
+`the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
+(`tests/fz2_cli.rs`) pins the cause identities and preserves the surrounding
+causal and output counts.
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
@@ -365,7 +394,8 @@ once anything is parked everything parks, so the stream's own order never
 changes and a streaming reader never sees an id it has no dictionary entry for.
 On `enum_take_drop_split`, 128 of 325 distinct types are first named by an event
 that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
-`span_start` whose `span_stop` carries the world a few lines later.
+`span_start`. The subsequent `work_graph.applied` event carries the world and
+defines those ids before the job's payload-free `span_stop`.
 
 `telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
 public log into a `CausalReport`: per canonical formula identity, evaluations
@@ -386,43 +416,47 @@ tables are applied at report time, which is what makes `canonical_multiset()`
 comparable across processes. Never infer identity or causality from counts: both
 are on the stream exactly.
 
-The `[fz, compiler2, job]` span still covers only two of these five
-completion sites (`drive.rs`'s and `product_drive.rs`'s job-pop loops, the
-only two callers wrapped in `start_job_span`/`stop_job_span`); that stays a
-deliberate timing-only measurement, unchanged by this. `work_graph.applied`
-is the one signal that observes every completion — it is the causality
-record, the job span is the clock.
+The `[fz, compiler2, job]` span covers `drive.rs`'s and `product_drive.rs`'s
+job-pop loops through `start_job_span`/`stop_job_span`. It carries job identity on start
+and elapsed time on its payload-free stop. `work_graph.applied` is the one
+signal that observes every completion — it is the causality record, the job
+span is the clock.
 
-When the agenda drains with unresolved waiters, `ExecutionContext::drive()`
-(`drive.rs`) runs its stall pass: it demands every submitted root's entry
-analysis and, for each blocked waiter's fact not already demanded since the
-last content change, pokes that fact's mapped producer through the
-fact->producer map (`demand_fact_producer`). If that expansion pokes at least
-one producer, the pass emits `[fz, compiler2, drive, demand_on_stall]`
-(raw event, no span) with `&u64` for the total pokes this round and the
-existing demanded fact set (`&HashSet<FactKey>`) as a raw borrow. `demand_on_stall`
-is public (allowlisted in `is_public_compiler2_trace_event`, `jsonl.rs`):
-its projected metadata carries `"producer_pokes"`, a `"demanded_facts"`
-object with `"count"` and a `"facts"` array of presentation-sorted full fact
-identities (`kind` + ids, via `render_fact_identity` — the same
-presentation-boundary sort `blocked`/`movements` use, since the source is a
-`HashSet`), and a hard-coded `"reason":"blocked_waiter_expansion"` — safe to
-hard-code because `demand_on_stall` has exactly one emit site and every
-member of the demanded set was passed through that one call to
-`demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. This
-lets a public trace name *which* facts were stalled and why, not just that a
-stall-demand happened — the aggregate `pull.session.finished` tally
-(`work_starts_blocked_waiter_expansion`) says how many; this event says
-which one, and its fact->producer expansion is readable from the same log by
-matching the next `work_graph.applied` completion the fact's producer job
-runs as. One caveat: `stall_demanded` (and so `"demanded_facts"`) is
+When the agenda drains, `ExecutionContext::drive_until` (`drive.rs`) runs its
+demand pass. It first expands published root-entry and caller-discovered-callee
+activations through `demand_activation_frontier_analyses`, attributed to
+`ActivationFrontier`. Then, for each blocked waiter's fact not already demanded
+since the last content change, it pokes that fact's mapped producer through
+`demand_fact_producer`, attributed to `BlockedWaiterExpansion`. If the combined
+expansions poke at least one producer, the pass emits
+`[fz, compiler2, drive, demand_on_stall]` (raw event, no span) with `&u64` for
+that combined `producer_pokes` total and the cumulative blocked-waiter
+`stall_demanded` facts as a typed owner-ordered vector.
+
+`demand_on_stall` is public (allowlisted in
+`is_public_compiler2_trace_event`, `jsonl.rs`). Its projected metadata carries
+`"producer_pokes"`, plus a `"demanded_facts"` object with `"count"`, a
+`"facts"` array of full fact identities (`kind` + ids) in that typed owner
+order, and a hard-coded
+`"reason":"blocked_waiter_expansion"`. That reason qualifies only the
+`demanded_facts`: every member of that set passed through
+`demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. The
+`producer_pokes` total may also include activation-frontier work. The
+`pull.session.finished` fields `work_starts_activation_frontier` and
+`work_starts_blocked_waiter_expansion` split how many agenda insertions each
+authority started; `demanded_facts` names which exact waiter facts the latter
+authority has attempted in the current stable-content window.
+
+One caveat: `stall_demanded` (and so `"demanded_facts"`) is
 cumulative across stall passes within a single drive — it is cleared only
 when something changed since the last stall (`changed_since_stall`) — so
 each event carries the running demanded set at that pass, not a per-pass
 delta; a later event's `"facts"` is a superset of an earlier one's unless the
-set was cleared in between. A round with `producer_pokes == 0` is a genuine
-stall: the drive breaks out and reports `DriveOutcome::Unresolved` instead of
-emitting the event. Separately, `[fz, compiler2, drive, timed_out]` fires
+set was cleared in between. After the quiescence flush, a round with
+`producer_pokes == 0` and no readiness wake is a genuine stall: the drive
+breaks out without emitting the event, then reports `DriveOutcome::Resolved`
+when no waiters remain or `DriveOutcome::Unresolved` otherwise. Separately,
+`[fz, compiler2, drive, timed_out]` fires
 when a deadline passed to `drive` elapses mid-agenda, before any stall pass
 runs. It carries only the independently semantic raw configured timeout;
 `pending_jobs` and `jobs_ran` belong to the drive span's raw `TimedOut`
@@ -431,9 +465,9 @@ outcome. JSON and test handlers derive `timeout_ms` during the callback.
 Product artifact producers lean on pull telemetry as their contract surface. The
 tests assert that the interpreter front door requests `RootBackendProduct(root)`,
 that producers wait on exact `ProductKey` / `FactUse<FactKey>` prerequisites,
-and that no forbidden root artifact jobs fire on the product path. Legacy job
-span assertions remain useful for macro/native compatibility paths, but they
-are not the target model for new artifact work.
+and that native and macro consumers reuse retained products. Scheduler job
+spans measure semantic formulas; product evaluations and settlements measure
+artifact production.
 
 The public 00181 no-dump proof should be gathered from CLI telemetry, not from
 world internals:
@@ -453,8 +487,9 @@ jq -sr '
 The fixture call-edge oracle sources its activation set from
 `Compiler2::product_executable_inventory`
 (`compiler.rs`), which drives the root through the product backend path and
-collects `driver.session().materialized_executables()` — there is no separate
-frontier scan.
+collects the keys projected by
+`driver.session().memo().materialized_executables()` — there is no parallel
+session inventory or separate frontier scan.
 The root session carries the raw `PullSession`. An in-process
 handler derives scheduler counters, demanded-set cardinalities, and root
 identity during the callback instead of making the emit site traverse the
@@ -465,32 +500,35 @@ from the product-path activation inventory.
 Transport product construction emits `[fz, compiler2, pull, product, *]` for
 per-position product demand. There is no root-wide `transport_flow` signal: the
 legacy `DeriveTransportPlan` job that emitted it — and its `TransportPlan(root)`
-fact — do not exist. The product path treats the
-`RuntimeDemand(E)` product as pre-transport evidence; `TransportPosition ->
-ShapeId`, `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows
+fact — do not exist. The product path treats the settled
+`RuntimeDemand(E)` World fact as pre-transport evidence; `TransportPosition ->
+ShapeId`, `CallableId` facts, and `BoundaryId` contracts
 are produced for the positions and boundaries named by demanded executable
-products. Tests assert ShapeId relationships from the demanded
-`MaterializedTransportPlan` when correctness depends on sharing.
+products. Tests assert sharing and representation through exact positioned
+products, retained ABI layouts, and emitted backend contracts. No root-wide
+transport or synthetic seam inventory stands in for those consumers.
 
-`ProductDriver`/`ProductMemo` (`pull.rs`) expose four
-`[fz, compiler2, pull, product, *]` leaves, all public (allowlisted in
-`jsonl.rs::is_public_compiler2_trace_event`). `cache_hit` and `reentered` carry
-the existing raw `ProductKey` and identify paths that do not run a producer.
+`ProductDriver`/`ProductMemo` (`pull.rs`) expose distinct public request,
+evaluation, settlement, cache-hit, displacement, co-publication, and recursive
+group events (allowlisted in `jsonl.rs::is_public_compiler2_trace_event`). Every
+safe caller owns `&mut ProductDriver`, and a producer receives only its
+`ProductReadContext`, so producer calls cannot overlap or invoke nested
+`ProductDriver::pull`; an in-progress duplicate asserts before request telemetry
+instead of fabricating a wait. `cache_hit` identifies a request that did not run a producer.
 `displaced` carries the raw `ProductKey` of a settled product the memo just
 displaced (rejected group member, or a reader invalidated by a changed
-dependency, stale fact, or explicit reproduction) -- Waiting outcomes do not
-claim completion, and there is no `requested`, `produced`, `waited`, or generic
-`finished` alias.
+dependency, stale fact, or explicit reproduction). Waiting evaluations retain
+their exact typed waits; no generic `produced`, `waited`, or `finished` alias
+exists.
 
 `settled` is the memo's own act of installing a value, not the driver's: it
-fires once per PRODUCT that actually settles, from inside `ProductMemo::finish`
-and `ProductMemo::finish_group` -- the single authority for both. A group
-settle (`finish_group`, e.g. a callable-construction or transport-shape SCC)
-fires once per member, not once for the anchor `ProductDriver::pull` happened
-to be pulling; `ProductReadContext::publish_product`'s co-published members
-(a demand cone's non-anchor executables, an effect SCC's non-anchor
-executables) settle through the same `finish` authority and are equally
-visible. The event carries the raw `ProductKey`, the authoritative
+fires once per product that actually settles, from the one
+`ProductMemo::finish_completion` authority. A recursive group settle (for
+example executable effects or callable construction) fires once per member,
+not once for the anchor `ProductDriver::pull` happened to be pulling;
+`ProductReadContext::publish_product`'s ordinary co-published members (such as
+a demand product's non-anchor executables) settle through the same authority
+and are equally visible. The event carries the raw `ProductKey`, the authoritative
 `ProductValue`, and a stack-built `ProductSettlement { generation, changed,
 group }`: `generation` and `changed` are the memo's own bookkeeping (no
 longer discarded after computation), and `group` is `Some(id)` for every
@@ -504,17 +542,23 @@ position-owned answer directly. There is no parallel projection, component, or
 solve event.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
-called from `ProductDriver::finish_session`) fires once per pull session, when
-the driving front door finishes demanding the session's products. It carries
-the raw `PullSession`, from which handlers derive its root and demanded
-set cardinalities, `producer_pokes`, per-reason work-start breakdown,
-`unsanctioned_work_starts`, and `root_scans` during the callback. The emitter
-does not duplicate those values into measurements. This is the root-level
-authority a handler reads to assert product-path work stayed bounded, and
-`work_start_reason_test`'s
+called from `ProductDriver::finish_session`) fires once per retained-session
+activation, when the driving front door finishes that request's product demand.
+Later activations reuse the same session id and allocate fresh monotone request
+ids. Producer pokes and work starts are reset for each activation; nested
+sessions partition the World's cumulative work-start changes rather than each
+repeating the same snapshot. Standalone `Compiler2::drive` owns the work across
+its balanced boundary, so a nested session excludes the drive's prefix and the
+next retained request cannot inherit it. The event carries the raw
+`PullSession`, from which handlers derive its root and demanded set cardinalities,
+`producer_pokes`, per-reason work-start breakdown,
+`unsanctioned_work_starts`, `root_scans`, and `drain_discovery_sweeps` during
+the callback. The emitter does not duplicate those values into measurements.
+The separate World-cumulative guard in `work_start_reason_test` asserts the
+whole production path: its
 `pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0`,
-`root_scans == 0`, AND `ignition == 2` (the true external front-door count)
-for every fixture they drive.
+`root_scans == 0`, `drain_discovery_sweeps == 0`, AND `ignition == 2` (the true
+external front-door count) for every fixture they drive.
 
 ### Work-Start Attribution (`WorkStartReason`)
 
@@ -526,8 +570,9 @@ is the raw telemetry authority. The sanctioned reasons mirror the pull model:
   submission.
 - `ChangedRevisionWake` is scheduler-owned wake propagation after a subscribed
   fact changes.
-- `StandingRootFrontier` and `ActivationFrontier` expand standing semantic
-  demand through the fact-to-producer map.
+- `ActivationFrontier` expands a published activation's standing semantic
+  demand through the fact-to-producer map. Root entries and caller-discovered
+  callees use the same path.
 - `BlockedWaiterExpansion` expands a drained waiter's missing fact to its
   producer, including runtime-module indexing.
 
@@ -538,13 +583,14 @@ deliberate mislabeling remains a review concern made visible by the session's
 per-reason breakdown. Bounded inner product pulls complete directly rather
 than entering the shared scheduler agenda, so they have no work-start tag.
 
-Macro executable readiness emits `[fz, compiler2, macro_executable, defined]`
-with raw `World` and `FunctionId`; handlers select the stored executable and
-backend revision during the callback. Artifact tests still assert the
-`JobEffects` facts and absence of `NativeProgram(macro_root)`.
+Macro readiness is the settlement of `RootBackendProduct(macro_root)` in its
+retained memo. Source-expansion jobs record that exact product dependency in
+their reads or waits. The nested retained-session test in
+`product_drive_test.rs` observes backend production without requesting
+`NativeProgram(macro_root)`.
 
 Macro expansion emits `[fz, compiler2, macro, expanded]` after a
-`MacroExecutable` runs over quoted source and before recursive expansion
+backend interpreter runs over quoted source and before recursive expansion
 continues. Its exact raw signature is `(&World, &FunctionId,
 &QuotedSourceRoot)` for the expanded output. Handlers derive module identity
 and quoted-source heap/root identity during the callback. The shared quoted
@@ -571,8 +617,8 @@ change. The raw callback receives `World` plus the stable
 key that addresses the result: `FunctionId`, `ModuleId`, `RootId`, `TypeName`,
 `ActivationKey`, or `CallSiteKey`. Generated-function publication adds its raw owner key. A
 handler reads the stored function source, contract, lowered body, dispatch,
-type, protocol wiring, activation analysis, callsite summary, backend program,
-or native program from those authorities during the callback.
+type, protocol wiring, activation analysis, or callsite summary from those
+authorities during the callback.
 
 Type-reference publication keeps the two owning key domains explicit.
 `[fz,compiler2,type,references,function,recorded]` carries raw `World` plus
@@ -583,19 +629,25 @@ own required key clone.
 
 This schema covers function `defined` and source `stashed`/`noted`/`expanded`,
 function contracts, lowered bodies, guard and entry dispatch, modules, structs,
-types, protocol dispatch, activation analysis, callsite summaries, backend
-programs, native programs, roots, and code submissions. `input_demand.derived`
-and `native_program.reusable_cons` already own their result outside `World`, so
-they carry the raw key and artifact directly. Code submission carries raw
+types, protocol dispatch, activation analysis, callsite summaries, roots, and
+code submissions. Backend and native programs live only in the
+retained product memo: `pull.product.settled` carries successful typed product
+settlement, and `native_program.reusable_cons` carries the root plus its exact
+backend input when native lowering succeeds. A failed evaluation appears as a
+typed `pull.product.evaluated` failure with no native settlement. Code
+submission carries raw
 `World` plus either its `CodeId` or the existing runtime-module registration
 result. No event duplicates ids, arities, counts, names, source references, or
 stored artifacts.
 
-Scheduler completion events carry raw `JobCompletion`. The
-`work_graph.applied` and job-span handlers read its job and applied step;
-`AppliedStep` owns the resulting output-key set, so job spans do not duplicate
-raw `JobEffects`. One `activation_inputs.defined` event carries the same
-completion plus `World`, and handlers iterate its affected activation-key set.
+`work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
+the job and applied step, including changed facts, movements, wakes, and waits.
+The job span does not duplicate either payload: its start owns job identity and
+its successful stop owns elapsed time. Published keys remain in the scheduler's per-job claim ledger;
+test-only output capture reads those standing claims from `World` instead of
+making every completion rebuild them. One `activation_inputs.defined` event
+carries the same completion plus `World`, and handlers iterate its affected
+activation-key set.
 Return publication carries raw `World` plus `ActivationKey` only when the
 stored return changes. Event presence is the change signal; handlers read the
 settled return from `World`. `return_type.widened` is a separate raw

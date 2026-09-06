@@ -34,11 +34,12 @@ a new counter that appears empty in the JSONL is usually missing one of them.
 ## What the stream carries
 
 **Job spans** — `fz.compiler2.job`, `span_start`/`span_stop`, carrying the job's
-full identity (kind plus `root_id`/`function_id`/`arrow`/... as applicable).
-Pair them by `span_id` for a per-formula time census. This covers the drive loop
-only, and only two of the five completion sites; a product settled during a pull
-is not a job. The span is the clock — `work_graph.applied` is the causality
-record, and it fires on every completion.
+full identity (kind plus `root_id`/`function_id`/`arrow`/... as applicable) on
+start and elapsed time on a payload-free stop. Pair them by `span_id` for a
+per-formula time census. Both job-pop loops open these spans; product
+evaluations have their own pull telemetry. The span
+is the clock — `work_graph.applied` owns the completion payload and causal
+record exactly once, and it fires on every completion.
 
 **Job completions** — `fz.compiler2.work_graph.applied`, one per applied job,
 carrying the completed formula's identity, the exact facts it changed with
@@ -53,25 +54,167 @@ cost is attributed by taking the gap between an event and the one before it. A
 product that settles a recursive group publishes its members atomically and
 reports the group id on each.
 
+**Product requests and evaluations** — `pull.product.requested` fires for
+every stack pull, including requests answered from the memo;
+`pull.product.evaluated` fires only when the producer body actually runs and
+shares the request's session-owned `ProductRequestId`. The allocator remains
+with a retained session, so ids increase across request activations. Exclusive driver
+ownership and the producer's context-only API make overlapping pulls
+impossible; cache requests have no evaluation. The evaluation
+also carries its structured outcome plus exact product/fact waits. A producer
+that settles another key emits `pull.product.copublished` with both publisher
+and peer. Successful recursive settlement emits `pull.recursive_group.published`
+for every actual member, again with publisher and peer. Cache hits,
+displacements, settlements, requests, evaluations, general co-publication, and
+recursive-group membership are distinct observations over the same structured
+`ProductKey` identity. The driver caches whether any typed causal subscriber is
+present; without one these new hot-path events do no registry traversal or
+payload construction, and no session id is minted.
+
+**Backend requests and pull sessions** —
+`fz.compiler2.backend_request.started` / `finished` bracket one request for a
+root backend program. Both boundaries use one gate and one typed payload;
+finish says either `success` with final population or `failure`, so partial
+subscriptions and errors cannot leave the public lifecycle structurally
+unbalanced. `pull.session.started` / `finished` carry the same exact
+numeric session id; nested sessions therefore have balanced lifecycles without
+erasing the outer session's replay history. Backend request, retained session,
+and product request are separate identities: successive backend requests
+reactivate the same root session id, while nested roots use different session
+ids and product request ids never repeat within a retained session.
+The finished session's producer-poke and work-start fields are activation-local
+deltas. `ProductSessions` partitions the World's monotone work-start counters
+across its nested activation stack and gives standalone `Compiler2::drive` its
+own balanced owner boundary, so nested sessions neither overlap the standalone
+prefix nor charge a later cache hit for work performed outside its request.
+Root backend and native artifacts live in retained product memos. Their
+`pull.product.settled` records identify the product, generation, and whether
+its value changed. Scheduler consumers read the product through
+`DependencyKey::Product(ProductAddress { root, key })`; the address identifies
+both its retained root session and its product. Fact dependencies retain their
+flat typed JSON identity; product dependencies carry the owning `root_id` and
+a nested `product` identity.
+
+`work_graph.dependencies_moved` carries the one causal `AppliedStep` for
+external product changes or readiness propagation. Its changes, movements,
+wakes, and blocked dependencies use the same renderer as job completions and
+quiescence. Equal product reproduction retains its allocation and generation,
+so consumers see no value movement. Macro expansion reads
+`RootBackendProduct(macro_root)` directly. Successful native production is measured by
+`NativeProgram(root)` settlement and `native_program.reusable_cons`.
+
+A failed direct product request returns `DriveOutcome::DependencyFailed`.
+The drive stop identifies that exact dependency; it attributes no scheduler
+job to a producer that never ran as a job.
+
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
-`WorkStartTally`: `ignition`, `changed_revision_wake`, `standing_root_frontier`,
-`activation_frontier`, `blocked_waiter_expansion`, plus `unsanctioned_work_starts`
-and `root_scans`. This is the pull-only guard's evidence — every job on the
-agenda must name a sanctioned reason. `unsanctioned_work_starts` and `root_scans`
+`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
+`blocked_waiter_expansion`, plus `unsanctioned_work_starts`, `root_scans`, and
+`drain_discovery_sweeps`. This is the pull-only guard's evidence — every job on
+the agenda must name a sanctioned reason. All three scan/unsanctioned counters
 are zero, and `compiler2::work_start_reason_test` holds them there: a
 reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
 producer that discovers work by scanning the fact table shows up in `root_scans`.
+`drain_discovery_sweeps` counts the narrower empty-agenda pass that clones and
+orders the activation-frontier and unresolved-wait inventories; exact nonempty
+indexes guard that work, so unchanged and irrelevant retained requests do not
+increment it.
+`activation_frontier` counts root-entry and caller-discovered-callee analyses
+ignited from their published `Activation` edges. The typed regression pairs
+`SeedRoot`'s claimed activation with the exact accepted frontier key and pins
+the combined fixture population: 3 root plus 265 callee starts become 268
+starts on the shared frontier, so compensating aggregate counts cannot hide a
+second root path.
 
-**Demand cones** — `fz.compiler2.demand.cone.settled` carries `members`,
-`external_members`, `rounds`, `derivations`. `RuntimeDemand(E)` is settled by a
-Jacobi ascent over a cone of executables collected transitively from its anchor,
-stopping only where demand has already settled, so `members` — not the one
-executable the key names — is the unit of work behind the answer.
-`external_members` counts the boundary it did reuse. `rounds` is the height the
-ascent climbed and `derivations` the member re-derivations it ran, which is well
-under `members * rounds` because a member whose reads did not move is skipped.
-Separating the three tells a cone that is too big from an ascent that climbs too
-far from members that re-derive too often; a wall-clock number cannot.
+**Runtime-demand facts** — `work_graph.applied` names each
+`DeriveRuntimeDemand(E)` completion, its exact reads, content movements,
+readiness changes, and wakes. Group by the typed executable identity to measure
+formula evaluations, and distinguish content-changing runs from readiness-only
+finality. Because each formula is one ordinary scheduler job, these counts are
+the work itself; there is no hidden cone member/round multiplier. Compare the
+causal work multiset across legal arrival orders and retained requests, and
+pair it with the canonical backend and runtime output so less work cannot hide
+a changed result. `RuntimeDemandInputs(E)` is an independently revisioned view
+of the input vector in the one stored demand value. On
+`00420_enum_take_drop_split`, changed-revision starts split into 1,731
+non-demand starts and 1,039 demand starts. Its three macro consumers each
+resume on their function definition and their retained content product.
+The trace contains 4,489 total formula evaluations, including 11 scope,
+21 module, and 1,278 RuntimeDemand evaluations. Blocked expansion is 1,138
+non-demand work plus 311 exact demand/construction formula keys.
+`work_start_reason_test` pairs these counts with the exact macro consumer
+sets and the activation frontier; no wall-clock estimate substitutes for
+those dependency records.
+
+The pre-deletion full-matrix census at exact old HEAD `7f2bcc2de` drove all 515
+non-deferred fixture paths through run/interp/build serially. Its 1,708
+`demand.cone.settled` events all reported `external_members=0`; the exact
+command and result live in
+`.agent/measurements/fz-kdt.4-external-members-census.txt`. The removed
+external/displacement path therefore had no observed owner to preserve.
+
+**Positioned product obligations** — settlement values expose their structural
+shape id and carrier separately. A carrier of `absent` does not imply a
+`Nothing` structural shape. Callable-owner values also expose the existing
+construction flag and callable/boundary fact counts; these are observations of
+the immutable answer, not additional compiler state. Pair them with exact
+requested/evaluated keys and the ABI's retained dependency inventory. The
+positioned-owner regression classifies physical lanes through the World's
+immutable shape descriptors and proves that scalar owners are never evaluated,
+while direct-only metadata and first-class constructions remain distinct.
+
+Cold interpreter requests, including nested definition-macro roots, report the
+following positioned work. Each cell is requests / evaluations / settlements /
+cache hits; a settlement is not necessarily a distinct final owner.
+
+| fixture | TransportShape | CallableConstruction |
+| --- | ---: | ---: |
+| `fz_f98_range_map_converges` | 1219 / 1201 / 873 / 18 | 181 / 156 / 116 / 25 |
+| `enum_predicate_search` | 2811 / 2780 / 2051 / 31 | 566 / 481 / 315 / 85 |
+| `00420_enum_take_drop_split` | 7110 / 7015 / 5309 / 95 | 795 / 716 / 516 / 79 |
+
+The take/drop final ABI inventory contains 38 construction owners and 427
+metadata-only owners: 125 without physical lanes and 302 with lanes. It contains
+no empty owner. The retained-input regression proves both directions of demand
+replacement: ignored inputs make no positioned requests, a reached demand edit
+creates the exact shape consumer, and withdrawal removes that consumer again.
+A generic call-result owner likewise appears only while its callable obligation
+exists. Unchanged and irrelevant requests use one retained root cache hit;
+an independent callable owner and its shape keep their generation across the
+reached input edit, and the owner keeps its allocation.
+
+**Input-source relations** — `IncomingInputSlot(slot)` is a World fact,
+not a product projection. `DeriveRuntimeDemand` completions name its exact
+publisher, content revision, readiness movements, and changed source ownership.
+Callable-construction product evaluations record the exact settled slot read.
+Pair those records with the retained source allocation and the consumer's
+generation: an equal publication preserves the fact allocation and revision,
+while an unrelated edge names neither that slot nor its reader closure. There
+is no root relation settlement count hiding a repeated inventory scan.
+
+**Recursive-group searches** —
+`fz.compiler2.pull.recursive_group.searched` carries the current product, the
+prospective dependency, and one `RecursiveGroupSearch`. `candidate_inventory`
+counts reachable products with freshly evaluated pending snapshots of the
+publishing kind; `vertex_visits` counts all reached pending products, including
+cross-kind bridges; and
+`edge_scans` counts their pending dependency edges. `cycle_closed` says the
+component contains the current product, and `group_members` counts only its
+same-kind members. One dependency-rooted Tarjan traversal supplies all six
+values. The prospective edge is recorded before borrowing the dependency map;
+there is no graph copy, separate early-exit reachability pass, or repeated scan
+per candidate. Displaced dependency history cannot participate in the search.
+Causal replay compares both these totals and the exact current-graph
+publisher/member identities. Search events are query work; successful
+`pull.recursive_group.published` events separately report exact actual members.
+Settlement group handles join actual members within their retained session.
+The canonical report renders each publication as its sorted canonical member
+multiset, preserving equivalent-member and repeated-publication multiplicity.
+Session and group numbers do not enter that comparand: renumbering a group is
+irrelevant, while splitting it, merging it, or replacing a singleton group with
+an ordinary settlement changes the report. The cross-process fixture bundle
+checks this partition alongside exact publisher/member edges without another
+compiler invocation.
 
 ## In tests
 
@@ -99,28 +242,131 @@ counts. Nothing else is needed — not a `World`, not the process that wrote it.
 
 Per FORMULA (canonical job identity): evaluations, split into `initial`,
 `content_caused`, `readiness_caused` and `uncaused`; changed vs unchanged
-outputs; wakes emitted; completions that ended blocked. Per PRODUCT (canonical
-`ProductKey`): settlements, distinct generations, the changed/unchanged split,
-cache hits, displacements. Plus the `pull.session.finished` tallies summed over
-every session.
+outputs; wakes emitted; completions that ended blocked. Product rows retain the
+raw structured `ProductKey`, so arena-distinct keys cannot overwrite each
+other. `canonical_multiset()` is a separate projection which folds equivalent
+raw rows only for cross-process comparison. Product rows count settlements,
+the changed/unchanged split, cache hits, and displacements. Session tallies are
+summed from balanced finished lifecycles.
+
+`CausalReport::derive_requests(events)` returns that vocabulary once per
+backend request. Product rows additionally separate requests, producer
+evaluations, first productions, retained cache hits, changed/equal
+reproductions, recursive peer publications, and first-generation products
+recomputed after an earlier request. Every evaluation also retains one exact
+causal record: session, request id, raw product, prior waits, prior evaluation
+position, matching trigger positions and kinds, and cause class. The enclosing
+report supplies backend-request identity. Triggers are
+fact movement, product settlement or cache-hit readiness, dependency or self
+displacement; records, not aggregate counters, are authoritative. The
+`requested` and `evaluated` events for a producer run share an exact
+session-local request id. Exclusive driver ownership prevents overlapping
+requests, while cache-only requests have no evaluation. Recursive searches
+performed by a producer run are measured as work rather than misreported as
+its cause. Each recursive-search record retains its structured product and
+dependency identities and the enclosing evaluation's cause. Each successful request boundary
+carries the final reachable executable and construction-wrapper population, so
+a future root cache hit reports population without requiring a new settlement.
+
+Reproduce the long-lived baselines with:
+
+```
+cargo test --lib target_fixture_reports_exercise_all_five_request_scenarios -- --nocapture
+cargo test --test fz2_cli target_fixture_public_causal_and_backend_observations_are_reproducible -- --nocapture
+```
+
+The first command runs cold, unchanged, unreachable edit, reached-leaf edit,
+and callee replacement for each of the three exact target fixtures. It proves
+that all five request reports are separated and internally exact. The second
+produces one immutable observation bundle per fixture, each containing two
+separate-process public reports, runtime outputs, and canonical backend dumps.
+One immutable observation spec is the authority for the front door, public
+telemetry, backend dump, inherited environment, process invocation, and failure
+context. A controlled child proves inherited environments preserve ambient
+values while fixed environments clear them. Owned trace and dump paths remove
+partial files on an early return.
+Pure named ratchets fan over those same bundles to compare every canonical work
+dimension with zero exclusions and prove byte-identical backend output. This
+removes one duplicate three-fixture producer pass: three bundles and six
+subprocess compilations replace six bundles and twelve subprocess compilations.
+No command interprets elapsed time as correctness.
+
+The 2026-09-04 combined-stack baseline makes the retained-work problem
+explicit. Columns are producer evaluations / settlements / distinct demanded
+products / unexplained producer evaluations; the final pair is reachable
+executables + construction wrappers:
+
+| fixture | cold | unchanged request | population |
+| --- | ---: | ---: | ---: |
+| `fz_f98_range_map_converges` | 2986 / 2147 / 2086 / 15 | 0 / 0 / 1 / 0 | 62 + 0 |
+| `enum_predicate_search` | 7584 / 5430 / 5056 / 35 | 0 / 0 / 1 / 0 | 168 + 32 |
+| `00420_enum_take_drop_split` | 16028 / 12309 / 11815 / 40 | 0 / 0 / 1 / 0 | 239 + 38 |
+
+`ExecutableEffects(E)` is now an ordinary formula over its local materialized
+effect and the exact `ExecutableEffects(callee)` products. That makes 62/123/187
+additional cold producer evaluations and 4/10/9 additional demanded product
+keys visible for the three fixtures above. The settlements, distinct
+generations, first productions, formula evaluations, backend artifacts, and
+runtime outputs do not change. Before this cutover, one effect producer hid a
+transitive materialized-executable walk and a private SCC fixpoint behind a
+single evaluation and co-published the other answers. Ordinary member
+evaluations now perform their local joins over recorded dependency edges. The
+evaluation that closes a recursive group joins the already-recorded member-local
+and external inputs once, then publishes the group's common idempotent answer.
+
+On `00181_enum_reduce_operator_ref`, `List.reduce_cont/3` first waits on
+`List.reduce_step/3`, which waits back on `List.reduce_cont/3`. The second
+reduce-cont evaluation closes and settles both executable-effect products at
+generation 1 under one group id. Each member already has one suspended request
+on the pull stack, so those requests resume as one cache hit per member without
+another producer evaluation. The old cone path instead left one cached
+`Enum.reduce/3` effects request; removing that hit and adding the two group
+member hits moves the fixture total from 18 to 19 while settlements,
+generations, backend output, and runtime output remain unchanged.
+
+The additional 3/5/13 unexplained product evaluations are recursive effect
+members retried from an `ExecutableEffects(callee)` wait without an intervening
+product movement. `fz-tfn.32` owns finding and correcting that generic
+product-wait retry cause; it must not become an effect-specific path or a
+causality exception.
+
+The retained unchanged request does zero scheduler-formula evaluations, zero
+product evaluations, zero settlements, and zero cross-request recomputations.
+It makes one request for `RootBackendProduct`, records one retained cache hit,
+and does not enter the scheduler drive or move the retained backend product. An unreachable
+edit has the same product profile and zero displacements; only its two
+source-processing formula evaluations run. Once that exact agenda drains, an
+O(1) check of the activation-frontier and waiter indexes avoids cloning or
+ordering either empty inventory. Reached edits evaluate only the displaced
+dependency closure.
+
+Cold, unchanged, and unreachable-edit requests have zero unexplained formula
+evaluations on all three fixtures. Reached-leaf and callee-replacement requests
+retain the exact unexplained formula counts 39/45, 90/122, and 156/185 in the
+table order. They remain visible in both `FormulaWork.uncaused` and the exact
+`CausalReport::uncaused` records, whose lengths the harness cross-checks. They
+are not a cross-process exclusion or a cause inferred from nearby traffic.
+Product evaluations have their own explicit unexplained class, reported in the
+table above; no nearby settlement is invented as a cause.
+Product identity is the structured key fields after removing JSONL renderer
+metadata such as `opaque_type`; otherwise the same key nested in an outcome
+wait would fail to match its top-level settlement solely because the renderer
+annotates those two positions differently.
 
 An evaluation is caused when a dependency MOVED in `[the formula's previous
 conclusion, now)`, where the dependency set is the completion's `reads` UNION
 the blocked-set its PREVIOUS completion recorded. `reads` alone is not enough —
 `reads` and `waits` are separate maps, so a job re-run because a wait became
-satisfiable has the fact only in `waits`, and a reads-only rule reports it as
-uncaused (measured: 37, 30 and 19 evaluations on the three fz-kdt.34 target
-fixtures, against zero for the shipped rule). `Dependencies::Reads` keeps that
-variant available so the acceptance test can measure the difference.
+satisfiable has the fact only in `waits`.
 
 `canonical_multiset()` is the comparand for two runs. Every count is keyed by
-canonical identity, so two PROCESSES can be compared even though their arenas
-renumber. Measured over six processes per fixture (15 pairs each): every formula
-dimension and every session tally agree 15/15 on all three target fixtures. One
-dimension does not — `pull.product.cache_hit` on `CallableConstruction`
-products, at 7/15, 6/15 and 1/15 — because the two runs construct different
-intermediate types. `causal_work_multisets_agree_across_two_processes`
-(`tests/fz2_cli.rs`) pins that divergence to exactly that dimension.
+canonical identity, so two processes can be compared even though their arenas
+renumber. It emits each canonical product/fact identity once, uses stable
+dictionary ids in grouped evaluation/search signatures, and omits zero rows;
+canonical text is report output, never replay authority. Typed owner-ordered completion waves make the complete causal
+inventory reproducible: requests, evaluations, settlements, cache behavior,
+recursive membership, grouped triggers, lifecycle/retraction and shift totals,
+outputs, and population are all compared with no product-specific exception.
 
 ## Reading the numbers
 
@@ -131,12 +377,13 @@ anything that does not grow linearly is structural.
 
 A product whose settle **count** grows with the program and whose **cost per
 settle** stays flat is incremental — that is the shape to expect.
-`executable_facts` and `abi_executable` hold flat per-settle costs across a 32x
-ladder. A product whose settle count is *constant* while its per-settle cost
+`abi_executable` holds flat per-settle costs across a 32x ladder.
+`ExecutableFacts(E)` now appears in formula evaluation counts as the direct
+`DeriveExecutableFacts(E)` job and in the fact publication/read ledger; it must
+never appear in any per-product count. A product whose settle count is *constant* while its per-settle cost
 grows is a pass wearing a product's clothes: its unit of work is the program,
 not the key it is filed under.
 
-`the_demand_ascent_height_does_not_grow_with_the_program`
-(`compiler2::product_drive_test`) pins the two demand-cone numbers that are
-supposed to be flat — `rounds`, and `derivations` per member — by doubling the
-call sites and comparing.
+`runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders`
+(`compiler2::drive_test`) perturbs root arrival while pinning the canonical
+backend, runtime output, and exact `DeriveRuntimeDemand` work multiset.

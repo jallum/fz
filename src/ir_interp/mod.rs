@@ -32,7 +32,7 @@ use value::*;
 
 #[derive(Clone)]
 struct BackendContinuation {
-    executable: usize,
+    executable: Rc<crate::compiler2::BackendExecutable>,
     entry: crate::compiler2::ControlEntryId,
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
 }
@@ -46,12 +46,12 @@ enum BackendBoundValue {
 
 enum BackendResumeEntry {
     Executable {
-        executable: usize,
+        executable: Rc<crate::compiler2::BackendExecutable>,
         args: Vec<AnyValue>,
         continuations: Vec<BackendContinuation>,
     },
     Entry {
-        executable: usize,
+        executable: Rc<crate::compiler2::BackendExecutable>,
         entry: crate::compiler2::ControlEntryId,
         env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
@@ -59,10 +59,8 @@ enum BackendResumeEntry {
 }
 
 struct BackendParkRecord {
-    executable: usize,
-    clauses: Vec<crate::compiler2::ReceiveClause>,
-    dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    bindings: crate::compiler2::DispatchBindings,
+    executable: Rc<crate::compiler2::BackendExecutable>,
+    entry: crate::compiler2::ControlEntryId,
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
     continuations: Vec<BackendContinuation>,
 }

@@ -216,6 +216,7 @@ impl RuntimeTypePredicate {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn any() -> Self {
         Self {
             ints: FiniteSet::any(),
@@ -2271,6 +2272,7 @@ mod tests {
 mod value_membership_tests {
     use super::surface_membership::SurfaceMembershipCensus;
     use super::*;
+    use crate::compiler2::World;
     use fz_runtime::any_value::AnyValueRef;
 
     /// A fake heap: cons cells and tuples addressed by synthetic words the
@@ -2571,6 +2573,71 @@ mod value_membership_tests {
         let mut element = RuntimeTypePredicate::none();
         element.maps = true;
         assert_eq!(escapes(&heap, &list_test(any_shape(), vec![element]), value, &[]), 0);
+    }
+
+    #[test]
+    fn real_struct_predicates_distinguish_foo_alone_from_plain_map_unions_and_complements() {
+        let mut world = World::new();
+        let foo = world.reference_module("Pkg.Foo");
+        let int = world.types_mut().int();
+        let foo_value = world.struct_value_ty(foo, &["value".to_string()], &[int]);
+        let foo_envelope = world.types_mut().runtime_type_test_envelope(foo_value);
+        let any = world.types_mut().any();
+        let not_foo = world.types_mut().difference(any, foo_envelope);
+        let raw_not_foo = world.types_mut().difference(any, foo_value);
+        let map_top = world.types_mut().map_top();
+        let foo_or_map = world.types_mut().union(foo_value, map_top);
+        let foo_predicate = world.types().runtime_type_predicate(&foo_value);
+        let not_foo_predicate = world.types().runtime_type_predicate(&not_foo);
+        let raw_not_foo_predicate = world.types().runtime_type_predicate(&raw_not_foo);
+        let foo_or_map_predicate = world.types().runtime_type_predicate(&foo_or_map);
+
+        let mut heap = FakeHeap::new(&[]);
+        heap.module
+            .struct_schemas
+            .insert("Pkg.Foo".to_string(), vec!["value".to_string()]);
+        let map = RuntimeAnyValue::HeapRef(
+            AnyValueRef::from_heap_object(ValueKind::MAP, 0x1000 as *const u8).expect("a map ref"),
+        );
+        let struct_value = heap.tuple(7, vec![RuntimeAnyValue::Int(1)]);
+        let tuple_schema_ids = HashMap::new();
+        let named_schema_ids = HashMap::from([("Pkg.Foo".to_string(), 7)]);
+        let callables = |_: u64| None;
+        let fields =
+            |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
+        let list_head = |_: RuntimeAnyValue| None;
+        let list_tail = |_: RuntimeAnyValue| None;
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+        };
+        assert!(matches_runtime_type_predicate(&foo_predicate, &reader, struct_value));
+        assert!(!matches_runtime_type_predicate(&foo_predicate, &reader, map));
+        assert!(
+            !matches_runtime_type_predicate(&not_foo_predicate, &reader, struct_value),
+            "the real complement of Foo must reject a registered Foo value"
+        );
+        assert!(matches_runtime_type_predicate(&not_foo_predicate, &reader, map));
+        assert!(
+            matches_runtime_type_predicate(&raw_not_foo_predicate, &reader, struct_value),
+            "a raw shaped subtraction must preserve the Foo residue whose fields runtime tests cannot inspect"
+        );
+        assert!(matches_runtime_type_predicate(
+            &not_foo_predicate,
+            &reader,
+            RuntimeAnyValue::Int(1)
+        ));
+        assert!(matches_runtime_type_predicate(
+            &foo_or_map_predicate,
+            &reader,
+            struct_value
+        ));
+        assert!(matches_runtime_type_predicate(&foo_or_map_predicate, &reader, map));
     }
 
     /// An IMPROPER list's tail is not an element: the walk stops there rather

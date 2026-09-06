@@ -5,7 +5,7 @@ use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, Function
 use crate::compiler2::artifact::{
     BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeProgram,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -34,36 +34,72 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
 struct TestTransportShapes {
     transport: TransportStore,
 }
+#[test]
+#[should_panic(expected = "duplicate backend executable identity")]
+fn backend_program_rejects_duplicate_member_identities() {
+    let mut world = super::World::new();
+    let int = world.types_mut().int();
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    BackendProgram::new(
+        key,
+        Vec::new(),
+        Default::default(),
+        vec![member.clone(), member],
+        Vec::new(),
+        world.types(),
+    );
+}
 
 #[test]
-fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
-    fn assert_closed(program: BackendProgram) {
-        let BackendProgram {
-            backend_revision: _,
-            entry: _,
-            atom_names: _,
-            struct_schemas: _,
-            executables,
-            construction_wrappers: _,
-        } = program;
-        for executable in executables {
-            let BackendExecutable {
-                key: _,
-                entry_dispatch: _,
-                return_ty: _,
-                param_reprs: _,
-                semantic_inputs: _,
-                return_layout: _,
-                runtime_demand: _,
-                value_types: _,
-                value_layouts: _,
-                effects: _,
-                body: _,
-            } = executable;
-        }
-    }
+#[should_panic(expected = "backend entry must belong to its program")]
+fn backend_program_rejects_an_entry_outside_its_inventory() {
+    let mut types = Types::new();
+    let (_, _, activation) = stub_activation_key(&mut types, Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    BackendProgram::new(key, Vec::new(), Default::default(), Vec::new(), Vec::new(), &types);
+}
 
-    let _ = assert_closed as fn(BackendProgram);
+#[test]
+#[should_panic(expected = "duplicate backend construction identity")]
+fn backend_program_rejects_duplicate_construction_owners() {
+    let mut world = super::World::new();
+    let int = world.types_mut().int();
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    let wrapper = std::rc::Rc::new(super::artifact::BackendConstructionWrapper {
+        identity: super::transport::TransportPosition::Value {
+            executable: member.abi.transport.executable.clone(),
+            value: super::ValueId::from_u32(0),
+        },
+        callable: CallableId::for_test(0),
+        captures: Box::default(),
+        call_arity: 0,
+        return_form: BackendCallableReturn::Absent,
+        members: Box::default(),
+        selection: None,
+    });
+    BackendProgram::new(
+        key,
+        Vec::new(),
+        Default::default(),
+        vec![member],
+        vec![wrapper.clone(), wrapper],
+        world.types(),
+    );
 }
 
 impl TestTransportShapes {
@@ -96,7 +132,7 @@ fn compiler2_native_program_contract_test_shapes_use_one_interner() {
 fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
-    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let (_root, _, activation) = stub_activation_key(&mut types, vec![int]);
     let mut shapes = TestTransportShapes::default();
     let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
@@ -136,9 +172,12 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         ExternTy::I64,
     )]);
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(executable.clone()),
@@ -198,6 +237,11 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "the native handoff should name one CPS/native entry body"
     );
     assert_eq!(
+        program.executable_fn(&executable),
+        Some(entry_fn),
+        "the native handoff should preserve the semantic executable to physical entry mapping",
+    );
+    assert_eq!(
         program.bodies[0].origin,
         NativeBodyOrigin::Executable(executable.clone()),
         "the body contract should keep executable identity on the body record instead of an external planner shell",
@@ -218,6 +262,13 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     assert_eq!(
         program.callable_boundaries[0].members[0].target, executable,
         "callable boundary members should name the executable they adapt",
+    );
+
+    let mut single_entry_program = program;
+    assert_eq!(
+        single_entry_program.deduplicate_equivalent_sibling_graphs(),
+        super::artifact::NativeGraphSharingWork::default(),
+        "a program with no sibling semantic entries has no graph-sharing candidate and must do no ownership-index work",
     );
 }
 
@@ -290,9 +341,12 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![
             NativeBody {
                 fn_id: entry_fn,
@@ -309,10 +363,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             },
             NativeBody {
                 fn_id: cont_fn,
-                origin: NativeBodyOrigin::Continuation {
-                    owner: entry_fn,
-                    index: 0,
-                },
+                origin: NativeBodyOrigin::Continuation { owner: entry_fn },
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
@@ -408,10 +459,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     );
     assert_eq!(
         program.bodies[1].origin,
-        NativeBodyOrigin::Continuation {
-            owner: entry_fn,
-            index: 0
-        },
+        NativeBodyOrigin::Continuation { owner: entry_fn },
         "native codegen should recover helper ownership from NativeBody.origin instead of planner reachability metadata",
     );
 }
@@ -462,9 +510,12 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(executable),

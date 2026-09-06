@@ -75,17 +75,18 @@ user `defprotocol` in the program.
 
 ## Implementation targets
 
-An `ImplTarget` is a module identity, never a display string. `impl_target_ty`
-maps a target's last segment to a concrete type:
+An `ImplTarget` is a module identity, never a display string. Builtin targets
+map to their concrete value family:
 
 ```text
 List -> list(any)   Integer -> int   Float -> float   Atom -> atom
-Binary -> str       Map -> map_top    <other> -> struct_impl_target_type(name)
+Binary -> str       Map -> map_top
 ```
 
-A named source struct (e.g. `Range`) maps to its nominal opaque tag
-`opaque(impl-target::Range)` (see [`set-theoretic-types`](set-theoretic-types.md)),
-which keeps it distinct from any structurally-similar value.
+A named source struct (e.g. `Range`) maps to one tagged record carrying its
+typed `ModuleId` and declared fields together. The tag keeps it disjoint from a
+plain map with identical fields. A target with no `StructDefined` fact remains
+the legacy opaque `impl-target::<name>` marker.
 
 ## Dispatch is receiver/target overlap selection
 
@@ -109,9 +110,8 @@ many matches       -> unresolved (any): the receiver is open/ambiguous here
 ```
 
 The runtime-predicate check is what keeps runtime identity authoritative. A
-named struct value can carry structural field evidence, including map-shaped
-evidence, but it is not a plain runtime map; `Enumerable.Range` therefore does
-not overlap the `Map` impl just because the `Range` struct has fields.
+named struct is a tagged record, not a plain map; `Enumerable.Range` therefore
+does not overlap the `Map` impl just because the two record shapes have fields.
 
 Selection is lazy about impl code, and there is a single discovery path: the
 **provider index** (`ProtocolImplProviders(protocol)`). Scope time records every

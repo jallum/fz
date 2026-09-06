@@ -76,6 +76,7 @@ pub(super) fn index_code(
 pub(super) fn scope_code(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
+    products: Option<&super::super::pull::ProductSessions>,
     code_id: CodeId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.code_source(code_id) else {
@@ -101,6 +102,7 @@ pub(super) fn scope_code(
     match source_publish::publish_scope(
         world,
         tel,
+        products,
         code_id,
         ScopeSnapshot::module(ModuleId::GLOBAL, base_namespace),
         &source.surface,
@@ -108,6 +110,7 @@ pub(super) fn scope_code(
         ScopePublication::Complete {
             namespace,
             reads: scope_reads,
+            product_reads,
             mut outputs,
             mut changed,
             ..
@@ -123,6 +126,7 @@ pub(super) fn scope_code(
             }
             Ok(JobEffects {
                 reads: current_uses(reads),
+                product_reads,
                 outputs,
                 changed,
                 ..JobEffects::default()
@@ -141,11 +145,14 @@ pub(super) fn scope_code(
 pub(super) fn define_module(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
+    products: Option<&super::super::pull::ProductSessions>,
     module_id: ModuleId,
 ) -> Result<JobEffects, FatalError> {
     if let Some((source, scope)) = world.module_scope(module_id) {
         let result = match &source.kind {
-            ModuleSourceKind::Body(surface) => source_publish::publish_scope(world, tel, source.code, scope, surface)?,
+            ModuleSourceKind::Body(surface) => {
+                source_publish::publish_scope(world, tel, products, source.code, scope, surface)?
+            }
             ModuleSourceKind::Protocol(surface) => source_publish::publish_protocol_surface(
                 world,
                 tel,
@@ -157,6 +164,7 @@ pub(super) fn define_module(
             ModuleSourceKind::ProtocolImpl(impl_source) => source_publish::publish_protocol_impl_surface(
                 world,
                 tel,
+                products,
                 source.code,
                 module_id,
                 scope.namespace(),
@@ -168,6 +176,7 @@ pub(super) fn define_module(
                 namespace,
                 revision_floor: _revision_floor,
                 reads,
+                product_reads,
                 mut outputs,
                 mut changed,
                 interface,
@@ -185,6 +194,7 @@ pub(super) fn define_module(
                 }
                 Ok(JobEffects {
                     reads: current_uses(reads),
+                    product_reads,
                     outputs,
                     changed,
                     ..JobEffects::default()
@@ -368,19 +378,25 @@ pub(super) fn publish_function_source_job(
 pub(super) fn expand_function_source(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
+    products: Option<&super::super::pull::ProductSessions>,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.function_source(function_id) else {
         return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
-    match FunctionSourceExpander::new(world, tel, function_id, &source).expand(&source)? {
-        FunctionSourceExpansion::Complete { source, reads } => {
+    match FunctionSourceExpander::new(world, tel, products, function_id, &source).expand(&source)? {
+        FunctionSourceExpansion::Complete {
+            source,
+            reads,
+            product_reads,
+        } => {
             let changed = super::super::drive::ExecutionContext::new(world, tel)
                 .note_expanded_function_source(function_id, source);
             let mut reads = reads;
             reads.push(FactKey::FunctionSource(function_id));
             Ok(JobEffects {
                 reads: current_uses(reads),
+                product_reads,
                 outputs: vec![FactKey::ExpandedFunctionSource(function_id)],
                 changed: changed
                     .then_some(FactKey::ExpandedFunctionSource(function_id))
@@ -397,6 +413,7 @@ enum FunctionSourceExpansion {
     Complete {
         source: FunctionSource,
         reads: Vec<FactKey>,
+        product_reads: Vec<super::super::drive::ProductAddress>,
     },
     Blocked(Box<JobEffects>),
 }
@@ -404,6 +421,8 @@ enum FunctionSourceExpansion {
 struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     world: &'world mut World,
     telemetry: &'tel T,
+    products: Option<&'world super::super::pull::ProductSessions>,
+    product_reads: Vec<super::super::drive::ProductAddress>,
     function: FunctionId,
     current_module: ModuleId,
     namespace: Namespace,
@@ -437,6 +456,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         self.reads.push(fact);
     }
 
+    fn products(&self) -> Option<&super::super::pull::ProductSessions> {
+        self.products
+    }
+    fn note_product_read(&mut self, product: super::super::drive::ProductAddress) {
+        self.product_reads.push(product);
+    }
+
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId> {
         match self.world.lookup_callable_namespace(scope.namespace(), name, arity) {
             Some(NamespaceSymbol::Macro(function)) if self.world.function_module(function) == self.current_module => {
@@ -448,11 +474,19 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world, 'tel, T> {
-    fn new(world: &'world mut World, telemetry: &'tel T, function: FunctionId, source: &FunctionSource) -> Self {
+    fn new(
+        world: &'world mut World,
+        telemetry: &'tel T,
+        products: Option<&'world super::super::pull::ProductSessions>,
+        function: FunctionId,
+        source: &FunctionSource,
+    ) -> Self {
         let current_module = world.function_module(function);
         Self {
             world,
             telemetry,
+            products,
+            product_reads: Vec::new(),
             function,
             current_module,
             namespace: source.namespace,
@@ -492,6 +526,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         Ok(FunctionSourceExpansion::Complete {
             source,
             reads: self.reads,
+            product_reads: self.product_reads,
         })
     }
 
@@ -673,6 +708,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
         effects.reads.extend(current_uses(self.reads.clone()));
+        effects.product_reads.extend(self.product_reads.clone());
         effects
     }
 }

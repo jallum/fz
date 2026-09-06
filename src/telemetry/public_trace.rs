@@ -22,7 +22,7 @@
 //! the `Compiler2` — and with it the `ConfiguredTelemetry` and the backend's
 //! last `Rc` — drop, and only then parses the shared buffer.
 
-use crate::compiler2::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FactKey, Job, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, DependencyKey, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 
 use super::ConfiguredTelemetry;
 use super::capture::vec_writer;
@@ -46,7 +46,7 @@ pub struct PublicSpan {
 /// order. Mirrors `ExUnit.CaptureLog.with_log`: the action's result
 /// (`outcome`) and the artifact it produced travel together.
 pub struct PublicTrace {
-    pub outcome: DriveOutcome<Job, FactKey>,
+    pub outcome: DriveOutcome<Job, DependencyKey>,
     events: Vec<PublicEvent>,
 }
 
@@ -78,6 +78,62 @@ impl PublicTrace {
                 need: ExecutableNeed::Value,
             });
             compiler.drive()
+        };
+
+        let events = parse_public_trace(&buf.borrow());
+        Self { outcome, events }
+    }
+
+    /// Issues multiple backend requests through one `Compiler2`. `revisions`
+    /// describes the requests after the cold one: `None` asks for the same
+    /// root unchanged, while `Some(source)` submits that source before asking
+    /// again. The helper drives the production interpreter boundary and keeps
+    /// its output silent; only observability is test-owned.
+    pub fn compile_requests(source: &str, revisions: &[Option<&str>]) -> Self {
+        let telemetry = ConfiguredTelemetry::new();
+        let (buf, writer) = vec_writer();
+        JsonlBackend::new_public_writer(writer).install(&telemetry);
+
+        let outcome = {
+            let mut compiler = Compiler2::new(telemetry);
+            compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+            compiler.submit_code(CodeSubmission {
+                name: Some("public_trace_initial.fz".to_string()),
+                text: source.to_string(),
+            });
+            let root = compiler.submit_root(RootSubmission {
+                module_name: None,
+                name: "main".to_string(),
+                arity: 0,
+                need: ExecutableNeed::Value,
+            });
+            let mut outcome = compiler.drive();
+            assert!(
+                matches!(outcome, DriveOutcome::Resolved),
+                "cold public-trace semantic drive did not resolve"
+            );
+            compiler
+                .run_root_interp(root)
+                .unwrap_or_else(|error| panic!("cold public-trace request failed: {error}"));
+            for (index, revision) in revisions.iter().enumerate() {
+                if let Some(source) = revision {
+                    compiler.submit_code(CodeSubmission {
+                        name: Some(format!("public_trace_revision_{}.fz", index + 1)),
+                        text: (*source).to_string(),
+                    });
+                    outcome = compiler.drive();
+                    assert!(
+                        matches!(outcome, DriveOutcome::Resolved),
+                        "public-trace revision {} did not resolve: {:?}",
+                        index + 1,
+                        outcome
+                    );
+                }
+                compiler
+                    .run_root_interp(root)
+                    .unwrap_or_else(|error| panic!("public-trace request {} failed: {error}", index + 2));
+            }
+            outcome
         };
 
         let events = parse_public_trace(&buf.borrow());

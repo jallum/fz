@@ -8,6 +8,7 @@ use crate::source::Span;
 use super::super::drive::{FactKey, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
+use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -54,6 +55,17 @@ pub(super) fn seed_root(
             ),
         ));
     }
+    if root.kind == RootKind::Macro && !surface.is_macro {
+        return Err(emit_root_error(
+            tel,
+            surface.span,
+            format!(
+                "compiler2 macro root target `{}/{}` is not a macro",
+                surface.name,
+                surface.arity()
+            ),
+        ));
+    }
     if !world.require_activation_key_facts(root.function, &mut reads, &mut waits) {
         return Ok(JobEffects {
             reads: settled_uses(reads),
@@ -71,7 +83,7 @@ pub(super) fn seed_root(
         activation: entry_activation.clone(),
         need: root.need,
     };
-    outputs.push(FactKey::Executable(entry_executable));
+    outputs.push(FactKey::Executable(entry_executable.clone()));
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
     // point means `require_activation_key_facts` above already observed both
     // `Recursive(function)` and `InputDemand(function)` settled, and their
@@ -81,16 +93,21 @@ pub(super) fn seed_root(
     // DeriveCallGraphComponent/DeriveInputDemand; later change waves reach
     // them via the normal wake mechanism.
     //
-    // `AnalyzeActivation` is not pushed either: the root itself is the
-    // standing demand for its entry's analysis. When the agenda drains,
-    // `World::demand_root_entry_analyses` expands that demand through the
-    // fact->producer map (`World::demand_fact_producer`) on every path -- the
-    // bare drive's demand-on-stall pass and the product fact-wait loops both
-    // pull through `World::next_ready_job`.
+    // `AnalyzeActivation` is not pushed either. Publishing `Activation(entry)`
+    // above records the same standing frontier edge as caller-discovered
+    // callees; `demand_activation_frontier_analyses` expands it through the
+    // fact->producer map on both the bare drive and product fact-wait paths.
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
         activation_input_contributions: vec![(entry_activation, root.input.clone())],
+        runtime_demand_input_contributions: vec![(
+            entry_executable,
+            TargetDemandContribution {
+                return_demand: Some(RuntimeDemand::for_executable_need(root.need)),
+                ..TargetDemandContribution::default()
+            },
+        )],
         ..JobEffects::default()
     })
 }

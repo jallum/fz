@@ -281,7 +281,7 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
     }
 }
 
-/// One node of the demand cone: a body's OWN dispatch demand, and the
+/// One node of the input-demand graph: a body's OWN dispatch demand, and the
 /// parameters it hands on unchanged.
 #[derive(Debug, Clone, Default)]
 struct DemandNode {
@@ -323,11 +323,11 @@ struct ForwardEdge {
 /// the demand on every position `g@j` that `f` forwards `i` to.
 ///
 /// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
-/// least fixpoint, computed by Kleene iteration over the cone one walk
+/// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
 /// discovers -- the same shape `derive_call_graph_component` uses for the
 /// strong component, and terminating for the same reason: the join is monotone
-/// and no join deepens a demand tree past the deepest local mask in the cone,
-/// which is a fixed finite depth once the cone is fixed.
+/// and no join deepens a demand tree past the deepest local mask in the graph,
+/// which is a fixed finite depth once the graph is fixed.
 ///
 /// A slot NOT reached this way is freight: the body neither asks about it nor
 /// hands it to anyone who does. It stays collapsed, which is what keeps one
@@ -342,8 +342,8 @@ pub(super) fn derive_input_demand(
 ) -> Result<JobEffects, FatalError> {
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
-    let mut cone = BTreeMap::new();
-    collect_demand_cone(world, function, &mut reads, &mut waits, &mut cone);
+    let mut graph = BTreeMap::new();
+    collect_input_forwarding_graph(world, function, &mut reads, &mut waits, &mut graph);
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
@@ -353,9 +353,9 @@ pub(super) fn derive_input_demand(
     }
 
     let demand = InputDemand {
-        local_dispatch: cone.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
-        forwarded_dispatch: solve_forwarded_demand(&cone, function, |node| &node.local),
-        returned: solve_forwarded_demand(&cone, function, |node| &node.local_result),
+        local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
+        forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
+        returned: solve_forwarded_demand(&graph, function, |node| &node.local_result),
     };
     emit_input_demand_derived(tel, &function, &demand);
     let changed = world.define_input_demand(function, demand);
@@ -367,18 +367,18 @@ pub(super) fn derive_input_demand(
     })
 }
 
-/// Walks the FORWARDING cone from `function`: only a callee that receives one
-/// of this body's parameters unchanged is entered, so the cone is a fraction
-/// of the call cone and a body that forwards nothing reads exactly the facts
+/// Walks the input FORWARDING graph from `function`: only a callee that receives
+/// one of this body's parameters unchanged is entered, so the graph is a fraction
+/// of the call graph and a body that forwards nothing reads exactly the facts
 /// the local mask always needed.
-fn collect_demand_cone(
+fn collect_input_forwarding_graph(
     world: &World,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    cone: &mut BTreeMap<FunctionId, DemandNode>,
+    graph: &mut BTreeMap<FunctionId, DemandNode>,
 ) {
-    if cone.contains_key(&function) {
+    if graph.contains_key(&function) {
         return;
     }
     // `StaticCallees` is the fact whose producer scopes a runtime module and
@@ -391,7 +391,7 @@ fn collect_demand_cone(
     }
     reads.push(callees);
     if let Some(callback) = world.protocol_callback(function) {
-        collect_protocol_callback_node(world, function, callback.protocol, reads, waits, cone);
+        collect_protocol_callback_node(world, function, callback.protocol, reads, waits, graph);
         return;
     }
     let lowered = FactKey::LoweredBody(function);
@@ -399,11 +399,11 @@ fn collect_demand_cone(
         // No body in this program: it asks nothing and forwards nothing. Every
         // fact that conclusion rests on is READ -- including the module whose
         // definition dissolves the provider boundary -- so a definition landing
-        // later grows the cone instead of leaving this answer frozen.
+        // later grows the forwarding graph instead of leaving this answer frozen.
         reads.push(FactKey::FunctionDefined(function));
         reads.push(FactKey::ModuleDefined(world.function_module(function)));
         reads.push(lowered);
-        cone.insert(function, DemandNode::default());
+        graph.insert(function, DemandNode::default());
         return;
     }
     let dispatch = FactKey::EntryDispatch(function);
@@ -419,7 +419,7 @@ fn collect_demand_cone(
     let local_result = return_flow_mask(world, function, local.len());
     let forwards = forwarded_inputs(world, function, local.len());
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    cone.insert(
+    graph.insert(
         function,
         DemandNode {
             local,
@@ -428,7 +428,7 @@ fn collect_demand_cone(
         },
     );
     for callee in next {
-        collect_demand_cone(world, callee, reads, waits, cone);
+        collect_input_forwarding_graph(world, callee, reads, waits, graph);
     }
 }
 
@@ -449,7 +449,7 @@ fn collect_protocol_callback_node(
     protocol: super::super::identity::ModuleId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    cone: &mut BTreeMap<FunctionId, DemandNode>,
+    graph: &mut BTreeMap<FunctionId, DemandNode>,
 ) {
     // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
     // first, because it is the arm-covered wait that can actually be produced;
@@ -492,7 +492,7 @@ fn collect_protocol_callback_node(
     forwards.sort_unstable();
     forwards.dedup();
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    cone.insert(
+    graph.insert(
         function,
         DemandNode {
             local: vec![DispatchDemand::Ignore; arity],
@@ -501,7 +501,7 @@ fn collect_protocol_callback_node(
         },
     );
     for callee in next {
-        collect_demand_cone(world, callee, reads, waits, cone);
+        collect_input_forwarding_graph(world, callee, reads, waits, graph);
     }
 }
 
@@ -899,21 +899,21 @@ fn returned_values(
     returned
 }
 
-/// The least fixpoint of the demand system over one cone, projected onto
-/// `function`. Kleene iteration: every round joins each edge's callee demand
-/// into its caller slot and stops when a round changes nothing.
+/// The least fixpoint of the input-forwarding graph, projected onto `function`.
+/// Kleene iteration joins each edge's callee demand into its caller slot and
+/// stops when one pass changes nothing.
 fn solve_forwarded_demand(
-    cone: &BTreeMap<FunctionId, DemandNode>,
+    graph: &BTreeMap<FunctionId, DemandNode>,
     function: FunctionId,
     axis: impl Fn(&DemandNode) -> &Vec<DispatchDemand>,
 ) -> Vec<DispatchDemand> {
-    let mut demand = cone
+    let mut demand = graph
         .iter()
         .map(|(id, node)| (*id, axis(node).clone()))
         .collect::<BTreeMap<_, _>>();
     loop {
         let mut changed = false;
-        for (id, node) in cone {
+        for (id, node) in graph {
             for edge in &node.forwards {
                 let Some(inherited) = demand
                     .get(&edge.callee)
@@ -973,10 +973,10 @@ fn collect_static_graph(
 
 /// The functions mutually reachable with `function`, `function` included.
 ///
-/// `graph` is the cone reachable FROM `function`, which is all the walk needs:
+/// `graph` is the subgraph reachable FROM `function`, which is all the walk needs:
 /// a function mutually reachable with `function` is reachable from it by
 /// definition, and so is every node on its path back. So membership reduces to
-/// "which nodes of the cone reach `function`" -- a walk of the cone's reversed
+/// "which nodes of the subgraph reach `function`" -- a walk of its reversed
 /// edges from `function`.
 fn strong_component(function: FunctionId, graph: &HashMap<FunctionId, Vec<FunctionId>>) -> HashSet<FunctionId> {
     let mut reversed: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();

@@ -56,7 +56,6 @@ pub trait ClaimShape {
 pub enum FactUse<F> {
     Current(F),
     Settled(F),
-    SettledPresence(F),
 }
 
 impl<F> FactUse<F> {
@@ -68,26 +67,22 @@ impl<F> FactUse<F> {
         Self::Settled(fact)
     }
 
-    pub fn settled_presence(fact: F) -> Self {
-        Self::SettledPresence(fact)
-    }
-
     pub fn fact(&self) -> &F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) | Self::SettledPresence(fact) => fact,
+            Self::Current(fact) | Self::Settled(fact) => fact,
         }
     }
 
     pub fn into_fact(self) -> F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) | Self::SettledPresence(fact) => fact,
+            Self::Current(fact) | Self::Settled(fact) => fact,
         }
     }
 
     pub fn readiness(&self) -> FactReadiness {
         match self {
             Self::Current(_) => FactReadiness::Current,
-            Self::Settled(_) | Self::SettledPresence(_) => FactReadiness::Settled,
+            Self::Settled(_) => FactReadiness::Settled,
         }
     }
 }
@@ -133,10 +128,6 @@ impl FactState {
                 settled: false,
             },
             FactUse::Settled(_) => self,
-            FactUse::SettledPresence(_) => Self {
-                revision: None,
-                settled: self.settled,
-            },
         }
     }
 }
@@ -258,6 +249,10 @@ where
         self.slots.get(key).and_then(FactSlot::revision)
     }
 
+    pub(crate) fn publishers(&self, key: &F) -> impl Iterator<Item = &P> {
+        self.slots.get(key).into_iter().flat_map(|slot| &slot.publishers)
+    }
+
     /// Transitive finality: present, no publisher queued to re-run, and no
     /// publisher reading a fact that can still move. This is the ONE meaning
     /// of settled — `FactUse::Settled` projects it, telemetry renders it, and
@@ -304,7 +299,7 @@ where
     pub fn satisfies(&self, fact_use: &FactUse<F>) -> bool {
         match fact_use {
             FactUse::Current(key) => self.revision(key).is_some(),
-            FactUse::Settled(key) | FactUse::SettledPresence(key) => self.is_settled(key),
+            FactUse::Settled(key) => self.is_settled(key),
         }
     }
 
@@ -470,31 +465,6 @@ where
         }
         let old_settled = slot.is_settled();
         set_membership(&mut slot.unfinal_publishers, publisher, unfinal);
-        let new_settled = slot.is_settled();
-        let revision = slot.revision();
-        (old_settled != new_settled).then(|| FactChange {
-            key: key.clone(),
-            old_revision: revision,
-            new_revision: revision,
-            old_settled,
-            new_settled,
-        })
-    }
-
-    /// Declares every publisher of `key` final. The drain arbiter's write:
-    /// with nothing left to run, a locally clean cone that holds no dirty fact
-    /// cannot move, so the counts that a cycle can never lower are discharged
-    /// wholesale. Returns the settled-bit change if the projection moved.
-    ///
-    /// The argument survives derivation granularity verbatim, because it was
-    /// never about jobs: it is about the CLAIMANTS of this key. Those are the
-    /// derivations named in the slot, so "nothing can move this fact" reads
-    /// exactly the derivations whose answers it is, and a dirty sibling
-    /// derivation — which publishes other keys — is correctly not consulted.
-    pub fn clear_unfinal_publishers(&mut self, key: &F) -> Option<FactChange<F>> {
-        let slot = self.slots.get_mut(key)?;
-        let old_settled = slot.is_settled();
-        slot.unfinal_publishers.clear();
         let new_settled = slot.is_settled();
         let revision = slot.revision();
         (old_settled != new_settled).then(|| FactChange {

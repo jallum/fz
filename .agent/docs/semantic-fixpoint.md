@@ -40,6 +40,14 @@ combinations (fz-9i4.7.10.2). Two compressions run at the insertion point
 (`ActivationInputAlternatives::insert_row`), and they are different
 judgements:
 
+Before that join, one `AnalyzeActivation` conclusion emits each exact
+`(ActivationKey, input row)` contribution once. Several reached paths may
+observe the same callee evidence, but they are one publisher making one claim;
+first-observed order is retained. This boundary compares interned type identity
+only. Distinct rows still reach the antichain below, and another analysis
+conclusion has its own contribution set, so neither evidence nor publisher
+ownership is collapsed.
+
 - whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
   says exactly what a standing row says;
 - whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated
@@ -259,16 +267,18 @@ Executable(callee_key, need)
 ```
 
 That publication is how executable demand grows. No separate sweep discovers
-reachable callees. Publishing `Activation(callee_key)` is also the record site
+reachable callees. Publishing any `Activation(key)` is also the record site
 for `World`'s activation frontier: `World::complete_job` folds the key into
-`activation_frontier` unless `ActivationAnalyzed(callee_key)` has already
-settled, and `World::demand_activation_frontier_analyses` — the non-root
-analogue of `demand_root_entry_analyses` — demands the callee's own
-`AnalyzeActivation` the next time the agenda drains. `analyze_activation`
+`activation_frontier` unless `ActivationAnalyzed(key)` has already settled,
+and `World::demand_activation_frontier_analyses` demands its
+`AnalyzeActivation` the next time the agenda drains. Root entries published by
+`SeedRoot` and caller-discovered callees published by `analyze_activation` use
+this one path.
+`analyze_activation`
 itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
 nothing about discovering a callee blocks on its analysis, and the frontier is
-the only thing that ignites a callee's first analysis pass.
+the ignition path for that caller-discovered callee's first analysis pass.
 `ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
@@ -311,62 +321,70 @@ publications from local semantic analysis. Downstream products consume that
 already-joined boundary surface instead of rediscovering or deduplicating
 semantic targets.
 
-## Product waits replace root semantic closure
+## Artifact products wait on exact facts
 
 The product path consumes settled facts directly. For one executable `E`,
-`MaterializedExecutable(E)` waits on settled `ActivationAnalyzed(E.activation)`,
-settled `ReturnType(E.activation)`, settled callsite summaries for that local
-activation, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and the transport
-positions required by the local body. It returns `PullWait::Fact` or
-`PullWait::Product` for those exact prerequisites.
+`MaterializedExecutable(E)` waits on settled `ExecutableFacts(E)`, settled
+`ReturnType(E.activation)`, `RuntimeDemand(E)`, the
+transport positions required by the local body. The shared fact already carries
+the analysis, lowered body, entry dispatch, and exact callsite summaries, so
+materialization neither rereads nor reconstructs that projection.
 
 The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
 `InputDemand(entry)` only so it can key the entry executable, then asks for
-`BackendExecutable(entry)`. Additional executables enter the request through
-symbolic call edges and callable entries recorded by already demanded products.
-There is no `SemanticClosed(root)` prerequisite on the product path and no
-root-wide semantic scan that decides artifact membership.
+`BackendExecutable(entry)`. Each backend producer records typed membership
+edges for its local calls, positioned callable targets, and reachable schemas.
+The retained memo updates rooted membership from those committed edges, including
+withdrawal when a recursive component loses its last root path. Value reads
+and membership have separate roles: a caller can retain its unchanged body
+while a changed callee remains part of the root artifact.
 
-`RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
-producer, the same pattern `ExecutableEffects` uses. Demand dependencies run
-both ways along every call edge (callers read callee input demands; callee
-return demands join caller contributions), so the demand SCC containing `E` is
-`E`'s call cone, discovered from settled facts only: `CallSiteSummary` direct
-targets, type-derived callable-flow resolutions, and any callee set a previous
-epoch recorded. The producer runs a bottom-start monotone Kleene ascent over
-the whole cone (return demands join up edges, input demands flow down edges,
-`ShapeDemand::join` per round) until nothing changes, then memoizes the settled
-fixpoint for every member at once. Members no contributor names at the fixpoint
-(the entry, delivery-reached continuations, escaped closure bodies) get the
-whole-by-need bootstrap at settle time — absence is a distinct settled cell.
-No mid-ascent value is ever observable outside the producer: there is no
-active-SCC seed, no consumed-return contribution floor, and no in-flight
-retraction. Settled demand retracts when materialization resolves a call edge
-outside the settled callee inventory, which re-keys and
-re-settles the affected cone.
+`DeriveRuntimeDemand(E)` owns the ordinary `RuntimeDemand(E)` World
+fact. It waits for `ExecutableFacts(E)` to appear settled and thereafter reads
+its Current content, the Current exact `RuntimeDemandInput(E)`, and Current
+`RuntimeDemandInputs(target)` sub-facts for direct and first-class callable
+targets. First-class surfaces name exact
+`CallableConstructionTarget(owner, value, surface)` facts. A loaded target
+input vector can expose another captured local callable, so the formula follows
+only those newly named target keys to a finite local closure; it does not
+inventory functions or executables. A self sub-fact is read only when an exact
+self edge names it. Absence is bottom. An owned job publishes its provisional
+demand and caller-local/direct or construction-owner return contributions. An
+absent non-self target adds a presence wait; only peer-dependent capture/input
+contributions wait for it. It never waits for a cyclic peer to settle.
 
-Exact products keep retries proportional to movement without changing the
-iterates. `ExecutableFacts(E)` owns the activation analysis, lowered body,
-entry dispatch, and callsite summaries consumed for one executable; exact
-fact movement displaces that product and its readers. Inside the ascent, a
-round re-derives only the members whose reads moved: a member reads its own joined
-return demand, its cone-edge targets' demands, and (for a lambda producer)
-every executable of the produced function — the two reverse indexes over
-exactly those reads mark the dirty set when a member's iterate moves, and
-every skipped member would have derived an identical value. A new world-fact
-read must enter the producing product's dependencies, and a new mutable-round
-read must extend the reverse indexes.
+Each formula conclusion owns a complete forward contribution set. A wait-free
+conclusion atomically replaces that publisher's exact target contributions, so
+omission retracts only that publisher. A blocked run extends without recanting
+prior evidence. Exact target activation keys retain capture/surface correlation;
+there is no callable-row aggregate or contribution store. Ordinary fact
+movement wakes the exact registered readers, including self and mutual cycles,
+until the scheduler reaches finality; an equal answer moves no content and
+wakes no current reader.
 
-Publication closes the stale-caller window: when a settling cone's
-contributions grow the joined return demand of an executable settled earlier
-OUTSIDE the cone, that external's memo is displaced while the cone's members
-were derived against its pre-growth input demands. The producer refuses to
-memoize such a cone; it re-collects (the displaced external is memo-less and
-joins as a member through the edge that carried the contribution) and settles
-the grown group together. Each re-cycle strictly grows the member set —
-enforced as a hard assertion — so the loop terminates within the finite
-demanded universe. The per-cone ascent round budget is likewise a hard failure
-in every build (a non-monotone regression fails loudly instead of hanging).
+A first-class callable edge contributes the target's exact `ExecutableNeed`
+return contract through that same ordinary map. Observed return demand remains
+an independent publisher and joins with the construction owner's contract;
+neither publication widens or replaces the other, and either retracts with its
+owner.
+
+`RuntimeDemand(E)` is the single stored semantic demand value.
+`RuntimeDemandInputs(E)` addresses its input vector with an independent
+revision, but stores no clone and has the same producer: return/value-only
+movement wakes full-value consumers, while input movement wakes both keys.
+Artifact producers
+read it only when settled and retain that allocation in materialized, ABI, and
+backend products. There is no runtime-demand product, private cone ascent,
+dirty-member index, epoch replay, or PullSession demand side map. This makes the
+same World fact authority observable to dormant retained sessions through the
+normal fact-movement subscription path. The production arrival-order gate
+registers independent, self-recursive, and mutually recursive roots in several
+orders and compares the canonical backend, interpreter output, causal
+`DeriveRuntimeDemand` work multiset, and settled state of every observed demand
+fact. The target
+fixture gates separately pin cross-door output. A second formula-only canon
+would duplicate the production artifact proof while bypassing the reactive
+scheduler that this boundary is meant to test.
 
 ## Current vs settled is the key boundary
 
@@ -457,6 +475,18 @@ pin, and `callable_union_capture_containment`, rehomed on that same dynamic
 shape because the key answered its old static body outright (fz-kdt.171).
 Stdout is byte-identical on all three doors on every one of them.
 
+Identity-consuming bodies still split into distinct semantic activations. That
+semantic split is not, by itself, a claim that the native machine code must be
+distinct. `NativeProgram` retains an `ExecutableKey -> FnId` entry for every
+activation and shares physical sibling CPS graphs only after native lowering
+has made the observable distinction explicit. In particular, a captured
+callable carried as `ValueRef` and used only as the callee word of an indirect
+call may differ in rich semantic `Ty` while producing the same native graph.
+The graph comparison does not erase direct callees, closure-construction words,
+ABI layouts, effects, captures, or any type attached to another use. Thus
+grounded direct calls remain specialized while boxed calls can share code
+without merging activation or construction identity (fz-kdt.163).
+
 The split is by capture TUPLE, so it separates two lambdas with different
 capture tuples as readily as one lambda at two capture types --
 `spawn/1` keys `closure[?](pid)` apart from `closure[?](pid, int)`, and the
@@ -493,14 +523,10 @@ the basis for the remaining type-system tickets.
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
   `Executable` demand facts.
 - `SeedActivation(a)` owns `Activation(a)`/`ActivationInputs(a)` for the
-  activations nothing else describes: a root's own entry, or one the
-  runtime-demand frontier minted from a callable surface which no analysis
-  walked and no caller claimed. (A root entry thus has two possible minters
-  today, `SeedRoot` and `SeedActivation`, whose reconstructions agree -- the
-  measured 4 lib-suite cases -- see the fz-kdt ticket on collapsing that to
-  one producer.) It reconstructs the
-  input row from the key's own arrow, so `World::demand_fact_producer` routes
-  a demand to it only while `ActivationInputs(a)` has no publisher
+  activations the runtime-demand frontier minted from a callable surface which
+  no analysis walked and no caller claimed. It reconstructs the input row from
+  the key's own arrow, so `World::demand_fact_producer` routes a demand to it
+  only while `ActivationInputs(a)` has no publisher
   (`World::seed_activation_producer`). A key a caller discovered is the
   caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,

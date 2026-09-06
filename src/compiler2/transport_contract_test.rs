@@ -2,23 +2,20 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-use super::artifact::{AbiValueRepr, MaterializedTransportPlan};
+use super::artifact::{AbiValueRepr, BackendTail};
 use super::body::{DeliveredValueSource, delivered_value_joins};
-use super::drive_test::assert_resolved;
 use super::facts::FactUse;
 use super::pull::{
-    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail, TransportCarrier,
-    TransportLayout, TransportShapeFact, WorldProductProducers,
+    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
+    TransportShapeFact, WorldProductProducers,
 };
-use super::semantic::{CallableFlowFact, CallableSurface};
+use super::semantic::{CallableFlowFact, CallableSurface, SemanticOrd as _};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
-use super::transport::{
-    BoundaryDescr, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, LaneId, ShapeDescr, ShapeId, TransportPosition,
-};
+use super::transport::{BoundaryDescr, LaneId, ShapeDescr, ShapeId, TransportPosition};
 use super::types::Ty;
 use super::{
-    CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job, RootSubmission,
-    RuntimeDemand, ShapeDemand, World,
+    CallableConstructionTargetKey, CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand,
+    FactKey, Job, RootSubmission, RuntimeDemand, ShapeDemand, World,
 };
 use crate::exec::runtime::DbgCapture;
 use crate::telemetry::ConfiguredTelemetry;
@@ -99,7 +96,10 @@ const SHAPE_DESCRIPTORS: &[(&str, &str)] = &[
     ("S_nothing", "Nothing"),
     ("S_int", "Lane(L_int)"),
     ("S_direct_callable", "Callable(C_direct)"),
-    ("S_pair_return", "Tuple([S_int, S_direct_callable])"),
+    (
+        "S_pair_return",
+        "Tuple([structural(S_int), structural(S_direct_callable)])",
+    ),
     ("S_pub_callable", "Callable(C_pub)"),
 ];
 
@@ -108,18 +108,17 @@ const LANE_DESCRIPTORS: &[(&str, &str)] = &[("L_int", "LaneDescr { ty: int, tran
 const CALLABLE_FACTS: &[(&str, &str)] = &[
     (
         "C_direct",
-        "target E_add; capture_shapes [S_int]; direct_surfaces [[S_int]]; boundary_ids []",
+        "target E_add; capture_layouts [structural(S_int)]; direct_surfaces [[S_int]]; boundary_ids []",
     ),
     (
         "C_pub",
-        "target E_add; capture_shapes [S_int]; direct_surfaces []; boundary_ids [B_pub]",
+        "target E_add; capture_layouts [structural(S_int)]; direct_surfaces []; boundary_ids [B_pub]",
     ),
 ];
 
 const BOUNDARY_FACTS: &[(&str, &str)] = &[(
     "B_pub",
-    "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
-     published_arg_lanes [L_int]",
+    "callable C_pub; surface_arg_layouts [structural(S_int)]; published_value_lane L_int",
 )];
 
 const ROOT_PLAN_MEMBERSHIP: &[&str] = &["E_main", "E_pair", "E_add"];
@@ -159,7 +158,7 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     );
     assert_eq!(
         shape("S_pair_return"),
-        Some("Tuple([S_int, S_direct_callable])"),
+        Some("Tuple([structural(S_int), structural(S_direct_callable)])"),
         "pair/1 returns the same tuple shape that main/0 resumes from"
     );
     assert_eq!(
@@ -169,21 +168,18 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     );
     assert_eq!(
         callable("C_direct"),
-        Some("target E_add; capture_shapes [S_int]; direct_surfaces [[S_int]]; boundary_ids []"),
+        Some("target E_add; capture_layouts [structural(S_int)]; direct_surfaces [[S_int]]; boundary_ids []"),
         "direct callable identity is separate from boundary publication"
     );
     assert_eq!(
         callable("C_pub"),
-        Some("target E_add; capture_shapes [S_int]; direct_surfaces []; boundary_ids [B_pub]"),
+        Some("target E_add; capture_layouts [structural(S_int)]; direct_surfaces []; boundary_ids [B_pub]"),
         "the escaped callable shares the target but publishes an explicit boundary fact"
     );
     assert_eq!(
         boundary("B_pub"),
-        Some(
-            "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
-             published_arg_lanes [L_int]"
-        ),
-        "boundary publication is contextual and points at shared lane/shape ids"
+        Some("callable C_pub; surface_arg_layouts [structural(S_int)]; published_value_lane L_int"),
+        "boundary publication is contextual and retains its physical argument layouts"
     );
 
     for (name, descr) in SHAPE_DESCRIPTORS.iter().chain(LANE_DESCRIPTORS) {
@@ -199,7 +195,7 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
 }
 
 #[test]
-fn compiler2_transport_flow_publishes_seam_specific_codegen_facts() {
+fn compiler2_transport_float_resume_consumes_the_emitted_abi_endpoint() {
     let source = r#"
 fn inc(x), do: x + 1.0
 
@@ -216,38 +212,42 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let seam_facts = &plan.codegen_seam_facts;
-
-    let function_entry = seam_facts
-        .iter()
-        .find(|fact| matches!(fact.seam, CodegenSeam::FunctionEntry { .. }) && fact.repr == CodegenLaneRepr::RawF64)
-        .unwrap_or_else(|| panic!("float function-entry seam should use RawF64: {seam_facts:?}"));
-    let block_param = seam_facts
-        .iter()
-        .find(|fact| matches!(fact.seam, CodegenSeam::BlockParam { .. }) && fact.repr == CodegenLaneRepr::ValueRef)
-        .unwrap_or_else(|| panic!("float block-param seam should use ValueRef: {seam_facts:?}"));
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let inc = executable_for(&world, &session, "inc", 1);
+    let main = executable_for(&world, &session, "main", 0);
+    let producer = retained_executable(&program, &inc);
     assert_eq!(
-        function_entry.lane, block_param.lane,
-        "the same float LaneId should have seam-specific reprs without forking lane identity"
+        producer.abi.semantic_inputs[0].layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64]
     );
-    assert!(
-        seam_facts
-            .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::ReturnDelivery { .. }) && fact.repr == CodegenLaneRepr::RawF64),
-        "a float-returning producer should publish a RawF64 return-delivery seam: {seam_facts:?}"
+    assert_eq!(
+        producer.abi.return_layout.layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64]
     );
+    let consumer = retained_executable(&program, &main);
+    let resume = consumer
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
+        })
+        .expect("the non-tail call has a delivered return endpoint");
+    assert_eq!(resume.layout.structural, producer.abi.return_layout.layout.structural);
+    assert_eq!(resume.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+        panic!("main has clauses")
+    };
     assert!(
-        seam_facts
-            .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::ContinuationEntry { .. })
-                && fact.repr == CodegenLaneRepr::ValueRef),
-        "a non-tail float call should publish a ValueRef continuation-entry seam: {seam_facts:?}"
+        entries.iter().any(|entry| matches!(&entry.origin,
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == resume)),
+        "the backend continuation consumes its authoritative ABI endpoint"
     );
 }
 
 #[test]
-fn compiler2_transport_flow_publishes_tail_call_codegen_seams() {
+fn compiler2_transport_float_tail_call_preserves_raw_return_delivery() {
     let source = r#"
 fn inc(x), do: x + 1.0
 fn main(), do: inc(1.0)
@@ -260,13 +260,18 @@ fn main(), do: inc(1.0)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let main = executable_for(&world, &driver.session(), "main", 0);
+    let main = retained_executable(&program, &main);
+    assert_eq!(main.abi.return_layout.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &main.body else {
+        panic!("main has clauses")
+    };
     assert!(
-        plan.codegen_seam_facts
-            .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::TailCall { .. }) && fact.repr == CodegenLaneRepr::RawF64),
-        "a tail float call should publish a RawF64 tail-call seam: {:?}",
-        plan.codegen_seam_facts
+        entries.iter().any(|entry| matches!(&entry.tail,
+        BackendTail::DirectCall { target: super::artifact::CallEdge::Direct(edge), .. }
+            if edge.return_flow == super::artifact::BackendReturnFlow::Tail)),
+        "the float call must retain direct tail return delivery"
     );
 }
 
@@ -280,16 +285,14 @@ fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
         "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.drop_while(xs, fn (x) -> x < 4 end))\n  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
 
     assert!(pull_events.produced_kind("transport_shape"));
-    let _ = plan
-        .position_layouts
-        .iter()
+    let session = driver.session();
+    let _ = retained_layouts(&program)
         .map(|(position, _)| position)
         .filter_map(|position| {
-            driver
-                .session()
+            session
                 .memo()
                 .product_dependencies(&ProductKey::TransportShape(position.clone()))
         })
@@ -315,18 +318,20 @@ fn main(), do: inc(1.0)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
-    let transport_shapes = plan_shapes(&plan);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
+    let transport_shapes = retained_layouts(&program)
+        .map(|(position, layout)| (position, layout.structural))
+        .collect::<Vec<_>>();
     let main = executable_for(&world, session, "main", 0);
     let inc = executable_for(&world, session, "inc", 1);
-    let main_return = plan_shape_at(
-        &plan,
+    let main_return = required_shape_at(
+        &program,
         &TransportPosition::ExecutableReturn {
             executable: main.clone(),
         },
     );
-    let inc_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: inc });
+    let inc_return = required_shape_at(&program, &TransportPosition::ExecutableReturn { executable: inc });
     let return_payloads = transport_shapes
         .iter()
         .filter_map(|(position, shape)| match position {
@@ -348,21 +353,18 @@ fn main(), do: inc(1.0)
         *payload_shape, main_return,
         "a true tail return shares the caller return contract shape"
     );
-    let payload_lanes = shape_leaf_lanes(&world, *payload_shape);
-    let [(leaf_shape, lane)] = payload_lanes.as_slice() else {
-        panic!("inc/1 should return one leaf lane");
-    };
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| {
-            matches!(seam, CodegenSeam::ReturnContinuation { executable, callsite: candidate }
-            if executable == &main && candidate == *callsite)
-        },
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::RawF64,
-        "return payload lanes should publish callsite result seam facts",
-    );
+    let endpoint = retained_executable(&program, &main)
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            matches!(position,
+            TransportPosition::ReturnPayload { callsite: found, .. } if found == *callsite)
+            .then_some(layout)
+        })
+        .expect("the callsite payload has an emitted ABI endpoint");
+    assert_eq!(endpoint.layout.structural, *payload_shape);
+    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
 }
 
 #[test]
@@ -374,14 +376,16 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
         include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let transport_shapes = plan_shapes(&plan);
+    let (_driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let transport_shapes = retained_layouts(&program)
+        .map(|(position, layout)| (position, layout.structural))
+        .collect::<Vec<_>>();
     let return_payloads = transport_shapes
         .iter()
         .filter_map(|(position, payload_shape)| match position {
             TransportPosition::ReturnPayload { executable, callsite } => {
-                let caller_return = plan_shape_at(
-                    &plan,
+                let caller_return = required_shape_at(
+                    &program,
                     &TransportPosition::ExecutableReturn {
                         executable: executable.clone(),
                     },
@@ -411,27 +415,52 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
         !leaf_lanes.is_empty(),
         "the non-tail return payload should still carry producer lanes"
     );
-    for (leaf_shape, lane) in leaf_lanes {
-        assert!(
-            plan.codegen_seam_facts.iter().any(|fact| {
-                matches!(
-                    &fact.seam,
-                    CodegenSeam::ReturnContinuation {
-                        executable: candidate_executable,
-                        callsite: candidate_callsite,
-                    } if candidate_executable == &executable && *candidate_callsite == *callsite
-                ) && fact.shape == Some(leaf_shape)
-                    && fact.lane == lane
-            }),
-            "return payload {executable:?} callsite {} should publish seam facts for lane {:?}",
-            callsite.as_u32(),
-            lane
-        );
-    }
+    let endpoint = retained_executable(&program, &executable)
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            matches!(position,
+            TransportPosition::ReturnPayload { callsite: found, .. } if *found == *callsite)
+            .then_some(layout)
+        })
+        .expect("the non-tail producer payload has an emitted ABI endpoint");
+    assert_eq!(endpoint.layout.structural, payload_shape);
+    assert!(
+        !endpoint.layout.reprs.is_empty(),
+        "producer payload retains physical ABI lanes"
+    );
+    let super::artifact::BackendBody::Clauses { entries, .. } = &retained_executable(&program, &executable).body else {
+        panic!("the caller has a body")
+    };
+    let call = entries
+        .iter()
+        .find(|entry| match &entry.tail {
+            BackendTail::DirectCall { callsite: found, .. } | BackendTail::ClosureCall { callsite: found, .. } => {
+                found == callsite
+            }
+            _ => false,
+        })
+        .expect("the producer payload belongs to an emitted callsite");
+    let flows = match &call.tail {
+        BackendTail::DirectCall { target, .. } => match target {
+            super::artifact::CallEdge::Direct(edge) => vec![&edge.return_flow],
+            super::artifact::CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
+            super::artifact::CallEdge::Indirect(flow) => vec![flow],
+        },
+        BackendTail::ClosureCall { return_flow, .. } => return_flow.iter().collect(),
+        _ => unreachable!("selected a callsite"),
+    };
+    assert!(
+        flows.iter().any(|flow| matches!(flow,
+        super::artifact::BackendReturnFlow::Continue { source }
+            | super::artifact::BackendReturnFlow::Deliver { source, .. } if source.as_ref() == endpoint)),
+        "the backend delivers the producer endpoint independently of the differing caller return contract: {flows:?}; endpoint={endpoint:?}"
+    );
 }
 
 #[test]
-fn compiler2_transport_flow_publishes_callable_boundary_codegen_seams() {
+fn compiler2_transport_callable_publication_retains_runtime_wrapper_contracts() {
     let source = r#"
 fn make(), do: fn (x) -> x + 1.0 end
 fn main(), do: make()
@@ -444,27 +473,110 @@ fn main(), do: make()
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (_, program) = pull_backend_for_test(&tel, &mut world, root);
+    let wrappers = program.construction_wrappers().iter().collect::<Vec<_>>();
+    assert!(!wrappers.is_empty(), "an escaped callable retains its runtime wrapper");
     assert!(
-        plan.codegen_seam_facts
+        wrappers
             .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::CallableBoundary { .. })
-                && fact.repr == CodegenLaneRepr::ValueRef),
-        "a published callable boundary should expose ValueRef callable-boundary lane facts: {:?}",
-        plan.codegen_seam_facts
+            .all(|wrapper| wrapper.return_form == super::artifact::BackendCallableReturn::ValueRef),
+        "published callable wrappers expose one public result word"
     );
     assert!(
-        plan.codegen_seam_facts
-            .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::FirstClassPublication { .. })
-                && fact.repr == CodegenLaneRepr::ValueRef),
-        "an escaped callable should expose ValueRef first-class-publication lane facts: {:?}",
-        plan.codegen_seam_facts
+        positioned_owners(&program).any(|positioned| !positioned.owner.boundary_facts.is_empty()),
+        "first-class publication retains exact construction boundary contracts"
     );
 }
 
 #[test]
-fn compiler2_transport_flow_publishes_extern_boundary_codegen_seams() {
+fn compiler2_callable_wrapper_keeps_capture_carriers_distinct_from_raw_arguments() {
+    let source = r#"
+fn main() do
+  flag = self() == self()
+  f = if flag do
+    fn () -> {41.5, :ok} end
+  else
+    fn () -> {42.5, :bad} end
+  end
+  {n, _} = f.()
+  g = if flag do
+    fn x -> n + x end
+  else
+    fn x -> n - x end
+  end
+  g.(1.0)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("callable_boundary_carrier_provenance.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_, program) = pull_backend_for_test(&tel, &mut world, root);
+
+    let (boundary, capture, argument) = positioned_owners(&program)
+        .flat_map(|positioned| positioned.owner.boundary_facts.keys())
+        .find_map(|boundary| {
+            let descr = world.boundary(*boundary);
+            let [capture] = world.callable(descr.callable).capture_layouts.as_ref() else {
+                return None;
+            };
+            let [argument] = descr.surface_arg_layouts.as_ref() else {
+                return None;
+            };
+            (capture.carrier.is_value_ref() && argument.carrier == TransportCarrier::Absent)
+                .then_some((*boundary, *capture, *argument))
+        })
+        .expect("the joined scalar closure should publish a carried capture and raw argument boundary");
+    let capture_lane = world.layout_lane_ids(capture);
+    let argument_lane = world.layout_lane_ids(argument);
+    assert_eq!(
+        capture_lane, argument_lane,
+        "the proof must exercise one typed lane in two physical roles"
+    );
+
+    let (wrapper, member) = program
+        .construction_wrappers()
+        .iter()
+        .find_map(|wrapper| {
+            wrapper
+                .members
+                .iter()
+                .find(|member| member.boundary == boundary)
+                .map(|member| (wrapper, member))
+        })
+        .expect("the boundary has a runtime wrapper member");
+    assert_eq!(wrapper.captures[0].layout.structural, capture.structural);
+    assert_eq!(wrapper.captures[0].layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    let capture_input = &member
+        .target_inputs
+        .iter()
+        .find(|input| input.semantic_index == member.capture_semantic_inputs[0])
+        .expect("target capture input")
+        .layout;
+    let argument_input = &member
+        .target_inputs
+        .iter()
+        .find(|input| input.semantic_index == member.surface_semantic_inputs[0])
+        .expect("target surface input")
+        .layout;
+    assert_eq!(capture_input.structural, capture.structural);
+    assert_eq!(capture_input.carrier, TransportCarrier::Absent);
+    assert_eq!(
+        capture_input.reprs.as_ref(),
+        &[AbiValueRepr::RawF64],
+        "the wrapper decodes its captured ValueRef to the private target's raw scalar input"
+    );
+    assert_eq!(argument_input.structural, argument.structural);
+    assert_eq!(argument_input.carrier, TransportCarrier::Absent);
+    assert_eq!(argument_input.reprs.as_ref(), &[AbiValueRepr::RawF64]);
+}
+
+#[test]
+fn compiler2_transport_float_extern_preserves_raw_abi_lanes() {
     let source = r#"
 extern "C" fn fz_float_id(float) :: float
 fn main(), do: fz_float_id(1.0)
@@ -477,13 +589,60 @@ fn main(), do: fz_float_id(1.0)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let external = executable_for(&world, &driver.session(), "fz_float_id", 1);
+    let external = retained_executable(&program, &external);
+    assert!(matches!(external.body, super::artifact::BackendBody::Extern { .. }));
+    assert_eq!(
+        external.abi.semantic_inputs[0].layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64]
+    );
+    assert_eq!(
+        external.abi.return_layout.layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64]
+    );
+}
+
+#[test]
+fn compiler2_extern_any_marshals_a_raw_scalar_without_promoting_its_transport_carrier() {
+    let source = r#"
+extern "C" fn fz_any_id(any) :: any
+fn main(), do: fz_any_id(1.0)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("transport_extern_any_scalar.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let executable = executable_for(&world, &driver.session(), "fz_any_id", 1);
+    let input = retained_layout_at(
+        &program,
+        &TransportPosition::ExecutableInput {
+            executable: executable.clone(),
+            semantic_index: 0,
+        },
+    )
+    .expect("the extern scalar input should have a transport layout");
+
+    assert_eq!(input.carrier, TransportCarrier::Absent);
+    assert_eq!(
+        retained_executable(&program, &executable).abi.semantic_inputs[0]
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::RawF64],
+        "the language input remains a raw scalar"
+    );
+    let main = executable_for(&world, &driver.session(), "main", 0);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &retained_executable(&program, &main).body else {
+        panic!("main has clauses")
+    };
     assert!(
-        plan.codegen_seam_facts
-            .iter()
-            .any(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }) && fact.repr == CodegenLaneRepr::RawF64),
-        "a float extern should publish RawF64 extern-boundary lane facts: {:?}",
-        plan.codegen_seam_facts
+        entries.iter().any(|entry| matches!(&entry.tail,
+        BackendTail::DirectCall { target: super::artifact::CallEdge::Direct(edge), .. }
+            if edge.extern_marshals.as_deref() == Some(&[crate::fz_ir::ExternTy::Any]))),
+        "the extern call owns the Any marshal that boxes the raw input"
     );
 }
 
@@ -503,26 +662,24 @@ fn main(), do: spawn(child)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let spawn = executable_for(&world, session, "spawn", 1);
     let spawn_input = TransportPosition::ExecutableInput {
         executable: spawn.clone(),
         semantic_index: 0,
     };
-    let (_, boundaries) = callable_owner_facts_for_test(session);
-    let boundary = boundaries
-        .iter()
+    let boundary = positioned_owners(&program)
+        .flat_map(|positioned| positioned.owner.boundary_facts.iter())
         .find_map(|(boundary, facts)| facts.publications.contains(&spawn_input).then_some(*boundary))
         .unwrap_or_else(|| panic!("spawn/1 callable input should publish a boundary"));
     let boundary_descr = world.boundary(boundary);
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &spawn && *semantic_index == 0),
-        None,
-        boundary_descr.published_value_lane,
-        CodegenLaneRepr::ValueRef,
-        "a callable executable input that crosses a boundary should publish its closure-ref entry lane",
+    let input = &retained_executable(&program, &spawn).abi.semantic_inputs[0].layout;
+    assert_eq!(input.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    assert_eq!(
+        world.lane(boundary_descr.published_value_lane).ty,
+        input.tys[0],
+        "the runtime input carries the published callable value lane"
     );
 }
 
@@ -541,48 +698,47 @@ fn main(), do: dbg({:zero, :pos, :other})
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let dbg_wrapper = executable_for(&world, session, "dbg", 1);
     let dbg = executable_for(&world, session, "fz_dbg", 1);
-    let wrapper_input_shape = plan_shape_at(
-        &plan,
+    let wrapper_input = retained_layout_at(
+        &program,
         &TransportPosition::ExecutableInput {
             executable: dbg_wrapper,
             semantic_index: 0,
         },
-    );
+    )
+    .expect("the direct wrapper input should have a transport layout");
     assert!(
-        matches!(shape_descr(&world, wrapper_input_shape), ShapeDescr::Lane(_)),
-        "a wrapper that forwards into an extern any boundary should also consume one boxed value lane",
+        matches!(shape_descr(&world, wrapper_input.structural), ShapeDescr::Tuple(_))
+            && wrapper_input.carrier == TransportCarrier::Absent,
+        "the direct wrapper input should retain complete tuple lanes until the extern boundary",
     );
-    let input_shape = plan_shape_at(
-        &plan,
+    let input = retained_layout_at(
+        &program,
         &TransportPosition::ExecutableInput {
             executable: dbg.clone(),
             semantic_index: 0,
         },
-    );
+    )
+    .expect("the extern input should have a transport layout");
     assert!(
-        matches!(shape_descr(&world, input_shape), ShapeDescr::Lane(_)),
-        "extern any input should consume one boxed value lane, not the tuple producer's field lanes",
+        input.carrier.is_value_ref(),
+        "extern any input should attach one explicit boxed carrier",
     );
-    let leaf_lanes = shape_leaf_lanes(&world, input_shape);
-    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+    let leaf_lanes = world.layout_physical_lanes(input);
+    let [physical] = leaf_lanes.as_slice() else {
         panic!("extern any input should have exactly one boxed lane")
     };
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &dbg && *semantic_index == 0),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "extern any input should publish one ValueRef function-entry seam",
-    );
+    let emitted = &retained_executable(&program, &dbg).abi.semantic_inputs[0].layout;
+    assert_eq!(emitted.structural, physical.structural);
+    assert_eq!(emitted.carrier, input.carrier);
+    assert_eq!(emitted.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
 }
 
 #[test]
-fn compiler2_transport_flow_publishes_tuple_codegen_seams_for_leaf_lanes() {
+fn compiler2_transport_tuple_resume_consumes_emitted_leaf_abi_lanes() {
     let source = r#"
 fn pair(x, y), do: {x, y}
 
@@ -599,11 +755,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let pair = executable_for(&world, session, "pair", 2);
-    let pair_return = plan_shape_at(
-        &plan,
+    let pair_return = required_shape_at(
+        &program,
         &TransportPosition::ExecutableReturn {
             executable: pair.clone(),
         },
@@ -616,39 +772,34 @@ end
         shape_descr(&world, pair_return)
     );
 
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &pair),
-        Some(leaf_lanes[0].0),
-        leaf_lanes[0].1,
-        CodegenLaneRepr::RawF64,
-        "float tuple leaves should publish raw return-delivery seam facts",
+    let producer = retained_executable(&program, &pair);
+    assert_eq!(
+        producer.abi.return_layout.layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64, AbiValueRepr::RawInt],
+        "tuple return leaves retain their raw scalar ABI lanes"
     );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &pair),
-        Some(leaf_lanes[1].0),
-        leaf_lanes[1].1,
-        CodegenLaneRepr::RawInt,
-        "integer tuple leaves should publish raw return-delivery seam facts",
-    );
-
     let main = executable_for(&world, session, "main", 0);
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
-        Some(leaf_lanes[0].0),
-        leaf_lanes[0].1,
-        CodegenLaneRepr::ValueRef,
-        "float tuple leaves should enter continuation blocks as ValueRef",
+    let consumer = retained_executable(&program, &main);
+    let endpoint = consumer
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
+        })
+        .expect("the tuple call has a continuation endpoint");
+    assert_eq!(endpoint.layout.structural, pair_return);
+    assert_eq!(
+        endpoint.layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64, AbiValueRepr::RawInt]
     );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
-        Some(leaf_lanes[1].0),
-        leaf_lanes[1].1,
-        CodegenLaneRepr::RawInt,
-        "integer tuple leaves should enter continuation blocks as RawInt",
+    let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+        panic!("main has clauses")
+    };
+    assert!(
+        entries.iter().any(|entry| matches!(&entry.origin,
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        "the tuple continuation consumes the exact endpoint contract"
     );
 }
 
@@ -672,43 +823,16 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let id_int = executable_for(&world, session, "id_int", 1);
     let id_atom = executable_for(&world, session, "id_atom", 1);
 
-    assert!(
-        plan.codegen_seam_facts.iter().any(|fact| matches!(
-            &fact.seam,
-            CodegenSeam::FunctionEntry { executable, .. } if executable == &id_int
-        ) && fact.repr == CodegenLaneRepr::RawInt),
-        "integer function entries should publish RawInt seam facts: {:?}",
-        plan.codegen_seam_facts
-    );
-    assert!(
-        plan.codegen_seam_facts.iter().any(|fact| matches!(
-            &fact.seam,
-            CodegenSeam::ReturnDelivery { executable } if executable == &id_int
-        ) && fact.repr == CodegenLaneRepr::RawInt),
-        "integer returns should publish RawInt seam facts: {:?}",
-        plan.codegen_seam_facts
-    );
-    assert!(
-        plan.codegen_seam_facts.iter().any(|fact| matches!(
-            &fact.seam,
-            CodegenSeam::FunctionEntry { executable, .. } if executable == &id_atom
-        ) && fact.repr == CodegenLaneRepr::RawAtom),
-        "atom function entries should publish RawAtom seam facts: {:?}",
-        plan.codegen_seam_facts
-    );
-    assert!(
-        plan.codegen_seam_facts.iter().any(|fact| matches!(
-            &fact.seam,
-            CodegenSeam::ReturnDelivery { executable } if executable == &id_atom
-        ) && fact.repr == CodegenLaneRepr::RawAtom),
-        "atom returns should publish RawAtom seam facts: {:?}",
-        plan.codegen_seam_facts
-    );
+    for (symbol, repr) in [(&id_int, AbiValueRepr::RawInt), (&id_atom, AbiValueRepr::RawAtom)] {
+        let executable = retained_executable(&program, symbol);
+        assert_eq!(executable.abi.semantic_inputs[0].layout.reprs.as_ref(), &[repr]);
+        assert_eq!(executable.abi.return_layout.layout.reprs.as_ref(), &[repr]);
+    }
 }
 
 #[test]
@@ -729,56 +853,51 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let id_box = executable_for(&world, session, "id_box", 1);
-    let id_box_return = plan_shape_at(
-        &plan,
+    let id_box_return = required_shape_at(
+        &program,
         &TransportPosition::ExecutableReturn {
             executable: id_box.clone(),
         },
     );
     let leaf_lanes = shape_leaf_lanes(&world, id_box_return);
-    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+    let [_] = leaf_lanes.as_slice() else {
         panic!(
             "id_box/1 should return one boxed leaf lane, got {:?}",
             shape_descr(&world, id_box_return)
         )
     };
 
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, .. } if executable == &id_box),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed function-entry lanes should publish ValueRef seam facts",
+    let producer = retained_executable(&program, &id_box);
+    assert_eq!(
+        producer.abi.semantic_inputs[0].layout.reprs.as_ref(),
+        &[AbiValueRepr::ValueRef]
     );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &id_box),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed return-delivery lanes should publish ValueRef seam facts",
+    assert_eq!(
+        producer.abi.return_layout.layout.reprs.as_ref(),
+        &[AbiValueRepr::ValueRef]
     );
-
     let main = executable_for(&world, session, "main", 0);
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed continuation block params should publish ValueRef seam facts",
-    );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ContinuationEntry { executable, .. } if executable == &main),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed continuation entries should publish ValueRef seam facts",
+    let consumer = retained_executable(&program, &main);
+    let endpoint = consumer
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
+        })
+        .expect("the binary result has a continuation endpoint");
+    assert_eq!(endpoint.layout.structural, id_box_return);
+    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+        panic!("main has clauses")
+    };
+    assert!(
+        entries.iter().any(|entry| matches!(&entry.origin,
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        "boxed block input and continuation entry share the exact ABI endpoint"
     );
 }
 
@@ -796,38 +915,44 @@ fn main(), do: fz_binary_id("hello")
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let extern_id = executable_for(&world, session, "fz_binary_id", 1);
-    let extern_return = plan_shape_at(
-        &plan,
+    let extern_return = required_shape_at(
+        &program,
         &TransportPosition::ExecutableReturn {
             executable: extern_id.clone(),
         },
     );
     let leaf_lanes = shape_leaf_lanes(&world, extern_return);
-    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+    let [_] = leaf_lanes.as_slice() else {
         panic!(
             "fz_binary_id/1 should return one boxed leaf lane, got {:?}",
             shape_descr(&world, extern_return)
         )
     };
 
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::TailCall { .. }),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed tail-call lanes should publish ValueRef seam facts",
+    let external = retained_executable(&program, &extern_id);
+    assert!(matches!(external.body, super::artifact::BackendBody::Extern { .. }));
+    assert_eq!(
+        external.abi.semantic_inputs[0].layout.reprs.as_ref(),
+        &[AbiValueRepr::ValueRef]
     );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ExternBoundary { executable } if executable == &extern_id),
-        Some(*leaf_shape),
-        *lane,
-        CodegenLaneRepr::ValueRef,
-        "boxed extern-boundary lanes should publish ValueRef seam facts",
+    assert_eq!(
+        external.abi.return_layout.layout.reprs.as_ref(),
+        &[AbiValueRepr::ValueRef]
+    );
+    let main = executable_for(&world, session, "main", 0);
+    let main = retained_executable(&program, &main);
+    assert_eq!(main.abi.return_layout.layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &main.body else {
+        panic!("main has clauses")
+    };
+    assert!(
+        entries.iter().any(|entry| matches!(&entry.tail,
+        BackendTail::DirectCall { target: super::artifact::CallEdge::Direct(edge), .. }
+            if edge.return_flow == super::artifact::BackendReturnFlow::Tail)),
+        "the boxed extern result retains direct tail delivery"
     );
 }
 
@@ -846,10 +971,10 @@ end
     let mut world = World::new();
     world.submit_code(Some("transport_ignore.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let ping = executable_for(&world, session, "ping", 1);
-    let ping_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: ping });
+    let ping_return = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: ping });
     assert!(
         matches!(shape_descr(&world, ping_return), ShapeDescr::Nothing),
         "ignored callee returns should collapse to Shape::Nothing at transport derivation"
@@ -872,13 +997,13 @@ end
     let mut world = World::new();
     world.submit_code(Some("transport_direct_callable.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let apply1 = executable_for(&world, session, "apply1", 2);
     let make_adder = executable_for(&world, session, "make_adder", 1);
     let main = executable_for(&world, session, "main", 0);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make_adder });
-    let applied = plan_shape_at(
+    let returned = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make_adder });
+    let applied = required_shape_at(
         &plan,
         &TransportPosition::ExecutableInput {
             executable: apply1.clone(),
@@ -890,7 +1015,7 @@ end
         .find(|shape| *shape == returned)
         .unwrap_or_else(|| panic!("main should resume the direct callable returned by make_adder/1"));
     assert!(
-        plan.position_layouts.iter().any(|(position, layout)| {
+        retained_layouts(&plan).any(|(position, layout)| {
             matches!(position, TransportPosition::CallArg { executable, semantic_index: 0, .. }
                 if executable == &main && layout.structural == applied)
         }),
@@ -912,22 +1037,25 @@ end
         .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
     let ShapeDescr::Callable(applied_callable) = shape_descr(&world, applied) else {
         panic!("apply1/2's input ABI should remain callable-shaped")
     };
     let applied_descr = world.callable(*applied_callable);
     assert_eq!(
-        applied_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *applied_callable).len(),
         1,
         "apply1/2 must preserve the returned closure's captured `a` payload: {applied_descr:?}"
     );
     assert_eq!(
-        plan.layout_at(&TransportPosition::ExecutableInput {
-            executable: apply1,
-            semantic_index: 0,
-        })
+        retained_layout_at(
+            &plan,
+            &TransportPosition::ExecutableInput {
+                executable: apply1,
+                semantic_index: 0,
+            }
+        )
         .expect("apply1 input layout")
         .carrier,
         TransportCarrier::Absent,
@@ -963,20 +1091,20 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     assert_plan_executable_references_are_root_scoped(&world, &plan, session);
 
     let pair = executable_for(&world, session, "pair", 1);
     let main = executable_for(&world, session, "main", 0);
-    let pair_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: pair });
+    let pair_return = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: pair });
     let pair_resume = resume_shapes_for(&plan, &main)
         .into_iter()
         .find(|shape| *shape == pair_return)
         .unwrap_or_else(|| {
             panic!(
                 "main/0 should resume pair/1's returned shape: {:?}",
-                plan.position_layouts
+                retained_layouts(&plan).collect::<Vec<_>>()
             )
         });
     assert_eq!(
@@ -990,15 +1118,15 @@ end
         panic!("pair/1 should return the integer and direct callable fields")
     };
     assert!(
-        matches!(shape_descr(&world, *n_shape), ShapeDescr::Lane(_)),
+        matches!(shape_descr(&world, n_shape.structural), ShapeDescr::Lane(_)),
         "the scalar field should remain a lane shape"
     );
-    let ShapeDescr::Callable(pair_callable) = shape_descr(&world, *f_shape) else {
+    let ShapeDescr::Callable(pair_callable) = shape_descr(&world, f_shape.structural) else {
         panic!("the callable field should remain a CallableId shape")
     };
 
     let apply1 = executable_for(&world, session, "apply1", 2);
-    let apply1_callable_input = plan_shape_at(
+    let apply1_callable_input = required_shape_at(
         &plan,
         &TransportPosition::ExecutableInput {
             executable: apply1.clone(),
@@ -1006,18 +1134,18 @@ end
         },
     );
     assert!(
-        plan.position_layouts.iter().any(|(position, layout)| {
+        retained_layouts(&plan).any(|(position, layout)| {
             matches!(position, TransportPosition::CallArg { executable, semantic_index: 0, .. }
                 if executable == &main && layout.structural == apply1_callable_input)
         }),
         "the caller argument must conform to apply1/2's independently owned callable input ABI"
     );
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
-    let callable_facts = callables
-        .get(pair_callable)
-        .unwrap_or_else(|| panic!("direct callable facts should exist for {pair_callable:?}"));
+    let callables = callable_contributions(session);
+    let boundaries = boundary_contributions(session);
     assert!(
-        !callable_facts.direct_surfaces.is_empty(),
+        callables
+            .iter()
+            .any(|(callable, facts)| callable == pair_callable && !facts.direct_surfaces.is_empty()),
         "direct callable surfaces should be plan facts, not artifact-local recovery"
     );
     let ShapeDescr::Callable(apply1_callable) = shape_descr(&world, apply1_callable_input) else {
@@ -1025,15 +1153,18 @@ end
     };
     let apply1_descr = world.callable(*apply1_callable);
     assert_eq!(
-        apply1_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *apply1_callable).len(),
         1,
         "apply1/2 must preserve the returned closure's structural capture payload: {apply1_descr:?}"
     );
     assert_eq!(
-        plan.layout_at(&TransportPosition::ExecutableInput {
-            executable: apply1,
-            semantic_index: 0,
-        })
+        retained_layout_at(
+            &plan,
+            &TransportPosition::ExecutableInput {
+                executable: apply1,
+                semantic_index: 0,
+            }
+        )
         .expect("apply1 input layout")
         .carrier,
         TransportCarrier::Absent,
@@ -1041,11 +1172,13 @@ end
     );
 
     let escape = executable_for(&world, session, "escape", 0);
-    let escaped = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: escape });
+    let escaped_position = TransportPosition::ExecutableReturn { executable: escape };
+    let escaped = required_shape_at(&plan, &escaped_position);
     let ShapeDescr::Callable(escaped_callable) = shape_descr(&world, escaped) else {
         panic!("escape/0 should return a callable shape")
     };
-    let escaped_facts = callables
+    let escaped_facts = owner_at(session, &escaped_position)
+        .callable_facts
         .get(escaped_callable)
         .unwrap_or_else(|| panic!("escaped callable facts should exist for {escaped_callable:?}"));
     assert_eq!(
@@ -1063,13 +1196,13 @@ end
     );
     assert!(
         boundaries
-            .get(boundary)
-            .is_some_and(|facts| !facts.publications.is_empty()),
+            .iter()
+            .any(|(candidate, facts)| candidate == boundary && !facts.publications.is_empty()),
         "first-class publication positions should be plan facts, not artifact-local boundary selection"
     );
 
     let double = executable_for(&world, session, "double", 1);
-    let double_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: double });
+    let double_return = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: double });
     let double_resume = resume_shapes_for(&plan, &main)
         .into_iter()
         .find(|shape| *shape == double_return)
@@ -1078,16 +1211,25 @@ end
         double_return, double_resume,
         "ignored later call results may be locally unused, but artifact must not shrink the received transport shape"
     );
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| matches!(seam, CodegenSeam::ContinuationEntry { executable, .. } if executable == &main),
-        Some(double_return),
-        shape_leaf_lanes(&world, double_return)
-            .first()
-            .map(|(_, lane)| *lane)
-            .expect("double/1 should return one lane"),
-        CodegenLaneRepr::RawInt,
-        "continuation entry representation should be a seam fact read by artifact/codegen consumers",
+    let consumer = retained_executable(&plan, &main);
+    let endpoint = consumer
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| {
+            (matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. })
+                && layout.layout.structural == double_return)
+                .then_some(layout)
+        })
+        .expect("double/1 has an emitted continuation endpoint");
+    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::RawInt]);
+    let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+        panic!("main has clauses")
+    };
+    assert!(
+        entries.iter().any(|entry| matches!(&entry.origin,
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        "the backend continuation uses the producer endpoint's integer contract"
     );
 }
 
@@ -1106,10 +1248,10 @@ end
     let mut world = World::new();
     world.submit_code(Some("transport_unused_callable.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (_, boundaries) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let boundaries = boundary_contributions(session);
     assert_eq!(
         boundaries.len(),
         0,
@@ -1130,13 +1272,11 @@ end
     let mut world = World::new();
     world.submit_code(Some("transport_direct_lambda_use.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
-    let callable_shapes = plan
-        .position_layouts
-        .iter()
+    let callable_shapes = retained_layouts(&plan)
         .filter_map(|(position, layout)| match position {
             TransportPosition::Value {
                 executable: candidate, ..
@@ -1151,14 +1291,11 @@ end
         "direct lambda use should keep a callable shape in the root plan"
     );
     assert_eq!(
-        callable_owner_facts_for_test(session).1.len(),
+        published_boundaries(session).len(),
         0,
         "a direct-only lambda path should not publish a first-class boundary"
     );
-    let direct_owners = root_backend_answer_for_test(session)
-        .transport
-        .callable_owners
-        .iter()
+    let direct_owners = positioned_owners(root_backend_answer_for_test(session))
         .filter(|positioned| {
             positioned.position.executable() == &main
                 && matches!(
@@ -1190,11 +1327,11 @@ fn main(), do: make()
     let mut world = World::new();
     world.submit_code(Some("transport_escaped_lambda.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
-    let returned = plan_shape_at(
+    let returned = required_shape_at(
         &plan,
         &TransportPosition::ExecutableReturn {
             executable: make.clone(),
@@ -1205,14 +1342,11 @@ fn main(), do: make()
         "escaped lambda should still be a callable shape in the transport plan"
     );
     assert_eq!(
-        callable_owner_facts_for_test(session).1.len(),
+        published_boundaries(session).len(),
         1,
         "escaping a lambda as a returned callable should publish exactly one boundary contract"
     );
-    let constructions = root_backend_answer_for_test(session)
-        .transport
-        .callable_owners
-        .iter()
+    let constructions = positioned_owners(root_backend_answer_for_test(session))
         .filter_map(|positioned| positioned.owner.construction.as_ref())
         .filter(|construction| construction.producer.executable() == &make)
         .collect::<Vec<_>>();
@@ -1236,17 +1370,15 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 1);
-    let input_shape = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableInput {
-            executable: main,
-            semantic_index: 0,
-        },
-    );
+    let input_position = TransportPosition::ExecutableInput {
+        executable: main,
+        semantic_index: 0,
+    };
+    let input_shape = required_shape_at(&plan, &input_position);
     assert!(
         matches!(shape_descr(&world, input_shape), ShapeDescr::Callable(_)),
         "a callable input with opaque closure-call demand should stay callable-shaped, not collapse to a value lane"
@@ -1255,9 +1387,15 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
         unreachable!("checked above")
     };
     let input_demand = upstream_input_demand_for_function(&world, session, "main", 1, 0);
-    assert_generic_callable_shape_matches_upstream_demand(&world, session, *input_callable, input_demand);
+    assert_generic_callable_shape_matches_upstream_demand(
+        &world,
+        session,
+        &input_position,
+        *input_callable,
+        input_demand,
+    );
     assert_eq!(
-        callable_owner_facts_for_test(session).1.len(),
+        published_boundaries(session).len(),
         1,
         "an opaque callable input should publish one explicit boundary contract"
     );
@@ -1286,24 +1424,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let mut demand_closure = session.demanded_executables().clone();
-    loop {
-        let previous_len = demand_closure.len();
-        demand_closure.extend(demand_closure.clone().into_iter().flat_map(|executable| {
-            session
-                .settled_demand_callees(&executable)
-                .into_iter()
-                .flatten()
-                .cloned()
-        }));
-        if demand_closure.len() == previous_len {
-            break;
-        }
-    }
-    let demanded_lambda_inputs = demand_closure
+    let session = &*driver.session();
+    let demanded_lambda_inputs = session
+        .demanded_executables()
         .iter()
         .filter(|executable| {
             world
@@ -1352,15 +1477,15 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 2, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 2);
     // Both opaque inputs are boxed callables, so their VALUE shapes are pure
     // layout (one boxed value lane) and may coincide. The surface contract is
     // not part of the value identity any more — it lives on the boundaries.
     for semantic_index in [0, 1] {
-        let shape = plan_shape_at(
+        let shape = required_shape_at(
             &plan,
             &TransportPosition::ExecutableInput {
                 executable: main.clone(),
@@ -1374,10 +1499,18 @@ end
     }
     // The distinction with different observed surfaces (`f.(1)` vs `g.({1, 2})`)
     // survives where it belongs: as two distinct published boundary contracts.
-    let (_, boundaries) = callable_owner_facts_for_test(session);
+    let boundaries = boundary_contributions(session);
     let surface_contracts = boundaries
-        .keys()
-        .map(|boundary| world.boundary(*boundary).surface_arg_shapes.to_vec())
+        .iter()
+        .map(|(id, _)| id)
+        .map(|boundary| {
+            world
+                .boundary(*boundary)
+                .surface_arg_layouts
+                .iter()
+                .map(|layout| layout.structural)
+                .collect::<Vec<_>>()
+        })
         .collect::<BTreeSet<_>>();
     assert!(
         surface_contracts.len() >= 2,
@@ -1401,21 +1534,21 @@ fn main(), do: {make1(1), make2(1, 2)}
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
+    let returned = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
     let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
         panic!("main/0 should return a tuple of callable values")
     };
     let [left, right] = items.as_ref() else {
         panic!("main/0 should return exactly two callable tuple fields")
     };
-    let ShapeDescr::Callable(left) = shape_descr(&world, *left) else {
+    let ShapeDescr::Callable(left) = shape_descr(&world, left.structural) else {
         panic!("first tuple field should be callable-shaped")
     };
-    let ShapeDescr::Callable(right) = shape_descr(&world, *right) else {
+    let ShapeDescr::Callable(right) = shape_descr(&world, right.structural) else {
         panic!("second tuple field should be callable-shaped")
     };
     assert_ne!(
@@ -1440,19 +1573,19 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let boundary = boundary_with_callable_arg(&world, session);
-    let [arg_shape] = boundary.surface_arg_shapes.as_ref() else {
-        panic!("f/1 boundary should publish one surface argument shape")
+    let [arg_layout] = boundary.surface_arg_layouts.as_ref() else {
+        panic!("f/1 boundary should publish one surface argument layout")
     };
     assert!(
-        matches!(shape_descr(&world, *arg_shape), ShapeDescr::Callable(_)),
+        matches!(shape_descr(&world, arg_layout.structural), ShapeDescr::Callable(_)),
         "the published boundary argument should preserve the callable shape"
     );
     assert_eq!(
-        boundary.published_arg_lanes.len(),
+        world.layout_lane_ids(*arg_layout).len(),
         1,
         "a callable argument crossing a boundary should be boxed into one published lane"
     );
@@ -1477,31 +1610,47 @@ fn main(), do: make()
         escaped_source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
     let outer = callable_return_for_executable(&world, &plan, make);
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let outer_facts = callables
-        .get(&outer)
-        .unwrap_or_else(|| panic!("the escaped closure should carry callable facts"));
+    let contributions = callable_contributions(session);
+    let outer_facts = contributions
+        .iter()
+        .filter(|(callable, _)| *callable == outer)
+        .map(|(_, facts)| *facts)
+        .collect::<Vec<_>>();
+    assert!(
+        !outer_facts.is_empty(),
+        "the escaped closure must retain callable owner facts"
+    );
+    let boundaries = outer_facts
+        .iter()
+        .flat_map(|facts| facts.boundary_ids.iter().copied())
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        outer_facts.boundary_ids.len(),
+        boundaries.len(),
         1,
         "the un-invoked escaped closure should publish exactly one first-class boundary"
     );
-    let outer_resolution = outer_facts
-        .resolutions
-        .first()
-        .unwrap_or_else(|| panic!("the escaped closure should resolve to its body executable"));
-    let grounded_return = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableReturn {
-            executable: outer_resolution.clone(),
-        },
+    let resolutions = outer_facts
+        .iter()
+        .flat_map(|facts| facts.resolutions.iter())
+        .collect::<HashSet<_>>();
+    assert!(
+        !resolutions.is_empty(),
+        "the escaped closure must resolve to body executables"
     );
-    assert!(matches!(world.shape(grounded_return), ShapeDescr::Tuple(_)));
+    for resolution in resolutions {
+        let grounded_return = required_shape_at(
+            &plan,
+            &TransportPosition::ExecutableReturn {
+                executable: resolution.clone(),
+            },
+        );
+        assert!(matches!(world.shape(grounded_return), ShapeDescr::Tuple(_)));
+    }
     let continuation = sole_callable_with_callable_capture(&world, session);
     assert_suspend_continuation_captures(&world, continuation);
 
@@ -1526,23 +1675,30 @@ end
         consumed_source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 0);
     let outer = callable_return_for_executable(&world, &plan, make);
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let outer_resolution = callables
-        .get(&outer)
-        .and_then(|facts| facts.resolutions.first())
-        .unwrap_or_else(|| panic!("the invoked closure should resolve to its body executable"));
-    let demanded_return = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableReturn {
-            executable: outer_resolution.clone(),
-        },
+    let contributions = callable_contributions(session);
+    let resolutions = contributions
+        .iter()
+        .filter(|(callable, _)| *callable == outer)
+        .flat_map(|(_, facts)| facts.resolutions.iter())
+        .collect::<HashSet<_>>();
+    assert!(
+        !resolutions.is_empty(),
+        "the invoked closure must resolve to body executables"
     );
-    assert!(matches!(shape_descr(&world, demanded_return), ShapeDescr::Tuple(_)));
+    for resolution in resolutions {
+        let demanded_return = required_shape_at(
+            &plan,
+            &TransportPosition::ExecutableReturn {
+                executable: resolution.clone(),
+            },
+        );
+        assert!(matches!(shape_descr(&world, demanded_return), ShapeDescr::Tuple(_)));
+    }
     let continuation = sole_callable_with_callable_capture(&world, session);
     assert_suspend_continuation_captures(&world, continuation);
 
@@ -1575,18 +1731,20 @@ end
 }
 
 fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> super::transport::CallableId {
-    let (callables, _) = callable_owner_facts_for_test(session);
+    let callables = callable_contributions(session);
     let candidates = callables
-        .keys()
+        .iter()
+        .map(|(id, _)| id)
         .copied()
         .filter(|callable| {
             world
                 .callable(*callable)
-                .capture_shapes
+                .capture_layouts
                 .iter()
-                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+                .any(|layout| matches!(shape_descr(world, layout.structural), ShapeDescr::Callable(_)))
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    let candidates = candidates.into_iter().collect::<Vec<_>>();
     let [continuation] = candidates.as_slice() else {
         panic!("exactly one callable (the suspend continuation) should capture a callable, got {candidates:?}")
     };
@@ -1596,13 +1754,13 @@ fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> 
 fn assert_suspend_continuation_captures(world: &World, continuation: super::transport::CallableId) {
     let continuation_descr = world.callable(continuation);
     assert_eq!(
-        continuation_descr.capture_shapes.len(),
+        continuation_descr.capture_layouts.len(),
         3,
         "the suspend continuation should capture the remaining list, accumulator, and reducer"
     );
     assert!(
         matches!(
-            shape_descr(world, continuation_descr.capture_shapes[2]),
+            shape_descr(world, continuation_descr.capture_layouts[2].structural),
             ShapeDescr::Callable(_)
         ),
         "the captured reducer should remain callable-shaped inside the continuation descriptor"
@@ -1628,12 +1786,10 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
-    let (resume_position, resume_layout) = plan
-        .position_layouts
-        .iter()
+    let (resume_position, resume_layout) = retained_layouts(&plan)
         .find(|(position, layout)| {
             matches!(
                 position,
@@ -1647,13 +1803,15 @@ end
         .unwrap_or_else(|| {
             panic!(
                 "main should resume the make/3 tuple return with the callable field still present: {:?}",
-                plan.position_layouts
+                retained_layouts(&plan).collect::<Vec<_>>()
             )
         });
     let resume_shape = resume_layout.structural;
     let callable = first_callable_in_shape(&world, resume_shape)
         .expect("the resumed tuple shape should contain the returned callable field");
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
+    let resume_owner = owner_at(session, resume_position);
+    let callables = &resume_owner.callable_facts;
+    let boundaries = &resume_owner.boundary_facts;
     let facts = callables
         .get(&callable)
         .unwrap_or_else(|| panic!("returned callable should have facts: {callables:?}"));
@@ -1674,35 +1832,35 @@ end
             .get(&boundary.0)
             .is_some_and(|facts| facts.publications.iter().any(|position| position == resume_position)),
         "the callable boundary must record the resume payload publication that carries the boxed closure pointer; \
-         resume_position={resume_position:?}; boundary={:?}; boundary_facts={:?}; seam_facts={:?}",
+         resume_position={resume_position:?}; boundary={:?}; boundary_facts={:?}",
         boundary.1,
         boundaries.get(&boundary.0),
-        plan.codegen_seam_facts,
     );
-    let TransportPosition::ResumePayload {
-        callsite: Some(callsite),
-        entry,
-        ..
-    } = resume_position
-    else {
-        panic!("checked above")
+    let consumer = retained_executable(&plan, &main);
+    let endpoint = consumer
+        .abi
+        .return_endpoints
+        .iter()
+        .find_map(|(position, layout)| (position == resume_position).then_some(layout))
+        .expect("the tuple resume owns an emitted ABI endpoint");
+    let physical = world.layout_physical_lanes(resume_layout);
+    let closure_index = physical
+        .iter()
+        .position(|lane| lane.lane == boundary.1.published_value_lane)
+        .expect("the resumed tuple physically carries its published closure word");
+    assert_eq!(endpoint.layout.structural, resume_shape);
+    assert_eq!(
+        endpoint.layout.reprs[closure_index],
+        AbiValueRepr::ValueRef,
+        "the returned callable enters the continuation as a published closure pointer"
+    );
+    let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+        panic!("main has clauses")
     };
-    assert_seam_fact(
-        &plan.codegen_seam_facts,
-        |seam| {
-            matches!(
-                seam,
-                CodegenSeam::ContinuationEntry {
-                    executable,
-                    callsite: candidate_callsite,
-                    entry: candidate_entry,
-                } if executable == &main && *candidate_callsite == *callsite && *candidate_entry == *entry
-            )
-        },
-        None,
-        boundary.1.published_value_lane,
-        CodegenLaneRepr::ValueRef,
-        "a tuple-returned callable captured by a later resume must enter the continuation as the published closure pointer",
+    assert!(
+        entries.iter().any(|entry| matches!(&entry.origin,
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        "the backend continuation retains the tuple endpoint including its closure word"
     );
 }
 
@@ -1747,9 +1905,9 @@ fn main(), do: make(fn x -> x + 1 end)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let captured_demand = upstream_input_demand_for_function(&world, session, "run", 2, 1);
     assert!(
@@ -1792,11 +1950,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
+    let returned = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("main/0 should return the callable value it also invoked directly")
     };
@@ -1805,10 +1963,11 @@ end
         .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
-    let facts = callables
+    let owner = producer_owner_for_flow(&world, session, &flow);
+    let facts = owner
+        .callable_facts
         .get(&callable)
         .unwrap_or_else(|| panic!("returned callable facts should be present"));
     assert!(
@@ -1819,9 +1978,10 @@ end
         !facts.boundary_ids.is_empty(),
         "the escaped callable should still publish a first-class boundary"
     );
-    let runtime_demands = runtime_demands_for_frontier(session);
+    let runtime_demands = runtime_demands_for_frontier(&world, session);
     for boundary in facts.boundary_ids.iter() {
-        let boundary_facts = boundaries
+        let boundary_facts = owner
+            .boundary_facts
             .get(boundary)
             .unwrap_or_else(|| panic!("boundary facts should exist for {boundary:?}"));
         let target_demands = boundary_facts
@@ -1872,18 +2032,18 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let callables = callable_contributions(session);
     let captured_callable = callables
         .iter()
         .find_map(|(outer, _)| {
             let outer_descr = world.callable(*outer);
-            let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+            let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
                 return None;
             };
-            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
                 return None;
             };
             Some(*captured)
@@ -1894,15 +2054,16 @@ end
                 callables
             )
         });
-    let captured_facts = callables
-        .get(&captured_callable)
-        .unwrap_or_else(|| panic!("captured callable facts should be present"));
     let producer_function = world
         .callable(captured_callable)
         .function
         .unwrap_or_else(|| panic!("captured callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, captured_callable, &flow);
+    let captured_facts = producer_owner_for_flow(&world, session, &flow)
+        .callable_facts
+        .get(&captured_callable)
+        .expect("captured callable producer facts should be present");
     assert!(
         !captured_facts.direct_surfaces.is_empty(),
         "the captured callable should keep its direct-call surface"
@@ -1932,20 +2093,19 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 1);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    let position = TransportPosition::ExecutableReturn { executable: make };
+    let returned = required_shape_at(&plan, &position);
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("recursive make/1 should return a callable shape")
     };
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let facts = callables
-        .get(callable)
-        .unwrap_or_else(|| panic!("recursive callable return facts should be present"));
     assert!(
-        !facts.resolutions.is_empty(),
+        callable_contributions(session)
+            .iter()
+            .any(|(candidate, facts)| candidate == callable && !facts.resolutions.is_empty()),
         "recursive callable return should keep the resolved local callable target instead of falling back to a generic opaque callable"
     );
 }
@@ -1964,29 +2124,29 @@ fn main(), do: make(1, 2)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let make = executable_for(&world, session, "make", 2);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    let returned = required_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("make/2 should return a callable shape")
     };
     assert!(
-        callable_owner_facts_for_test(session).0.contains_key(callable),
+        callable_contributions(session)
+            .iter()
+            .any(|(candidate, _)| candidate == callable),
         "returned callable facts should be present"
     );
-    let callable_descr = world.callable(*callable);
     assert_eq!(
-        callable_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *callable).len(),
         2,
         "two same-typed captures are two ordered payload lanes, not one deduplicated lane"
     );
     let boundary = single_boundary_descr(&world, session);
     assert_eq!(
-        boundary.published_capture_lanes.as_ref(),
-        callable_descr.capture_lanes.as_ref(),
-        "published capture lanes must preserve the callable capture payload sequence exactly"
+        boundary.callable, *callable,
+        "the boundary must derive its capture payload from the callable descriptor"
     );
 }
 
@@ -2008,12 +2168,12 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (_, boundary_facts) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let boundary_facts = boundary_contributions(session);
     assert_eq!(
-        boundary_facts.len(),
+        published_boundaries(session).len(),
         2,
         "one escaped callable used at two surfaces should publish one boundary contract per surface"
     );
@@ -2024,7 +2184,7 @@ end
         };
         assert_eq!(
             target.activation.input.len(),
-            boundary_descr.surface_arg_shapes.len(),
+            boundary_descr.surface_arg_layouts.len(),
             "boundary target arity should match the boundary's published surface"
         );
     }
@@ -2041,10 +2201,10 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (_, boundaries) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let boundaries = boundary_contributions(session);
     let dead_return_boundaries = boundaries
         .iter()
         .filter_map(|(boundary, facts)| {
@@ -2055,7 +2215,7 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
                     matches!(
                         shape_descr(
                             &world,
-                            plan_shape_at(
+                            required_shape_at(
                                 &plan,
                                 &TransportPosition::ExecutableReturn {
                                     executable: target.clone(),
@@ -2072,12 +2232,6 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
         dead_return_boundaries.is_empty(),
         "first-class callable boundaries whose resolved target returns an empty type are not callable contracts: {dead_return_boundaries:?}"
     );
-
-    world.demand(super::Job::LowerNativeProgram(root));
-    assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None),
-        "Range Enumerable fixture should lower native callable publications before the known slicer runtime blocker",
-    );
 }
 
 #[test]
@@ -2091,9 +2245,9 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     assert!(
         executable_membership(&world, session)
             .iter()
@@ -2124,11 +2278,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let pair_down = executable_for(&world, session, "pair_down", 1);
-    let returned = plan_shape_at(
+    let returned = required_shape_at(
         &plan,
         &TransportPosition::ExecutableReturn {
             executable: pair_down.clone(),
@@ -2156,13 +2310,18 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_runtime_enum_reduce_operator_refs.fz");
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let executables = driver.session().materialized_executables().keys().collect::<Vec<_>>();
+    let session = driver.session();
+    let executables = session
+        .memo()
+        .materialized_executables()
+        .map(|(executable, _)| executable)
+        .collect::<Vec<_>>();
 
     let plus_flows = executables
         .iter()
-        .filter_map(|executable| driver.session().memo().runtime_demand(executable))
+        .filter_map(|executable| world.runtime_demand(executable))
         .flat_map(|demand| demand.callable_flows.values())
         .filter(|flow| function_is(&world, flow.function, "+", 2))
         .collect::<Vec<_>>();
@@ -2174,20 +2333,20 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
                     .iter()
                     .any(|resolution| function_is(&world, resolution.activation.function, "+", 2))
         }),
-        "product runtime demand should keep operator refs as direct Kernel.+/2 callable flows: {plus_flows:?}"
+        "the RuntimeDemand fact should keep operator refs as direct Kernel.+/2 callable flows: {plus_flows:?}"
     );
     assert!(
         plus_flows
             .iter()
             .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
-        "operator refs used only as Enum.reduce reducers should not become first-class product demand: {plus_flows:?}"
+        "operator refs used only as Enum.reduce reducers should not become first-class demand: {plus_flows:?}"
     );
-    assert_eq!(driver.session().producer_pokes(), 0);
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, &driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product path should emit finished produced outcomes"
     );
-    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
+    assert_eq!(*finished_producer_pokes.borrow(), Some(executable_fact_pokes));
 }
 
 #[test]
@@ -2209,17 +2368,17 @@ end
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "ignore", 1);
+    let demand = runtime_demand_fact_for_function(&world, session, "ignore", 1);
     assert_eq!(
         demand.input_demands,
         vec![RuntimeDemand::ignore()],
         "semantic inputs stay present, but an unused callable input should not claim runtime demand",
     );
-    let omitted_inputs = runtime_demands_for_frontier(session)
+    let omitted_inputs = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.input_demands.iter())
         .filter(|input| input.is_ignore())
@@ -2244,10 +2403,10 @@ fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let session = &*driver.session();
     let (executable, materialized) = session
+        .memo()
         .materialized_executables()
-        .iter()
         .find(|(executable, materialized)| {
             function_is(&world, executable.activation.function, "with_index", 2)
                 && materialized
@@ -2263,8 +2422,8 @@ fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
     assert_eq!(mapper_demand.callable.targets.len(), 1);
     assert!(!mapper_demand.callable.is_first_class());
     let abi = session
-        .abi_executables()
-        .get(executable)
+        .memo()
+        .abi_executable(executable)
         .expect("the mapper overload should publish an ABI executable");
     assert_eq!(
         abi.transport
@@ -2343,9 +2502,9 @@ end
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let demands = runtime_demands_for_frontier(driver.session());
+    let demands = runtime_demands_for_frontier(&world, &driver.session());
 
     let direct_callable_flows = demands
         .values()
@@ -2387,10 +2546,10 @@ fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes
         let mut world = World::new();
         world.submit_code(Some("discarded_closure_call.fz".to_string()), source.to_string());
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+        let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
         let _ = &plan;
-        let session = driver.session();
-        let demands = runtime_demands_for_frontier(session);
+        let session = &*driver.session();
+        let demands = runtime_demands_for_frontier(&world, session);
         // The callable-flow fact names the function it constructs; that is the
         // lambda whose own return the discarded call may or may not reach.
         let lambda_function = demands
@@ -2457,11 +2616,11 @@ fn main(), do: make()
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "make", 0);
+    let demand = runtime_demand_fact_for_function(&world, session, "make", 0);
     assert!(
         has_callable_flow(&demand, |flow| flow.escape && !flow.opaque),
         "a callable that escapes should be first-class at runtime: {demand:?}",
@@ -2476,7 +2635,7 @@ fn main(), do: make()
         }),
         "an escaped callable with no known call surface should publish a first-class surface and canonical resolution upstream: {demand:?}",
     );
-    let first_class_callable_flows = runtime_demands_for_frontier(session)
+    let first_class_callable_flows = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .filter(|flow| !flow.first_class_surfaces.is_empty())
@@ -2506,10 +2665,10 @@ fn main(), do: apply(make_adder(1))
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = product_runtime_demand_for_function(&world, driver.session(), "make_adder", 1);
+    let demand = runtime_demand_fact_for_function(&world, &driver.session(), "make_adder", 1);
     assert!(
         has_callable_flow(&demand, |flow| {
             !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty()
@@ -2534,11 +2693,11 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         "fn main(f), do: f.(1)\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "main", 1);
+    let demand = runtime_demand_fact_for_function(&world, session, "main", 1);
     assert!(
         matches!(
             demand.input_demands.as_slice(),
@@ -2549,7 +2708,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         ),
         "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
     );
-    let opaque_callable_demands = runtime_demands_for_frontier(session)
+    let opaque_callable_demands = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.input_demands.iter())
         .filter(|input| input.callable.opaque)
@@ -2578,10 +2737,10 @@ end
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = product_runtime_demand_for_function(&world, driver.session(), "main", 1);
+    let demand = runtime_demand_fact_for_function(&world, &driver.session(), "main", 1);
     assert!(
         demand.call_arg_demands.values().any(|demands| {
             matches!(
@@ -2602,11 +2761,9 @@ end
         }),
         "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
     );
-    let main = executable_for(&world, driver.session(), "main", 1);
-    let constructions = root_backend_answer_for_test(driver.session())
-        .transport
-        .callable_owners
-        .iter()
+    let main = executable_for(&world, &driver.session(), "main", 1);
+    let session = driver.session();
+    let constructions = positioned_owners(root_backend_answer_for_test(&session))
         .filter(|positioned| positioned.position.executable() == &main)
         .filter_map(|positioned| positioned.owner.construction.as_ref())
         .collect::<Vec<_>>();
@@ -2632,11 +2789,11 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
-    let demands = runtime_demands_for_frontier(session);
+    let demands = runtime_demands_for_frontier(&world, session);
     let (main_executable, demand) = demands
         .iter()
         .find(|(executable, _)| function_is(&world, executable.activation.function, "main", 0))
@@ -2710,10 +2867,10 @@ fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_befo
         "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demands = runtime_demands_for_frontier(driver.session());
+    let demands = runtime_demands_for_frontier(&world, &driver.session());
     let first_class_flows = demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -2743,10 +2900,10 @@ fn main(), do: make_pairer()
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let runtime_demands = runtime_demands_for_frontier(driver.session());
+    let runtime_demands = runtime_demands_for_frontier(&world, &driver.session());
     let tuple_return_demands = runtime_demands
         .iter()
         .filter_map(|(executable, demand)| {
@@ -2803,10 +2960,10 @@ end
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let resume_demands = runtime_demands_for_frontier(driver.session())
+    let resume_demands = runtime_demands_for_frontier(&world, &driver.session())
         .iter()
         .filter_map(|(executable, demand)| {
             function_is(&world, executable.activation.function, "pair_down", 1).then_some(demand.value_demands.clone())
@@ -2843,9 +3000,9 @@ fn main(), do: make()
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     let reducer_executables = session
         .demanded_executables()
@@ -2870,7 +3027,7 @@ fn main(), do: make()
         "the settled demand closure should hold canonical reducer activations, not type-template inputs: {reducer_executables:?}"
     );
 
-    let demands = runtime_demands_for_frontier(session);
+    let demands = runtime_demands_for_frontier(&world, session);
     assert!(
         demands.values().any(|demand| {
             has_callable_flow(demand, |flow| {
@@ -2913,14 +3070,14 @@ end
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
 
     // The per-executable product makes every dbg/1 activation individually
     // observable; the store-era test asserted one map entry — every activation
     // must satisfy the same contract.
-    let dbg_input_demands = runtime_demands_for_frontier(session)
+    let dbg_input_demands = runtime_demands_for_frontier(&world, session)
         .iter()
         .filter(|(executable, _)| function_is(&world, executable.activation.function, "dbg", 1))
         .map(|(_, demand)| demand.input_demands.clone())
@@ -2937,7 +3094,7 @@ end
         );
     }
 
-    let main_demand = product_runtime_demand_for_function(&world, session, "main", 0);
+    let main_demand = runtime_demand_fact_for_function(&world, session, "main", 0);
     assert!(
         main_demand
             .entry_capture_demands
@@ -2957,10 +3114,11 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, _) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let constructions = callable_owners_for_test(driver.session())
-        .into_iter()
-        .filter_map(|owner| owner.construction)
+    let (driver, _) = pull_backend_for_test(&tel, &mut world, root);
+    let owners = callable_owners_for_test(&driver.session());
+    let constructions = owners
+        .iter()
+        .filter_map(|owner| owner.construction.as_ref())
         .filter(|construction| {
             world
                 .callable(construction.callable)
@@ -3008,14 +3166,13 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let pull_events = PullTelemetryCapture::install(&tel);
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_transport_enum_reduce_operator_refs.fz");
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let main_return = TransportPosition::ExecutableReturn {
-        executable: plan.entry.clone(),
+        executable: executable_symbol_for(&world, plan.entry()),
     };
 
-    let returned = plan
-        .shape_at(&main_return)
-        .expect("main return transport product should contain a concrete shape");
+    let returned =
+        retained_shape_at(&plan, &main_return).expect("main return transport product should contain a concrete shape");
     let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
         panic!("product main/0 should return the two reduced integer results as a tuple")
     };
@@ -3032,7 +3189,8 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
             .collect::<Vec<_>>()
     );
 
-    let (owner_callables, _) = callable_owner_facts_for_test(driver.session());
+    let session = driver.session();
+    let owner_callables = callable_contributions(&session);
     let plus_callables = owner_callables
         .iter()
         .filter_map(|(callable, facts)| {
@@ -3054,12 +3212,12 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
         plus_callables.iter().all(|(_, facts)| facts.boundary_ids.is_empty()),
         "product transport should not publish first-class boundaries for operator-ref reducers: {plus_callables:?}"
     );
-    let zero_capture_plus_input = driver
-        .session()
+    let session = driver.session();
+    let zero_capture_plus_input = session
         .demanded_executables()
         .iter()
         .find_map(|executable| {
-            let runtime = driver.session().memo().runtime_demand(executable)?;
+            let runtime = world.runtime_demand(executable)?;
             runtime
                 .input_demands
                 .iter()
@@ -3076,20 +3234,22 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
                 })
         })
         .expect("Enum.reduce should carry an exact zero-capture Kernel.+/2 input");
-    let plus_layout = plan
-        .layout_at(&TransportPosition::ExecutableInput {
+    let plus_layout = retained_layout_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
             executable: executable_symbol_for(&world, zero_capture_plus_input.0),
             semantic_index: zero_capture_plus_input.1,
-        })
-        .expect("Kernel.+ input layout");
+        },
+    )
+    .expect("Kernel.+ input layout");
     let ShapeDescr::Callable(plus_callable) = shape_descr(&world, plus_layout.structural) else {
         panic!("the exact Kernel.+/2 input should retain a callable shape")
     };
     let plus_descr = world.callable(*plus_callable);
     assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
-    assert!(plus_descr.capture_lanes.is_empty());
+    assert!(callable_capture_lanes(&world, *plus_callable).is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_materialized_executable_fact_authority(&world, &driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product transport path should emit finished produced outcomes"
@@ -3106,13 +3266,12 @@ fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
         &tel,
         "pull_transport_order_stability_enum_reduce_operator_refs.fz",
     );
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (_, plan) = pull_backend_for_test(&tel, &mut world, root);
     let main_return = TransportPosition::ExecutableReturn {
-        executable: plan.entry.clone(),
+        executable: executable_symbol_for(&world, plan.entry()),
     };
-    let root_first_shape = plan
-        .shape_at(&main_return)
-        .expect("packaged root product should publish main return shape");
+    let root_first_shape =
+        retained_shape_at(&plan, &main_return).expect("packaged root product should publish main return shape");
     let mut shape_first_driver = ProductDriver::new(&tel, root);
     let shape_first = pull_product_until_produced_with_fact_waits(
         &mut shape_first_driver,
@@ -3142,34 +3301,42 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_materialized_enum_reduce_operator_refs.fz");
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
 
     assert!(
-        driver.session().materialized_executables().keys().any(|executable| {
-            let function = world.function_ref(executable.activation.function);
-            function.name == "main" && function.arity == 0
-        }),
+        driver
+            .session()
+            .memo()
+            .materialized_executables()
+            .any(|(executable, _)| {
+                let function = world.function_ref(executable.activation.function);
+                function.name == "main" && function.arity == 0
+            }),
         "product materialization should include main/0"
     );
     assert!(
-        driver.session().materialized_executables().keys().any(|executable| {
-            let function = world.function_ref(executable.activation.function);
-            function.name == "+" && function.arity == 2
-        }),
+        driver
+            .session()
+            .memo()
+            .materialized_executables()
+            .any(|(executable, _)| {
+                let function = world.function_ref(executable.activation.function);
+                function.name == "+" && function.arity == 2
+            }),
         "product materialization should include Kernel.+/2"
     );
-    for (caller, materialized) in driver.session().materialized_executables() {
+    for (caller, materialized) in driver.session().memo().materialized_executables() {
         for edge in materialized.call_edges.values() {
             for callee in materialized_call_edge_callees(edge) {
                 assert!(
-                    driver.session().materialized_executable(callee).is_some(),
+                    driver.session().memo().materialized_executable(callee).is_some(),
                     "symbolic materialized call edge from {caller:?} points to an undemanded callee {callee:?}"
                 );
             }
         }
     }
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_materialized_executable_fact_authority(&world, &driver.session());
 }
 
 #[test]
@@ -3181,22 +3348,22 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
     let executables = driver
         .session()
+        .memo()
         .backend_executables()
-        .keys()
-        .cloned()
+        .map(|(executable, _)| executable.clone())
         .collect::<HashSet<_>>();
 
     assert_eq!(
-        driver.session().abi_executables().len(),
+        driver.session().memo().abi_executables().count(),
         executables.len(),
         "ABI products should be per demanded executable"
     );
     assert_eq!(
-        driver.session().backend_executables().len(),
+        driver.session().memo().backend_executables().count(),
         executables.len(),
         "backend products should be per demanded executable"
     );
-    for (caller, abi) in driver.session().abi_executables() {
+    for (caller, abi) in driver.session().memo().abi_executables() {
         for edge in abi.call_edges.values() {
             for callee in abi_ready_call_edge_callees(edge) {
                 assert!(
@@ -3206,20 +3373,21 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
             }
         }
     }
-    for (caller, backend) in driver.session().backend_executables() {
-        assert_eq!(
-            backend.call_edges,
-            backend
-                .abi
-                .call_edges
-                .iter()
-                .map(|(callsite, edge)| (*callsite, edge.target.clone()))
-                .collect::<HashMap<_, _>>(),
-            "symbolic backend product should preserve ABI ExecutableKey call edges"
+    for (caller, backend) in driver.session().memo().backend_executables() {
+        assert!(
+            Rc::ptr_eq(
+                &backend.abi,
+                driver
+                    .session()
+                    .memo()
+                    .abi_executable(caller)
+                    .expect("backend ABI prerequisite")
+            ),
+            "backend metadata must retain the exact ABI allocation"
         );
-        assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
+        assert_backend_body_has_typed_targets(&backend.body, caller);
     }
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_materialized_executable_fact_authority(&world, &driver.session());
 }
 
 #[test]
@@ -3239,39 +3407,41 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let pull_events = PullTelemetryCapture::install(&tel);
     let product_jobs = JobTelemetry::new();
     product_jobs.install(&tel);
-    assert!(
-        ProductDriver::new(&tel, root).session().executable_index().is_empty(),
-        "dense executable indices should not exist before final backend packaging"
-    );
     let (program, driver) =
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     let packaged = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.clone())
         .collect::<HashSet<_>>();
     let demanded = driver
         .session()
+        .memo()
         .backend_executables()
-        .keys()
-        .cloned()
+        .map(|(executable, _)| executable.clone())
         .collect::<HashSet<_>>();
     assert_eq!(
         packaged, demanded,
         "final backend packaging should preserve the demanded executable frontier"
     );
+    let mut ordered = demanded.into_iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     assert_eq!(
-        driver.session().executable_index().len(),
-        packaged.len(),
-        "dense executable indices are assigned at final packaging only"
+        program
+            .executables()
+            .iter()
+            .map(|executable| &executable.key)
+            .collect::<Vec<_>>(),
+        ordered.iter().collect::<Vec<_>>(),
+        "the backend program inventory preserves deterministic semantic order"
     );
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "direct operator refs should not fabricate first-class construction wrappers",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
-    assert_eq!(driver.session().producer_pokes(), 0);
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, &driver.session());
     driver.finish_session();
     assert!(
         product_jobs.total_stops() > 0,
@@ -3281,7 +3451,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         pull_events.produced_count() > 0,
         "root backend product path should emit finished produced outcomes"
     );
-    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
+    assert_eq!(*finished_producer_pokes.borrow(), Some(executable_fact_pokes));
 
     assert!(
         no_dump_job_fires > 0,
@@ -3291,7 +3461,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
 
 fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &super::artifact::BackendProgram) {
     let mut checked = 0;
-    for executable in &program.executables {
+    for executable in program.executables().iter() {
         let super::artifact::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };
@@ -3312,19 +3482,23 @@ fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &s
             let super::artifact::CallEdge::Direct(edge) = target else {
                 continue;
             };
-            let Some(callee_index) = edge.callee.copied_local() else {
+            let Some(callee_key) = edge.callee.local() else {
                 continue;
             };
             let callee = program
-                .executables
-                .get(callee_index)
+                .executables()
+                .get(
+                    program
+                        .executable_index(callee_key, world.types())
+                        .expect("direct target belongs to program"),
+                )
                 .expect("packaged direct-call callee index should be in bounds");
             if executable_input_shape_is_nothing(world, callee, 0) {
                 continue;
             }
             checked += 1;
             assert!(
-                executable.value_layouts.contains_key(&first_arg.value),
+                executable.abi.value_layouts.contains_key(&first_arg.value),
                 "direct call in {:?} forwards clause param {:?} into non-empty callee input 0, so ABI must bind it",
                 executable.key,
                 first_arg.value
@@ -3343,6 +3517,7 @@ fn executable_input_shape_is_nothing(
     semantic_index: usize,
 ) -> bool {
     let shape = executable
+        .abi
         .semantic_inputs
         .iter()
         .find(|input| input.semantic_index == semantic_index)
@@ -3374,10 +3549,10 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let callables = callable_contributions(session);
     assert!(
         executable_membership(&world, session)
             .iter()
@@ -3391,9 +3566,7 @@ end
         "the joined reducer frontier should keep add_b/2 live"
     );
 
-    let reducer_arg_shapes = plan
-        .position_layouts
-        .iter()
+    let reducer_arg_shapes = retained_layouts(&plan)
         .filter_map(|(position, layout)| match position {
             TransportPosition::CallArg { semantic_index: 2, .. }
                 if matches!(shape_descr(&world, layout.structural), ShapeDescr::Callable(_)) =>
@@ -3406,7 +3579,7 @@ end
     assert!(
         !reducer_arg_shapes.is_empty(),
         "the third Enum.reduce argument should be transported as a callable shape, not a scalar lane: {:?}",
-        plan.position_layouts
+        retained_layouts(&plan).collect::<Vec<_>>()
     );
     assert!(
         reducer_arg_shapes.iter().any(|shape| {
@@ -3414,8 +3587,8 @@ end
                 return false;
             };
             callables
-                .get(callable)
-                .is_some_and(|facts| !facts.boundary_ids.is_empty())
+                .iter()
+                .any(|(candidate, facts)| candidate == callable && !facts.boundary_ids.is_empty())
         }),
         "the joined reducer must publish a first-class callable boundary instead of pooling a direct target"
     );
@@ -3430,13 +3603,13 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
     let main = executable_for(&world, session, "main", 0);
     let add_a = executable_for(&world, session, "add_a", 2).activation.function;
     let add_b = executable_for(&world, session, "add_b", 2).activation.function;
-    let (_, boundaries) = callable_owner_facts_for_test(session);
-    let (boundary, facts) = boundaries
+    let boundaries = boundary_contributions(session);
+    let (_, facts) = boundaries
         .iter()
         .find(|(_, facts)| {
             let resolutions = facts
@@ -3444,7 +3617,12 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
                 .iter()
                 .map(|resolution| resolution.activation.function)
                 .collect::<HashSet<_>>();
-            resolutions.contains(&add_a) && resolutions.contains(&add_b)
+            resolutions.contains(&add_a)
+                && resolutions.contains(&add_b)
+                && facts.publications.iter().any(|position| {
+                    matches!(position,
+                    TransportPosition::CallArg { executable, .. } if executable == &main)
+                })
         })
         .unwrap_or_else(|| {
             panic!("one published boundary must own the joined add_a/add_b resolutions: {boundaries:?}")
@@ -3454,27 +3632,75 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
         .iter()
         .filter(|position| position.executable() == &main)
         .inspect(|&position| {
-            let layout = plan
-                .layout_at(position)
+            let layout = retained_layout_at(&plan, position)
                 .unwrap_or_else(|| panic!("a published callable position must carry its settled layout: {position:?}"));
             let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
                 panic!("a joined callable publication must remain callable-shaped: {position:?} -> {layout:?}")
             };
             assert_eq!(world.callable(*callable).function, None);
-            assert_eq!(layout.carrier, TransportCarrier::ValueRef);
+            assert!(layout.carrier.is_value_ref());
         })
         .collect::<Vec<_>>();
     assert!(
         !publications.is_empty(),
         "main must carry the joined callable boundary before native lowering"
     );
+    let targets = plan
+        .construction_wrappers()
+        .iter()
+        .filter(|wrapper| wrapper.identity.executable() == &main)
+        .flat_map(|wrapper| wrapper.members.iter().map(|member| member.target.activation.function))
+        .collect::<HashSet<_>>();
     assert!(
-        plan.codegen_seam_facts.iter().any(|fact| {
-            matches!(fact.seam, CodegenSeam::FirstClassPublication { boundary: candidate } if candidate == *boundary)
-                && fact.shape.is_none()
-        }),
-        "transport should publish a first-class codegen lane for the joined callable boundary"
+        targets.contains(&add_a) && targets.contains(&add_b),
+        "each branch retains the concrete wrapper whose closure word flows into the join"
     );
+    for position in publications {
+        let TransportPosition::CallArg {
+            executable,
+            callsite,
+            semantic_index,
+        } = position
+        else {
+            panic!("the selected publication is a call argument")
+        };
+        let published = retained_layout_at(&plan, position).expect("the call argument owns its joined layout");
+        let edge = retained_executable(&plan, executable)
+            .abi
+            .call_edges
+            .get(callsite)
+            .expect("the published argument belongs to a retained ABI call edge");
+        let targets = edge.target.local_callees();
+        assert!(
+            !targets.is_empty(),
+            "the joined reducer argument has reached dispatch targets"
+        );
+        for target in targets {
+            let callee = plan
+                .executable(target, world.types())
+                .expect("the call target is retained");
+            let input = &callee
+                .abi
+                .semantic_inputs
+                .iter()
+                .find(|input| input.semantic_index == *semantic_index)
+                .expect("each selected callee retains the reducer argument")
+                .layout;
+            assert_eq!(
+                input.structural, published.structural,
+                "each dispatch arm receives the joined callable's structural contract"
+            );
+            assert_eq!(
+                input.carrier, published.carrier,
+                "each dispatch arm receives the same published closure carrier"
+            );
+            assert_eq!(
+                input.reprs.as_ref(),
+                &[AbiValueRepr::ValueRef],
+                "the joined callable crosses the emitted call edge as one closure word before native capture"
+            );
+        }
+    }
 }
 
 #[test]
@@ -3486,40 +3712,54 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let lambda_capturing_published_callable = callables.keys().find_map(|callable| {
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
+    let callables = callable_contributions(session);
+    let lambda_capturing_published_callable = callables.iter().map(|(id, _)| id).find_map(|callable| {
         let descr = world.callable(*callable);
-        let [capture_shape] = descr.capture_shapes.as_ref() else {
+        let [capture_layout] = descr.capture_layouts.as_ref() else {
             return None;
         };
-        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+        let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
             return None;
         };
         let captured_descr = world.callable(*captured);
-        let captured_facts = callables.get(captured)?;
-        (descr.function.is_some() && captured_descr.function.is_none() && !captured_facts.boundary_ids.is_empty())
-            .then_some((*callable, *capture_shape))
+        let published = callables
+            .iter()
+            .any(|(candidate, facts)| candidate == captured && !facts.boundary_ids.is_empty());
+        (descr.function.is_some() && captured_descr.function.is_none() && published)
+            .then_some((*callable, capture_layout.structural))
     });
     let (callable, capture_shape) = lambda_capturing_published_callable
         .expect("Enum.reduce's generated loop lambda should capture the published joined reducer value");
     let descr = world.callable(callable);
     assert_eq!(
-        descr.capture_lanes.len(),
+        callable_capture_lanes(&world, callable).len(),
         1,
         "a lambda that captures a first-class callable value must carry that runtime value in a physical capture lane, not recurse into the captured callable's zero structural lanes: {descr:?}; capture_shape={capture_shape:?}",
     );
+    let resolutions = callables
+        .iter()
+        .filter(|(candidate, _)| *candidate == callable)
+        .flat_map(|(_, facts)| facts.resolutions.iter())
+        .collect::<HashSet<_>>();
     assert!(
-        callables[&callable].resolutions.iter().all(|executable| {
-            plan.layout_at(&TransportPosition::ExecutableInput {
-                executable: executable.clone(),
-                semantic_index: 0,
-            })
-            .is_some_and(|layout| layout.carrier == TransportCarrier::ValueRef)
+        !resolutions.is_empty(),
+        "the capturing lambda must retain executable targets"
+    );
+    assert!(
+        resolutions.iter().all(|executable| {
+            retained_layout_at(
+                &plan,
+                &TransportPosition::ExecutableInput {
+                    executable: (*executable).clone(),
+                    semantic_index: 0,
+                },
+            )
+            .is_some_and(|layout| layout.carrier.is_value_ref())
         }),
         "each generated lambda executable must receive its first-class callable capture through a ValueRef-owned input layout: callable={callable:?}; layouts={:?}",
-        plan.position_layouts,
+        retained_layouts(&plan).collect::<Vec<_>>(),
     );
 }
 
@@ -3532,14 +3772,14 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
         include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let (executable, semantic_index, target) = session
         .demanded_executables()
         .iter()
         .find_map(|executable| {
-            let demand = session.memo().runtime_demand(executable)?;
+            let demand = world.runtime_demand(executable)?;
             demand
                 .input_demands
                 .iter()
@@ -3559,15 +3799,15 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
         executable: executable_symbol_for(&world, &executable),
         semantic_index,
     };
-    let layout = plan.layout_at(&position).expect("captured callable input layout");
+    let layout = retained_layout_at(&plan, &position).expect("captured callable input layout");
     let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
         panic!("the exact callable input should retain a callable shape: {layout:?}")
     };
     let descr = world.callable(*callable);
     assert_eq!(descr.function, Some(target.activation.function));
     assert_eq!(descr.capture_tys.as_ref(), &target.activation_inputs[..2]);
-    assert_eq!(descr.capture_shapes.len(), 2);
-    assert_eq!(descr.capture_lanes.len(), 2);
+    assert_eq!(descr.capture_layouts.len(), 2);
+    assert_eq!(callable_capture_lanes(&world, *callable).len(), 2);
     assert_eq!(layout.carrier, TransportCarrier::Absent);
 }
 
@@ -3595,13 +3835,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let captured_first_class = plan
-        .position_layouts
-        .iter()
+    let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let captured_first_class = retained_layouts(&plan)
         .filter(|(position, _)| matches!(position, TransportPosition::EntryCapture { .. }))
         .filter_map(|(position, layout)| match shape_descr(&world, layout.structural) {
-            ShapeDescr::Callable(callable) => Some((position.clone(), *layout, *callable)),
+            ShapeDescr::Callable(callable) => Some((position.clone(), layout, *callable)),
             _ => None,
         })
         .filter(|(_, _, callable)| world.callable(*callable).function.is_none())
@@ -3616,9 +3854,8 @@ end
             0,
             "a generic callable's structure must not duplicate its boxed carrier: {position:?}",
         );
-        assert_eq!(
-            layout.carrier,
-            TransportCarrier::ValueRef,
+        assert!(
+            layout.carrier.is_value_ref(),
             "the continuation capture must carry the first-class callable through its exact layout carrier: {position:?}",
         );
     }
@@ -3649,19 +3886,19 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let callables = callable_contributions(session);
     let captured_callable = callables.iter().find_map(|(outer, facts)| {
         let outer_descr = world.callable(*outer);
-        let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+        let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
             return None;
         };
-        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+        let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
             return None;
         };
-        (!facts.direct_surfaces.is_empty()).then_some((*captured, *capture_shape, facts.resolutions.clone()))
+        (!facts.direct_surfaces.is_empty()).then_some((*captured, capture_layout.structural, facts.resolutions.clone()))
     });
     let (captured_callable, captured_shape, reducer_resolutions) =
         captured_callable.unwrap_or_else(|| panic!("the reducer lambda should capture predicate as a callable shape"));
@@ -3671,20 +3908,23 @@ end
             semantic_index: 0,
         };
         assert_eq!(
-            plan.shape_at(&position),
+            retained_shape_at(&plan, &position),
             Some(captured_shape),
             "the reducer executable capture-prefix input should read the producer capture ShapeId from callable-flow resolution evidence"
         );
     }
-    let captured_facts = callables
-        .get(&captured_callable)
-        .unwrap_or_else(|| panic!("captured predicate callable facts should be present"));
     assert!(
-        captured_facts.direct_surfaces.iter().any(|surface| surface.len() == 1),
+        callables
+            .iter()
+            .filter(|(candidate, _)| *candidate == captured_callable)
+            .any(|(_, facts)| facts.direct_surfaces.iter().any(|surface| surface.len() == 1)),
         "the captured predicate should retain its direct one-argument callable surface"
     );
     assert!(
-        captured_facts.boundary_ids.is_empty(),
+        callables
+            .iter()
+            .filter(|(candidate, _)| *candidate == captured_callable)
+            .all(|(_, facts)| facts.boundary_ids.is_empty()),
         "a predicate captured for direct reducer use should not be upgraded to a first-class boundary"
     );
 }
@@ -3699,9 +3939,9 @@ fn compiler2_layout_distinct_input_positions_keep_independent_owned_answers() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let mut inputs = BTreeMap::<(u32, usize), Vec<(&TransportPosition, &TransportLayout)>>::new();
-    for (position, layout) in &plan.position_layouts {
+    let (_, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let mut inputs = BTreeMap::<(u32, usize), Vec<(&TransportPosition, TransportLayout)>>::new();
+    for (position, layout) in retained_layouts(&plan) {
         if let TransportPosition::ExecutableInput {
             executable,
             semantic_index,
@@ -3720,7 +3960,7 @@ fn compiler2_layout_distinct_input_positions_keep_independent_owned_answers() {
             .collect::<BTreeSet<_>>()
             .len()
             >= 2
-            && answers.iter().map(|(_, layout)| **layout).collect::<HashSet<_>>().len() >= 2
+            && answers.iter().map(|(_, layout)| *layout).collect::<HashSet<_>>().len() >= 2
     });
     assert!(
         distinct.is_some(),
@@ -3739,9 +3979,9 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let reducers = owners
         .iter()
@@ -3775,11 +4015,10 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
             "a concrete reducer construction must retain its resolved call edges: {construction:?} -> {facts:?}"
         );
         for capture in construction.captures.iter().filter(|capture| {
-            plan.shape_at(&capture.source)
+            retained_shape_at(&plan, &capture.source)
                 .is_some_and(|shape| matches!(shape_descr(&world, shape), ShapeDescr::Callable(_)))
         }) {
-            let shape = plan
-                .shape_at(&capture.source)
+            let shape = retained_shape_at(&plan, &capture.source)
                 .unwrap_or_else(|| panic!("a carrier source must publish a transport shape: {capture:?}"));
             let ShapeDescr::Callable(captured) = shape_descr(&world, shape) else {
                 panic!("a carrier source must publish a callable shape: {capture:?} -> {shape:?}")
@@ -3789,9 +4028,8 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
                 None,
                 "the captured public callable ABI must not encode source function identity"
             );
-            assert_eq!(
-                capture.layout.carrier,
-                TransportCarrier::ValueRef,
+            assert!(
+                capture.layout.carrier.is_value_ref(),
                 "a callable capture must carry its callable value even when its descriptor has no nested lanes",
             );
         }
@@ -3818,7 +4056,7 @@ fn main(), do: make(41).(1)
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let constructions = owners
         .iter()
@@ -3838,6 +4076,23 @@ fn main(), do: make(41).(1)
         "both public scalar-capturing lambdas should retain one construction fact",
     );
     for construction in constructions {
+        let descriptor = world.callable(construction.callable);
+        assert_eq!(
+            descriptor.capture_layouts.as_ref(),
+            construction
+                .captures
+                .iter()
+                .map(|capture| capture.layout)
+                .collect::<Vec<_>>(),
+            "the callable descriptor and construction must share one capture-layout authority",
+        );
+        for member in &construction.members {
+            assert_eq!(
+                world.boundary(member.boundary).callable,
+                construction.callable,
+                "public boundaries must derive captures from the construction's callable descriptor",
+            );
+        }
         let capture = &construction.captures[0];
         let shape = capture.layout.structural;
         assert!(
@@ -3850,7 +4105,7 @@ fn main(), do: make(41).(1)
         );
         assert_eq!(capture.layout.carrier, TransportCarrier::Absent);
         let wrapper = program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
             .find(|wrapper| wrapper.callable == construction.callable)
             .unwrap_or_else(|| panic!("public construction should retain its backend wrapper: {construction:?}"));
@@ -3899,14 +4154,12 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
-    let owners = callable_owners_for_test(session);
+    let session = &*driver.session();
     let mut checked = 0;
-    for wrapper in &program.construction_wrappers {
-        let construction = owners
-            .iter()
-            .filter_map(|owner| owner.construction.as_ref())
-            .find(|construction| construction.callable == wrapper.callable)
+    for wrapper in program.construction_wrappers().iter() {
+        let construction = owner_at(session, &wrapper.identity)
+            .construction
+            .as_ref()
             .unwrap_or_else(|| panic!("backend wrapper should retain its callable construction fact"));
         let callable_capture = construction
             .captures
@@ -3956,11 +4209,9 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
 /// whole-value contracts and are out of scope here: the invariant binds
 /// exactly where a position ships ONE lane for a whole value.
 ///
-/// Executable returns and local values are both covered. Call arguments,
-/// return payloads and resume payloads are not reachable from a published
-/// `BackendExecutable`, so this gate does not see them -- reaching them needs
-/// the `MaterializedTransportPlan`, which the backend product does not retain
-/// on the executables themselves.
+/// This gate compares executable returns and retained local value layouts with
+/// their analyzed types. Other positioned layouts remain observable through
+/// each backend member's ABI transport answers.
 #[test]
 fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
     let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
@@ -3975,7 +4226,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
 
     let mut whole_value_lanes = 0;
     let mut sunk = Vec::new();
-    for executable in &program.executables {
+    for executable in program.executables().iter() {
         let name = &world.function_ref(executable.key.activation.function).name;
         let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
             let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
@@ -3995,12 +4246,12 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
         };
         whole_value_lanes += check(
             format!("{name}/{} return", executable.key.activation.function.as_u32()),
-            &executable.return_layout.layout,
-            executable.return_ty,
+            &executable.abi.return_layout.layout,
+            executable.abi.materialized.return_ty,
             &world,
         );
-        for (value, layout) in &executable.value_layouts {
-            let Some(value_ty) = executable.value_types.get(value).copied() else {
+        for (value, layout) in &executable.abi.value_layouts {
+            let Some(value_ty) = executable.abi.materialized.value_types.get(value).copied() else {
                 continue;
             };
             whole_value_lanes += check(
@@ -4096,11 +4347,7 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
 
     let mut published = 0;
     let mut foreign = Vec::new();
-    for positioned in root_backend_answer_for_test(driver.session())
-        .transport
-        .callable_owners
-        .iter()
-    {
+    for positioned in positioned_owners(root_backend_answer_for_test(&driver.session())) {
         for facts in positioned.owner.boundary_facts.values() {
             for publication in facts.publications.iter() {
                 published += 1;
@@ -4125,6 +4372,92 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
         Vec::<String>::new(),
         "a callable owner may only publish the boundary at its own position",
     );
+}
+
+/// Large immutable facts and products cross several ownership surfaces, but
+/// each surface must retain the producer's one allocation. Structural equality
+/// remains the movement rule; pointer identity is only the ownership proof.
+#[test]
+fn world_facts_and_product_memo_share_their_immutable_payloads() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("shared_product_payloads.fz".to_string()),
+        "fn add1(x), do: x + 1\nfn main(), do: add1(41)".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let root_key = ProductKey::RootBackendProduct(root);
+    let root_answer = match driver.session().memo().get(&root_key) {
+        Some(ProductValue::RootBackendProduct(answer)) => answer.clone(),
+        other => panic!("expected shared root backend answer, got {other:?}"),
+    };
+    let session = driver.session();
+    let memo = session.memo();
+    for (executable, materialized) in memo.materialized_executables() {
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("materialized executable must read a RuntimeDemand fact");
+        assert!(
+            Rc::ptr_eq(&materialized.runtime_demand, runtime_demand),
+            "materialization must retain the producer's RuntimeDemand allocation",
+        );
+    }
+    for (executable, abi) in memo.abi_executables() {
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("ABI executable must read a RuntimeDemand fact");
+        assert!(Rc::ptr_eq(&abi.materialized.runtime_demand, runtime_demand));
+        assert!(Rc::ptr_eq(
+            &abi.materialized,
+            memo.materialized_executable(executable)
+                .expect("memoized materialized input")
+        ));
+        for positioned in abi.callable_owners.iter() {
+            match memo.get(&ProductKey::CallableConstruction(positioned.position.clone())) {
+                Some(ProductValue::CallableConstruction(owner)) => {
+                    assert!(
+                        Rc::ptr_eq(&positioned.owner, owner),
+                        "ABI owner at {:?} must retain its memo allocation (equal={})",
+                        positioned.position,
+                        positioned.owner == *owner,
+                    );
+                }
+                other => panic!("expected memoized callable owner, got {other:?}"),
+            }
+        }
+    }
+    for (executable, backend) in memo.backend_executables() {
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("backend executable must read a RuntimeDemand fact");
+        assert!(Rc::ptr_eq(&backend.abi.materialized.runtime_demand, runtime_demand));
+        assert!(Rc::ptr_eq(
+            &backend.abi,
+            memo.abi_executable(executable).expect("memoized ABI input")
+        ));
+    }
+    for executable in root_answer.executables().iter() {
+        let runtime_demand = world
+            .runtime_demand(&executable.key)
+            .expect("packaged executable must read a RuntimeDemand fact");
+        assert!(
+            Rc::ptr_eq(&executable.abi.materialized.runtime_demand, runtime_demand),
+            "backend packaging must retain the producer's RuntimeDemand allocation",
+        );
+    }
+
+    drop(session);
+    let cached = driver.pull(&mut WorldProductProducers::new(&mut world, &tel), root_key);
+    match cached {
+        PullOutcome::Produced(ProductValue::RootBackendProduct(answer)) => {
+            assert!(Rc::ptr_eq(&answer, &root_answer));
+        }
+        other => panic!("settled root product should be a cache hit, got {other:?}"),
+    }
+
+    driver.finish_session();
 }
 
 /// One recursion component publishes ONE return contract.
@@ -4165,10 +4498,10 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
 
-    let reaches = direct_call_reachability(&program);
+    let reaches = direct_call_reachability(&program, world.types());
     let mut checked = 0;
     let mut demoted = Vec::new();
-    for (caller, executable) in program.executables.iter().enumerate() {
+    for (caller, executable) in program.executables().iter().enumerate() {
         let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4182,11 +4515,14 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
             let super::body::ControlDestination::Return = dest else {
                 continue;
             };
-            for (callee, return_flow) in return_flow_arms(target) {
+            for (callee_key, return_flow) in return_flow_arms(target) {
+                let callee = program
+                    .executable_index(callee_key, world.types())
+                    .expect("call target belongs to program");
                 if !reaches[callee].contains(&caller) {
                     continue;
                 }
-                if program.executables[callee].return_ty != executable.return_ty {
+                if program.executables()[callee].abi.materialized.return_ty != executable.abi.materialized.return_ty {
                     continue;
                 }
                 checked += 1;
@@ -4199,7 +4535,7 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
                     caller,
                     callsite,
                     world
-                        .function_ref(program.executables[callee].key.activation.function)
+                        .function_ref(program.executables()[callee].key.activation.function)
                         .name,
                     callee,
                 ));
@@ -4222,9 +4558,9 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
 
 /// Which executables each executable can reach through packaged call edges --
 /// the artifact's own call graph, read back off the program it published.
-fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BTreeSet<usize>> {
-    let mut edges = vec![BTreeSet::new(); program.executables.len()];
-    for (caller, executable) in program.executables.iter().enumerate() {
+fn direct_call_reachability(program: &super::artifact::BackendProgram, types: &super::Types) -> Vec<BTreeSet<usize>> {
+    let mut edges = vec![BTreeSet::new(); program.executables().len()];
+    for (caller, executable) in program.executables().iter().enumerate() {
         let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4233,7 +4569,11 @@ fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BT
                 super::artifact::BackendTail::DirectCall { target, .. } => target,
                 _ => continue,
             };
-            edges[caller].extend(target.local_callees().into_iter().copied());
+            edges[caller].extend(target.local_callees().into_iter().map(|key| {
+                program
+                    .executable_index(key, types)
+                    .expect("call target belongs to program")
+            }));
         }
     }
     let mut reaches = edges.clone();
@@ -4255,22 +4595,155 @@ fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BT
 
 /// The callee and return flow of every arm one packaged call edge can take.
 fn return_flow_arms(
-    target: &super::artifact::CallEdge<usize, super::artifact::BackendReturnFlow>,
-) -> Vec<(usize, &super::artifact::BackendReturnFlow)> {
+    target: &super::artifact::CallEdge<ExecutableKey, super::artifact::BackendReturnFlow>,
+) -> Vec<(&ExecutableKey, &super::artifact::BackendReturnFlow)> {
     match target {
         super::artifact::CallEdge::Direct(direct) => direct
             .callee
-            .copied_local()
+            .local()
             .map(|callee| (callee, &direct.return_flow))
             .into_iter()
             .collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => dispatch
             .arms
             .iter()
-            .filter_map(|arm| Some((arm.callee.copied_local()?, &arm.return_flow)))
+            .filter_map(|arm| Some((arm.callee.local()?, &arm.return_flow)))
             .collect(),
         super::artifact::CallEdge::Indirect(_) => Vec::new(),
     }
+}
+
+#[test]
+fn positioned_callable_owners_have_observable_obligations() {
+    for (name, source) in [
+        (
+            "take_drop",
+            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+        ),
+        ("scalar", "fn main(), do: 42"),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let evaluated = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&evaluated);
+        tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+            &["fz", "compiler2", "pull", "product", "evaluated"],
+            move |_, _, _, key, _, _| observed.borrow_mut().push(key.clone()),
+        );
+        let mut world = World::new();
+        world.submit_code(Some(format!("{name}.fz")), source.into());
+        let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+        let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+        let session = driver.session();
+        let mut classes = BTreeMap::new();
+        for (key, abi) in session.memo().abi_executables() {
+            for positioned in &abi.callable_owners {
+                let owner = &positioned.owner;
+                let class = if owner.construction.is_some() {
+                    "construction"
+                } else if !owner.callable_facts.is_empty() || !owner.boundary_facts.is_empty() {
+                    "metadata"
+                } else {
+                    "empty"
+                };
+                let physical = !world.layout_physical_lanes(owner.layout).is_empty();
+                *classes.entry((class, physical)).or_insert(0usize) += 1;
+                assert!(
+                    session
+                        .memo()
+                        .product_dependencies(&ProductKey::AbiExecutable(key.clone()))
+                        .expect("ABI dependency inventory")
+                        .contains_key(&ProductKey::CallableConstruction(positioned.position.clone())),
+                    "the final owner has its exact ABI consumer"
+                );
+            }
+        }
+        assert!(
+            !classes.keys().any(|(class, _)| *class == "empty"),
+            "every retained owner carries construction or callable/boundary facts"
+        );
+        if name == "scalar" {
+            assert!(
+                !evaluated
+                    .borrow()
+                    .iter()
+                    .any(|key| matches!(key, ProductKey::CallableConstruction(_))),
+                "physical scalar layouts perform no callable-construction producer work"
+            );
+        } else {
+            assert_eq!(
+                classes,
+                BTreeMap::from([
+                    (("construction", true), 38),
+                    (("metadata", false), 125),
+                    (("metadata", true), 302)
+                ]),
+                "the pruned owner population preserves every nonempty baseline obligation"
+            );
+        }
+    }
+}
+
+#[test]
+fn ignored_forwarded_input_requests_no_positioned_products() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluated = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&evaluated);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, PullOutcome, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, key, _, _| observed.borrow_mut().push(key.clone()),
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("ignored_forwarded_input.fz".into()),
+        "fn discard(_), do: 0\nfn forward(x), do: discard(x)\nfn main(), do: forward(42)".into(),
+    );
+    let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let (executable, abi) = session
+        .memo()
+        .abi_executables()
+        .find(|(key, _)| function_is(&world, key.activation.function, "forward", 1))
+        .expect("reached forward executable");
+    let demand = world.runtime_demand(executable).expect("settled demand authority");
+    assert!(
+        demand.input_demands[0].is_ignore(),
+        "neither physical nor callable input is demanded"
+    );
+    let super::body::LoweredBody::Clauses { clauses, .. } = &abi.materialized.body else {
+        panic!("ordinary forward body")
+    };
+    for clause in clauses {
+        assert!(
+            !demand.callable_flows.contains_key(&clause.params[0]),
+            "ignored scalar is not a callable flow"
+        );
+    }
+    let position = TransportPosition::ExecutableInput {
+        executable: executable_symbol_for(&world, executable),
+        semantic_index: 0,
+    };
+    let forbidden = [
+        ProductKey::TransportShape(position.clone()),
+        ProductKey::CallableConstruction(position.clone()),
+    ];
+    assert_eq!(
+        evaluated
+            .borrow()
+            .iter()
+            .filter(|key| forbidden.contains(key))
+            .collect::<Vec<_>>(),
+        Vec::<&ProductKey>::new(),
+        "an authoritative absent input has no positioned producer work"
+    );
+    assert!(
+        !abi.transport.input_positions.contains(&position),
+        "ABI has no absent input consumer"
+    );
+    assert!(
+        !abi.callable_owners.iter().any(|owner| owner.position == position),
+        "ABI has no absent callable owner"
+    );
 }
 
 #[test]
@@ -4295,7 +4768,7 @@ fn main(), do: make(41).(1)
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
-    let session = driver.session();
+    let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let construction = owners
         .iter()
@@ -4314,8 +4787,40 @@ fn main(), do: make(41).(1)
         TransportCarrier::Absent,
         "a capture used only by an ignored callee input should have no physical carrier",
     );
+    let TransportPosition::Value {
+        executable: capture_executable,
+        value,
+    } = &capture.source
+    else {
+        panic!("lexical capture has a positioned source value")
+    };
+    let (_, capture_abi) = session
+        .memo()
+        .abi_executables()
+        .find(|(key, _)| executable_symbol_for(&world, key) == *capture_executable)
+        .expect("capture producer ABI");
+    assert!(
+        capture_abi.transport.value_positions.contains(&capture.source),
+        "the lexical source owns capture metadata directly, independent of parameter transport"
+    );
+    assert!(capture_abi.value_layouts[value].reprs.is_empty());
+    for (key, abi) in session.memo().abi_executables() {
+        for (semantic_index, demand) in world.runtime_demand(key).unwrap().input_demands.iter().enumerate() {
+            if demand.is_ignore() {
+                assert!(
+                    !abi.transport
+                        .input_positions
+                        .contains(&TransportPosition::ExecutableInput {
+                            executable: executable_symbol_for(&world, key),
+                            semantic_index,
+                        }),
+                    "lexical metadata must not retain an ignored input ABI position"
+                );
+            }
+        }
+    }
     let wrapper = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .find(|wrapper| wrapper.callable == construction.callable)
         .expect("ignored-input lambda should retain its backend wrapper");
@@ -4344,13 +4849,10 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
-    let reducer_input_boundaries = plan
-        .position_layouts
-        .iter()
+    let session = &*driver.session();
+    let reducer_input_boundaries = retained_layouts(&plan)
         .filter_map(|(position, layout)| {
             let TransportPosition::ExecutableInput {
                 executable,
@@ -4365,10 +4867,12 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
             let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
                 return None;
             };
-            let facts = callables
+            let owner = owner_at(session, position);
+            let facts = owner
+                .callable_facts
                 .get(callable)
                 .unwrap_or_else(|| panic!("callable facts should exist for reducer input {callable:?}"));
-            (!facts.boundary_ids.is_empty()).then_some(facts.boundary_ids.clone())
+            (!facts.boundary_ids.is_empty()).then_some((owner, &facts.boundary_ids))
         })
         .collect::<Vec<_>>();
 
@@ -4376,10 +4880,11 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
         !reducer_input_boundaries.is_empty(),
         "Enum.take should publish a first-class callable boundary for the reduce_while_cont/3 reducer input"
     );
-    for boundary_ids in reducer_input_boundaries {
+    for (owner, boundary_ids) in reducer_input_boundaries {
         for boundary in boundary_ids {
-            let facts = boundaries
-                .get(&boundary)
+            let facts = owner
+                .boundary_facts
+                .get(boundary)
                 .unwrap_or_else(|| panic!("boundary facts should exist for reducer input boundary {boundary:?}"));
             assert!(
                 !facts.resolutions.is_empty(),
@@ -4400,22 +4905,24 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
-    let unpublished = plan
-        .position_layouts
-        .iter()
+    let session = &*driver.session();
+    let unpublished = retained_layouts(&plan)
         .filter_map(|(position, layout)| {
             let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
                 return None;
             };
-            let facts = callables.get(callable)?;
+            let owner = owner_at(session, position);
+            let facts = owner
+                .callable_facts
+                .get(callable)
+                .expect("a callable-shaped position must retain its own callable metadata");
             if facts.boundary_ids.len() <= 1 {
                 return None;
             }
-            let publications = boundaries
+            let publications = owner
+                .boundary_facts
                 .iter()
                 .filter_map(|(boundary, facts)| facts.publications.contains(position).then_some(*boundary))
                 .collect::<Vec<_>>();
@@ -4452,13 +4959,10 @@ fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let answers = root_backend_answer_for_test(session)
-        .transport
-        .callable_owners
-        .iter()
+    let session = &*driver.session();
+    let answers = positioned_owners(root_backend_answer_for_test(session))
         .filter(|positioned| {
             matches!(positioned.position, TransportPosition::Value { .. })
                 && world
@@ -4501,9 +5005,9 @@ fn compiler2_callable_construction_owners_preserve_shared_boundary_publications(
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     let answers = ["left", "right"].map(|name| {
         let position = TransportPosition::ExecutableReturn {
             executable: executable_for(&world, session, name, 0),
@@ -4576,27 +5080,27 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
+    let session = &*driver.session();
+    let callables = callable_contributions(session);
     let reducer = callables
         .iter()
         .find_map(|(callable, facts)| {
             let descr = world.callable(*callable);
-            let [capture_shape] = descr.capture_shapes.as_ref() else {
+            let [capture_layout] = descr.capture_layouts.as_ref() else {
                 return None;
             };
-            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
                 return None;
             };
-            let reducer_shape = plan.position_layouts.iter().find_map(|(_, layout)| {
+            let reducer_shape = retained_layouts(&plan).find_map(|(_, layout)| {
                 matches!(shape_descr(&world, layout.structural), ShapeDescr::Callable(candidate) if candidate == callable)
                     .then_some(layout.structural)
             })?;
             (!facts.direct_surfaces.is_empty()).then_some((
                 reducer_shape,
-                *capture_shape,
+                capture_layout.structural,
                 *captured,
                 facts.resolutions.clone(),
             ))
@@ -4612,7 +5116,7 @@ end
         "the direct reducer fixture should reach reduce_plain/3"
     );
     for reduce_plain in reduce_plain_executables {
-        let reduce_plain_reducer_input = plan_shape_at(
+        let reduce_plain_reducer_input = required_shape_at(
             &plan,
             &TransportPosition::ExecutableInput {
                 executable: reduce_plain.clone(),
@@ -4624,9 +5128,8 @@ end
             ShapeDescr::Callable(_)
         ));
     }
-    let predicate_descr = world.callable(predicate_callable);
     assert!(
-        predicate_descr.capture_lanes.is_empty(),
+        callable_capture_lanes(&world, predicate_callable).is_empty(),
         "the predicate lambda captures nothing, so the reducer capture-prefix input must carry no payload lanes"
     );
     for resolution in reducer_resolutions {
@@ -4634,9 +5137,76 @@ end
             executable: resolution,
             semantic_index: 0,
         };
-        let capture_input = plan.shape_at(&position).expect("capture input shape");
+        let capture_input = retained_shape_at(&plan, &position).expect("capture input shape");
         assert!(matches!(shape_descr(&world, capture_input), ShapeDescr::Callable(_)));
     }
+}
+
+#[test]
+fn compiler2_escaped_callable_uses_its_exact_target_to_project_branded_capture_demand() {
+    let source = r#"
+fn main() do
+  predicate = fn x -> x > 2 end
+  fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("escaped_branded_capture.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
+    let session = &*driver.session();
+    let owner = super::jobs::backend::executable_key_for_symbol(root, &executable_symbol_for(&world, plan.entry()));
+    let owner_demand = world.runtime_demand(&owner).expect("main demand");
+    let (value, flow) = owner_demand
+        .callable_flows
+        .iter()
+        .find(|(_, flow)| flow.captures.len() == 1 && !flow.first_class_edges.is_empty())
+        .expect("the escaped outer closure should have one exact construction target");
+    assert!(flow.direct_edges.is_empty());
+    assert!(
+        owner_demand
+            .value_demands
+            .get(value)
+            .expect("escaped outer demand")
+            .callable
+            .targets
+            .is_empty(),
+        "the escaped-only path must prove construction-fact correlation rather than the direct-target path",
+    );
+    let target_key = CallableConstructionTargetKey {
+        owner: owner.clone(),
+        value: *value,
+        surface: flow.first_class_edges[0].surface.clone(),
+    };
+    assert!(
+        world
+            .job_reads(&Job::DeriveRuntimeDemand(owner))
+            .contains(&FactUse::current(FactKey::CallableConstructionTarget(target_key))),
+        "the owner formula must retain the exact construction-target dependency used to select the row",
+    );
+    let callables = callable_contributions(session);
+    let captured_shapes = callables
+        .iter()
+        .map(|(id, _)| id)
+        .filter_map(|callable| {
+            let descr = world.callable(*callable);
+            let [capture] = descr.capture_layouts.as_ref() else {
+                return None;
+            };
+            Some(capture.structural)
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        captured_shapes
+            .iter()
+            .any(|shape| matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_))),
+        "the escaped outer callable must carry its invoked predicate capture as a callable: {captured_shapes:?}",
+    );
 }
 
 #[test]
@@ -4650,11 +5220,10 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let runtime_demands = runtime_demands_for_frontier(session);
+    let session = &*driver.session();
+    let runtime_demands = runtime_demands_for_frontier(&world, session);
     let direct_flows = runtime_demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -4666,6 +5235,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     );
 
     for flow in direct_flows {
+        let callables = &producer_owner_for_flow(&world, session, flow).callable_facts;
         let flow_resolutions = flow_resolution_symbols(&world, flow);
         let matching_callables = callables
             .iter()
@@ -4712,9 +5282,9 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
         "fn main() do\n  dbg(Enum.to_list(1..3))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let session = driver.session();
+    let session = &*driver.session();
     // The Range-specific recursion is monomorphic over integer ranges; no input
     // may carry `float` (only the generic Enum/dbg entry points legitimately
     // accept the whole element domain).
@@ -4772,108 +5342,6 @@ fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
-#[test]
-fn compiler2_runtime_demand_resettles_a_member_whose_contribution_grows_an_external_callee() {
-    // INTENT (fz-go4.18.22 rework, F1 — the stale-caller window): a NON-anchor
-    // cone member whose settled contribution GROWS the joined return demand of
-    // a callee settled EARLIER (outside the cone) must not memoize a demand
-    // derived against that callee's pre-growth input demands.
-    //
-    // The anchor alone is already covered: the invalidation walk from the
-    // moved callee climbs the dependency chain back to the in-progress anchor,
-    // whose production the memo discards (`invalidated_in_progress`) and the
-    // driver re-pulls. The window is the MEMBER: its stale memo is recorded
-    // after the walk and stands — and the anchor's re-pull then reads it as a
-    // settled EXTERNAL, laundering the pre-growth demand into the anchor while
-    // the displaced callee re-settles larger with nothing re-deriving its
-    // caller. The fix refuses to memoize a cone whose publication displaced
-    // one of its own external inputs: it re-collects (the displaced callee is
-    // memo-less and joins as a member) and settles the grown cone together.
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    world.submit_code(
-        Some("runtime_demand_stale_caller_window.fz".to_string()),
-        r#"
-fn id(x), do: x
-fn mid(q), do: id(q)
-fn caller(p), do: mid(p)
-fn main(), do: caller(1)
-"#
-        .to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    // Settle every World fact once; the window itself is re-constructed in a
-    // FRESH session below, where the pull order is controlled explicitly.
-    let warm = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let id_exec = demanded_executable_for_function(&world, warm.session(), "id", 1);
-    let mid_exec = demanded_executable_for_function(&world, warm.session(), "mid", 1);
-    let caller_exec = demanded_executable_for_function(&world, warm.session(), "caller", 1);
-    let phantom_caller = world.root_entry_executable(root);
-
-    let mut driver = ProductDriver::new(&tel, root);
-    // An earlier settle observed `id` only as a discarded call: its joined
-    // return demand is the bottom `ignore` (an observed discard, not absence),
-    // so `id` settles with its input undemanded.
-    driver.session_mut().replace_settled_return_demand_contributions(
-        &tel,
-        phantom_caller,
-        HashMap::from([(id_exec.clone(), RuntimeDemand::ignore())]),
-        &HashSet::new(),
-    );
-    pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        &mut world,
-        root,
-        ProductKey::RuntimeDemand(id_exec.clone()),
-        "id demand should settle from the discard evidence",
-    );
-    assert_eq!(
-        driver
-            .session()
-            .memo()
-            .runtime_demand(&id_exec)
-            .map(|demand| demand.input_demands.clone()),
-        Some(vec![RuntimeDemand::ignore()]),
-        "premise: id settles EARLIER with its input undemanded",
-    );
-
-    // `caller` anchors a {caller, mid} cone that reads `id` as an external
-    // input; `mid`'s contribution (the cone's bootstrapped-whole return demand
-    // flowing down the chain) grows `id`'s join past the earlier settle.
-    pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        &mut world,
-        root,
-        ProductKey::RuntimeDemand(caller_exec.clone()),
-        "caller demand should settle",
-    );
-
-    for (name, executable) in [("caller", &caller_exec), ("mid", &mid_exec), ("id", &id_exec)] {
-        let demand = driver
-            .session()
-            .memo()
-            .runtime_demand(executable)
-            .unwrap_or_else(|| panic!("{name} demand should be memoized by the re-settled cone"))
-            .clone();
-        assert_eq!(
-            demand.input_demands,
-            vec![RuntimeDemand::whole()],
-            "{name}'s settled input demand must reflect id's POST-growth input demand \
-             (whole flows caller -> mid -> id and back up the argument chain), \
-             not the displaced pre-growth ignore",
-        );
-    }
-}
-
-fn demanded_executable_for_function(world: &World, session: &PullSession, name: &str, arity: usize) -> ExecutableKey {
-    session
-        .demanded_executables()
-        .iter()
-        .find(|executable| function_is(world, executable.activation.function, name, arity))
-        .cloned()
-        .unwrap_or_else(|| panic!("demanded executable for {name}/{arity}"))
-}
-
 fn assert_entry_dispatch_control(
     source_name: &str,
     source: &str,
@@ -4886,10 +5354,10 @@ fn assert_entry_dispatch_control(
     world.submit_code(Some(source_name.to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let (executable, materialized) = driver
-        .session()
+    let session = driver.session();
+    let (executable, materialized) = session
+        .memo()
         .materialized_executables()
-        .iter()
         .find(|(executable, _)| function_is(&world, executable.activation.function, function_name, 1))
         .unwrap_or_else(|| panic!("{function_name}/1 should materialize"));
     let reachability = &world
@@ -4906,20 +5374,22 @@ fn assert_entry_dispatch_control(
     );
 }
 
-fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
+fn runtime_demands_for_frontier(
+    world: &World,
+    session: &PullSession,
+) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
     session
         .demanded_executables()
         .iter()
         .filter_map(|executable| {
-            session
-                .memo()
+            world
                 .runtime_demand(executable)
-                .map(|demand| (executable.clone(), demand.clone()))
+                .map(|demand| (executable.clone(), demand.as_ref().clone()))
         })
         .collect()
 }
 
-fn product_runtime_demand_for_function(
+fn runtime_demand_fact_for_function(
     world: &World,
     session: &PullSession,
     name: &str,
@@ -4929,8 +5399,9 @@ fn product_runtime_demand_for_function(
         .demanded_executables()
         .iter()
         .find(|executable| function_is(world, executable.activation.function, name, arity))
-        .and_then(|executable| session.memo().runtime_demand(executable).cloned())
-        .unwrap_or_else(|| panic!("product runtime demand for {name}/{arity}"))
+        .and_then(|executable| world.runtime_demand(executable))
+        .map(|demand| demand.as_ref().clone())
+        .unwrap_or_else(|| panic!("RuntimeDemand fact for {name}/{arity}"))
 }
 
 fn has_callable_flow(demand: &ExecutableRuntimeDemand, predicate: impl Fn(&CallableFlowFact) -> bool) -> bool {
@@ -4949,17 +5420,17 @@ fn submit_enum_reduce_operator_ref_root(
     world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2))
 }
 
-fn pull_transport_plan_for_test<'a>(
+fn pull_backend_for_test<'a>(
     tel: &'a ConfiguredTelemetry,
     world: &mut World,
     root: super::RootId,
-) -> (ProductDriver<'a, ConfiguredTelemetry>, MaterializedTransportPlan) {
+) -> (ProductDriver<'a, ConfiguredTelemetry>, Rc<super::BackendProgram>) {
     let driver = pull_root_backend_driver_for_test(tel, world, root);
-    let plan = root_backend_answer_for_test(driver.session()).transport.clone();
+    let plan = root_backend_answer_for_test(&driver.session()).clone();
     (driver, plan)
 }
 
-fn root_backend_answer_for_test(session: &super::pull::PullSession) -> &super::artifact::RootBackendProductAnswer {
+fn root_backend_answer_for_test(session: &super::pull::PullSession) -> &Rc<super::BackendProgram> {
     match session.memo().get(&ProductKey::RootBackendProduct(session.root())) {
         Some(ProductValue::RootBackendProduct(answer)) => answer,
         Some(other) => panic!("root backend product produced unexpected value {other:?}"),
@@ -4967,23 +5438,122 @@ fn root_backend_answer_for_test(session: &super::pull::PullSession) -> &super::a
     }
 }
 
-fn callable_owners_for_test(session: &super::pull::PullSession) -> Vec<super::transport::CallableConstructionOwner> {
-    root_backend_answer_for_test(session)
-        .transport
-        .callable_owners
-        .iter()
+fn callable_owners_for_test(
+    session: &super::pull::PullSession,
+) -> Vec<std::rc::Rc<super::transport::CallableConstructionOwner>> {
+    positioned_owners(root_backend_answer_for_test(session))
         .map(|positioned| positioned.owner.clone())
         .collect()
 }
 
-fn callable_owner_facts_for_test(
-    session: &super::pull::PullSession,
-) -> (
-    HashMap<super::transport::CallableId, super::transport::CallableFacts>,
-    HashMap<super::transport::BoundaryId, super::transport::BoundaryFacts>,
-) {
-    let transport = &root_backend_answer_for_test(session).transport;
-    (transport.callable_facts.clone(), transport.boundary_facts.clone())
+fn positioned_owners(
+    program: &super::BackendProgram,
+) -> impl Iterator<Item = &super::artifact::PositionedCallableConstructionOwner> {
+    let mut seen = HashMap::new();
+    program
+        .executables()
+        .iter()
+        .flat_map(|backend| backend.abi.callable_owners.iter())
+        .filter(
+            move |positioned| match seen.insert(&positioned.position, &positioned.owner) {
+                None => true,
+                Some(previous) => {
+                    assert!(
+                        Rc::ptr_eq(previous, &positioned.owner),
+                        "one position must retain its exact owner allocation"
+                    );
+                    false
+                }
+            },
+        )
+}
+
+fn retained_executable<'a>(
+    program: &'a super::BackendProgram,
+    symbol: &ExecutableSymbol,
+) -> &'a super::artifact::BackendExecutable {
+    program
+        .executables()
+        .iter()
+        .find(|backend| &backend.abi.transport.executable == symbol)
+        .expect("transport position must name a reached backend executable")
+}
+
+fn retained_layouts(program: &super::BackendProgram) -> impl Iterator<Item = (&TransportPosition, TransportLayout)> {
+    let mut seen = HashMap::new();
+    program
+        .executables()
+        .iter()
+        .flat_map(|backend| {
+            backend
+                .abi
+                .transport
+                .position_layouts
+                .iter()
+                .map(|(position, layout)| (position, *layout))
+                .chain(
+                    backend
+                        .abi
+                        .callable_owners
+                        .iter()
+                        .map(|positioned| (&positioned.position, positioned.owner.layout)),
+                )
+        })
+        .filter(move |(position, layout)| match seen.insert(*position, *layout) {
+            None => true,
+            Some(previous) => {
+                assert_eq!(previous, *layout, "one position must retain one exact layout");
+                false
+            }
+        })
+}
+
+fn retained_layout_at(program: &super::BackendProgram, position: &TransportPosition) -> Option<TransportLayout> {
+    let abi = &retained_executable(program, position.executable()).abi;
+    abi.transport.layout_at(position).or_else(|| {
+        positioned_owners(program)
+            .find(|positioned| &positioned.position == position)
+            .map(|positioned| positioned.owner.layout)
+    })
+}
+
+fn retained_shape_at(program: &super::BackendProgram, position: &TransportPosition) -> Option<ShapeId> {
+    retained_layout_at(program, position).map(|layout| layout.structural)
+}
+
+fn callable_contributions(
+    session: &PullSession,
+) -> Vec<(super::transport::CallableId, &super::transport::CallableFacts)> {
+    positioned_owners(root_backend_answer_for_test(session))
+        .flat_map(|positioned| positioned.owner.callable_facts.iter())
+        .map(|(callable, facts)| (*callable, facts))
+        .collect()
+}
+
+fn boundary_contributions(
+    session: &PullSession,
+) -> Vec<(super::transport::BoundaryId, &super::transport::BoundaryFacts)> {
+    positioned_owners(root_backend_answer_for_test(session))
+        .flat_map(|positioned| positioned.owner.boundary_facts.iter())
+        .map(|(boundary, facts)| (*boundary, facts))
+        .collect()
+}
+
+fn published_boundaries(session: &PullSession) -> BTreeSet<super::transport::BoundaryId> {
+    boundary_contributions(session)
+        .into_iter()
+        .map(|(boundary, _)| boundary)
+        .collect()
+}
+
+fn owner_at<'a>(
+    session: &'a PullSession,
+    position: &TransportPosition,
+) -> &'a super::transport::CallableConstructionOwner {
+    match session.memo().get(&ProductKey::CallableConstruction(position.clone())) {
+        Some(ProductValue::CallableConstruction(owner)) => owner,
+        other => panic!("expected exact callable owner at {position:?}, got {other:?}"),
+    }
 }
 
 fn pull_root_backend_driver_for_test<'a>(
@@ -4991,20 +5561,38 @@ fn pull_root_backend_driver_for_test<'a>(
     world: &mut World,
     root: super::RootId,
 ) -> ProductDriver<'a, ConfiguredTelemetry> {
-    let (_program, driver) =
-        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
-            .expect("panic-based ProductDriveError never returns Err");
+    let (_, driver) = super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
+        .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
     driver
 }
 
-/// Panics on all four `ProductDriveError` hooks instead of returning a value,
+/// Panics on each `ProductDriveError` hook instead of returning a value,
 /// so this file keeps its old fail-loudly ergonomics while sharing the one
 /// production pull-drive loop. No test asserts on the panic text.
 #[derive(Debug)]
 struct PanicProductDriveError;
 
 impl super::product_drive::ProductDriveError for PanicProductDriveError {
+    fn dependency_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        address: super::drive::ProductAddress,
+        source: super::scheduler::FatalError,
+    ) -> Self {
+        panic!("product dependency {address:?} failed: {source:?}");
+    }
+
+    fn product_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: super::RootId,
+        product: &ProductKey,
+        failure: super::pull::ProductFailure,
+    ) -> Self {
+        panic!("root {} product {product:?} failed: {failure:?}", root.as_u32());
+    }
+
     fn job_failed<T: crate::telemetry::Telemetry>(
         _world: &World,
         _tel: &T,
@@ -5052,9 +5640,8 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
 
 /// Pulls an arbitrary `ProductKey` to a settled `ProductValue`, expanding any
 /// `PullWait::Fact` through the shared `product_drive::drive_product_fact_wait`.
-/// Production only ever drives one fixed key (`RootBackendProduct`); these
-/// tests need transport shapes, runtime demands, and materialized executables
-/// too, so only the inner fact-wait loop is shared.
+/// These tests also request transport shapes, runtime demands, and
+/// materialized executables, so only the inner fact-wait loop is shared.
 fn pull_product_until_produced_with_fact_waits(
     driver: &mut ProductDriver<'_, ConfiguredTelemetry>,
     world: &mut World,
@@ -5099,6 +5686,7 @@ fn pull_product_until_produced_with_fact_waits(
                     }
                 }
             }
+            PullOutcome::Failed(failure) => panic!("{message}: product {current:?} failed: {failure:?}"),
         }
     }
     panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
@@ -5124,36 +5712,36 @@ fn abi_ready_call_edge_callees(edge: &super::artifact::AbiReadyCallEdge) -> Vec<
     }
 }
 
-fn assert_symbolic_backend_body_has_no_dense_targets(body: &super::pull::SymbolicBackendBody, caller: &ExecutableKey) {
-    let super::pull::SymbolicBackendBody::Clauses { entries, .. } = body else {
+fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, caller: &ExecutableKey) {
+    let super::artifact::BackendBody::Clauses { entries, .. } = body else {
         return;
     };
     for entry in entries {
         match &entry.tail {
-            SymbolicBackendTail::DirectCall { target, .. } => {
+            BackendTail::DirectCall { target, .. } => {
                 assert!(
                     !abi_call_edge_callees_from_target(target).is_empty(),
-                    "symbolic backend direct call in {caller:?} should keep ExecutableKey targets"
+                    "backend direct call in {caller:?} should keep ExecutableKey targets"
                 );
             }
-            SymbolicBackendTail::ClosureCall { target, .. } => {
+            BackendTail::ClosureCall { target, .. } => {
                 if let Some(target) = target {
                     assert!(
                         target.activation.root == caller.activation.root,
-                        "symbolic backend closure target should be an ExecutableKey, got {target:?}"
+                        "backend closure target should be an ExecutableKey, got {target:?}"
                     );
                 }
             }
-            SymbolicBackendTail::Value { .. }
-            | SymbolicBackendTail::If { .. }
-            | SymbolicBackendTail::Dispatch { .. }
-            | SymbolicBackendTail::Receive(_)
-            | SymbolicBackendTail::Halt { .. } => {}
+            BackendTail::Value { .. }
+            | BackendTail::If { .. }
+            | BackendTail::Dispatch { .. }
+            | BackendTail::Receive(_)
+            | BackendTail::Halt { .. } => {}
         }
     }
 }
 
-fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
+fn abi_call_edge_callees_from_target<R>(target: &super::artifact::CallEdge<ExecutableKey, R>) -> Vec<&ExecutableKey> {
     match target {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => {
@@ -5163,8 +5751,12 @@ fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<Executab
     }
 }
 
-fn upstream_callable_flow_for_producer(session: &PullSession, function: super::FunctionId) -> CallableFlowFact {
-    runtime_demands_for_frontier(session)
+fn upstream_callable_flow_for_producer(
+    world: &World,
+    session: &PullSession,
+    function: super::FunctionId,
+) -> CallableFlowFact {
+    runtime_demands_for_frontier(world, session)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .find(|flow| flow.function == function)
@@ -5179,7 +5771,7 @@ fn upstream_input_demand_for_function(
     arity: usize,
     semantic_index: usize,
 ) -> RuntimeDemand {
-    runtime_demands_for_frontier(session)
+    runtime_demands_for_frontier(world, session)
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
@@ -5193,6 +5785,7 @@ fn upstream_input_demand_for_function(
 fn assert_generic_callable_shape_matches_upstream_demand(
     world: &World,
     session: &PullSession,
+    position: &TransportPosition,
     callable: super::transport::CallableId,
     demand: RuntimeDemand,
 ) {
@@ -5207,12 +5800,12 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     // — asserted below.
     assert_eq!(descr.function, None, "an opaque callable value is boxed: function None");
     assert_eq!(
-        descr.capture_lanes.len(),
+        callable_capture_lanes(world, callable).len(),
         0,
         "a generic callable identity must not duplicate its external carrier as a capture lane: {descr:?}"
     );
-    let (callables, _) = callable_owner_facts_for_test(session);
-    let facts = callables
+    let facts = owner_at(session, position)
+        .callable_facts
         .get(&callable)
         .unwrap_or_else(|| panic!("callable facts should exist for generic callable {callable:?}"));
     assert_eq!(
@@ -5228,8 +5821,9 @@ fn assert_callable_facts_match_upstream_flow(
     callable: super::transport::CallableId,
     flow: &CallableFlowFact,
 ) {
-    let (callables, boundaries) = callable_owner_facts_for_test(session);
-    let facts = callables
+    let owner = producer_owner_for_flow(world, session, flow);
+    let facts = owner
+        .callable_facts
         .get(&callable)
         .unwrap_or_else(|| panic!("callable facts should exist for {callable:?}"));
     assert_eq!(
@@ -5242,7 +5836,24 @@ fn assert_callable_facts_match_upstream_flow(
         facts.boundary_ids.len() <= flow.first_class_surfaces.len(),
         "transport boundary ids should be justified by upstream first-class surfaces"
     );
-    assert_boundary_resolutions_match_upstream_flow(world, &boundaries, facts, flow);
+    assert_boundary_resolutions_match_upstream_flow(world, &owner.boundary_facts, facts, flow);
+}
+
+fn producer_owner_for_flow<'a>(
+    world: &World,
+    session: &'a PullSession,
+    flow: &CallableFlowFact,
+) -> &'a super::transport::CallableConstructionOwner {
+    positioned_owners(root_backend_answer_for_test(session))
+        .find_map(|positioned| {
+            let TransportPosition::Value { executable, value } = &positioned.position else {
+                return None;
+            };
+            let key = super::jobs::backend::executable_key_for_symbol(session.root(), executable);
+            let demand = world.runtime_demand(&key)?;
+            (demand.callable_flows.get(value) == Some(flow)).then_some(positioned.owner.as_ref())
+        })
+        .expect("the upstream producer flow must retain its exact positioned callable owner")
 }
 
 fn flow_resolution_symbols(world: &World, flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
@@ -5288,7 +5899,11 @@ fn assert_boundary_resolutions_match_upstream_flow(
 
     for boundary in facts.boundary_ids.iter().copied() {
         let boundary_descr = world.boundary(boundary);
-        let surface_arg_shapes = boundary_descr.surface_arg_shapes.clone();
+        let surface_arg_shapes = boundary_descr
+            .surface_arg_layouts
+            .iter()
+            .map(|layout| layout.structural)
+            .collect::<Vec<_>>();
         let expected = expected_by_surface
             .iter()
             .find_map(|(surface, expected)| {
@@ -5376,7 +5991,7 @@ fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> 
                         .iter()
                         .copied()
                         .zip(field_tys)
-                        .all(|(field_shape, field_ty)| shape_matches_surface_input_ty(world, field_shape, field_ty))
+                        .all(|(field, field_ty)| shape_matches_surface_input_ty(world, field.structural, field_ty))
             })
         }
         ShapeDescr::Callable(_) => world.types().arrow_result(&ty).is_some(),
@@ -5407,12 +6022,8 @@ fn function_is(world: &World, function: super::FunctionId, name: &str, arity: us
     function_ref.name == name && function_ref.arity == arity
 }
 
-fn resume_shapes_for(
-    plan: &MaterializedTransportPlan,
-    executable: &super::transport::ExecutableSymbol,
-) -> Vec<ShapeId> {
-    plan.position_layouts
-        .iter()
+fn resume_shapes_for(plan: &super::BackendProgram, executable: &super::transport::ExecutableSymbol) -> Vec<ShapeId> {
+    retained_layouts(plan)
         .filter_map(|(position, layout)| match position {
             TransportPosition::ResumePayload {
                 executable: candidate, ..
@@ -5422,53 +6033,35 @@ fn resume_shapes_for(
         .collect()
 }
 
-fn plan_shapes(plan: &MaterializedTransportPlan) -> HashMap<TransportPosition, ShapeId> {
-    plan.position_layouts
-        .iter()
-        .map(|(position, layout)| (position.clone(), layout.structural))
-        .collect()
-}
-
-fn plan_shape_at(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.shape_at(position)
-        .unwrap_or_else(|| panic!("transport position should exist: {position:?}"))
+fn required_shape_at(plan: &super::BackendProgram, position: &TransportPosition) -> ShapeId {
+    retained_shape_at(plan, position).unwrap_or_else(|| panic!("transport position should exist: {position:?}"))
 }
 
 fn shape_descr(world: &World, shape: ShapeId) -> &ShapeDescr {
     world.shape(shape)
 }
 
-fn shape_leaf_lanes(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match shape_descr(world, shape) {
-        ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| shape_leaf_lanes(world, item))
-            .collect(),
-    }
+fn callable_capture_lanes(world: &World, callable: super::transport::CallableId) -> Vec<LaneId> {
+    world
+        .callable(callable)
+        .capture_layouts
+        .iter()
+        .copied()
+        .flat_map(|layout| world.layout_lane_ids(layout))
+        .collect()
 }
 
-fn assert_seam_fact(
-    seam_facts: &[CodegenSeamFact],
-    seam_matches: impl Fn(&CodegenSeam) -> bool,
-    shape: Option<ShapeId>,
-    lane: LaneId,
-    repr: CodegenLaneRepr,
-    intent: &str,
-) {
-    assert!(
-        seam_facts
-            .iter()
-            .any(|fact| { seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane && fact.repr == repr }),
-        "{intent}: expected shape {shape:?}, lane {lane:?}, repr {repr:?}; facts: {seam_facts:?}",
-    );
+fn shape_leaf_lanes(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+    world
+        .shape_physical_lanes(shape)
+        .into_iter()
+        .map(|physical| (physical.structural, physical.lane))
+        .collect()
 }
 
 fn assert_plan_executable_references_are_root_scoped(
     world: &World,
-    transport: &MaterializedTransportPlan,
+    transport: &super::BackendProgram,
     session: &PullSession,
 ) {
     let membership = session
@@ -5477,18 +6070,18 @@ fn assert_plan_executable_references_are_root_scoped(
         .map(|key| executable_symbol_for(world, key))
         .collect::<HashSet<_>>();
     assert!(
-        membership.contains(&transport.entry),
+        membership.contains(&executable_symbol_for(world, transport.entry())),
         "the root plan entry must be part of executable membership: {membership:?}"
     );
-    for (position, _) in &transport.position_layouts {
+    for (position, _) in retained_layouts(transport) {
         let executable = position.executable();
         assert!(
             membership.contains(executable),
             "transport position should reference only root-member executables: {position:?}"
         );
     }
-    let (callables, _) = callable_owner_facts_for_test(session);
-    for facts in callables.values() {
+    let callables = callable_contributions(session);
+    for (_, facts) in callables {
         for executable in facts.resolutions.iter() {
             assert!(
                 membership.contains(executable),
@@ -5496,39 +6089,47 @@ fn assert_plan_executable_references_are_root_scoped(
             );
         }
     }
-    for fact in transport.codegen_seam_facts.iter() {
-        if let Some(executable) = fact.seam.executable() {
+    for backend in transport.executables().iter() {
+        for (position, _) in backend.abi.return_endpoints.iter() {
             assert!(
-                membership.contains(executable),
-                "codegen seam facts should reference only root-member executables: {:?}",
-                fact.seam
+                membership.contains(position.executable()),
+                "emitted ABI endpoints reference only root-member executables: {position:?}"
             );
+        }
+        for wrapper in backend.construction_wrappers.iter() {
+            assert!(
+                membership.contains(wrapper.identity.executable()),
+                "runtime wrapper identity belongs to a root-member executable"
+            );
+            for member in wrapper.members.iter() {
+                assert!(
+                    membership.contains(&executable_symbol_for(world, &member.target)),
+                    "runtime wrapper targets belong to root-member executables"
+                );
+            }
         }
     }
 }
 
 fn single_boundary_descr<'a>(world: &'a World, session: &PullSession) -> &'a BoundaryDescr {
-    let (_, boundary_facts) = callable_owner_facts_for_test(session);
-    let boundaries = boundary_facts.keys().copied().collect::<Vec<_>>();
+    let boundaries = published_boundaries(session).into_iter().collect::<Vec<_>>();
     let [boundary] = boundaries.as_slice() else {
-        panic!(
-            "fixture should publish exactly one boundary contract: {:?}",
-            boundary_facts
-        )
+        panic!("fixture should publish exactly one boundary contract: {:?}", boundaries)
     };
     world.boundary(*boundary)
 }
 
 fn boundary_with_callable_arg<'a>(world: &'a World, session: &PullSession) -> &'a BoundaryDescr {
-    let (_, boundaries) = callable_owner_facts_for_test(session);
+    let boundaries = boundary_contributions(session);
     boundaries
-        .keys()
+        .iter()
+        .map(|(id, _)| id)
         .map(|boundary| world.boundary(*boundary))
         .find(|boundary| {
             boundary
-                .surface_arg_shapes
+                .surface_arg_layouts
                 .iter()
-                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+                .any(|layout| matches!(shape_descr(world, layout.structural), ShapeDescr::Callable(_)))
         })
         .unwrap_or_else(|| {
             panic!(
@@ -5540,10 +6141,10 @@ fn boundary_with_callable_arg<'a>(world: &'a World, session: &PullSession) -> &'
 
 fn callable_return_for_executable(
     world: &World,
-    plan: &MaterializedTransportPlan,
+    plan: &super::BackendProgram,
     executable: super::transport::ExecutableSymbol,
 ) -> super::transport::CallableId {
-    let returned = plan_shape_at(plan, &TransportPosition::ExecutableReturn { executable });
+    let returned = required_shape_at(plan, &TransportPosition::ExecutableReturn { executable });
     let ShapeDescr::Callable(callable) = shape_descr(world, returned) else {
         panic!(
             "fixture executable should return a callable shape, got {:?}",
@@ -5556,7 +6157,7 @@ fn callable_return_for_executable(
 fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(_) => true,
-        ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, *item)),
+        ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, item.structural)),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
     }
 }
@@ -5564,7 +6165,9 @@ fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
 fn first_callable_in_shape(world: &World, shape: ShapeId) -> Option<super::transport::CallableId> {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(callable) => Some(*callable),
-        ShapeDescr::Tuple(items) => items.iter().find_map(|item| first_callable_in_shape(world, *item)),
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .find_map(|item| first_callable_in_shape(world, item.structural)),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
     }
 }
@@ -5623,6 +6226,45 @@ fn capture_finished_producer_pokes(tel: &ConfiguredTelemetry) -> Rc<RefCell<Opti
     observed
 }
 
+fn assert_materialized_executable_fact_authority(world: &World, session: &PullSession) -> u64 {
+    let producer_pokes = session.producer_pokes();
+    let starts = world.work_start_tally();
+    assert!(
+        starts.blocked_waiter_expansion >= producer_pokes,
+        "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
+    );
+    assert_eq!(
+        starts.unclassified, 0,
+        "direct fact production must not start unsanctioned work"
+    );
+    assert_eq!(starts.root_scans, 0, "direct fact production must not scan roots");
+    for (executable, _) in session.memo().materialized_executables() {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        let job = Job::DeriveExecutableFacts(executable.clone());
+        assert!(
+            world.fact_revision(&fact).is_some(),
+            "demanded executable fact must publish"
+        );
+        assert_eq!(
+            world.job_outputs(&job),
+            vec![fact],
+            "each demanded executable key must have exactly its one direct producer",
+        );
+        let runtime_fact = FactKey::RuntimeDemand(executable.clone());
+        assert!(
+            world.fact_is_settled(&runtime_fact),
+            "each materialized executable must consume one settled RuntimeDemand fact",
+        );
+        assert!(
+            world
+                .job_outputs(&Job::DeriveRuntimeDemand(executable.clone()))
+                .contains(&runtime_fact),
+            "each runtime-demand value must come from its exact formula",
+        );
+    }
+    producer_pokes
+}
+
 fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {
     let tel = ConfiguredTelemetry::new();
     let jobs = JobTelemetry::new();
@@ -5657,11 +6299,9 @@ impl JobTelemetry {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
-            &["fz", "compiler2", "job"],
-            |_, _, _, _| {},
-            move |_, _, _, _, _, completion| stops.borrow_mut().push(completion.job.clone()),
-            |_, _, _, _| {},
+        telemetry.attach_raw_event2::<World, super::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, _, completion| stops.borrow_mut().push(completion.job.clone()),
         );
     }
 
@@ -5712,21 +6352,25 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);
     let types = world.types();
-    let descents = plan
-        .callable_owners
+    let wrappers = plan.construction_wrappers().iter().collect::<Vec<_>>();
+    assert!(
+        !wrappers.is_empty(),
+        "the fixture must retain actual construction wrappers"
+    );
+    let descents = wrappers
         .windows(2)
         .filter(|pair| {
-            let left = pair[0].position.executable();
-            let right = pair[1].position.executable();
+            let left = pair[0].identity.executable();
+            let right = pair[1].identity.executable();
             left.activation.function == right.activation.function
         })
         .filter(|pair| {
             types
-                .cmp_tys(
-                    &pair[0].position.executable().activation.input,
-                    &pair[1].position.executable().activation.input,
+                .cmp_activation_tys(
+                    &pair[0].identity.executable().activation.input,
+                    &pair[1].identity.executable().activation.input,
                 )
                 .is_gt()
         })
@@ -5767,11 +6411,9 @@ end
     let mut world = World::new();
     world.submit_code(Some("transport_multi_activation.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let (_driver, plan) = pull_backend_for_test(&tel, &mut world, root);
 
-    let reducer_inputs = plan
-        .position_layouts
-        .iter()
+    let reducer_inputs = retained_layouts(&plan)
         .filter(|(position, _)| {
             matches!(
                 position,
@@ -5781,7 +6423,7 @@ end
                 } if world.function_ref(executable.activation.function).name == "reduce_cont"
             )
         })
-        .map(|(position, layout)| (position.clone(), *layout))
+        .map(|(position, layout)| (position.clone(), layout))
         .collect::<Vec<_>>();
     assert!(
         reducer_inputs.len() > 1,
@@ -5793,7 +6435,7 @@ end
         };
         let descr = world.callable(*callable);
         assert_eq!(
-            descr.capture_lanes.len(),
+            callable_capture_lanes(&world, *callable).len(),
             1,
             "every activation reached by this reducer captures the mailbox callable, so the \
              input must carry its one lane: {position:?} {descr:?}"

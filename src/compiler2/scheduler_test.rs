@@ -4,9 +4,274 @@ use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, Wake
 use crate::compiler2::facts::ClaimShape;
 use crate::compiler2::facts::DerivationId;
 use crate::compiler2::scheduler::DerivationEffects;
+use crate::compiler2::scheduler::take_next_fact_change;
+use crate::compiler2::semantic::SemanticOrd;
+
+struct TestOrder;
+
+impl SemanticOrd<TestOrder> for u32 {
+    fn semantic_cmp(&self, other: &Self, _ctx: &TestOrder) -> std::cmp::Ordering {
+        self.cmp(other)
+    }
+}
+
+impl SemanticOrd<TestOrder> for &'static str {
+    fn semantic_cmp(&self, other: &Self, _ctx: &TestOrder) -> std::cmp::Ordering {
+        self.cmp(other)
+    }
+}
 
 type TestScheduler = Scheduler<u32, &'static str>;
 type TestStep = AppliedStep<u32, &'static str>;
+
+struct ExternalProduct(crate::compiler2::facts::FactState);
+
+#[test]
+#[should_panic(expected = "external dependencies cannot be published as scheduler facts")]
+fn external_product_cannot_gain_a_second_publisher_in_the_fact_table() {
+    let mut scheduler = TestScheduler::new();
+    let product = ExternalProduct(crate::compiler2::facts::FactState {
+        revision: None,
+        settled: false,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::new(),
+            vec!["product"],
+            vec!["product"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+}
+
+impl super::scheduler::ExternalDependencyStates<&'static str> for ExternalProduct {
+    fn external_state(&self, key: &&'static str) -> Option<crate::compiler2::facts::FactState> {
+        (*key == "product").then_some(self.0)
+    }
+}
+
+#[test]
+fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: false,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::from([FactUse::settled("product"), FactUse::current("input")]),
+        Vec::new(),
+        &product,
+        &TestOrder,
+    );
+    scheduler.complete_ordered_with_external(
+        &2,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::new(),
+            vec!["input"],
+            vec!["input"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(scheduler.pop(), None, "the remaining product wait is still unsettled");
+    product.0.settled = true;
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1], "all named waits are now satisfied");
+    assert_eq!(scheduler.facts().revision(&"product"), None);
+}
+
+#[test]
+fn replacing_external_reads_detaches_the_old_dependency() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    for reads in [HashSet::from([FactUse::current("product")]), HashSet::new()] {
+        scheduler.complete_ordered_with_external(
+            &1,
+            HashSet::new(),
+            vec![DerivationEffects::sole(reads, vec!["answer"], Vec::new(), true)],
+            &product,
+            &TestOrder,
+        );
+    }
+    product.0.revision = Some(2);
+    product.0.settled = false;
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(2),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert!(step.wakes.is_empty());
+    assert!(scheduler.facts().is_settled(&"answer"));
+    assert_eq!(scheduler.unfinal_reads(&1), 0);
+}
+
+#[test]
+fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    for (job, input, output) in [(1, "product", "answer"), (2, "answer", "downstream")] {
+        scheduler.complete_ordered_with_external(
+            &job,
+            HashSet::new(),
+            vec![DerivationEffects::sole(
+                HashSet::from([FactUse::current(input)]),
+                vec![output],
+                vec![output],
+                true,
+            )],
+            &product,
+            &TestOrder,
+        );
+    }
+    product.0.settled = false;
+    scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    scheduler.complete_ordered_with_external(
+        &3,
+        HashSet::from([FactUse::settled("downstream")]),
+        Vec::new(),
+        &product,
+        &TestOrder,
+    );
+    let step = scheduler.settle_quiescent_ordered_with_external(&["downstream"], &product, &TestOrder);
+    assert!(
+        !scheduler.facts().is_settled(&"downstream") && step.wakes.is_empty(),
+        "an empty job queue cannot certify the unsettled product's transitive consumers"
+    );
+    assert_eq!(scheduler.pop(), None);
+}
+
+#[test]
+fn an_unrelated_dirty_product_does_not_block_fact_quiescence() {
+    let mut scheduler = chain_a_b_c();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    while scheduler.pop().is_some() {}
+    let product = ExternalProduct(crate::compiler2::facts::FactState {
+        revision: Some(1),
+        settled: false,
+    });
+    assert!(!scheduler.facts().is_settled(&"c"));
+    scheduler.settle_quiescent_ordered_with_external(&["c"], &product, &TestOrder);
+    assert!(
+        scheduler.facts().is_settled(&"c"),
+        "only exact upstream product dependencies can prevent fact quiescence"
+    );
+}
+
+#[test]
+fn external_product_equal_validation_restores_finality_without_running_its_reader() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::from([FactUse::current("product")]),
+            vec!["answer"],
+            vec!["answer"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    assert!(scheduler.facts().is_settled(&"answer"));
+    assert_eq!(
+        scheduler.facts().revision(&"product"),
+        None,
+        "the product has no scheduler-owned slot"
+    );
+    for (before, after) in [(true, false), (false, true)] {
+        product.0.settled = after;
+        let step = scheduler.apply_external_changes_ordered(
+            vec![FactChange {
+                key: "product",
+                old_revision: Some(1),
+                new_revision: Some(1),
+                old_settled: before,
+                new_settled: after,
+            }],
+            &product,
+            &TestOrder,
+        );
+        assert!(
+            step.wakes.is_empty(),
+            "readiness alone must not evaluate a content reader"
+        );
+        assert_eq!(scheduler.facts().is_settled(&"answer"), after);
+        assert_eq!(scheduler.pop(), None);
+    }
+    product.0.revision = Some(2);
+    let step = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(2),
+            old_settled: true,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(enqueued_jobs(&step), vec![1]);
+    assert!(
+        scheduler.rebased(&1),
+        "changed replacing content rebases its exact reader"
+    );
+    assert!(!scheduler.facts().is_settled(&"answer"));
+    assert_eq!(scheduler.facts().revision(&"product"), None);
+}
 
 /// The jobs `step` newly started (`WakeDisposition::Enqueued`), in wake
 /// order, standing in for the retired `AppliedStep::enqueued` field: same
@@ -46,16 +311,61 @@ impl ClaimShape for &'static str {
     }
 }
 
+#[test]
+fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology() {
+    let change = |key: &'static str, revision: u64| crate::compiler2::FactChange {
+        key,
+        old_revision: revision.checked_sub(1),
+        new_revision: Some(revision),
+        old_settled: false,
+        new_settled: false,
+    };
+    let mut pending = vec![change("a", 1), change("c", 2), change("b", 3), change("c", 4)];
+    let mut revisions = Vec::new();
+    while let Some(change) = take_next_fact_change(&mut pending, &TestOrder) {
+        revisions.push(change.new_revision.expect("fixture movements have revisions"));
+    }
+    assert_eq!(
+        revisions,
+        vec![1, 3, 4, 2],
+        "typed minimum keys drain first, while interleaved equal keys retain newest-first chronology",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
+    let mut scheduler = TestScheduler::new();
+    let step = complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["answer"],
+        vec!["answer"],
+    );
+
+    let AppliedStep {
+        changed,
+        movements,
+        wakes,
+        blocked,
+    } = step;
+    assert_eq!(changed.len(), 1);
+    assert_eq!(movements.len(), 1);
+    assert!(wakes.is_empty());
+    assert!(blocked.is_empty());
+    assert_eq!(
+        scheduler.output_keys(&1).iter().copied().collect::<Vec<_>>(),
+        vec!["answer"]
+    );
+}
+
 fn current(fact: &'static str) -> FactUse<&'static str> {
     FactUse::current(fact)
 }
 
 fn settled(fact: &'static str) -> FactUse<&'static str> {
     FactUse::settled(fact)
-}
-
-fn settled_presence(fact: &'static str) -> FactUse<&'static str> {
-    FactUse::settled_presence(fact)
 }
 
 /// One job, one answer: the whole-body derivation every job that does not
@@ -71,10 +381,11 @@ fn complete(
     changed: Vec<&'static str>,
 ) -> AppliedStep<u32, &'static str> {
     let concluded = waits.is_empty();
-    scheduler.complete(
+    scheduler.complete_ordered(
         &job,
         waits,
         vec![DerivationEffects::sole(reads, outputs, changed, concluded)],
+        &TestOrder,
     )
 }
 
@@ -105,58 +416,7 @@ fn complete_derivations(
             concluded,
         })
         .collect();
-    scheduler.complete(&job, waits, effects)
-}
-
-#[test]
-fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
-    let mut scheduler = TestScheduler::new();
-    let producer = 1_u32;
-    let waiter = 2_u32;
-
-    complete(
-        &mut scheduler,
-        waiter,
-        HashSet::new(),
-        HashSet::from([settled_presence("summary")]),
-        Vec::new(),
-        Vec::new(),
-    );
-    let appeared = complete(
-        &mut scheduler,
-        producer,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["summary"],
-        vec!["summary"],
-    );
-    assert_eq!(
-        enqueued_jobs(&appeared),
-        vec![waiter],
-        "settled-presence waiters should wake when the fact first settles",
-    );
-    let _ = scheduler.pop();
-    complete(
-        &mut scheduler,
-        waiter,
-        HashSet::from([settled_presence("summary")]),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    let moved = complete(
-        &mut scheduler,
-        producer,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["summary"],
-        vec!["summary"],
-    );
-    assert!(
-        !enqueued_jobs(&moved).contains(&waiter),
-        "settled-presence readers are readiness subscribers, not content subscribers",
-    );
+    scheduler.complete_ordered(&job, waits, effects, &TestOrder)
 }
 
 #[test]
@@ -181,7 +441,7 @@ fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps = DependencyIndex::new();
     deps.replace_waits(3_u32, HashSet::from([current("foo")]));
 
-    let waiters = deps.waiters(&current("foo"));
+    let waiters = deps.waiters(&current("foo"), &TestOrder);
     assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
 }
 
@@ -541,7 +801,7 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
         HashSet::from([current("module_surface"), current("function_defined")]),
         "blocked facts should be the exact keys the completed job is waiting on"
     );
-    let unresolved = scheduler.unresolved();
+    let unresolved = scheduler.unresolved(&TestOrder);
     assert_eq!(
         unresolved.into_iter().map(|wait| wait.fact).collect::<HashSet<_>>(),
         HashSet::from([current("module_surface"), current("function_defined")]),
@@ -916,17 +1176,14 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
 /// only that someone is now deriving the key. Waking every `Current` reader of
 /// nothing is work with no evidence behind it.
 ///
-/// The other two questions the slot answers still move, and must: the fact is
-/// PRESENT (a `Settled` waiter can now be satisfied by it, and only a present
-/// fact ever settles) and it is SETTLED, so both the settled and the
-/// settled-presence waiters wake on the readiness edge alone.
+/// The other question the slot answers still moves, and must: the fact is
+/// SETTLED, so the settled waiter wakes on the readiness edge alone.
 #[test]
 fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader() {
     let mut scheduler = TestScheduler::new();
     let writer = 1_u32;
     let reader = 2_u32;
     let settled_waiter = 3_u32;
-    let presence_waiter = 4_u32;
 
     complete(
         &mut scheduler,
@@ -944,15 +1201,6 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
         Vec::new(),
         Vec::new(),
     );
-    complete(
-        &mut scheduler,
-        presence_waiter,
-        HashSet::new(),
-        HashSet::from([settled_presence("cum_ret")]),
-        Vec::new(),
-        Vec::new(),
-    );
-
     // The claim lists the key as an output but marks nothing changed: the
     // publisher is deriving it and has reached bottom.
     let step = complete(
@@ -982,8 +1230,8 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
     );
     assert_eq!(
         enqueued_jobs(&step),
-        vec![settled_waiter, presence_waiter],
-        "presence and settledness DID move, so the settled and settled-presence waiters wake",
+        vec![settled_waiter],
+        "settledness DID move, so the settled waiter wakes",
     );
 }
 
@@ -1047,8 +1295,8 @@ fn compiler2_scheduler_first_cumulative_content_after_bottom_wakes_the_reader_on
 /// content a reader can see and act on -- `CallSiteSummary`'s `Unresolved`
 /// is a reader-visible answer, not the absence of one. So its first
 /// appearance stays a movement even when the publisher lists nothing changed,
-/// and the demand facts (`Activation`, `Executable`) that gate whole cones on
-/// presence keep waking their readers the way they always have.
+/// and the demand facts (`Activation`, `Executable`) that gate readers on
+/// presence keep waking those readers.
 #[test]
 fn compiler2_scheduler_replacing_appearance_wakes_current_readers_unmarked() {
     let mut scheduler = TestScheduler::new();
@@ -1646,7 +1894,7 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
         "counting alone can never finalize a cycle — each clean member counts the other as unfinal",
     );
 
-    let drained = scheduler.settle_quiescent(&["cum_a"]);
+    let drained = scheduler.settle_quiescent_ordered(&["cum_a"], &TestOrder);
 
     assert!(
         scheduler.facts().is_settled(&"cum_a") && scheduler.facts().is_settled(&"cum_b"),
@@ -1673,6 +1921,332 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
     );
 }
 
+#[test]
+fn quiescing_one_answer_certifies_its_exact_derivations_cooutputs() {
+    let mut scheduler = TestScheduler::new();
+    for changed in [vec!["cum_cycle", "answer"], Vec::new()] {
+        complete(
+            &mut scheduler,
+            1,
+            HashSet::from([current("cum_cycle")]),
+            HashSet::new(),
+            vec!["cum_cycle", "answer"],
+            changed,
+        );
+        while scheduler.pop().is_some() {}
+    }
+    assert!(!scheduler.facts().is_settled(&"cum_cycle"));
+    assert!(!scheduler.facts().is_settled(&"answer"));
+    let revisions = ["answer", "cum_cycle"].map(|key| scheduler.facts().revision(&key));
+
+    let step = scheduler.settle_quiescent_ordered(&["answer"], &TestOrder);
+
+    assert!(scheduler.facts().is_settled(&"answer"));
+    assert!(
+        scheduler.facts().is_settled(&"cum_cycle"),
+        "one derivation's outputs share the finality of its exact reads"
+    );
+    assert_eq!(
+        step.changed.iter().map(|change| change.key).collect::<HashSet<_>>(),
+        HashSet::from(["answer", "cum_cycle"])
+    );
+    assert!(
+        step.changed
+            .iter()
+            .all(|change| change.readiness_changed() && !change.content_changed())
+    );
+    assert_eq!(
+        ["answer", "cum_cycle"].map(|key| scheduler.facts().revision(&key)),
+        revisions
+    );
+    assert!(
+        scheduler
+            .settle_quiescent_ordered(&["cum_cycle"], &TestOrder)
+            .changed
+            .is_empty()
+    );
+}
+
+#[test]
+fn cooutput_arbitration_preserves_other_derivations_and_other_publishers() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        20,
+        HashSet::new(),
+        HashSet::from([current("missing_ground")]),
+        vec!["ground"],
+        vec!["ground"],
+    );
+    complete(
+        &mut scheduler,
+        21,
+        HashSet::from([current("ground")]),
+        HashSet::new(),
+        vec!["shared"],
+        vec!["shared"],
+    );
+    for changed in [true, false] {
+        complete_derivations(
+            &mut scheduler,
+            PUBLISHER,
+            HashSet::from([current("missing")]),
+            vec![
+                (
+                    D1,
+                    HashSet::from([current("cum_cycle")]),
+                    vec!["cum_cycle", "answer", "shared"],
+                    if changed {
+                        vec!["cum_cycle", "answer", "shared"]
+                    } else {
+                        vec![]
+                    },
+                    true,
+                ),
+                (
+                    D2,
+                    HashSet::from([current("cum_other")]),
+                    vec!["cum_other", "other"],
+                    if changed { vec!["cum_other", "other"] } else { vec![] },
+                    true,
+                ),
+                (
+                    DerivationId(3),
+                    HashSet::new(),
+                    vec!["dirty"],
+                    if changed { vec!["dirty"] } else { vec![] },
+                    false,
+                ),
+            ],
+        );
+        while scheduler.pop().is_some() {}
+    }
+    let step = scheduler.settle_quiescent_ordered(&["answer"], &TestOrder);
+    assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"cum_cycle"));
+    for key in ["shared", "other", "cum_other", "dirty", "ground"] {
+        assert!(
+            !scheduler.facts().is_settled(&key),
+            "unselected ownership of {key} must stand"
+        );
+    }
+    assert_eq!(
+        step.changed.iter().map(|change| change.key).collect::<HashSet<_>>(),
+        HashSet::from(["answer", "cum_cycle"])
+    );
+}
+
+#[test]
+fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: false,
+    });
+    for changed in [vec!["cum_cycle", "answer"], vec![]] {
+        scheduler.complete_ordered_with_external(
+            &1,
+            HashSet::new(),
+            vec![DerivationEffects::sole(
+                HashSet::from([current("cum_cycle"), current("product")]),
+                vec!["cum_cycle", "answer"],
+                changed,
+                true,
+            )],
+            &product,
+            &TestOrder,
+        );
+        while scheduler.pop().is_some() {}
+    }
+    assert!(
+        scheduler
+            .settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder)
+            .changed
+            .is_empty()
+    );
+    assert!(!scheduler.facts().is_settled(&"answer") && !scheduler.facts().is_settled(&"cum_cycle"));
+    product.0.settled = true;
+    scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    scheduler.settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder);
+    assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"cum_cycle"));
+    scheduler.complete_ordered_with_external(
+        &2,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::from([current("answer")]),
+            vec![],
+            vec![],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    let revisions = ["answer", "cum_cycle"].map(|key| scheduler.facts().revision(&key));
+
+    product.0.settled = false;
+    let dirty = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert!(
+        dirty.wakes.is_empty(),
+        "Current readers do not run on readiness-only movement"
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"answer") && !scheduler.facts().is_settled(&"cum_cycle"),
+        "the next dependency edge must unfinalize every certified claim"
+    );
+    assert_eq!(
+        dirty
+            .movements
+            .iter()
+            .filter(|movement| ["answer", "cum_cycle"].contains(&movement.key))
+            .count(),
+        2
+    );
+    product.0.settled = true;
+    let restored = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert!(restored.wakes.is_empty());
+    assert_eq!(
+        ["answer", "cum_cycle"].map(|key| scheduler.facts().revision(&key)),
+        revisions
+    );
+    scheduler.settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder);
+    assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"cum_cycle"));
+    product.0.revision = Some(2);
+    let moved = scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(2),
+            old_settled: true,
+            new_settled: true,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert_eq!(enqueued_jobs(&moved), vec![1]);
+    assert_eq!(scheduler.pop(), Some(1));
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::from([current("cum_cycle"), current("product")]),
+            vec!["cum_cycle", "answer"],
+            vec![],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    scheduler.settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder);
+    assert_eq!(
+        scheduler.pop(),
+        None,
+        "equal reproduction does not wake the Current answer reader"
+    );
+    assert_eq!(
+        ["answer", "cum_cycle"].map(|key| scheduler.facts().revision(&key)),
+        revisions
+    );
+}
+
+#[test]
+fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
+    use crate::compiler2::facts::{FactChange, FactState};
+    let mut scheduler = TestScheduler::new();
+    let mut product = ExternalProduct(FactState {
+        revision: Some(1),
+        settled: true,
+    });
+    scheduler.complete_ordered_with_external(
+        &10,
+        HashSet::from([current("missing")]),
+        vec![DerivationEffects::sole(
+            HashSet::new(),
+            vec!["ground"],
+            vec!["ground"],
+            false,
+        )],
+        &product,
+        &TestOrder,
+    );
+    scheduler.complete_ordered_with_external(
+        &1,
+        HashSet::new(),
+        vec![DerivationEffects::sole(
+            HashSet::from([current("ground"), current("product")]),
+            vec!["answer", "coanswer"],
+            vec!["answer", "coanswer"],
+            true,
+        )],
+        &product,
+        &TestOrder,
+    );
+    scheduler.settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder);
+    assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"coanswer"));
+    product.0.settled = false;
+    scheduler.apply_external_changes_ordered(
+        vec![FactChange {
+            key: "product",
+            old_revision: Some(1),
+            new_revision: Some(1),
+            old_settled: true,
+            new_settled: false,
+        }],
+        &product,
+        &TestOrder,
+    );
+    assert!(!scheduler.facts().is_settled(&"answer"));
+
+    scheduler.complete_ordered_with_external(
+        &10,
+        HashSet::new(),
+        vec![DerivationEffects::sole(HashSet::new(), vec!["ground"], vec![], true)],
+        &product,
+        &TestOrder,
+    );
+
+    assert!(scheduler.facts().is_settled(&"ground"));
+    assert!(
+        !scheduler.facts().is_settled(&"answer") && !scheduler.facts().is_settled(&"coanswer"),
+        "settling old arbitrated ground cannot erase the still-unquiet new product edge"
+    );
+    assert!(
+        scheduler
+            .settle_quiescent_ordered_with_external(&["answer"], &product, &TestOrder)
+            .changed
+            .is_empty()
+    );
+}
+
 /// The arbiter is not a licence to call anything final. A fact whose own
 /// publisher is dirty has not been re-derived from the ground it stands on,
 /// and no amount of drain quiet changes that.
@@ -1691,7 +2265,7 @@ fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_d
     // it, which is the shape a blocked publisher leaves behind.
     while scheduler.pop().is_some() {}
 
-    let step = scheduler.settle_quiescent(&["a", "c"]);
+    let step = scheduler.settle_quiescent_ordered(&["a", "c"], &TestOrder);
 
     assert!(!scheduler.facts().is_settled(&"a"), "a's own publisher never re-ran");
     assert!(
@@ -1720,7 +2294,7 @@ fn compiler2_scheduler_the_drain_arbiter_does_nothing_while_work_is_queued() {
     );
     assert_eq!(scheduler.pending_jobs(), 1, "job_a is queued to re-run");
 
-    let step = scheduler.settle_quiescent(&["c"]);
+    let step = scheduler.settle_quiescent_ordered(&["c"], &TestOrder);
 
     assert!(
         step.changed.is_empty(),
@@ -2172,7 +2746,7 @@ fn compiler2_scheduler_the_drain_arbiter_settles_a_clean_answer_beside_a_dirty_s
         "x's own answer is clean but reads a fact that can still move",
     );
 
-    let drained = scheduler.settle_quiescent(&["x", "y"]);
+    let drained = scheduler.settle_quiescent_ordered(&["x", "y"], &TestOrder);
 
     assert!(
         scheduler.facts().is_settled(&"x"),
@@ -2404,8 +2978,8 @@ fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
     }
 
     assert_eq!(
-        format!("{:?}", ascending.unresolved()),
-        format!("{:?}", descending.unresolved()),
+        format!("{:?}", ascending.unresolved(&TestOrder)),
+        format!("{:?}", descending.unresolved(&TestOrder)),
         "the same standing waits should render the same however they were recorded"
     );
 }

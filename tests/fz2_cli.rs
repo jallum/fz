@@ -1,23 +1,469 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{metadata, read_to_string, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fz::causal::{CausalReport, parse_public_trace};
+use fz::causal::{CausalReport, FormulaWork, parse_public_trace};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TargetFixture {
+    source: &'static str,
+    golden: &'static str,
+}
+
+const TARGET_FIXTURES: [TargetFixture; 3] = [
+    TargetFixture {
+        source: "fixtures2/00420_enum_take_drop_split.fz",
+        golden: "fixtures2/behavior/enum_take_drop_split.fz",
+    },
+    TargetFixture {
+        source: "fixtures2/behavior/enum_predicate_search.fz",
+        golden: "fixtures2/behavior/enum_predicate_search.fz",
+    },
+    TargetFixture {
+        source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationDoor {
+    Interp,
+    Run,
+}
+
+impl ObservationDoor {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Interp => "interp",
+            Self::Run => "run",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationTelemetry {
+    PublicJsonl,
+}
+
+impl ObservationTelemetry {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PublicJsonl => "public-jsonl",
+        }
+    }
+
+    fn append_args(self, path: &Path, args: &mut Vec<OsString>) {
+        match self {
+            Self::PublicJsonl => {
+                args.push("--log-telemetry".into());
+                args.push(path.into());
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationDump {
+    Backend,
+    Native,
+}
+
+impl ObservationDump {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Backend => "backend",
+            Self::Native => "native",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservationEnvironment {
+    inherited: bool,
+    fixed_overrides: &'static [(&'static str, &'static str)],
+}
+
+impl std::fmt::Display for ObservationEnvironment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(if self.inherited { "inherited" } else { "fixed" })?;
+        for (name, value) in self.fixed_overrides {
+            write!(formatter, "+{name}={value}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservationSpec {
+    door: ObservationDoor,
+    telemetry: ObservationTelemetry,
+    dump: ObservationDump,
+    environment: ObservationEnvironment,
+}
+
+const TARGET_OBSERVATION_SPEC: ObservationSpec = ObservationSpec {
+    door: ObservationDoor::Interp,
+    telemetry: ObservationTelemetry::PublicJsonl,
+    dump: ObservationDump::Backend,
+    environment: ObservationEnvironment {
+        inherited: true,
+        fixed_overrides: &[],
+    },
+};
+
+impl ObservationSpec {
+    fn invocation(self, fixture: TargetFixture, trace: &Path, dump: &Path) -> ObservationInvocation {
+        let mut args = Vec::with_capacity(6);
+        self.telemetry.append_args(trace, &mut args);
+        args.push(self.door.name().into());
+        args.push("--dump".into());
+        args.push(format!("{}={}", self.dump.name(), dump.display()).into());
+        args.push(fixture.source.into());
+        ObservationInvocation {
+            args,
+            environment: self.environment,
+        }
+    }
+}
+
+impl std::fmt::Display for ObservationSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "door={} telemetry={} dump={} env={}",
+            self.door.name(),
+            self.telemetry.name(),
+            self.dump.name(),
+            self.environment,
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ObservationInvocation {
+    args: Vec<OsString>,
+    environment: ObservationEnvironment,
+}
+
+impl ObservationInvocation {
+    fn command(&self) -> Command {
+        self.configure(Command::new(FZ2_BIN))
+    }
+
+    fn configure(&self, mut command: Command) -> Command {
+        if !self.environment.inherited {
+            command.env_clear();
+        }
+        command.envs(self.environment.fixed_overrides.iter().copied());
+        command.args(&self.args);
+        command
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationProcess {
+    First,
+    Second,
+}
+
+impl ObservationProcess {
+    const ALL: [Self; 2] = [Self::First, Self::Second];
+
+    const fn phase(self) -> &'static str {
+        match self {
+            Self::First => "first-process",
+            Self::Second => "second-process",
+        }
+    }
+}
 
 fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
     let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     temp_dir().join(format!("{}_{}_{}{}", prefix, id(), nonce, suffix))
 }
 
+fn sum_reporting_counts(counts: impl IntoIterator<Item = (String, u64)>) -> BTreeMap<String, u64> {
+    counts.into_iter().fold(BTreeMap::new(), |mut sums, (identity, count)| {
+        *sums.entry(identity).or_default() += count;
+        sums
+    })
+}
+
 fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
+}
+
+#[derive(Debug)]
+struct ObservationFailure {
+    spec: ObservationSpec,
+    fixture: &'static str,
+    phase: &'static str,
+    ratchet: &'static str,
+    detail: String,
+}
+
+impl std::fmt::Display for ObservationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "fixture={} {} phase={} ratchet={}: {}",
+            self.fixture, self.spec, self.phase, self.ratchet, self.detail,
+        )
+    }
+}
+
+impl std::error::Error for ObservationFailure {}
+
+fn observation_failure(
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    phase: &'static str,
+    ratchet: &'static str,
+    detail: impl Into<String>,
+) -> ObservationFailure {
+    ObservationFailure {
+        spec,
+        fixture: fixture.source,
+        phase,
+        ratchet,
+        detail: detail.into(),
+    }
+}
+
+struct OwnedObservationFile {
+    path: Option<PathBuf>,
+}
+
+impl OwnedObservationFile {
+    fn new(prefix: &str, suffix: &str) -> Self {
+        Self {
+            path: Some(unique_temp_path(prefix, suffix)),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.path
+            .as_deref()
+            .expect("owned observation file was already consumed")
+    }
+
+    fn read_and_remove(mut self, request: ProcessRequest, artifact: &str) -> Result<Vec<u8>, ObservationFailure> {
+        let path = self.path();
+        let bytes = std::fs::read(path).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                request.process.phase(),
+                "observation-production",
+                format!("read {artifact} {}: {error}", path.display()),
+            )
+        })?;
+        remove_file(path).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                request.process.phase(),
+                "observation-production",
+                format!("remove {artifact} {}: {error}", path.display()),
+            )
+        })?;
+        self.path = None;
+        Ok(bytes)
+    }
+}
+
+impl Drop for OwnedObservationFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = remove_file(path);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProcessObservation {
+    stdout: String,
+    stderr: Vec<u8>,
+    report: CausalReport,
+    construction_targets: BTreeSet<String>,
+    backend: String,
+}
+
+struct TargetObservation<T = ProcessObservation> {
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    processes: [T; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessRequest {
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    process: ObservationProcess,
+}
+
+fn produce_target_observations<T, E>(
+    spec: ObservationSpec,
+    mut produce_process: impl FnMut(ProcessRequest) -> Result<T, E>,
+) -> Result<Vec<TargetObservation<T>>, E> {
+    TARGET_FIXTURES
+        .into_iter()
+        .map(|fixture| {
+            let request = |process| ProcessRequest { spec, fixture, process };
+            Ok(TargetObservation {
+                spec,
+                fixture,
+                processes: [
+                    produce_process(request(ObservationProcess::First))?,
+                    produce_process(request(ObservationProcess::Second))?,
+                ],
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn reporting_counts_add_canonical_equivalent_rows() {
+    assert_eq!(
+        sum_reporting_counts([("same identity".to_string(), 1), ("same identity".to_string(), 2)]),
+        BTreeMap::from([("same identity".to_string(), 3)])
+    );
+}
+
+#[test]
+fn target_fixture_observations_call_the_process_producer_exactly_twice_per_fixture() {
+    #[derive(Debug, PartialEq, Eq)]
+    struct ProcessSentinel {
+        invocation: usize,
+        fixture: TargetFixture,
+        process: ObservationProcess,
+    }
+
+    let mut invocations = 0;
+    let observations = produce_target_observations(TARGET_OBSERVATION_SPEC, |request| {
+        invocations += 1;
+        Ok::<_, std::convert::Infallible>(ProcessSentinel {
+            invocation: invocations,
+            fixture: request.fixture,
+            process: request.process,
+        })
+    })
+    .expect("the sentinel producer is infallible");
+
+    assert_eq!(observations.len(), 3, "one bundle belongs to each fixture");
+    assert_eq!(invocations, 6, "each bundle needs two independent compiler processes");
+    for (fixture_index, observation) in observations.iter().enumerate() {
+        assert_eq!(observation.fixture, TARGET_FIXTURES[fixture_index]);
+        assert_eq!(observation.spec, TARGET_OBSERVATION_SPEC);
+        assert_eq!(observation.processes[0].fixture, observation.fixture);
+        assert_eq!(observation.processes[1].fixture, observation.fixture);
+        assert_eq!(observation.processes[0].process, ObservationProcess::First);
+        assert_eq!(observation.processes[1].process, ObservationProcess::Second);
+        assert_ne!(
+            observation.processes[0].invocation, observation.processes[1].invocation,
+            "a bundle must not clone one process result into both comparison slots"
+        );
+        assert_eq!(
+            [observation.processes[0].invocation, observation.processes[1].invocation],
+            [fixture_index * 2 + 1, fixture_index * 2 + 2],
+            "fixture and process production order must remain deterministic"
+        );
+    }
+}
+
+fn compile_process_observation(request: ProcessRequest) -> Result<ProcessObservation, ObservationFailure> {
+    let phase = request.process.phase();
+    let trace = OwnedObservationFile::new(&format!("fz2_target_{phase}"), ".jsonl");
+    let backend = OwnedObservationFile::new(&format!("fz2_target_{phase}"), ".backend");
+    let invocation = request.spec.invocation(request.fixture, trace.path(), backend.path());
+    let output = invocation.command().output().map_err(|error| {
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("spawn compiler process: {error}"),
+        )
+    })?;
+    if !output.status.success() {
+        return Err(observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!(
+                "compiler process exited {:?}; stdout={:?} stderr={:?}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ),
+        ));
+    }
+
+    let trace = trace.read_and_remove(request, "public trace")?;
+    let backend = backend.read_and_remove(request, "backend dump")?;
+    let report = std::panic::catch_unwind(|| CausalReport::derive(&parse_public_trace(&trace))).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic");
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("decode/replay public trace panicked: {detail}"),
+        )
+    })?;
+
+    let construction_targets = report
+        .formulas
+        .keys()
+        .filter(|identity| {
+            serde_json::from_str::<serde_json::Value>(identity)
+                .ok()
+                .and_then(|identity| {
+                    identity
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|kind| kind == "DeriveCallableConstructionTarget")
+        })
+        .cloned()
+        .collect();
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("runtime stdout is not UTF-8: {error}"),
+        )
+    })?;
+    Ok(ProcessObservation {
+        stdout,
+        stderr: output.stderr,
+        report,
+        construction_targets,
+        backend: String::from_utf8(backend).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                phase,
+                "observation-production",
+                format!("backend dump is not UTF-8: {error}"),
+            )
+        })?,
+    })
 }
 
 fn run_fz2_without_color(args: &[&OsStr]) -> Output {
@@ -229,6 +675,314 @@ fn assert_file_contains(path: &Path, needle: &str, context: &str) {
     );
 }
 
+fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, ObservationFailure> {
+    let expected = fixture_expected_stdout(observation.fixture.golden);
+    let mut construction_targets = 0;
+    for (process, process_observation) in ObservationProcess::ALL.into_iter().zip(&observation.processes) {
+        let phase = process.phase();
+        let fail =
+            |detail: String| observation_failure(observation.spec, observation.fixture, phase, "public-trace", detail);
+        if normalize_stdout(&process_observation.stdout) != normalize_stdout(&expected) {
+            return Err(fail(format!(
+                "runtime stdout differs from the fixture golden: {:?}",
+                process_observation.stdout
+            )));
+        }
+        if !process_observation.stderr.is_empty() {
+            return Err(fail(format!(
+                "compiler process wrote stderr: {}",
+                String::from_utf8_lossy(&process_observation.stderr)
+            )));
+        }
+        let report = &process_observation.report;
+        if report.recursive_search.searches == 0 {
+            return Err(fail("recursive-search population is empty".to_string()));
+        }
+        if report.recursive_groups.is_empty() {
+            return Err(fail("successful recursive publication population is empty".to_string()));
+        }
+        let settled_members = report.recursive_groups.values().map(Vec::len).sum::<usize>();
+        let published_members = report.product_totals().recursive_members as usize;
+        if settled_members != published_members {
+            return Err(fail(format!(
+                "recursive settlement membership ({settled_members}) differs from publication membership ({published_members})"
+            )));
+        }
+        if let Some(gap) = report.undefined_first_uses.first() {
+            return Err(fail(format!("public trace used an undefined raw id first: {gap:?}")));
+        }
+        if report.canon.types() == 0 || report.canon.functions() == 0 {
+            return Err(fail("public trace canon dictionary is empty".to_string()));
+        }
+        if observation.fixture.source.ends_with("fz_f98_range_map_converges.fz")
+            && let Some(unattributed) = report.uncaused.first()
+        {
+            return Err(fail(format!("evaluation is unattributed: {unattributed:?}")));
+        }
+        if let Some(undefined) = process_observation
+            .construction_targets
+            .iter()
+            .find(|identity| identity.contains("?ty:"))
+        {
+            return Err(fail(format!(
+                "callable-construction target surface has an undefined canonical type: {undefined}"
+            )));
+        }
+        construction_targets += process_observation.construction_targets.len();
+    }
+    Ok(construction_targets)
+}
+
+fn causal_work_ratchet(observation: &TargetObservation) -> Result<(), ObservationFailure> {
+    let fail = |detail: String| {
+        observation_failure(
+            observation.spec,
+            observation.fixture,
+            "cross-process-comparison",
+            "causal-work",
+            detail,
+        )
+    };
+    let [first, second] = &observation.processes;
+    if first.stdout != second.stdout {
+        return Err(fail("runtime output moved across processes".to_string()));
+    }
+    let first = first.report.canonical_multiset();
+    let second = second.report.canonical_multiset();
+    if first.len() <= 1_000 {
+        return Err(fail(format!(
+            "canonical work comparand is vacuous: {} entries",
+            first.len()
+        )));
+    }
+    if first != second {
+        let divergence = first
+            .iter()
+            .find(|(key, count)| second.get(*key) != Some(count))
+            .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
+        return Err(fail(format!(
+            "canonical work differs; first divergence: {divergence:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn backend_identity_ratchet(observation: &TargetObservation) -> Result<usize, ObservationFailure> {
+    let fail =
+        |phase, detail| observation_failure(observation.spec, observation.fixture, phase, "backend-identity", detail);
+    for (process, process_observation) in ObservationProcess::ALL.into_iter().zip(&observation.processes) {
+        let phase = process.phase();
+        if process_observation.backend.len() <= 1_000 {
+            return Err(fail(
+                phase,
+                format!("backend dump is vacuous: {} bytes", process_observation.backend.len()),
+            ));
+        }
+        if process_observation.backend.contains("Ty(") {
+            return Err(fail(phase, "backend dump carries a raw type interner id".to_string()));
+        }
+    }
+
+    let [first, second] = &observation.processes;
+    if first.construction_targets != second.construction_targets {
+        return Err(fail(
+            "cross-process-comparison",
+            "canonical callable-construction target identities differ".to_string(),
+        ));
+    }
+    if first.backend != second.backend {
+        let divergence = first
+            .backend
+            .lines()
+            .zip(second.backend.lines())
+            .position(|(left, right)| left != right);
+        return Err(fail(
+            "cross-process-comparison",
+            format!(
+                "canonical backend differs first at line {divergence:?}: first={:?} second={:?}",
+                divergence.and_then(|at| first.backend.lines().nth(at)),
+                divergence.and_then(|at| second.backend.lines().nth(at)),
+            ),
+        ));
+    }
+    Ok(first.construction_targets.len())
+}
+
+fn synthetic_process_observation(fixture: TargetFixture) -> ProcessObservation {
+    ProcessObservation {
+        stdout: fixture_expected_stdout(fixture.golden),
+        stderr: Vec::new(),
+        report: CausalReport::default(),
+        construction_targets: BTreeSet::new(),
+        backend: "x".repeat(1_001),
+    }
+}
+
+#[test]
+fn target_observation_consumer_failures_retain_exact_attribution() {
+    let fixture = TARGET_FIXTURES[0];
+    let base = synthetic_process_observation(fixture);
+
+    let public = public_trace_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base.clone(), base.clone()],
+    })
+    .expect_err("an empty public report must fail");
+    assert_eq!(public.phase, "first-process");
+    assert_eq!(public.ratchet, "public-trace");
+
+    let mut changed_output = base.clone();
+    changed_output.stdout.push('!');
+    let causal = causal_work_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base.clone(), changed_output],
+    })
+    .expect_err("different process output must fail");
+    assert_eq!(causal.phase, "cross-process-comparison");
+    assert_eq!(causal.ratchet, "causal-work");
+
+    let mut changed_backend = base.clone();
+    changed_backend.backend.push('!');
+    let backend = backend_identity_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base, changed_backend],
+    })
+    .expect_err("different backend artifacts must fail");
+    assert_eq!(backend.phase, "cross-process-comparison");
+    assert_eq!(backend.ratchet, "backend-identity");
+
+    for failure in [public, causal, backend] {
+        let context = failure.to_string();
+        assert!(context.contains(fixture.source));
+        assert!(context.contains("door=interp telemetry=public-jsonl dump=backend"));
+        assert!(context.contains("phase="));
+        assert!(context.contains("ratchet="));
+    }
+}
+
+#[test]
+fn observation_spec_moves_invocation_and_failure_context_together() {
+    let changed = ObservationSpec {
+        door: ObservationDoor::Run,
+        telemetry: ObservationTelemetry::PublicJsonl,
+        dump: ObservationDump::Native,
+        environment: ObservationEnvironment {
+            inherited: false,
+            fixed_overrides: &[("FZ_OBSERVATION_TEST", "isolated")],
+        },
+    };
+    let fixture = TARGET_FIXTURES[0];
+    let trace = Path::new("trace.jsonl");
+    let dump = Path::new("artifact.dump");
+    let normal = TARGET_OBSERVATION_SPEC.invocation(fixture, trace, dump);
+    let changed_invocation = changed.invocation(fixture, trace, dump);
+
+    assert_ne!(changed_invocation, normal);
+    let command = changed_invocation.command();
+    assert_eq!(
+        command.get_args().map(OsStr::to_owned).collect::<Vec<_>>(),
+        [
+            "--log-telemetry",
+            "trace.jsonl",
+            "run",
+            "--dump",
+            "native=artifact.dump",
+            fixture.source,
+        ]
+        .map(OsString::from)
+        .to_vec()
+    );
+
+    const AMBIENT_KEY: &str = "FZ_TFN31_AMBIENT_SENTINEL_7A16D2";
+    const AMBIENT_VALUE: &str = "visible-only-when-inherited";
+    let ambient_line = format!("{AMBIENT_KEY}={AMBIENT_VALUE}");
+    let environment = |invocation: &ObservationInvocation| {
+        let mut child = Command::new("/bin/sh");
+        child.args(["-c", "/usr/bin/env"]);
+        child.env(AMBIENT_KEY, AMBIENT_VALUE);
+        let output = invocation
+            .configure(child)
+            .output()
+            .expect("run controlled environment child");
+        assert!(output.status.success(), "controlled environment child must succeed");
+        String::from_utf8(output.stdout).expect("controlled environment is UTF-8")
+    };
+    let inherited_environment = environment(&normal);
+    let fixed_environment = environment(&changed_invocation);
+    assert!(
+        inherited_environment.lines().any(|line| line == ambient_line),
+        "an inherited observation environment must preserve the child's ambient sentinel"
+    );
+    assert!(
+        fixed_environment.lines().all(|line| line != ambient_line),
+        "a fixed observation environment must clear the child's ambient sentinel"
+    );
+    assert!(
+        fixed_environment
+            .lines()
+            .any(|line| line == "FZ_OBSERVATION_TEST=isolated"),
+        "a fixed observation environment must apply its declared overrides"
+    );
+
+    let failure = observation_failure(changed, fixture, "second-process", "probe", "deliberate failure");
+    let context = failure.to_string();
+    assert!(context.contains("door=run telemetry=public-jsonl dump=native"));
+    assert!(context.contains("env=fixed+FZ_OBSERVATION_TEST=isolated"));
+    assert!(context.contains("phase=second-process ratchet=probe"));
+}
+
+#[test]
+fn observation_outputs_are_removed_when_partial_production_returns_early() {
+    fn abandon_partial_outputs() -> Result<(), Vec<PathBuf>> {
+        let trace = OwnedObservationFile::new("fz2_target_early_error", ".jsonl");
+        let backend = OwnedObservationFile::new("fz2_target_early_error", ".backend");
+        let paths = vec![trace.path().to_path_buf(), backend.path().to_path_buf()];
+        write(trace.path(), b"partial trace").expect("write partial trace");
+        write(backend.path(), b"partial backend").expect("write partial backend");
+        Err(paths)
+    }
+
+    let paths = abandon_partial_outputs().expect_err("the partial producer deliberately returns early");
+
+    assert!(
+        paths.iter().all(|path| !path.exists()),
+        "Drop must remove every owned output when production exits before consumption: {paths:?}"
+    );
+}
+
+#[test]
+fn target_observation_temp_files_have_parallel_collision_free_ownership() {
+    let paths = std::thread::scope(|scope| {
+        (0..32)
+            .map(|_| {
+                scope.spawn(|| {
+                    let file = OwnedObservationFile::new("fz2_target_parallel", ".tmp");
+                    let path = file.path().to_path_buf();
+                    write(&path, path.as_os_str().as_encoded_bytes()).expect("write owned temp output");
+                    let bytes = file
+                        .read_and_remove(
+                            ProcessRequest {
+                                spec: TARGET_OBSERVATION_SPEC,
+                                fixture: TARGET_FIXTURES[0],
+                                process: ObservationProcess::First,
+                            },
+                            "parallel ownership probe",
+                        )
+                        .expect("read and remove owned temp output");
+                    assert_eq!(bytes, path.as_os_str().as_encoded_bytes());
+                    path
+                })
+            })
+            .map(|thread| thread.join().expect("parallel temp owner"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(paths.iter().collect::<BTreeSet<_>>().len(), paths.len());
+    assert!(paths.iter().all(|path| !path.exists()));
+}
+
 #[test]
 fn help_lists_compiler2_commands_on_stdout() {
     for flag in ["help", "--help", "-h"] {
@@ -317,12 +1071,15 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
     // shrinking every `changed` array, because a fact that is transitively
     // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // Net on 00181: 1,545 -> 1,563 events, 970,146 -> 921,532 bytes; 00009 is
-    // 205 events either way, 105,699 -> 105,683 bytes. Pins keep tight headroom
-    // so creep without cause still trips them.
+    // fz-kdt.5's request/evaluation/wait identities make product work exactly
+    // attributable. fz-tfn.38 then made each product evaluation's exact fact
+    // prerequisite set one arbiter boundary and made the job span timing-only;
+    // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
+    // steps. The bounds retain modest headroom while unrelated public-stream
+    // creep still trips.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_620, 1024 * 1024),
-        ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
@@ -337,142 +1094,43 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     }
 }
 
-/// fz-kdt.34's cross-run acceptance: two SEPARATE PROCESSES compiling one input
-/// must have done the same WORK, measured from the public log alone.
-///
-/// Two processes is the point. `RandomState` reseeds per process, so raw arena
-/// ids genuinely drift between the two logs (fz-kdt.47 measured 16 differing
-/// slots over four runs) and no `World` survives to translate them. The logs
-/// translate themselves: each carries `fz.compiler2.canon.*` definition lines
-/// for every raw id it names, and the causal report joins through them. Raw ids
-/// may differ; canonical identity may not.
-///
-/// ONE dimension is measured NOT to hold, and this test pins its blast radius
-/// rather than dropping it: `pull.product.cache_hit` counts on
-/// `CallableConstruction` products differ between processes (six processes per
-/// fixture, 15 pairs each: every formula dimension and every session tally
-/// agree 15/15 on all three target fixtures, as does every other product kind
-/// and every other dimension of `callable_construction` itself; cache hits
-/// agree 7/15, 6/15 and 1/15). The two runs construct different intermediate
-/// types, so a genuinely different set of construction products is pulled. Any
-/// divergence OUTSIDE that one dimension fails here.
+/// One immutable observation bundle now feeds the public-trace, causal-work,
+/// and canonical-backend ratchets. Each fixture is still compiled in two
+/// SEPARATE processes: `RandomState` must reseed across the comparison boundary,
+/// and the logs must translate their own raw arena ids. What disappeared is the
+/// second three-fixture producer loop that recompiled the same process/config/
+/// front-door observations solely so another pure assertion could read them.
 ///
 /// Work counts only — no wall-clock quantity appears in the comparand.
 #[test]
-fn causal_work_multisets_agree_across_two_processes() {
-    let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
-    let mut multisets = Vec::new();
-    for tag in ["first", "second"] {
-        let telemetry_path = unique_temp_path(&format!("fz2_causal_{tag}"), ".jsonl");
-        let out = run_fz2(&[
-            OsStr::new("--log-telemetry"),
-            telemetry_path.as_os_str(),
-            OsStr::new("interp"),
-            OsStr::new(fixture),
-        ]);
-        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
+    let observations = produce_target_observations(TARGET_OBSERVATION_SPEC, compile_process_observation)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        observations.len(),
+        3,
+        "the three byte-identical fixture/config/front-door keys need three bundle productions"
+    );
+    assert_eq!(
+        observations
+            .iter()
+            .map(|observation| observation.processes.len())
+            .sum::<usize>(),
+        6,
+        "each bundle must retain two separate-process observations"
+    );
 
-        let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
-        let report = CausalReport::derive(&parse_public_trace(&log));
-        assert!(
-            report.undefined_first_uses.is_empty(),
-            "the {tag} log must define every raw id it names; first gap: {:?}",
-            report.undefined_first_uses.first()
-        );
-        assert!(
-            report.canon.types() > 0 && report.canon.functions() > 0,
-            "the {tag} log must carry a populated canon dictionary"
-        );
-        assert!(
-            report.uncaused.is_empty(),
-            "the {tag} log must attribute every evaluation; first unattributed: {:?}",
-            report.uncaused.first()
-        );
-        multisets.push(report.canonical_multiset());
-        let _ = remove_file(&telemetry_path);
+    let mut public_construction_targets = 0;
+    let mut backend_construction_targets = 0;
+    for observation in &observations {
+        public_construction_targets += public_trace_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        causal_work_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        backend_construction_targets += backend_identity_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
     }
-
-    let (first, second) = (&multisets[0], &multisets[1]);
     assert!(
-        first.len() > 1_000,
-        "expected a substantial comparand, got {} entries",
-        first.len()
+        public_construction_targets > 0 && backend_construction_targets > 0,
+        "the three demand fixtures must carry exact callable targets from public facts into the backend"
     );
-    let unexplained = first
-        .keys()
-        .chain(second.keys())
-        .filter(|key| first.get(*key) != second.get(*key))
-        .filter(|key| !is_callable_construction_cache_hit(key))
-        .collect::<BTreeSet<_>>();
-    assert!(
-        unexplained.is_empty(),
-        "two processes compiling {fixture} must agree on every canonical work count outside the \
-         known callable-construction cache-hit divergence; unexplained: {unexplained:?}"
-    );
-}
-
-/// The single measured cross-process divergence: see
-/// `causal_work_multisets_agree_across_two_processes`. A key in the canonical
-/// multiset is `<dimension>\u{1}<identity>\u{1}<count name>`.
-fn is_callable_construction_cache_hit(key: &str) -> bool {
-    key.starts_with("product\u{1}")
-        && key.ends_with("\u{1}cache_hits")
-        && key.contains("\"kind\":\"callable_construction\"")
-}
-
-/// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES
-/// compiling one input must write byte-identical files.
-///
-/// Two processes is the point. Inside one process a `HashMap`'s iteration order
-/// is stable enough to hide the defect; across processes `RandomState` reseeds,
-/// so a rendering derived from `{:#?}` differs run to run even when the two
-/// programs are equal (fz-kdt.6). The sibling `--dump native` still renders
-/// with `{:#?}`, and on this very fixture two processes write files that differ
-/// at char 59,803 of 98,141 — which is what this test asserts can no longer
-/// happen to the backend dump. Nor is the arena a comparand: a `Ty` is a
-/// position in one `World`.
-#[test]
-fn backend_dump_is_byte_identical_across_two_processes() {
-    let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
-    let first_path = unique_temp_path("fz2_backend_canon_a", ".backend");
-    let second_path = unique_temp_path("fz2_backend_canon_b", ".backend");
-
-    for path in [&first_path, &second_path] {
-        let spec = format!("backend={}", path.display());
-        let out = run_fz2(&[
-            OsStr::new("interp"),
-            OsStr::new("--dump"),
-            OsStr::new(&spec),
-            OsStr::new(fixture),
-        ]);
-        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
-    }
-
-    let first = read_to_string(&first_path).expect("read first backend dump");
-    let second = read_to_string(&second_path).expect("read second backend dump");
-    assert!(
-        first.len() > 1_000,
-        "the backend dump should describe a whole program, got {} bytes",
-        first.len()
-    );
-    assert!(
-        !first.contains("Ty("),
-        "the canonical backend dump must not carry raw interner ids"
-    );
-    let divergence = first
-        .lines()
-        .zip(second.lines())
-        .position(|(left, right)| left != right);
-    assert!(
-        first == second,
-        "two processes must write one canonical backend dump; they first differ at line {divergence:?}:\n  \
-         first:  {:?}\n  second: {:?}",
-        divergence.and_then(|at| first.lines().nth(at)),
-        divergence.and_then(|at| second.lines().nth(at)),
-    );
-
-    let _ = remove_file(&first_path);
-    let _ = remove_file(&second_path);
 }
 
 #[test]
@@ -698,12 +1356,49 @@ fn main(), do: App.run()
 }
 
 #[test]
+fn runtime_demand_order_fixtures_cross_every_cli_execution_boundary() {
+    for (fixture, golden) in [
+        (
+            "fixtures2/00420_enum_take_drop_split.fz",
+            "fixtures2/behavior/enum_take_drop_split.fz",
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            "fixtures2/behavior/enum_predicate_search.fz",
+        ),
+        (
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        ),
+    ] {
+        let expected = fixture_expected_stdout(golden);
+        for mode in ["interp", "run"] {
+            let out = run_fz2(&[OsStr::new(mode), OsStr::new(fixture)]);
+            assert_successful_stdout(&out, &expected, &format!("fz2 {mode} {fixture}"));
+        }
+        let out_bin = unique_temp_path("fz2_runtime_demand_order", ".bin");
+        let build = run_fz2(&[
+            OsStr::new("build"),
+            OsStr::new(fixture),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ]);
+        assert_successful_stdout(&build, "", &format!("fz2 build {fixture}"));
+        let run = Command::new(&out_bin)
+            .output()
+            .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+        assert_successful_stdout(&run, &expected, &format!("built {fixture}"));
+        let _ = remove_file(&out_bin);
+        let _ = remove_file(out_bin.with_extension("bin.o"));
+    }
+}
+
+#[test]
 fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
     for fixture in [
         "fixtures2/behavior/map_three_path_parity.fz",
         "fixtures2/behavior/defstruct_runtime.fz",
         "fixtures2/behavior/utf8_smart_constructor.fz",
-        "fixtures2/behavior/enum_predicate_search.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         let out_bin = unique_temp_path("fz2_fixture_build", ".bin");
@@ -1031,13 +1726,17 @@ end
 /// renderings with nothing on the log to explain it, and any evaluation woken
 /// by such a flip would classify as uncaused.
 ///
-/// Measured today: the arbiter answers PRODUCT fact waits (`jobs::artifact`,
-/// `jobs::backend`, `jobs::transport`, `jobs::runtime_demand` all wait on
-/// `Settled(..)` through the pull driver, which polls the fact rather than
-/// registering a scheduler waiter), so it moves facts and wakes no job. The
-/// zero is asserted, not assumed: the day a scheduler waiter does stand on one
-/// of these facts, this test says so and the causal replay's readiness arm
-/// (fz-kdt.59) comes alive with the movement already on the log to name.
+/// fz-kdt.45 made `DeriveExecutableFacts(E)` a scheduler job whose direct fact
+/// formula stands on settled `ActivationAnalyzed` and `CallSiteSummary` facts.
+/// Their finality flips therefore wake that exact producer. Product waits are
+/// still polled by the pull driver; the newly live readiness cause comes from
+/// this direct scheduler fact boundary, independent of how root analysis is
+/// ignited.
+///
+/// fz-tfn.8 made executable effects ordinary product formulas. The mutually
+/// recursive `List.reduce_cont/3` and `List.reduce_step/3` formulas settle as
+/// one group; their two suspended stack requests then read the values that
+/// group just published without evaluating either producer again.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
     let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
@@ -1061,13 +1760,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 .eq(["fz", "compiler2", "work_graph", "quiesced"])
         })
         .collect();
-    assert!(
-        !quiesced.is_empty(),
-        "{fixture} drives product fact waits that only the drain arbiter can answer; \
-         if this is empty the arbiter stopped running or stopped being observed"
+    assert_eq!(
+        quiesced.len(),
+        14,
+        "{fixture}: one derivation's co-outputs must share arbitration, below the former 34-event ceiling"
     );
 
-    let mut wakes = 0;
+    let mut wakes = Vec::new();
+    let mut readiness_changes = BTreeMap::new();
     for event in &quiesced {
         let step = event.metadata.get("step").expect("a quiesced event carries its step");
         for change in step.get("changed").and_then(|c| c.as_array()).into_iter().flatten() {
@@ -1080,20 +1780,193 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 change.get("old_settled"),
                 change.get("new_settled"),
                 "every entry in a quiesced step's changed array must be a settled-bit flip; \
-                 the array carries only the arbiter's own flips by construction (subscriber \
+                the array carries only the arbiter's own flips by construction (subscriber \
                  dirtying travels via movements), so this pins the flip shape"
             );
+            let kind = change
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .expect("every readiness change names its fact kind");
+            *readiness_changes.entry(kind).or_insert(0) += 1;
         }
-        wakes += step.get("wakes").and_then(|w| w.as_array()).map_or(0, Vec::len);
+        wakes.extend(step.get("wakes").and_then(|w| w.as_array()).into_iter().flatten());
     }
     assert_eq!(
-        wakes, 0,
-        "the settled waits the arbiter answers today are product waits, polled by the pull \
-         driver rather than registered as scheduler waiters; a non-zero count here means a \
-         scheduler waiter now stands on one, and the readiness cause class is live"
+        readiness_changes,
+        BTreeMap::from([
+            ("Activation", 9),
+            ("ActivationAnalyzed", 10),
+            ("ActivationInputs", 9),
+            ("CallSiteSummary", 11),
+            ("CallSiteTargets", 11),
+            ("IncomingInputSlot", 23),
+            ("ReturnType", 10),
+            ("RuntimeDemand", 10),
+            ("RuntimeDemandInput", 9),
+            ("RuntimeDemandInputs", 10),
+        ]),
+        "certification must publish all exact co-output readiness transitions without changing values"
+    );
+
+    let mut wake_causes = BTreeSet::new();
+    let mut wake_dispositions = BTreeMap::new();
+    for wake in &wakes {
+        let cause = wake.get("cause").expect("a readiness wake names its cause");
+        let cause_kind = cause
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .expect("a readiness wake names its fact kind");
+        let job = wake.get("job").expect("a readiness wake names its job");
+        assert_eq!(
+            cause.get("use").and_then(serde_json::Value::as_str),
+            Some("settled"),
+            "the direct producer must wait for settled semantic facts: {wake:?}"
+        );
+        assert_eq!(
+            job.get("kind").and_then(serde_json::Value::as_str),
+            Some("DeriveExecutableFacts"),
+            "only the direct executable-fact producer wakes here: {wake:?}"
+        );
+        assert_eq!(
+            job.get("need").and_then(serde_json::Value::as_str),
+            Some("value"),
+            "this census derives value-needed executable facts: {wake:?}"
+        );
+        for field in ["root_id", "function_id", "arrow"] {
+            let cause_component = cause
+                .get(field)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("the cause must name its activation {field}: {wake:?}"));
+            let job_component = job
+                .get(field)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("the producer must name its activation {field}: {wake:?}"));
+            assert_eq!(
+                cause_component, job_component,
+                "the semantic fact must wake its exact executable producer: {wake:?}"
+            );
+        }
+        let cause_fields = cause
+            .as_object()
+            .expect("a readiness cause is an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            cause_fields,
+            BTreeSet::from(["arrow", "function_id", "kind", "root_id", "use"]),
+            "each prerequisite kind must carry exactly its semantic identity: {wake:?}"
+        );
+        assert_eq!(
+            job.as_object()
+                .expect("a readiness job is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["arrow", "function_id", "kind", "need", "root_id"]),
+            "DeriveExecutableFacts must carry exactly one executable identity: {wake:?}"
+        );
+        assert_eq!(
+            wake.get("shift").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "readiness alone is not a content shift: {wake:?}"
+        );
+        wake_causes.insert(cause_kind);
+        let disposition = wake
+            .get("disposition")
+            .and_then(serde_json::Value::as_str)
+            .expect("a readiness wake names its agenda disposition");
+        *wake_dispositions.entry(disposition).or_insert(0) += 1;
+    }
+    assert_eq!(
+        wake_causes,
+        BTreeSet::from(["ActivationAnalyzed"]),
+        "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
+    );
+    assert_eq!(
+        wake_dispositions,
+        BTreeMap::from([("enqueued", 6)]),
+        "{fixture}: direct-fact readiness wake accounting moved"
     );
 
     let report = CausalReport::derive(&events);
+    let executable_fact_readiness = report
+        .formulas
+        .iter()
+        .filter(|(formula, _)| formula.contains("\"kind\":\"DeriveExecutableFacts\""))
+        .map(|(_, work)| work.readiness_caused)
+        .sum::<u64>();
+    let formula_totals = report.formula_totals();
+    assert!(
+        executable_fact_readiness > 0,
+        "the direct fact producer must exercise the causal replay's readiness class"
+    );
+    assert_eq!(
+        executable_fact_readiness, formula_totals.readiness_caused,
+        "all readiness-caused work in this fixture comes from the direct executable-fact boundary"
+    );
+    assert_eq!(
+        formula_totals,
+        FormulaWork {
+            // Co-output finality removes redundant executable-fact readiness work.
+            evaluations: 350,
+            initial: 174,
+            content_caused: 170,
+            readiness_caused: 6,
+            uncaused: 0,
+            changed_outputs: 210,
+            unchanged_outputs: 140,
+            wakes: 178,
+            blocked_completions: 157,
+        },
+        "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
+    );
+    let products = report.product_totals();
+    let effect_cache_hits = sum_reporting_counts(
+        report
+            .products
+            .iter()
+            .filter(|(product, work)| product.kind() == Some("executable_effects") && work.cache_hits > 0)
+            .map(|(product, work)| (product.canonical_identity(&report.canon), work.cache_hits)),
+    );
+    let effect_identity = |function_id, arrow| {
+        serde_json::json!({
+            "arrow": arrow,
+            "function_id": function_id,
+            "kind": "executable_effects",
+            "need": "value",
+            "root_id": 0,
+        })
+        .to_string()
+    };
+    assert_eq!(
+        effect_cache_hits,
+        BTreeMap::from([
+            (
+                effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
+                1,
+            ),
+            (
+                effect_identity("List.reduce_step/3", "fp[F] (list(int), {:cont, int}, a2) -> r0",),
+                1,
+            ),
+        ]),
+        "{fixture}: the reactive effect group must leave one cache-only suspended request per member"
+    );
+    assert_eq!(
+        (
+            products.settlements,
+            products.distinct_generations,
+            products.changed,
+            products.unchanged,
+            products.cache_hits,
+            products.displacements,
+        ),
+        // Shape/owner answers stay; runtime and definition-macro roots no longer
+        // settle separate pointer-only backend-content projection products.
+        (239, 239, 239, 0, 15, 0),
+        "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
+    );
     assert!(
         report.uncaused.is_empty(),
         "every evaluation must still name a moved input; first unattributed: {:?}",
@@ -1101,7 +1974,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert!(
         report.readiness_without_settled_wake.is_empty(),
-        "a readiness cause is only claimable where a Settled/SettledPresence wake carried it"
+        "a readiness cause is only claimable where a Settled wake carried it"
     );
     let _ = remove_file(&telemetry_path);
 }

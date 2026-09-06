@@ -5,7 +5,7 @@ use crate::ir_interp::{
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -16,10 +16,389 @@ struct ContractCase<'a> {
 }
 
 #[test]
+fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained_bodies() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_membership.fz".into()),
+        text: "defmodule Cycle do\nfn first(n) do\n if n == 0, do: 42, else: second(n - 1)\nend\nfn second(n), do: first(n)\nend\n".into(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_main.fz".into()),
+        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let before = compiler.retained_backend_program(root);
+    let module = compiler.world_mut().reference_module("Cycle");
+    let first = compiler.world_mut().reference_function(module, "first", 1);
+    let second = compiler.world_mut().reference_function(module, "second", 1);
+    let recursive = before
+        .executables()
+        .iter()
+        .filter(|body| [first, second].contains(&body.key.activation.function))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(recursive.iter().any(|body| body.key.activation.function == first));
+    assert!(recursive.iter().any(|body| body.key.activation.function == second));
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_cut.fz".into()),
+        text: "fn main(), do: 7\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let detached = compiler.retained_backend_program(root);
+    assert!(
+        detached
+            .executables()
+            .iter()
+            .all(|body| ![first, second].contains(&body.key.activation.function))
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("rooted_recursive_reattach.fz".into()),
+        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let reattached = compiler.retained_backend_program(root);
+    for body in &recursive {
+        let retained = reattached
+            .executable(&body.key, compiler.world().types())
+            .expect("the same recursive specialization returns");
+        assert!(Rc::ptr_eq(body, retained));
+        assert!(Rc::ptr_eq(
+            body,
+            before.executable(&body.key, compiler.world().types()).unwrap()
+        ));
+    }
+}
+
+#[test]
+fn reached_leaf_edit_preserves_unchanged_root_atom_allocations() {
+    let telemetry = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.set_output(DbgCapture::new().sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("root_atom_sharing.fz".into()),
+        text: "fn left(), do: 1\nfn right(), do: :retained_atom\nfn main() do\n dbg(right())\n left()\nend\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    let original = compiler.retained_backend_program(root);
+    let original_atom = original
+        .atom_names
+        .iter()
+        .find(|name| name.as_str() == "retained_atom")
+        .unwrap();
+    compiler.submit_code(CodeSubmission {
+        name: Some("root_atom_leaf_edit.fz".into()),
+        text: "fn left(), do: 2\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    let changed = compiler.retained_backend_program(root);
+    let changed_atom = changed
+        .atom_names
+        .iter()
+        .find(|name| name.as_str() == "retained_atom")
+        .unwrap();
+    assert_eq!(
+        original_atom.as_ptr(),
+        changed_atom.as_ptr(),
+        "a reached leaf edit must retain the allocation of an unchanged sibling's atom contribution"
+    );
+}
+
+#[test]
+fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
+    use super::artifact::{BackendBody, BackendExecutable, BackendTail, CallEdge};
+    use super::pull::ProductKey;
+
+    fn target(executable: &BackendExecutable) -> super::ExecutableKey {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            panic!("right has a function body");
+        };
+        entries
+            .iter()
+            .find_map(|entry| match &entry.tail {
+                BackendTail::DirectCall {
+                    target: CallEdge::Direct(edge),
+                    ..
+                } => edge.callee.local().cloned(),
+                _ => None,
+            })
+            .expect("right directly calls zleaf")
+    }
+
+    let telemetry = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&telemetry, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(telemetry);
+    let aleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_member_identity.fz".into()),
+        text: "fn aleaf(), do: 1\nfn left(), do: 1\nfn right(), do: zleaf()\nfn zleaf(), do: 41\nfn main(), do: left() + right()\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let right = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "right", 0);
+    let left = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "left", 0);
+    let zleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "zleaf", 0);
+    let original = compiler.retained_backend_program(root);
+    assert!(
+        !original
+            .executables()
+            .iter()
+            .any(|member| member.key.activation.function == aleaf)
+    );
+    let member = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    let key = ProductKey::BackendExecutable(member.key.clone());
+    let generation = compiler.retained_product_generation(root, &key);
+    let original_target = target(member);
+
+    let mut previous_left = Rc::clone(
+        original
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap(),
+    );
+    for (text, leaf_present) in [
+        ("fn aleaf(), do: 1\nfn left(), do: aleaf()\n", true),
+        ("fn left(), do: 1\n", false),
+    ] {
+        compiler.submit_code(CodeSubmission {
+            name: Some("backend_member_sibling_edit.fz".into()),
+            text: text.into(),
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+        let changed = compiler.retained_backend_program(root);
+        assert_eq!(
+            changed
+                .executables()
+                .iter()
+                .any(|member| member.key.activation.function == aleaf),
+            leaf_present,
+            "the edit must actually insert or withdraw its new reachable member"
+        );
+        let changed_left = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap();
+        assert!(
+            !Rc::ptr_eq(&previous_left, changed_left),
+            "the edited body must move while right remains shared"
+        );
+        previous_left = Rc::clone(changed_left);
+        let retained = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == right)
+            .unwrap();
+        assert_eq!(
+            compiler.retained_product_generation(root, &key),
+            generation,
+            "the sibling edit moves no local backend dependency"
+        );
+        assert_eq!(
+            target(retained),
+            original_target,
+            "adding or withdrawing an earlier member cannot rename right's zleaf target"
+        );
+        assert!(
+            Rc::ptr_eq(member, retained),
+            "root membership changes must share the unchanged complete backend allocation"
+        );
+    }
+    let original_leaf = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == zleaf)
+        .unwrap();
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_leaf_edit.fz".into()),
+        text: "fn zleaf(), do: 42\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(43));
+    let leaf_changed = compiler.retained_backend_program(root);
+    let changed_leaf = leaf_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == zleaf)
+        .unwrap();
+    assert!(
+        !Rc::ptr_eq(original_leaf, changed_leaf),
+        "a changed leaf body cannot reuse stale instructions"
+    );
+    let retained_right = leaf_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    assert_eq!(target(retained_right), original_target);
+    assert!(
+        Rc::ptr_eq(member, retained_right),
+        "a changed target body with equal ABI needs no caller rewrite"
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_right_edit.fz".into()),
+        text: "fn right(), do: 43\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(44));
+    let right_changed = compiler.retained_backend_program(root);
+    let changed_right = right_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    assert!(
+        !Rc::ptr_eq(member, changed_right),
+        "a relevant right edit must publish its new complete body"
+    );
+    assert!(
+        !right_changed
+            .executables()
+            .iter()
+            .any(|member| member.key.activation.function == zleaf),
+        "removing right's edge withdraws its unneeded former target"
+    );
+    assert!(Rc::ptr_eq(
+        &previous_left,
+        right_changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap()
+    ));
+}
+
+#[test]
 fn compiler2_can_own_configured_telemetry() {
     fn requires_owned_configured_telemetry(_: Compiler2<ConfiguredTelemetry>) {}
 
     requires_owned_configured_telemetry(Compiler2::new(ConfiguredTelemetry::new()));
+}
+
+#[test]
+fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdrawal() {
+    let telemetry = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&telemetry, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(telemetry);
+    let output = DbgCapture::new();
+    compiler.set_output(output.sink());
+    let aleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_construction_identity.fz".into()),
+        text: "fn left(), do: 1\nfn right(), do: fn x -> x + 41 end\nfn main() do\n f = right()\n dbg(f)\n left() + f.(0)\nend\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let right = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "right", 0);
+    let original = compiler.retained_backend_program(root);
+    let member = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    let wrapper = member
+        .construction_wrappers
+        .first()
+        .expect("printing the callable requires a first-class construction");
+    let identity = wrapper.identity.clone();
+    let generation =
+        compiler.retained_product_generation(root, &super::pull::ProductKey::BackendExecutable(member.key.clone()));
+    let original_count = original.construction_wrappers().len();
+    let old_ordinal = original
+        .construction_index(&identity, compiler.world().types())
+        .unwrap();
+    for (text, added) in [
+        (
+            "fn aleaf(), do: fn x -> x + 1 end\nfn left() do\n f = aleaf()\n dbg(f)\n f.(0)\nend\n",
+            true,
+        ),
+        ("fn left(), do: 1\n", false),
+    ] {
+        compiler.submit_code(CodeSubmission {
+            name: Some("backend_construction_sibling_edit.fz".into()),
+            text: text.into(),
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+        let changed = compiler.retained_backend_program(root);
+        assert_eq!(
+            changed
+                .executables()
+                .iter()
+                .any(|member| member.key.activation.function == aleaf),
+            added
+        );
+        assert_eq!(
+            changed.construction_wrappers().len(),
+            original_count + usize::from(added),
+            "the edit must actually add or remove one independent construction"
+        );
+        let ordinal = changed
+            .construction_index(&identity, compiler.world().types())
+            .expect("right still owns its exact construction");
+        assert_eq!(
+            ordinal,
+            old_ordinal + usize::from(added),
+            "only the consumer-local runtime projection renumbers"
+        );
+        assert!(
+            Rc::ptr_eq(wrapper, &changed.construction_wrappers()[ordinal]),
+            "the exact wrapper payload is shared across sibling membership edits"
+        );
+        let retained = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == right)
+            .unwrap();
+        assert!(
+            Rc::ptr_eq(member, retained),
+            "constructor instructions retain their stable typed wrapper reference"
+        );
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::pull::ProductKey::BackendExecutable(member.key.clone())),
+            generation
+        );
+    }
 }
 
 #[test]
@@ -122,7 +501,7 @@ fn run_contract(case: ContractCase<'_>) {
     let drive_start = Rc::clone(&drive_span_id);
     let drive_outcome = Rc::new(RefCell::new(None));
     let outcome_sink = Rc::clone(&drive_outcome);
-    tel.attach_raw_span0_1::<DriveOutcome<Job, super::FactKey>, _, _, _>(
+    tel.attach_raw_span0_1::<DriveOutcome<Job, super::drive::DependencyKey>, _, _, _>(
         &["fz", "compiler2", "drive"],
         move |_, span_id, _| drive_start.set(span_id),
         move |_, _, _, _, outcome| *outcome_sink.borrow_mut() = Some(outcome.clone()),
@@ -186,12 +565,6 @@ fn run_contract(case: ContractCase<'_>) {
         "{} should emit indexed work under the drive span",
         case.name
     );
-    assert!(
-        indexed_stop.completion_present,
-        "{} should close the indexing job with completion metadata",
-        case.name
-    );
-
     assert_eq!(
         capture.count(&["fz", "compiler2", "function", "defined"]),
         0,
@@ -566,12 +939,10 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
 /// Overproduction guard: an interp drive demands only `BackendProgram`, so it
 /// must never lower a `NativeProgram` no consumer asked for -- the spreadsheet-
 /// model rule (produce only what the demander needs). The JIT and AOT front
-/// doors demand `NativeProgram` explicitly (`native_program_for_root` ->
-/// `Job::LowerNativeProgram`), so they must still produce it.
+/// doors demand the exact `NativeProgram(root)` product, so they must still
+/// produce it.
 ///
-/// `Job::LowerNativeProgram` is run as a direct, synchronous call
-/// (`native_program_for_root`), not through the agenda's per-job
-/// `["fz","compiler2","job"]` span, so this counts the one telemetry event
+/// This counts the one telemetry event
 /// `lower_native_program` unconditionally emits per successful lowering
 /// (`["fz","compiler2","native_program","reusable_cons"]`) instead of tapping
 /// that span.
@@ -605,9 +976,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             "an interp drive must never lower NativeProgram -- interp reads BackendProgram, \
              never NativeProgram, so lowering native off the backend product is pure overproduction",
         );
-        assert!(
-            !compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "an interp drive must leave NativeProgram absent -- no consumer on this path ever demands it",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            None
         );
     }
 
@@ -636,9 +1007,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             1,
             "the JIT front door demands NativeProgram exactly once through compile_root_jit",
         );
-        assert!(
-            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "the JIT front door must still produce NativeProgram",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            Some(1)
         );
     }
 
@@ -667,9 +1038,9 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             1,
             "the AOT front door demands NativeProgram exactly once through compile_root_aot",
         );
-        assert!(
-            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
-            "the AOT front door must still produce NativeProgram",
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::ProductKey::NativeProgram(root)),
+            Some(1)
         );
     }
 }
@@ -694,7 +1065,6 @@ struct JobSpanStart {
 struct JobSpanStop {
     job: Job,
     parent_span_id: u64,
-    completion_present: bool,
 }
 
 struct JobCapture {
@@ -713,19 +1083,25 @@ impl JobCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let starts = Rc::clone(&self.starts);
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+        let jobs_by_span = Rc::new(RefCell::new(HashMap::new()));
+        let started_jobs = Rc::clone(&jobs_by_span);
+        let stopped_jobs = Rc::clone(&jobs_by_span);
+        telemetry.attach_raw_span1_0::<Job, _, _, _>(
             &["fz", "compiler2", "job"],
-            move |_, _, parent_span_id, job| {
+            move |_, span_id, parent_span_id, job| {
+                started_jobs.borrow_mut().insert(span_id, job.clone());
                 starts.borrow_mut().push(JobSpanStart {
                     job: job.clone(),
                     parent_span_id,
                 });
             },
-            move |_, _, parent_span_id, _, _, completion| {
+            move |_, span_id, parent_span_id, _| {
                 stops.borrow_mut().push(JobSpanStop {
-                    job: completion.job.clone(),
+                    job: stopped_jobs
+                        .borrow_mut()
+                        .remove(&span_id)
+                        .expect("a job span stop must match its start"),
                     parent_span_id,
-                    completion_present: true,
                 });
             },
             |_, _, _, _| {},
@@ -833,7 +1209,7 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
         .drive_root_backend_work_starts(root)
         .unwrap_or_else(|error| panic!("{name} should drive to its backend product: {error}"));
     assert!(
-        !compiler.world().backend_program(root).executables.is_empty(),
+        !compiler.retained_backend_program(root).executables().is_empty(),
         "{name} should settle a backend product with executable functions",
     );
 

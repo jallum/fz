@@ -34,7 +34,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, Memo};
 use super::format::brand_refinement;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
 /// Renders types in their canonical external form, memoized by `Ty`.
@@ -50,6 +50,10 @@ pub(crate) struct TyCanon<'a> {
     bodies: HashMap<Ty, Arc<str>>,
     fingerprints: HashMap<Ty, Arc<str>>,
     whole: HashMap<Ty, Arc<str>>,
+    #[cfg(test)]
+    alpha_names: Option<HashMap<TypeVarId, usize>>,
+    #[cfg(test)]
+    structural_alpha_names: HashMap<TypeVarId, String>,
 }
 
 impl<'a> TyCanon<'a> {
@@ -59,7 +63,23 @@ impl<'a> TyCanon<'a> {
             bodies: HashMap::new(),
             fingerprints: HashMap::new(),
             whole: HashMap::new(),
+            #[cfg(test)]
+            alpha_names: None,
+            #[cfg(test)]
+            structural_alpha_names: HashMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn alpha_normalized(labels: &'a dyn Fn(FnId) -> String) -> Self {
+        let mut canon = Self::new(labels);
+        canon.alpha_names = Some(HashMap::new());
+        canon
+    }
+
+    #[cfg(test)]
+    pub(crate) fn name_structural_alpha(&mut self, id: TypeVarId, name: String) {
+        self.structural_alpha_names.insert(id, name);
     }
 
     /// The canonical form of `ty`: an invariant fingerprint, then the ordered
@@ -86,15 +106,31 @@ impl<'a> TyCanon<'a> {
     /// One type variable, rendered the way the arrow language names it: a
     /// structural address (`a0`, `a1_0`, `r0`) when the id carries the address
     /// tag, else the free var's own id.
-    pub(crate) fn var(&self, types: &Types, id: TypeVarId) -> String {
-        types.ctx().render_var(id)
+    pub(crate) fn var(&mut self, types: &Types, id: TypeVarId) -> String {
+        self.var_text(types.ctx(), id)
+    }
+
+    fn var_text(&mut self, cx: TyCtx<'_>, id: TypeVarId) -> String {
+        let raw = cx.render_var(id);
+        #[cfg(test)]
+        if let Some(name) = self.structural_alpha_names.get(&id) {
+            return name.clone();
+        }
+        #[cfg(test)]
+        if raw.starts_with('α')
+            && let Some(names) = &mut self.alpha_names
+        {
+            let next = names.len();
+            return format!("free{}", *names.entry(id).or_insert(next));
+        }
+        raw
     }
 
     fn fingerprint_at(&mut self, cx: TyCtx<'_>, ty: Ty) -> Arc<str> {
         if let Some(hit) = self.fingerprints.get(&ty) {
             return Arc::clone(hit);
         }
-        let text: Arc<str> = descr_fingerprint(cx, cx.descr(&ty)).into();
+        let text: Arc<str> = descr_fingerprint(cx, cx.descr(&ty), |id| self.var_text(cx, id)).into();
         self.fingerprints.insert(ty, Arc::clone(&text));
         text
     }
@@ -123,7 +159,7 @@ impl<'a> TyCanon<'a> {
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
         push_set(&mut parts, &d.opaques, "opaque", Clone::clone);
-        push_set(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
+        push_set(&mut parts, &d.vars, "var", |id| self.var_text(cx, *id));
         parts.extend(sorted(axes.tuple_rects.iter().map(|rect| self.rect_text(cx, rect))));
         parts.extend(sorted(
             self.clause_texts(cx, &axes.tuple_complex, Self::tuple_clause)
@@ -304,7 +340,10 @@ impl<'a> TyCanon<'a> {
             .iter()
             .map(|(key, value)| format!("{} => {}", map_key(key), self.body(cx, *value)))
             .collect();
-        format!("%{{{}}}", fields.join(", "))
+        match &sig.tag {
+            MapTag::Plain => format!("%{{{}}}", fields.join(", ")),
+            MapTag::Struct(tag) => format!("%{}{{{}}}", tag.name, fields.join(", ")),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -607,7 +646,7 @@ fn retain_kept<T>(items: Vec<T>, keep: Vec<bool>) -> Vec<T> {
 /// change it: saturation and widening keep an axis non-empty, and the
 /// subsumption drop always leaves a survivor (the last clause standing has
 /// nothing left to be covered by).
-fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr) -> String {
+fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVarId) -> String) -> String {
     if d.is_empty_memo(cx, &mut Memo::default()) {
         return "fp[none]".to_string();
     }
@@ -620,7 +659,7 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr) -> String {
     if !d.brands.is_any() {
         push_key(&mut parts, "n", &d.brands, Clone::clone);
     }
-    push_key(&mut parts, "v", &d.vars, |id| cx.render_var(*id));
+    push_key(&mut parts, "v", &d.vars, |id| render_var(*id));
     let structural: String = [
         (inhabited(cx, &d.tuples, emptiness::tuple_clause_empty), "T"),
         (inhabited(cx, &d.lists, emptiness::list_clause_empty), "L"),
@@ -681,7 +720,7 @@ fn basic_names(basic: BasicBits) -> Vec<String> {
 fn push_set<T, F>(parts: &mut Vec<String>, set: &FiniteSet<T>, top: &str, render: F)
 where
     T: Ord + Clone,
-    F: Fn(&T) -> String,
+    F: FnMut(&T) -> String,
 {
     if set.is_none() {
         return;
@@ -704,7 +743,7 @@ where
 fn push_key<T, F>(parts: &mut Vec<String>, tag: &str, set: &FiniteSet<T>, render: F)
 where
     T: Ord + Clone,
-    F: Fn(&T) -> String,
+    F: FnMut(&T) -> String,
 {
     if set.is_none() {
         return;

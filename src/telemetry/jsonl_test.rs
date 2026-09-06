@@ -151,8 +151,8 @@ fn compiler_drive_and_job_spans_render_raw_authorities() {
     assert!(jobs[0].contains("\"kind\":\"span_start\""));
     assert!(jobs[0].contains("\"job\":{\"opaque_type\":"));
     assert!(jobs[1].contains("\"kind\":\"span_stop\""));
-    assert!(jobs[1].contains("\"world\":{\"opaque_type\":"));
-    assert!(jobs[1].contains("\"completion\":{\"opaque_type\":"));
+    assert!(!jobs[1].contains("\"world\":"));
+    assert!(!jobs[1].contains("\"completion\":"));
     assert_ne!(jobs[0].split("\"parent_span_id\":").nth(1), Some("0"));
 }
 
@@ -341,6 +341,31 @@ fn through_configured_telemetry_roundtrips() {
 }
 
 #[test]
+fn callable_owner_settlement_renders_its_existing_obligations() {
+    use crate::compiler2::pull::{ProductValue, TransportCarrier, TransportLayout};
+    use crate::compiler2::transport::{CallableConstructionOwner, ShapeId};
+    let value = ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
+        layout: TransportLayout {
+            structural: ShapeId::for_test(17),
+            carrier: TransportCarrier::Absent,
+        },
+        construction: None,
+        callable_facts: Default::default(),
+        boundary_facts: Default::default(),
+    }));
+    let measurements = Measurements::new();
+    let metadata = crate::metadata! { value: crate::telemetry::opaque(&value) };
+    let event = make_event(&["test"], EventKind::Event, &measurements, &metadata);
+    let json: serde_json::Value = serde_json::from_str(&capture_jsonl(&event)).unwrap();
+    let answer = &json["metadata"]["value"];
+    assert_eq!(answer["structural_shape_id"], 17);
+    assert_eq!(answer["carrier"], "absent");
+    assert_eq!(answer["construction"], false);
+    assert_eq!(answer["callable_facts"], 0);
+    assert_eq!(answer["boundary_facts"], 0);
+}
+
+#[test]
 fn pull_product_settled_renders_the_value_authority() {
     let (buf, writer) = vec_writer();
     let telemetry = ConfiguredTelemetry::new();
@@ -369,6 +394,298 @@ fn pull_product_settled_renders_the_value_authority() {
     assert!(output.contains("\"group\":null"), "{output}");
     assert!(!output.contains("\"product\",\"produced\""), "{output}");
     assert!(!output.contains("\"product\",\"waited\""), "{output}");
+}
+
+#[test]
+fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
+    use crate::compiler2::DependencyKey;
+    use crate::compiler2::SemanticOrd as _;
+    use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
+
+    fn canonicalize_arrows(
+        value: &serde_json::Value,
+        arrows: &std::collections::HashMap<u64, &'static str>,
+        field: Option<&str>,
+    ) -> serde_json::Value {
+        match (field, value) {
+            (Some("arrow"), serde_json::Value::Number(id)) => serde_json::Value::String(
+                arrows
+                    .get(&id.as_u64().expect("arrow id is an integer"))
+                    .expect("test dictionary covers every activation arrow")
+                    .to_string(),
+            ),
+            (_, serde_json::Value::Object(fields)) => serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), canonicalize_arrows(value, arrows, Some(name))))
+                    .collect(),
+            ),
+            (_, serde_json::Value::Array(values)) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| canonicalize_arrows(value, arrows, None))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+
+    let render = |non_empty_first: bool| {
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let root = RootId::for_test(71);
+        let function = FunctionId::for_test(710);
+        let (list, non_empty) = if non_empty_first {
+            let non_empty = types.non_empty_list(int);
+            let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            let list = types.list(int);
+            let list = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            (list, non_empty)
+        } else {
+            let list = types.list(int);
+            let list = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            let non_empty = types.non_empty_list(int);
+            let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            (list, non_empty)
+        };
+        let raw_order = list.arrow < non_empty.arrow;
+        let keys = if non_empty_first {
+            vec![
+                FactKey::ReturnType(non_empty.clone()),
+                FactKey::ReturnType(list.clone()),
+            ]
+        } else {
+            vec![
+                FactKey::ReturnType(list.clone()),
+                FactKey::ReturnType(non_empty.clone()),
+            ]
+        };
+        let mut keys = keys.into_iter().map(DependencyKey::Fact).collect::<Vec<_>>();
+        keys.sort_by(|left, right| left.semantic_cmp(right, &types));
+        let step = crate::compiler2::AppliedStep {
+            changed: keys
+                .iter()
+                .cloned()
+                .map(|key| FactChange {
+                    key,
+                    old_revision: None,
+                    new_revision: Some(1),
+                    old_settled: false,
+                    new_settled: true,
+                })
+                .collect(),
+            movements: keys
+                .iter()
+                .cloned()
+                .map(|key| FactMovement {
+                    key,
+                    state: FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                })
+                .collect(),
+            wakes: Vec::<crate::compiler2::Wake<crate::compiler2::Job, DependencyKey>>::new(),
+            blocked: keys.into_iter().map(FactUse::settled).collect(),
+        };
+        let mut body = String::new();
+        write_applied_step_body(&mut body, &step);
+        let json = format!(
+            "{{{}}}",
+            body.strip_prefix(',').expect("applied body starts with a field")
+        );
+        let raw: serde_json::Value = serde_json::from_str(&json).expect("applied step JSON");
+        let arrows = std::collections::HashMap::from([
+            (list.arrow.as_u32() as u64, "list-activation"),
+            (non_empty.arrow.as_u32() as u64, "non-empty-list-activation"),
+        ]);
+        (
+            raw_order,
+            serde_json::to_vec(&canonicalize_arrows(&raw, &arrows, None)).expect("canonical batch JSON"),
+        )
+    };
+
+    let list_first = render(false);
+    let non_empty_first = render(true);
+    assert_ne!(
+        list_first.0, non_empty_first.0,
+        "fixture must deterministically reverse raw arrow ids"
+    );
+    assert_eq!(
+        list_first.1, non_empty_first.1,
+        "renderer must preserve the typed owner sequence across opposite mint and insertion histories"
+    );
+}
+
+#[test]
+fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
+    use crate::compiler2::DependencyKey;
+    use crate::compiler2::{
+        AppliedStep, FactChange, FactKey, FactMovement, FactState, FactUse, Job, RootId, Wake, WakeDisposition,
+    };
+
+    let root = RootId::for_test(7);
+    let key = DependencyKey::Fact(FactKey::RootEntry(root));
+    let step = AppliedStep {
+        changed: vec![FactChange {
+            key: key.clone(),
+            old_revision: None,
+            new_revision: Some(1),
+            old_settled: false,
+            new_settled: true,
+        }],
+        wakes: vec![Wake {
+            cause: FactUse::settled(key.clone()),
+            job: Job::SeedRoot(root),
+            disposition: WakeDisposition::Enqueued,
+            shift: true,
+        }],
+        movements: vec![FactMovement {
+            key: key.clone(),
+            state: FactState {
+                revision: Some(1),
+                settled: true,
+            },
+        }],
+        blocked: vec![FactUse::settled(key)],
+    };
+    let mut body = String::new();
+    write_applied_step_body(&mut body, &step);
+    assert_eq!(
+        body,
+        concat!(
+            ",\"changed\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"old_revision\":null,\"new_revision\":1,\"old_settled\":false,\"new_settled\":true}]",
+            ",\"wakes\":[{\"cause\":{\"use\":\"settled\",\"kind\":\"RootEntry\",\"root_id\":7},\"job\":{\"kind\":\"SeedRoot\",\"root_id\":7},\"disposition\":\"enqueued\",\"shift\":true}]",
+            ",\"movements\":[{\"kind\":\"RootEntry\",\"root_id\":7,\"revision\":1,\"settled\":true}]",
+            ",\"blocked\":[{\"kind\":\"RootEntry\",\"root_id\":7}]",
+        )
+    );
+}
+
+#[test]
+fn product_dependency_reads_identify_both_the_owner_and_the_product() {
+    use crate::compiler2::{DependencyKey, ProductAddress};
+    use crate::compiler2::{FactUse, ProductKey, RootId};
+
+    for owner in [7, 8] {
+        let dependency = FactUse::settled(DependencyKey::Product(ProductAddress {
+            root: RootId::for_test(owner),
+            key: ProductKey::RootBackendProduct(RootId::for_test(9)),
+        }));
+        let mut body = String::new();
+        write_dependency_use_identity(&mut body, &dependency);
+        assert_eq!(
+            body,
+            format!(
+                "{{\"use\":\"settled\",\"kind\":\"Product\",\"root_id\":{owner},\"product\":{{\"kind\":\"root_backend_product\",\"root_id\":9}}}}"
+            )
+        );
+    }
+}
+
+#[test]
+fn incoming_slot_facts_identify_the_exact_root_executable_and_input() {
+    use crate::compiler2::incoming_inputs::InputSlot;
+    use crate::compiler2::{
+        ActivationKey, DependencyKey, ExecutableKey, ExecutableNeed, FactKey, FactUse, FunctionId, RootId, Types,
+    };
+
+    let mut types = Types::new();
+    let int = types.int();
+    let mut identities = std::collections::HashSet::new();
+    for root in [7, 8] {
+        for index in [0, 1] {
+            let activation =
+                ActivationKey::from_inputs(RootId::for_test(root), FunctionId::for_test(9), &[int, int], &mut types);
+            let arrow = activation.arrow.as_u32();
+            let slot = InputSlot {
+                executable: ExecutableKey {
+                    activation,
+                    need: ExecutableNeed::Value,
+                },
+                semantic_index: index,
+            };
+            let dependency = FactUse::settled(DependencyKey::Fact(FactKey::IncomingInputSlot(slot)));
+            let mut body = String::new();
+            write_dependency_use_identity(&mut body, &dependency);
+            let identity: serde_json::Value = serde_json::from_str(&body).expect("typed slot dependency JSON");
+            assert_eq!(
+                identity,
+                serde_json::json!({
+                    "use": "settled", "kind": "IncomingInputSlot", "root_id": root,
+                    "function_id": 9, "arrow": arrow, "need": "value", "semantic_index": index,
+                })
+            );
+            assert!(
+                identities.insert(body),
+                "different root/input slots must not collapse in causal replay"
+            );
+        }
+    }
+}
+
+#[test]
+fn product_movements_are_public_causal_events() {
+    use crate::compiler2::{AppliedStep, FactMovement, FactState, Job, ProductKey, RootId};
+    use crate::compiler2::{DependencyKey, ProductAddress};
+
+    let telemetry = ConfiguredTelemetry::new();
+    let (buf, writer) = vec_writer();
+    JsonlBackend::new_public_writer(writer).install(&telemetry);
+    let step = AppliedStep::<Job, DependencyKey> {
+        changed: vec![],
+        wakes: vec![],
+        blocked: vec![],
+        movements: vec![FactMovement {
+            key: DependencyKey::Product(ProductAddress {
+                root: RootId::for_test(7),
+                key: ProductKey::RootBackendProduct(RootId::for_test(7)),
+            }),
+            state: FactState {
+                revision: Some(3),
+                settled: true,
+            },
+        }],
+    };
+    telemetry.raw_event1(&["fz", "compiler2", "work_graph", "dependencies_moved"], &step);
+    drop(telemetry);
+    let log = String::from_utf8(buf.borrow().clone()).unwrap();
+    let events = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "each product movement has one causal record");
+    assert_eq!(
+        events[0]["metadata"]["step"]["movements"][0]["product"]["kind"],
+        "root_backend_product"
+    );
+    assert_eq!(events[0]["metadata"]["step"]["movements"][0]["revision"], 3);
+}
+
+#[test]
+fn failed_product_requests_report_the_dependency_that_failed() {
+    use crate::compiler2::{DependencyKey, DriveOutcome, Job, ProductAddress, ProductKey, RootId};
+
+    let outcome = DriveOutcome::<Job, DependencyKey>::DependencyFailed {
+        dependency: DependencyKey::Product(ProductAddress {
+            root: RootId::for_test(7),
+            key: ProductKey::NativeProgram(RootId::for_test(7)),
+        }),
+    };
+    let measurements = Measurements::new();
+    let metadata = crate::metadata! { outcome: crate::telemetry::opaque(&outcome) };
+    let event = make_event(
+        &["fz", "compiler2", "drive"],
+        EventKind::SpanStop,
+        &measurements,
+        &metadata,
+    );
+    let rendered: serde_json::Value = serde_json::from_str(&capture_jsonl(&event)).unwrap();
+    let outcome = &rendered["metadata"]["outcome"];
+    assert_eq!(outcome["status"], "dependency_failed");
+    assert_eq!(outcome["dependency"]["root_id"], 7);
+    assert_eq!(outcome["dependency"]["product"]["kind"], "native_program");
+    assert!(outcome.get("job_kind").is_none());
 }
 
 #[test]
@@ -423,6 +740,7 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
                 surface_inputs: Vec::new(),
                 activation: None,
                 activation_inputs: None,
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,

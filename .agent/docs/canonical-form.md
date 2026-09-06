@@ -90,7 +90,11 @@ over a whole arena stays affordable.
 
 ## canon(BackendProgram)
 
-Built on `canon(Ty)`, by three rules:
+Built on `canon(Ty)`, by four rules:
+
+- **only semantic artifact content renders**. Product generations and fact
+  revisions own freshness, so the program and its canonical form carry no
+  synthetic version line.
 
 - **interned ids expand** to what they describe. A `ShapeId` becomes its
   descriptor tree, bottoming out in lanes (a type plus a class) and callables (a
@@ -98,19 +102,26 @@ Built on `canon(Ty)`, by three rules:
   a `Span`'s code id becomes the submission's name.
 - **program-wide positions are re-sorted** on an id-free key: an executable's
   function, input types and need; a wrapper's callable, arity, return form and
-  member boundaries. Every index into either vector — the program entry, direct
-  and closure call targets, wrapper identities, the `construction` field on a
-  step — is remapped through that order. The remap lives in the RENDERING;
-  nothing renumbers the real structures.
+  member boundaries. The renderer assigns ordinals to `ExecutableKey` and
+  `TransportPosition` identities in that order, then uses them for the program
+  entry, call targets, wrappers, and construction references. These references
+  remain typed keys in the retained bodies. Rendering neither renumbers nor
+  rewrites the real structures; runtime ordinal lookups are a separate consumer
+  projection of the persistent ordered program inventory. Updating a root
+  contribution shares untouched collection branches; canonical rendering walks
+  the snapshot only when a caller requests a dump.
 
-  Two entries that render the same TIE, and a tie falls back to published
-  order — so the published order has to be id-free too, and it is: both
-  packaging sorts (`jobs::backend::compare_executable_keys` and
-  `jobs::artifact::compare_transport_positions`, the one the wrapper vector is
-  numbered by) compare their type components through `Types::cmp_ty` rather
-  than as raw interner ids. Before fz-kdt.101 they compared raw ids — interning
-  order, which the agenda decides — and a schedule flip swapped the indices of
-  two byte-identical construction wrappers on `enum_take_drop_split`.
+  Two entries that render the same tie fall back to published order, so that
+  order must also be semantic. `SemanticOrd<Types>` is the single typed owner
+  for `ExecutableKey`, `ExecutableSymbol`, and `TransportPosition`; it compares
+  activation arrows structurally through `Types::cmp_activation_ty`, never by
+  raw interner ids or rendered text. Packaging and wrapper enumeration consume
+  that same relation. `Types::ComparisonCache` stores predicate and activation-
+  order verdicts in one operation-tagged key → typed-outcome map; immutable
+  interned `Ty` handles make each verdict reusable for the World lifetime, and
+  symmetric/reversed queries normalize onto one entry. Before typed publication
+  order, a schedule flip could swap two byte-identical construction wrappers on
+  `enum_take_drop_split`.
 - **body-local ids are re-densified**. `ValueId` and `CallSiteId` are sparse
   after pruning (entries are reindexed, values and callsites are not), so names
   are handed out at first appearance in the body walk: `v0`, `v1`, `cs0`. A

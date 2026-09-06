@@ -270,6 +270,7 @@ fn test_command(
     let exe = std::env::current_exe().map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
 
     println!("Running {}...\n", plural_count(tests.len(), "test", "tests"));
+    notify_fixture_execution_start();
     let mut failures = 0usize;
     for test in &tests {
         let module_arg = test.module_arg();
@@ -639,10 +640,10 @@ fn emit_requested_root_dumps(
     dumps: &[DumpSpec],
 ) -> Result<(), String> {
     if let Some(stage) = max_requested_stage(dumps) {
-        compiler
+        let (backend, native) = compiler
             .drive_root_to_dump_stage(root, stage)
             .map_err(|error| format!("fz2 dump prep: {error}"))?;
-        compiler.emit_requested_program_dumps(root);
+        compiler.emit_requested_program_dumps(root, &backend, native.as_deref());
     }
     // The types/activations dumps are served from the product-path activation
     // inventory, independently of any backend/native stage drive above, so they

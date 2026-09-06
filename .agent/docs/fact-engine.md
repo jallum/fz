@@ -60,8 +60,8 @@ A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
 blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to its
 single producing job, and every path that discovers a blocked wait —
-`demand_blocked_wait_producers` at drain time, the standing activation and
-root-entry frontier expansions, and the product pull driver's fact waits —
+`demand_blocked_wait_producers` at drain time, the standing activation
+frontier expansion, and the product pull driver's fact waits —
 demands that producer through the map. A fact with more than one possible
 producer (for example `ModuleInterface`, produced by either `DefineModule` or
 `DefineModuleInterface` depending on whether the module has source state) maps
@@ -73,13 +73,11 @@ supplies the activation's inputs (`World::seed_activation_producer`), because
 a key a caller discovered is that caller's to publish and to withdraw. A fact
 whose producer publishes it only as a co-output of a broader
 job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
-`ProtocolImplProviders`, `Executable`, `BackendProgram`, `NativeProgram`) has
+`ProtocolImplProviders`, `Executable`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
 it. Every fact with one sole-producing job gets an arm — including
 `FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
-(`Job::ExpandFunctionSource`), `EntryDispatch` (`Job::PlanEntryDispatch`), and
-`MacroExecutable` (`Job::BuildMacroExecutable`), whose sole producers used to
-be named directly by the blocked wait instead of through this map. A fact is
+(`Job::ExpandFunctionSource`), and `EntryDispatch` (`Job::PlanEntryDispatch`). A fact is
 a co-output exception only when no single job is its sole producer, never
 because a caller already knows which job to name.
 Blocked work is not an error; exact waits are how ordering emerges without a
@@ -152,16 +150,15 @@ claims `ReturnType` on every run, evidence or not — announces a publisher and
 moves nothing. It is minted at revision **0**: present, at bottom, no content
 movement (`facts::appearance_revision`), and `None` <-> `Some(0)` is not a
 content change in either direction (`FactChange::content_changed`). `Current`
-readers stay asleep; presence and settledness did move, so `Settled` and
-`SettledPresence` subscribers wake on the readiness edge. The first claim that
-carries real evidence is an ordinary ascent, 0 -> 1.
+readers stay asleep; a `Current` wait is now satisfiable, and `Settled`
+subscribers wake on the readiness edge. The first claim that carries real
+evidence is an ordinary ascent, 0 -> 1.
 
 A REPLACING fact has no bottom to be at, so this never applies to one: whatever
 it says on arrival is content a reader can see and act on — `CallSiteSummary`
 and `CallSiteTargets`' `Unresolved` IS a reader-visible answer, not the absence
 of one — and it appears at revision 1 and wakes. The existence facts
-(`Activation`, `Executable`) are the same: a whole cone is gated on their
-presence.
+(`Activation`, `Executable`) are the same: their readers are gated on presence.
 
 Measured over `fz2 interp --log-telemetry` on `fz_f98_range_map_converges`,
 `enum_predicate_search` and `00420_enum_take_drop_split`, joining each step's
@@ -188,8 +185,8 @@ an edge for EVERY callsite it reaches, unresolved and all
 about one really is knowledge and nothing about those kinds is preserved. A
 preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
 value is untouched, and no `Current` reader wakes (a readiness flip on a
-re-listed key is representable and reaches `Settled`/`SettledPresence`
-subscribers only). One side effect is real: re-listed `Activation` keys pass
+re-listed key is representable and reaches `Settled` subscribers only). One
+side effect is real: re-listed `Activation` keys pass
 back through the completion's frontier harvest, so an unsettled callee is
 re-noted on every preserving conclusion — bounded, and retired by the drain
 pass's has-run guard.
@@ -245,13 +242,12 @@ about a key is. A BLOCKED job may have reached some answers before the block:
 those are clean, and the ones it never reached stay dirty. That is the main
 traffic — most completions block.
 
-`is_locally_settled`, `clear_unfinal_publishers` and the drain arbiter's
-soundness argument hold VERBATIM at this granularity, because none of them was
-ever about jobs: each is a statement about the CLAIMANTS of one key, and the
-claimants of a key are the derivations whose answer it is. A dirty sibling
-publishes other keys and is correctly not consulted. This is also why the
-cheaper-looking alternative fails: per-output dirty bits sitting beside
-per-JOB unfinality do not compose, because the two halves of `is_settled`
+`is_locally_settled` and drain arbitration inspect the exact derivations
+claiming the requested key, not every answer of their jobs. Certifying one
+clean derivation certifies its own co-outputs because they share its reads;
+a dirty sibling derivation and another publisher's claims remain untouched.
+Per-output dirty bits sitting beside per-JOB unfinality do not compose,
+because the two halves of `is_settled`
 would then be scoped to different things.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
@@ -336,25 +332,25 @@ They are asked of the same slot and answered separately.
   quiescent.
 
 Finality is dependency STATE, maintained edge-triggered — never a pass, a
-sweep, a group inventory, an epoch object, or a root scan. Two cached counts
-carry it, and both are recomputed from their own source whenever that source
-is replaced, so no delta can go stale:
+sweep, a group inventory, an epoch object, or a root scan. The reader state and
+claim state share one publisher identity:
 
-    unfinal_reads[publisher]        how many of that derivation's recorded
-                                    reads name a fact that is not quiet
-    slot.unfinal_publishers         which publishers of the fact have a
-                                    non-zero unfinal_reads
+    read_finality[publisher]        Pending(count) or Quiescent(count), tracking
+                                    that derivation's actual unquiet read uses
+    slot.unfinal_publishers         publishers whose reader state is Pending
 
-Both are keyed by the same publisher identity, which is what makes them
-composable (see *The publisher is a derivation*). A fact flipping quiet adjusts
-its readers' counts; a derivation whose count flips 0 <-> non-zero carries the
-flip into every fact IT publishes — its siblings, which read other ground, are
-untouched; a fact whose quiet state flips propagates on.
-`Scheduler::unfinal_reads(job)` folds a job's derivations into the job-level
-question a readiness-ordered pop would ask; the ledger itself always acts per
-derivation. Every wave is sign-uniform — a fact that just
-went unquiet can only make readers unquiet — so each node flips at most once
-and the walk is exactly the affected cone.
+An absent reader entry means zero unquiet reads. Replacing a derivation's reads
+recounts them and removes any old quiescence certificate. Exact quiet edges
+decrement the count; an unquiet edge increments it and revokes certification.
+A change in effective finality reaches every output of that derivation — not
+sibling derivations that read other ground. A fact whose quiet state flips
+propagates on.
+
+`Scheduler::unfinal_reads(job)` sums pending counts across a job's derivations
+for readiness-ordered selection; quiescent-certified counts contribute zero.
+The ledger itself always acts per derivation. Every wave is sign-uniform — a
+fact that just went unquiet can only make readers unquiet — so each node flips
+at most once and the walk is exactly the affected cone.
 
 Reading an ABSENT fact makes no reader unfinal. Nobody is deriving it, so
 nothing about it can move on its own; a reader that concluded while it was
@@ -364,7 +360,7 @@ claim from a publisher that is still deriving makes the fact unquiet, and that
 reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
-content) reaches `Settled` and `SettledPresence` subscribers ONLY. Routing it
+content) reaches `Settled` subscribers ONLY. Routing it
 to `Current` subscribers as well would recompute formulas whose input content
 never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
 holds that line.
@@ -385,15 +381,30 @@ drain is therefore exactly locally settled, which is what it meant everywhere
 before finality became transitive. The transitive rule is what holds DURING the
 ascent; the drain is where it is discharged.
 
-`Scheduler::settle_quiescent(facts)` is that discharge, and it is
+`Scheduler::settle_quiescent_ordered_with_external(facts, external, ctx)` is
+that discharge, and it is
 demand-driven: it answers the exact settled questions something is actually
-asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`),
-a product pull's awaited fact (`product_drive::drive_product_fact_wait`), and
-the root-entry gate's direct `Recursive`/`InputDemand` queries
-(`demand_root_entry_analyses`). Nothing else is arbitrated. One arbitrated
-fact discharges a whole quiesced cycle, because clearing it makes it quiet and
-the ordinary wave carries that through every publisher that was only waiting on
-it.
+asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
+and one product evaluation's exact prerequisite set
+(`product_drive::drive_product_fact_waits_with_sessions`). A product producer
+names every prerequisite it can identify in the same evaluation, and the pull
+driver presents that set to the arbiter atomically; serially arbitrating the
+members would turn one semantic barrier into multiple public readiness steps.
+Arbitration starts only from those requested facts. The selected fact must be
+locally clean and have no unsettled external-product ground. For each of its
+exact publishers, the scheduler records quiescent certification while retaining
+the actual unquiet-read count, and clears that publisher's unfinal claims through
+its existing output frontier.
+Other publishers of a shared output still control their own claims. Ordinary
+quiet propagation carries the resulting readiness edges to readers.
+
+A derivation's co-outputs are one conclusion over the same reads, not separate
+arbitration requests. Certifying the publisher's finality state together with
+its claims ensures that a later
+quiet-to-unquiet input edge revokes certification and unfinalizes all of them
+again. The real count still includes previously licensed unquiet reads, so
+their later quiet edges cannot cancel a different outstanding dependency.
+No value or revision changes during this certification.
 
 Drain finality is optimistic in exactly the way settledness has always been
 optimistic: a reader that acts on it may see the cone move again later, and it
@@ -412,8 +423,9 @@ the schedule itself:
 - a keep-first merge keeps whichever conclusion arrived first.
 
 So a hash-random wake order publishes a different `BackendProgram` for the same
-input — same structure, different `Ty` ids — while every fact is correct. That
-is why order is preserved end to end rather than restored afterwards:
+input — same structure, different `Ty` ids — while every fact is correct. Each
+owner therefore makes unordered membership typed and explicit before the next
+mutation boundary:
 
     job emits outputs (Vec, source order)
       -> dedupe_job_facts                  keeps order (OrderedSet, not HashSet)
@@ -421,13 +433,15 @@ is why order is preserved end to end rather than restored afterwards:
       -> DependencyIndex::outputs          keeps order
       -> mark_dirty                        iterates in that order
       -> pending_changes                   drained in that order
-      -> enqueue_dependents                subscribers/waiters in registration order
+      -> DependencyIndex                   typed Publisher/Job order
       -> job order                         -> intern order -> Ty ids
 
-`OrderedSet` (`ordered_set.rs`) is the single insertion-ordered membership set
-behind every hop. Losing the order at ANY hop is sufficient to lose
-reproducibility, and each hop that loses it merely moves where the divergence
-first shows.
+`OrderedSet` still preserves source emission and membership, but insertion
+order is not semantic identity. `DependencyIndex` orders subscriber, waiter,
+reader, and unresolved-job waves with the World's typed Job/Publisher
+relations. `ContributionMap` likewise orders every touched/next key wave before
+joins can allocate. Losing owner order at any mutation boundary is sufficient
+to move the first divergence downstream.
 
 Two non-cures, both tried and rejected. Sorting needs a comparator that does not
 depend on what is being minted, and Debug-text sorts are what fz-k22.21 had to
@@ -442,6 +456,35 @@ is the causal one and names the first swapped pair;
 end state. Both compile twice in ONE process, which is what exposes the hazard:
 `RandomState` is seeded per `HashMap` instance, so the second compile's maps
 iterate differently from the first's.
+
+Activation-bearing identities have one owner-supplied total order.
+`SemanticOrd<Types>` compares real fields and delegates activation arrows to
+`Types::cmp_activation_ty`. That operation reuses the type store's structural
+walk in activation mode: callable arguments, return, then literal; list
+emptiness and addressed variable paths remain explicit, and named literals use
+immutable owner-registered callable labels. It therefore distinguishes lattice
+forms that display intentionally merges, including possibly-empty and
+non-empty lists, without allocating or parsing presentation text.
+`Job`, `FactKey`, `FactUse`, callsites, executables, completion reports,
+settled-wait drains, terminal unresolved inventories, product fact waits, and
+activation dump/fixture inventories all delegate to that relation. `FactKey` has no
+raw `Ord`: only the owning `World` can interpret its World-local type handles.
+The generic scheduler and dependency index accept one semantic context whose
+`SemanticOrd` implementations own fact, job, and publisher order; neither
+accepts per-domain callbacks or falls back to type ids or hash iteration. Existing presentation
+orders remain intact: diagnostics retain their variant-name order, readiness
+is a tie-break after fact identity, and settled-wait draining uses that same
+fact relation. Only activation-bearing payloads replace raw type ids with typed
+structural comparison.
+
+The type store memoizes `ActivationArrow` verdicts by a normalized `(low Ty,
+high Ty)` pair; asking in the reverse direction reuses the inverse. Descriptors
+and structural addresses are immutable after interning, and callable labels
+must be registered before comparison and cannot be renamed, so the entry lives
+for the owning `Types`/`World` lifetime with no invalidation path. Hit/miss
+counters exist only in tests. ClauseOrder's private storage-canonical relation
+remains distinct: it intentionally puts a closure literal before its surface to
+group DNF clauses and must not determine activation order.
 
 ## The drive loop
 
@@ -458,13 +501,12 @@ while let Some(job) = agenda.pop():
 ```
 
 When the agenda drains, standing demands expand before the drive ends: every
-submitted root demands its entry activation's analysis
-(`World::demand_root_entry_analyses`), every discovered callee activation
-demands its own analysis (`World::demand_activation_frontier_analyses`), and
+published activation — root entry or caller-discovered callee — demands its
+own analysis (`World::demand_activation_frontier_analyses`), and
 every blocked waiter's fact names its single producer through the
 fact->producer map (`World::demand_fact_producer` — the same expansion the
-product fact-wait loops reach through `World::next_ready_job`). Both
-activation-analysis expansions are first-run ignition only: each checks
+product fact-wait loops reach through `World::next_ready_job`). The activation
+frontier expansion is first-run ignition only: it checks
 `Scheduler::has_run` for its `AnalyzeActivation` job and skips a key that has
 already run at least once, because the graph's own read/wait subscriptions
 carry every later revision from there — a key whose first run blocked without
@@ -475,21 +517,12 @@ ends only when nothing can be demanded: `Resolved` (no waiters),
 `Unresolved { waits }` (blocked facts with no mapped producer), or
 `Fatal { job }`.
 
-The standing waits themselves come out of a `HashMap`, so
-`DependencyIndex::unresolved` orders them before handing them over: by the
-fact's `Debug` rendering, with the readiness variant as tie-break. That is the
-one place the wait list is ordered, and both things that read it inherit it —
-the stall expansion pokes producers in that order, and the `Unresolved` message
-a stalled compile prints renders in it, so one binary prints one text for one
-program (fz-kdt.109). This key is the pattern fz-k22.21 removed from the fold
-paths above, and the difference is SCOPE, not taste: seven `FactKey` variants
-embed `ActivationKey.arrow`, a raw interned `Ty` id, so this rendering is
-mint-order-dependent — legal here only because its use is within-run (one
-binary, one program, ids already minted; the ticket's complaint was one binary
-printing many texts), and inherited unchanged from the two per-caller sorts it
-replaced, which used the identical key on the identical facts. Anything
-CROSS-run still goes through `StableSortKey`, per fz-k22.21; ordering the poke
-path by a structural key instead is open as fz-kdt.114.
+Standing waits come from a `HashMap`, but the dependency index does not guess
+their identity. `DependencyIndex::unresolved` uses the same typed semantic
+context as the other fact boundaries. Producer pokes and
+the terminal `Unresolved` result therefore inherit one structural order across
+opposite type-mint histories. This inventory is only materialized at the
+existing stall and terminal boundaries.
 
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
@@ -499,80 +532,160 @@ there is no diagnostics fact family to reconcile.
 
 The interpreter artifact path is not a scheduler pass and it does not enqueue
 follow-up jobs. `Compiler2::run_root_interp` asks the product driver for
-`ProductKey::RootBackendProduct(root)`. Each product producer returns either a
-`ProductValue` or an exact set of waits:
+`ProductKey::RootBackendProduct(root)`. Each product producer returns a
+`ProductValue`, an exact set of waits, or an explicit `Failed(ProductFailure)`
+outcome that the memo never installs:
 
 ```text
 ProductKey =
   RootBackendProduct(root)
+  NativeProgram(root)
   BackendExecutable(E)
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
-  ExecutableFacts(E)
-  RuntimeDemand(E)
-  OutgoingEdgeFrontier(root)
-  OutgoingInputEdges(E)
-  IncomingInputRelations(root)
-  IncomingInputSlot(slot)
   TransportShape(position)
   CallableConstruction(position)
+  StructSchema(module)
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
 
+Before the pull stack expands an unordered wait set, product waits retain their
+existing product-key order and fact waits use the World's semantic `FactUse`
+key. Thus an activation-bearing fact cannot reverse product expansion merely
+because its arrow received a different arena handle.
+
+`ExecutableFacts(E)` and `RuntimeDemand(E)` are direct facts.
+`DeriveExecutableFacts(E)`
+publishes its World-owned immutable value after settled reads of
+`ActivationAnalyzed(E.activation)`, `LoweredBody(E.function)`,
+`EntryDispatch(E.function)`, and the exact `CallSiteSummary` facts named by the
+analysis. `DeriveRuntimeDemand(E)` waits for that fact's first settled value,
+then subscribes to its Current content, its exact caller-owned input cell, and
+the `RuntimeDemandInputs(target)` sub-facts named by direct or first-class
+callable edges. `CallableConstructionTarget(owner, value, surface)` supplies an
+exact first-class target. Newly exposed local callables extend that finite
+keyed read set until it stops growing; there is no function or executable scan.
+Absence is bottom. An owned formula publishes provisional demand and
+caller-local return contributions, then withholds only peer-dependent
+capture/input contributions while an exact non-self target is absent. Product
+producers read settled full `RuntimeDemand(E)` values through ordinary fact
+dependencies; neither demand fact has a product memo entry or bridge.
+
+Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
+and every position-owned semantic fact nameable from the key in the same
+evaluation (`ActivationInputs` for an executable input; `ReturnType` for an
+executable return or return payload). These stay distinct typed dependencies
+and distinct readiness changes; the shared prerequisite boundary alone is
+atomic.
+
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
 `ReturnType(A)`"; it may not schedule unrelated work under another name.
-Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
-and `RuntimeDemand(E)` discover executable dependency groups from settled
-call-edge facts; recursive `CallableConstruction(position)` products settle
-their position groups from external anchors. `TransportShape(position)` has no
+The public causal stream records these as distinct operations: `requested`
+means the stack asked for a key, `evaluated` means its producer body ran and
+names the exact waits it returned, `settled` means a memo value was published,
+`product.copublished` identifies a general publisher/peer settlement, and
+`recursive_group.published` identifies every actual member of a successfully
+settled recursive group. A repeated evaluation retains its prior exact waits
+and the positions of the fact movement, settlement/cache hit, displacement, or
+other exact event that triggered it. Each product pull has a checked, nonzero
+id allocated monotonically by its retained session, and the producer-running pull carries that same id on
+`evaluated`. Exclusive driver ownership and the producer's context-only API
+make overlapping pulls impossible; cache requests do not invent evaluations.
+Recursive search inside a producer stays within that exact request boundary.
+Causality is never inferred from an aggregate or merely adjacent log lines.
+Cyclic products use the same pending-product graph. `ExecutableEffects(E)` is
+one ordinary formula over `MaterializedExecutable(E)` and the exact
+`ExecutableEffects(callee)` products named by its local call edges. A pending
+back-edge lets the generic group query identify the members; idempotent effect
+union gives every member the join of the group's local and settled external
+inputs without another traversal or fixpoint. `RuntimeDemand(E)` is not a
+product and never enters this graph; its exact World-fact dependencies converge
+through ordinary content-changing wakes. Recursive
+`CallableConstruction(position)` products settle their position groups from
+external anchors. `TransportShape(position)` has no
 group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
 facts at recipe construction, so its evaluation is a function of settled facts
 and of products that can settle without it. Component membership answers
 mutual reachability, which is an equality; a grounded closure-call edge has no
-static edge of its own and needs the ONE-WAY question, so that rare edge walks
-`StaticCallees` at the asking site instead of turning a second reachability
-answer into a fact. A producer discovers its group by asking whether the
-dependency it is about to wait on reaches back to it; that walk, and the strong
-component it gates, follow the dependencies of unsettled products only. A
-settled product answers a read with the value it already holds, so it waits on
-nothing and no cycle of waits runs through it — and a settled product never
-depends on an unsettled one, so nothing is missed by not stepping into it.
-Each group publishes every member atomically. Each memo entry
+static edge of its own. The group query records the prospective
+`current -> dependency` read before borrowing the dependency map, so no graph
+copy precedes the one Tarjan traversal that both detects a cycle and returns
+the component containing the dependency. It follows the dependencies
+of freshly evaluated formulas that completed with unresolved waits and visits
+each reachable product once. The current evaluation supplies its reads
+directly; every non-current group member therefore has a pending snapshot by
+construction. A displaced product's last settled dependencies are retained for
+reproduction, not treated as evidence that its new formula is waiting in the
+cycle. As an executable-effects formula records its direct callee reads, its
+pending component can only grow; it stages the last detected group after the
+complete local read set. Hash order may change visitation order, but not the
+search counts or component selected from one graph. A settled product answers
+a read with the value it already holds, so it waits on nothing and no cycle of
+waits runs through it — and a settled product never depends on an unsettled
+one, so nothing is missed by not stepping into it.
+Graph traversal establishes component membership only. `ProductReadContext`
+stages every peer value and dependency snapshot produced by one invocation;
+`ProductDriver` adds the requested key, and `ProductMemo` typed-sorts and
+commits that complete same-producer completion. Recursive components use the
+same completion owner, which validates the group and publishes every member
+atomically. This is an ordering envelope around one producer return, not a
+batch across independent product pulls or fact settlements. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
-fact-use states. Every member of a settled group retains the union of the
+fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
+`pull.recursive_group.published` events separately report exact actual members.
+Each successful group receives a fresh session-local settlement handle. Causal
+replay joins those settlement handles within their session and compares the
+canonical member multiset of each publication. Numeric allocation order is not
+group identity; actual membership and publication multiplicity are.
+Large product answers are single-threaded `Rc` values: the producer, memo entry,
+downstream product, direct consumer, and cache hit retain one immutable
+allocation. `PullSession` and `World` already contain
+`Rc`-owned facts and never cross a `Send` boundary, so `Arc` would add atomic
+traffic without adding a valid ownership path. Recursive-group members also
+retain one `Rc<ProductDependencies>` because their validated external snapshot
+is one value. Equality remains structural at both seams: a separately allocated
+equal answer preserves its product generation, while changed content advances
+it. Same-handle comparisons short-circuit on typed pointer identity before the
+structural fallback, so ordinary memo handoffs do not rescan payloads.
+When a producer reconstructs equal content, settlement retains the memo's
+existing allocation, so the direct pull result cannot replace it with an
+equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
+its materialized, ABI, and backend point queries and iterators project
+the stored key/value pairs directly. `PullSession` carries no parallel artifact
+maps.
+Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency
 state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
 and retries from fresh reads. Internal back-edges disappear only after that
-concordance check. Product or fact movement discards pending reader snapshots
-and unregisters their edges before retry. Equal reproduction preserves its
-generation. Settled demand retracts
-when re-materialization resolves a call edge outside the settlement's callee
-inventory, or when a settlement's own publication grows the join of an
-external input it consumed — then the producer re-collects with the displaced
-external absorbed and re-settles the grown cone before memoizing. Fact
-waits are satisfied at the Compiler2 front door by driving only the direct fact
-producer needed for that exact fact, while deferring forbidden root artifact
-jobs for the submitted root.
+concordance check. Product or fact movement, including dirtiness propagated
+through a still-produced dependency, discards pending reader snapshots and
+unregisters their edges before retry. Settled readers remain memoized and carry
+that dirtiness lazily until requested. Equal reproduction preserves its
+generation. Fact waits are satisfied at the Compiler2 front door by driving
+only the direct fact producer needed for that exact fact, while deferring
+forbidden root artifact jobs for the submitted root.
 
-`PullSession` owns the request-local product memo and scheduling relations used
-to reproduce moved products. A `TransportShape(position)` answer remains in its
+`PullSession` owns one root's retained product memo and scheduling relations
+for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
 positioned layout answers it consumed. A closure callee's carrier selects its
 physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
 one exact semantic target to refine directly. `AbiReadyExecutable` refines that
 set and embeds each callable-construction answer with its position; and
-`SymbolicBackendExecutable` carries both values unchanged. The root backend
-packages a wrapper only from a positioned owner whose `construction` is
-present. Direct-only owners retain their layout and direct callable facts with
-no construction, so final packaging does not rejoin boundary publications to
-recover first-class eligibility.
+`BackendExecutable` retains that ABI handle. Its producer reads the exact ABI
+prerequisites named by return endpoints and construction members/captures, then
+lowers one complete body and creates wrappers only for positioned owners whose
+`construction` is present. Direct-only owners retain their layout and direct
+callable facts with no construction, so lowering does not rejoin boundary
+publications to recover first-class eligibility.
 
-A value whose positioned layout settled to `Nothing` carries no lanes, so
-nothing downstream can read it. Backend lowering applies that proof once, in the
-shared symbolic lowering: every fresh construction step
+A value whose positioned layout settled to `Nothing` carries no runtime lanes.
+Its lexical capture metadata can still be consumed by a callable wrapper.
+Backend lowering applies the lane-absence proof once, in the
+shared backend lowering: every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
 when its own value is proven absent — a closure the plan proves is never invoked
@@ -587,90 +700,135 @@ encode, so a value tail returning through it reads no value at all
 (`return_lane_vars` in `jobs/native.rs`, the `BackendTail::Value` arm in
 `ir_interp/backend.rs`).
 
-The root backend producer traverses its exact reachable backend-product
-values, then densifies
-their embedded layouts and callable owners into one root product answer. The
-answer retains that `MaterializedTransportPlan` beside the closed
-`BackendProgram`; runtime consumers project only the program.
-There is no parallel session map of transport positions, shapes, layouts,
-callable boundaries, or transport-shape groups, and final packaging does not scan the
-fact table or memo to rediscover them.
-Outgoing publication is an order-free requested-publisher set plus immutable
-per-publisher slot-source maps. `IncomingInputRelations(root)` derives the
-immutable request-relative slot/source relation for the exact current frontier
-generation; each `IncomingInputSlot(slot)` projects one exact value.
-Runtime-demand products also record the other runtime-demand products they read.
-When one settles to a changed value, only those recorded dependents are
-invalidated; if a product is invalidated while in progress, the pull driver
-rejects that stale result and returns an explicit product wait for the same key.
+Root membership is a distinct dependency relation, not a read of every member's
+value. Each backend producer commits its exact executable and schema membership
+edges alongside its value. Pending attempts leave the committed membership
+standing; recursive-group external read unions do not merge producer-owned
+membership. `ProductMemo` keeps the forward edges, their reverse index, and a
+rooted parent/child witness. Cutting a witness edge repairs support from the
+remaining committed edges; an isolated recursive cycle cannot retain itself.
+The witness stores reachability evidence, not a second copy of the graph.
+The memo's derived readiness bit covers both value readers and rooted members.
+Refresh recomputes it from those inputs; external notifications observe the
+bit's transition through the ordinary mutation wave, not partially updated
+membership state. An equal member can restore readiness without reevaluating
+the root or its native and source consumers.
 
-`BackendProgram(root)` is a co-output-only fact (no arm in
-`World::demand_fact_producer`): its sole producer is this bounded product-pull
-drive, `drive_root_backend_product`, never an agenda job. A job that needs a
-root's `BackendProgram` as an ordinary prerequisite of its own conclusion --
-`Job::BuildMacroExecutable` (`jobs/macro_runtime.rs`, building the executable
-for a macro's hidden compile-time root) and `Job::LowerNativeProgram`
-(`jobs/native.rs`, lowering a root's backend program to native) -- runs this
-same bounded drive inline when the fact is absent and registers its result
-through `complete_job`, exactly as `product_drive::drive_product_fact_wait`
-already does for jobs it runs inside its own bounded fact-wait loop. This is
-the second sanctioned non-wait work-start alongside `submit_root`'s `SeedRoot`
-ignition: `submit_root` starts work because the root does not exist yet to be
-waited on, while this starts work because the fact it needs has no producer a
-wait could ever name -- both are bounded, self-contained drives invoked
-directly rather than a job commanding another job to run.
+The root producer consumes changed member keys and owns one shared
+`BackendProgram`. Its persistent ordered inventories retain executable,
+wrapper, atom, and schema contributions while sharing untouched branches with
+older snapshots. Each body extracts its atoms once and keeps `ExecutableKey`
+call targets and `TransportPosition` construction references; membership changes
+do not rewrite it. `StructSchema(module)` owns one settled `StructDefined`
+projection. Exact ABI owners retain transport layouts and callable metadata;
+there is no root transport aggregate or historical-memo census.
+ABI inputs are selected by the settled runtime demand's physical and callable
+axes together. Ignored inputs request no positioned products; lexical capture
+layouts belong to their explicitly named source `Value` positions instead.
+The ABI requests no generic callable owner when its structural layout contains
+no callable nodes. Local callable-flow owners use the producer's shared selector
+and retain metadata even without physical lanes. Every retained layout and
+owner remains keyed by its own position, not by equality with another answer.
+`DeriveRuntimeDemand(E)` publishes exact input-source contributions into
+`IncomingInputSlot(slot)` facts. `ContributionMap` joins each slot's sources
+with the scheduler's publisher frontier governing replacement and withdrawal.
+The target formula claims empty own slots, making absence of incoming edges
+an authoritative readable answer. Callable construction reads that one settled
+fact directly and consumes its immutable, typed-sorted source slice. Its slot
+and shape prerequisites are named together. Equal publication retains the
+joined allocation and revision.
+`RuntimeDemand(E)` is an ordinary replacing World fact. Its formula records
+current reads of exact direct and construction targets, then reads only those
+targets' `RuntimeDemandInputs(E)` sub-facts. The sub-fact projects the input
+vector from the same stored demand value while carrying its own revision, so a
+return-only change cannot wake an input-only reader. Artifact products read the
+full demand fact at settled readiness and use the normal fact-generation
+dependency path for invalidation.
 
-### Whole-program struct-schema completeness
+`Compiler2` retains one `PullSession` per root. Its memo emits a subscription
+change exactly when the first reader of a fact appears or the last disappears.
+A Compiler2-owned `FactKey -> roots` index routes each job-completion or
+quiescence movement only to those roots. Dormant sessions receive it directly;
+roots paused around a nested macro drive receive it once in an active inbox.
+Repeated movements of one fact coalesce to the final `FactState` before the
+next pull. This path scans neither roots, facts, products, nor dependencies,
+and equal final state leaves readers settled.
 
-`World::struct_def_schemas()` snapshots the *entire* shared `StructDefMap` fact
-store (every published `defstruct`, source-written or macro-emitted) at the
-moment a root's `BackendProgram` is packaged (`jobs/backend.rs`,
-`produce_root_backend_product`). That snapshot feeds `struct_schemas` on the
-`BackendProgram`, which the interpreter and native codegen read for the
-cofinite `is_named_struct`/`matches_runtime_struct` check ("is this runtime
-value NOT one of the known named structs") — a check that needs completeness
-over every struct name that could appear as a runtime value anywhere in the
-program, not just ones the checking root's own reachable graph literally
-constructs.
+Root requests reconcile queued source work before reading retained products. An
+empty agenda costs O(1); queued work follows ordinary FIFO execution and exact
+wakes. A request does not expand unrelated standing activation demand. Fatal or
+timed-out reconciliation rejects the request because edit visibility is incomplete.
 
-A `World` can hold more than one independently-driven `RootId` at once — every
-`defmacro` mints its own hidden compile-time root (`World::macro_root`, driven
-through `Job::BuildMacroExecutable`) alongside the program's one runtime root.
-`struct_def_schemas()` is order-dependent in principle: it only contains what
-has *settled so far*, and different roots settle their own backend products at
-different times. Whole-program completeness nonetheless holds today, by
-construction of two facts about the current architecture:
+Scheduler dependencies have two typed identities: World facts and root-owned
+products. The dependency index owns reads, waits, and finality for both. Fact
+slots store only World fact revisions; an external state provider reads product
+generations and readiness directly from the retained ProductMemo. A product has
+no scheduler publisher, fact slot, or synthetic job.
 
-- **Per-root completeness is structural.** A root's `BackendProgram` cannot
-  settle until every `BackendExecutable` its own reachable call graph needs has
-  been packaged, and a `MakeStruct`/`StructField`/`AssertStruct` step cannot
-  package until the struct it names has a settled `StructDefined` fact
-  (`produce_root_backend_executable_product`'s waits). So whichever root reads
-  `struct_def_schemas()` already has every struct *it itself* can construct or
-  match against.
-- **No struct value ever crosses between two independently-driven roots at
-  runtime.** One `fz2 run`/`interp`/`build` invocation submits exactly one
-  runtime root (`Compiler2::submit_root`, `RootKind::Runtime`); `fz2 test`
-  spawns one fresh OS subprocess (and therefore one fresh `Compiler2`/`World`,
-  with its own one runtime root) per discovered test via `run-test-root`; the
-  fixture matrix likewise drives each fixture/path as its own child process.
-  Spawned actor processes (`fz_spawn`) reuse the *same* `BackendProgram` their
-  spawning root already produced — spawning mints a new runtime `Process`, not
-  a new `RootId`. Macro roots run on a separate compile-time process
-  (`QuotedSourceRoot::lend_process`) over AST-shaped values, never over the
-  running program's own struct instances, and their product is never read by
-  the main root's interpreter/codegen. So the one root whose reachable graph
-  can construct a given struct is always the same root whose product is
-  consulted when a value from that construction is later struct-checked.
+A source job expanding a macro reads RootBackendProduct of its hidden macro
+root. Missing content becomes an exact product wait. Fact movement reaches only
+subscribed root sessions. When it dirties a product with scheduler consumers,
+the product movement makes those consumers unfinal through the ordinary
+scheduler. The shared drive validates named product requests before fact
+quiescence. Equal reproduction restores readiness without executing a Current
+reader; changed generation reruns its exact source readers. The scheduler is
+the sole owner of these read/wait edges; the product demand queue contains only
+addresses to validate.
 
-Together these mean today's single-runtime-root-per-program execution model
-makes the cofinite predicate sound by construction, even though
-`struct_def_schemas()` itself has no barrier forcing it to wait for every
-`defstruct` in the `World`. A future feature that lets one `World` drive
-*multiple runtime roots* whose values can flow into each other at runtime (a
-REPL, a multi-submission session, cross-program message passing) would break
-this invariant and must add the coarser barrier this section describes instead
-of relying on it implicitly.
+Retained sessions remain reachable while active. Short checked borrows end
+before scheduler execution, so a nested macro root can read the same product
+state authority without copying it or recursively borrowing an active drive.
+Session activation identities persist across requests, while product request
+ids advance. Each activation owns its work-start delta; nested roots and
+standalone drives have separate balanced accounting boundaries.
+
+RootBackendProduct owns an Rc<BackendProgram>. ProductMemo retains the existing
+allocation and generation when its answer reproduces equal. NativeProgram and
+macro execution consume that same handle. A native failure installs no native
+answer and restores the same retained session for retry.
+
+Compiler2::retire_root_products removes the root-owned fact subscription edges
+and drops its memo. For products with scheduler consumers it also publishes the
+exact dependency withdrawal through the scheduler. Existing consumer demand
+survives even when a never-produced product has no withdrawal movement: the
+next drive re-observes the exact requested address in a fresh memo. Retirement
+allocates no replacement session, and removing the consumer cancels its demand.
+Pending product requests reuse the scheduler's deduplicating FIFO `Agenda`;
+renewed demand cannot revive a duplicate stale queue entry.
+World holds no backend or macro artifact
+payload that could retain the allocation or substitute a second authority.
+
+### Root-local struct schemas
+
+Each pruned `MaterializedExecutable` carries the typed `ModuleId`s of structs
+its surviving construction/assertion steps or retained runtime type surfaces
+name. A struct is one map-DNF leaf whose `MapTag::Struct(ModuleId, name)` and
+fields remain conjunctive through every type operation. It is not recovered
+from `Ty` display/canonical text or the old `impl-target::` string convention.
+The artifact also drops `value_types`
+for values removed by control pruning before it walks those surfaces, so dead
+types cannot overpackage a schema.
+`RootBackendProduct` unions those sets across its exact reachable executable
+closure, reads each `StructDefined(module)` through `ProductReadContext`, and
+only then materializes the runtime name-to-fields map. The map remains the
+single interpreter/native/AOT schema input, but its membership and invalidation
+are root-local and fact-tracked. No product snapshots `StructDefMap`, and a
+struct reached only by another root cannot make retained and fresh calculations
+disagree. `ModuleMap::reference_named` interns one `ModuleId` per fully
+qualified name; the map tag compares that id, while runtime registration and
+artifact rendering keep the full stable name (so `A.Item` and `B.Item` cannot
+collide).
+Record-axis top ranges over plain maps and every struct family; `map_top` is the
+distinct positive `Plain {}` leaf. Runtime test envelopes preserve a struct tag
+while erasing its unobservable positive field predicates, so `not Foo` rejects
+a registered `Foo` while admitting a plain map and other values. Shaped raw
+negatives conservatively keep the untestable family residue. An explicit `Foo
+| map` admits both.
+
+The cofinite named-struct predicates remain complete for the values a root can
+observe: spawned processes use the same root program, while macro roots execute
+separately over quoted values. If runtime values later cross independently
+compiled roots, that feature must explicitly compose their schema sets.
 
 ## Tiny walkthrough
 
@@ -701,11 +859,13 @@ AnalyzeActivation(a) re-runs against the new body.
   the returned decision and immutable `World` getters; the context never owns
   store mutation or invariants.
 
-`AppliedStep<J, F>` is `Scheduler::complete`'s report of one completion's
-effect on the graph: `outputs` (this job's published keys), `changed` (the
-`FactChange`s that resulted), `movements` (the full post-wave state of every
-fact this completion or its cascade touched), `wakes`, and `blocked` (the
-waits, if any, this completion left standing). `wakes: Vec<Wake<J, F>>` is
+`AppliedStep<J, F>` is `Scheduler::complete_ordered`'s report of one completion's
+effect on the graph: `changed` (the `FactChange`s that resulted), `movements`
+(the full post-wave state of every fact this completion or its cascade
+touched), `wakes`, and `blocked` (the waits, if any, this completion left
+standing). Published keys remain authoritative in the scheduler's per-job
+claim ledger; completion does not rebuild them for observation.
+`wakes: Vec<Wake<J, F>>` is
 every wake this completion caused, in wake order; each `Wake` attributes one
 `job` to the `cause: FactUse<F>` that moved it, carries `disposition`
 (`Enqueued` — the job's real work start — or `Coalesced` — the job was

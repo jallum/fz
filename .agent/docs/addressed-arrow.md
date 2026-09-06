@@ -35,6 +35,7 @@ in the arrow:
   `P_u{k}_{j}`; repeated source names still reuse their first address, but
   independent variables in different tuple alternatives do not collapse just
   because they occupy the same field position
+- capture `j` of a closure literal at address `P` → `P_c{j}`
 - a *name's* canonical id is the address of its **first occurrence** (pre-order:
   params left-to-right, then result); repeats reuse it
 
@@ -52,12 +53,25 @@ second parameter) and its contents `a1_0`/`a1_1`; an address can. Two distinct
 positions therefore have distinct addresses by construction. The only way two
 slots share an id is a shared *name* — which is deliberate.
 
-`AddrStep` is one step of a path: `Param(i)`, `Result`, `Field(j)`,
-`Variant(k)`, `Elem`, `Payload`, `MapField(j)`, `VarSlot(k)`. A full address is
-a `&[AddrStep]` rooted at a `Param` or `Result`. `address_remap` walks a `Ty`,
-replacing each variable with the address of its first occurrence;
-`address_remap_children` recurses into tuples/lists/resources/maps/funcs,
-extending the path at each child.
+`AddrStep` is one step of a path: `Param(i)`, `Result`, `Capture(i)`,
+`Field(j)`, `Variant(k)`, `Elem`, `Payload`, `MapField(j)`, or `VarSlot(k)`. A
+full address is a `&[AddrStep]` rooted at a `Param` or `Result`.
+`address_remap` walks a `Ty`, replacing each variable with the address of its
+first occurrence; `address_remap_children` recurses into tuples, lists,
+resources, maps, function surfaces, and closure-literal captures.
+
+Address correlation is lexical. The enclosing value has one map, and every
+`ArrowSig` pushes a fresh frame recording its args/result and captures. A raw
+source generic on a callable surface still consults the enclosing value map, so
+a deliberate source-level arg/result correlation keeps its meaning. A literal
+capture first consults the live args/result maps, from inner to outer, so a
+generic shared by one callable's arg, result, and capture stays shared. Any
+other capture is re-owned at its exact `Capture(i)` path and recorded in that
+literal's capture map; repeats within that literal reuse it. The frame is popped at
+the end of the signature. Consequently an embedded prior value cannot alias an
+independent nested callable merely because both arrived carrying `a0`, and a
+sibling cannot inherit the prior sibling's correlation map. Re-addressing
+produces the same paths and is idempotent.
 
 ## Addressing makes the interner the canonical form
 
@@ -346,9 +360,11 @@ suffix carries `a{K}..` addresses in the full arrow frame. `own_surface`
 re-addresses that suffix standalone, rebasing it to the canonical `a0`-based
 surface frame, so two closures that share a body but differ in captures yield
 one own-surface comparable to a standalone `CallableSurface`.
-`own_surface_past_captures` decides capture identity by prefix equality (the
-left-to-right addressing property makes the addressed captures exactly the
-arrow's leading prefix) and re-addresses the suffix only when the prefix matches.
+`own_surface_past_captures` accepts captures already expressed in the
+activation's addressed frame, decides capture identity by exact prefix equality,
+and re-addresses the suffix only when that prefix matches. Addressing raw capture
+types standalone is not interchangeable with that frame after activation keying
+has erased transported closure identity.
 
 ## The backend boundary: value templates
 

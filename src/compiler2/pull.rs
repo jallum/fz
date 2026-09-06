@@ -5,67 +5,159 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+mod rooted;
+
+#[cfg(test)]
+use super::body::{CallSiteId, ValueId};
+use super::world::World;
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendReceive, BackendStep, CallEdge, CallReturnFlow, EffectSummary,
-    MaterializedExecutable, ReusableConsCapture, RootBackendProductAnswer,
+    AbiReadyExecutable, BackendExecutable, BackendProgram, EffectSummary, MaterializedExecutable, NativeProgram,
 };
-use super::body::{
-    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
-};
-use super::drive::FactKey;
-use super::facts::{FactMovement, FactState, FactUse};
-use super::identity::{ExecutableKey, RootId};
-use super::jobs::runtime_demand::ExecutableFacts;
+use super::drive::{DependencyKey, FactKey, ProductAddress};
+use super::executable_facts::ExecutableFacts;
+use super::facts::{FactChange, FactMovement, FactState, FactUse};
+use super::identity::{ExecutableKey, ModuleId, RootId};
 use super::scheduler::WorkStartTally;
-use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
-use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
+use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
+#[cfg(test)]
+use super::transport::LaneId;
+#[cfg(test)]
+use super::transport::ShapeId;
+use super::transport::{CallableConstructionOwner, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
-use super::world::World;
+static NEXT_PULL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
+const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
+const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
+const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
+const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct InputSlot {
-    pub executable: ExecutableKey,
-    pub semantic_index: usize,
+fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
+    [
+        PRODUCT_REQUESTED_EVENT,
+        PRODUCT_EVALUATED_EVENT,
+        PRODUCT_COPUBLISHED_EVENT,
+        RECURSIVE_GROUP_PUBLISHED_EVENT,
+    ]
+    .into_iter()
+    .any(|event| tel.is_raw_event_enabled(event))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PullSessionId(NonZeroU64);
+
+impl PullSessionId {
+    pub(crate) fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProductRequestId(NonZeroU64);
+
+impl ProductRequestId {
+    pub(crate) fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug)]
+struct ProductRequestIds {
+    next: Option<NonZeroU64>,
+}
+
+impl ProductRequestIds {
+    fn new() -> Self {
+        Self {
+            next: NonZeroU64::new(1),
+        }
+    }
+
+    fn allocate(&mut self) -> ProductRequestId {
+        let id = self.next.expect("product request identity exhausted");
+        self.next = id.get().checked_add(1).and_then(NonZeroU64::new);
+        ProductRequestId(id)
+    }
+}
+
+fn allocate_pull_session_id(counter: &AtomicU64) -> PullSessionId {
+    let id = counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            (next != 0).then(|| next.checked_add(1).unwrap_or(0))
+        })
+        .unwrap_or_else(|_| panic!("pull session identity exhausted"));
+    PullSessionId(NonZeroU64::new(id).expect("the allocator never returns its exhausted sentinel"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProductKey {
     RootBackendProduct(RootId),
+    NativeProgram(RootId),
     BackendExecutable(ExecutableKey),
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
-    ExecutableFacts(ExecutableKey),
-    RuntimeDemand(ExecutableKey),
-    OutgoingEdgeFrontier(RootId),
-    OutgoingInputEdges(ExecutableKey),
-    IncomingInputRelations(RootId),
-    IncomingInputSlot(InputSlot),
     TransportShape(TransportPosition),
     CallableConstruction(TransportPosition),
+    StructSchema(ModuleId),
+}
+
+impl SemanticOrd<super::types::Types> for ProductKey {
+    fn semantic_cmp(&self, other: &Self, types: &super::types::Types) -> std::cmp::Ordering {
+        product_rank(self)
+            .cmp(&product_rank(other))
+            .then_with(|| match (self, other) {
+                (Self::AbiExecutable(left), Self::AbiExecutable(right))
+                | (Self::BackendExecutable(left), Self::BackendExecutable(right))
+                | (Self::MaterializedExecutable(left), Self::MaterializedExecutable(right))
+                | (Self::ExecutableEffects(left), Self::ExecutableEffects(right)) => left.semantic_cmp(right, types),
+                (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
+                | (Self::NativeProgram(left), Self::NativeProgram(right)) => left.cmp(right),
+                (Self::StructSchema(left), Self::StructSchema(right)) => left.cmp(right),
+                (Self::TransportShape(left), Self::TransportShape(right))
+                | (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
+                    left.semantic_cmp(right, types)
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+fn product_rank(product: &ProductKey) -> u8 {
+    match product {
+        ProductKey::AbiExecutable(_) => 0,
+        ProductKey::BackendExecutable(_) => 1,
+        ProductKey::CallableConstruction(_) => 2,
+        ProductKey::ExecutableEffects(_) => 3,
+        ProductKey::MaterializedExecutable(_) => 6,
+        ProductKey::RootBackendProduct(_) => 9,
+        ProductKey::NativeProgram(_) => 11,
+        ProductKey::TransportShape(_) => 12,
+        ProductKey::StructSchema(_) => 13,
+    }
 }
 
 impl ProductKey {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::RootBackendProduct(_) => "root_backend_product",
+            Self::NativeProgram(_) => "native_program",
             Self::BackendExecutable(_) => "backend_executable",
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
-            Self::ExecutableFacts(_) => "executable_facts",
-            Self::RuntimeDemand(_) => "runtime_demand",
-            Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
-            Self::OutgoingInputEdges(_) => "outgoing_input_edges",
-            Self::IncomingInputRelations(_) => "incoming_input_relations",
-            Self::IncomingInputSlot(_) => "incoming_input_slot",
             Self::TransportShape(_) => "transport_shape",
             Self::CallableConstruction(_) => "callable_construction",
+            Self::StructSchema(_) => "struct_schema",
         }
     }
 
@@ -74,16 +166,12 @@ impl ProductKey {
             Self::BackendExecutable(executable)
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
-            | Self::ExecutableEffects(executable)
-            | Self::ExecutableFacts(executable)
-            | Self::RuntimeDemand(executable)
-            | Self::OutgoingInputEdges(executable) => Some(executable),
-            Self::IncomingInputSlot(slot) => Some(&slot.executable),
+            | Self::ExecutableEffects(executable) => Some(executable),
             Self::RootBackendProduct(_)
-            | Self::OutgoingEdgeFrontier(_)
-            | Self::IncomingInputRelations(_)
+            | Self::NativeProgram(_)
             | Self::TransportShape(_)
             | Self::CallableConstruction(_) => None,
+            Self::StructSchema(_) => None,
         }
     }
 }
@@ -93,36 +181,43 @@ pub enum TransportShapeFact {
     Layout(TransportLayout),
 }
 
-impl TransportShapeFact {
-    pub fn shape(&self) -> Option<ShapeId> {
-        match self {
-            Self::Layout(layout) => Some(layout.structural),
-        }
-    }
-
-    pub fn layout(&self) -> Option<TransportLayout> {
-        match self {
-            Self::Layout(layout) => Some(*layout),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
+    #[cfg(test)]
     Unit,
-    RootBackendProduct(Box<RootBackendProductAnswer>),
-    BackendExecutable(Box<SymbolicBackendExecutable>),
-    AbiExecutable(Box<AbiReadyExecutable>),
-    MaterializedExecutable(Box<MaterializedExecutable>),
+    RootBackendProduct(Rc<BackendProgram>),
+    NativeProgram(Rc<NativeProgram>),
+    BackendExecutable(Rc<BackendExecutable>),
+    AbiExecutable(Rc<AbiReadyExecutable>),
+    MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    ExecutableFacts(Rc<ExecutableFacts>),
-    RuntimeDemand(Box<ExecutableRuntimeDemand>),
-    OutgoingEdgeFrontier(Rc<HashSet<ExecutableKey>>),
-    OutgoingInputEdges(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
-    IncomingInputRelations(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
-    IncomingInputSlot(HashSet<IncomingInputSource>),
     TransportShape(TransportShapeFact),
-    CallableConstruction(Box<CallableConstructionOwner>),
+    CallableConstruction(Rc<CallableConstructionOwner>),
+    StructSchema(Rc<super::backend_program::BackendSchema>),
+}
+
+fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
+    match (left, right) {
+        (ProductValue::RootBackendProduct(left), ProductValue::RootBackendProduct(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::NativeProgram(left), ProductValue::NativeProgram(right)) => {
+            Rc::ptr_eq(left, right) || super::artifact::native_programs_equal(left, right)
+        }
+        (ProductValue::BackendExecutable(left), ProductValue::BackendExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::AbiExecutable(left), ProductValue::AbiExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::MaterializedExecutable(left), ProductValue::MaterializedExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::CallableConstruction(left), ProductValue::CallableConstruction(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        _ => left == right,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -135,95 +230,12 @@ pub enum PullWait {
 pub enum PullOutcome {
     Produced(ProductValue),
     Waiting(Vec<PullWait>),
+    Failed(ProductFailure),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicBackendExecutable {
-    pub key: ExecutableKey,
-    pub abi: Box<AbiReadyExecutable>,
-    pub body: SymbolicBackendBody,
-    pub call_edges: HashMap<CallSiteId, CallEdge<ExecutableKey>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SymbolicBackendBody {
-    Extern {
-        signature: LoweredExtern,
-    },
-    Clauses {
-        clauses: Vec<SymbolicBackendClause>,
-        entries: Vec<SymbolicBackendEntry>,
-        generated: Vec<super::FunctionId>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicBackendClause {
-    pub span: crate::source::Span,
-    pub params: Vec<ValueId>,
-    pub projections: Vec<BackendStep>,
-    pub entry: ControlEntryId,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicBackendEntry {
-    pub span: crate::source::Span,
-    pub origin: SymbolicBackendEntryOrigin,
-    pub params: Vec<ValueId>,
-    pub captures: Vec<ValueId>,
-    pub capture_positions: Vec<TransportPosition>,
-    pub reusable_cons_captures: Vec<ReusableConsCapture>,
-    pub steps: Vec<BackendStep>,
-    pub tail: SymbolicBackendTail,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolicBackendEntryOrigin {
-    Clause,
-    Branch,
-    ReceiveOutcome,
-    DeliveredResume {
-        value: ValueId,
-        position: TransportPosition,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SymbolicBackendTail {
-    Value {
-        value: ValueId,
-        dest: ControlDestination,
-    },
-    DirectCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        target: CallEdge<ExecutableKey>,
-        args: Vec<BackendCallArg>,
-        dest: ControlDestination,
-    },
-    ClosureCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: ValueId,
-        target: Option<ExecutableKey>,
-        args: Vec<BackendCallArg>,
-        dest: ControlDestination,
-        return_flow: Option<CallReturnFlow>,
-    },
-    If {
-        cond: ValueId,
-        then_entry: ControlEntryId,
-        else_entry: ControlEntryId,
-    },
-    Dispatch {
-        inputs: Vec<ValueId>,
-        bindings: DispatchBindings,
-        dispatch: Box<ControlDispatch>,
-    },
-    Receive(Box<BackendReceive>),
-    Halt {
-        atom: String,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductFailure {
+    NativeLowering,
 }
 
 impl PullOutcome {
@@ -247,10 +259,40 @@ pub struct ProductMemo {
     dirty_descendants: HashSet<ProductKey>,
     in_progress: HashSet<ProductKey>,
     invalidated_in_progress: HashSet<ProductKey>,
+    fact_subscription_changes: Vec<(FactKey, bool)>,
     /// Monotone counter stamping each settled group with a distinct id. The
     /// first group settled gets id 1 (the field itself starts at the
     /// `Default` zero and is pre-incremented before use).
     next_group_id: u64,
+    observed_products: HashSet<ProductKey>,
+    external_changes: Vec<FactChange<ProductKey>>,
+    rooted: HashMap<ProductKey, rooted::RootedProducts>,
+    membership_readers: HashMap<ProductKey, HashSet<ProductKey>>,
+    rooted_readers: HashMap<ProductKey, HashSet<ProductKey>>,
+}
+
+type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies);
+
+enum ProductCompletion {
+    Batch(Vec<ProductCommitMember>),
+    RecursiveGroup(Vec<ProductCommitMember>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ReaderMutation {
+    Invalidate,
+    Dirty,
+    Refresh,
+}
+
+impl ReaderMutation {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Invalidate => 0,
+            Self::Dirty => 1,
+            Self::Refresh => 2,
+        }
+    }
 }
 
 /// One settled product's causal identity, carried on the `pull.product.settled`
@@ -263,20 +305,196 @@ pub struct ProductSettlement {
     pub group: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingNode {
+    index: usize,
+    lowlink: usize,
+}
+
+/// One Tarjan traversal over the dependency-reachable pending graph.
+struct PendingStrongComponent {
+    next_index: usize,
+    nodes: HashMap<ProductKey, PendingNode>,
+    stack: Vec<ProductKey>,
+    on_stack: HashSet<ProductKey>,
+    candidate_inventory: u64,
+    vertex_visits: u64,
+    edge_scans: u64,
+}
+
+fn sort_product_keys(keys: &mut [ProductKey], types: &super::types::Types) {
+    keys.sort_by(|left, right| left.semantic_cmp(right, types));
+    for pair in keys.windows(2) {
+        debug_assert!(
+            pair[0] == pair[1] || pair[0].semantic_cmp(&pair[1], types) != std::cmp::Ordering::Equal,
+            "distinct product keys share one semantic order identity: {:?} vs {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
+impl PendingStrongComponent {
+    fn find(
+        memo: &ProductMemo,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        dependency: &ProductKey,
+    ) -> (Vec<ProductKey>, u64, u64, u64) {
+        let mut search = Self {
+            next_index: 0,
+            nodes: HashMap::new(),
+            stack: Vec::new(),
+            on_stack: HashSet::new(),
+            candidate_inventory: 0,
+            vertex_visits: 0,
+            edge_scans: 0,
+        };
+        if dependency != current && memo.pending_product_dependencies(dependency).is_none() {
+            return (Vec::new(), 0, 0, 0);
+        }
+        let members = search
+            .visit(memo, current, current_dependencies, dependency)
+            .expect("the traversal root must complete its strong component");
+        (
+            members,
+            search.candidate_inventory,
+            search.vertex_visits,
+            search.edge_scans,
+        )
+    }
+
+    fn visit(
+        &mut self,
+        memo: &ProductMemo,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        key: &ProductKey,
+    ) -> Option<Vec<ProductKey>> {
+        let index = self.next_index;
+        self.next_index += 1;
+        self.nodes.insert(key.clone(), PendingNode { index, lowlink: index });
+        self.stack.push(key.clone());
+        self.on_stack.insert(key.clone());
+        self.vertex_visits += 1;
+
+        let dependencies = if key == current {
+            Some(current_dependencies)
+        } else {
+            memo.pending_product_dependencies(key)
+        };
+        if dependencies.is_some() && key.kind() == current.kind() {
+            self.candidate_inventory += 1;
+        }
+        for dependency in dependencies
+            .into_iter()
+            .flat_map(|dependencies| dependencies.products.keys())
+        {
+            if dependency != current && memo.pending_product_dependencies(dependency).is_none() {
+                continue;
+            }
+            self.edge_scans += 1;
+            if !self.nodes.contains_key(dependency) {
+                let _ = self.visit(memo, current, current_dependencies, dependency);
+                let dependency_lowlink = self.nodes[dependency].lowlink;
+                let node = self.nodes.get_mut(key).expect("visited product node");
+                node.lowlink = node.lowlink.min(dependency_lowlink);
+            } else if self.on_stack.contains(dependency) {
+                let dependency_index = self.nodes[dependency].index;
+                let node = self.nodes.get_mut(key).expect("visited product node");
+                node.lowlink = node.lowlink.min(dependency_index);
+            }
+        }
+
+        let node = self.nodes[key];
+        if node.lowlink != node.index {
+            return None;
+        }
+
+        let mut component = Vec::new();
+        loop {
+            let member = self
+                .stack
+                .pop()
+                .expect("a strong-component root must remain on the stack");
+            self.on_stack.remove(&member);
+            let complete = member == *key;
+            component.push(member);
+            if complete {
+                break;
+            }
+        }
+        Some(component)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecursiveGroupSearch {
+    pub candidate_inventory: u64,
+    pub vertex_visits: u64,
+    pub edge_scans: u64,
+    pub cycle_closed: bool,
+    pub group_members: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ProductEntry {
     value: ProductValue,
     generation: u64,
-    dependencies: ProductDependencies,
+    dependencies: Rc<ProductDependencies>,
+    membership: HashSet<ProductKey>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ProductDependencies {
     products: HashMap<ProductKey, Option<u64>>,
     facts: HashMap<FactUse<FactKey>, FactState>,
+    membership: HashSet<ProductKey>,
 }
 
 impl ProductMemo {
+    fn has_unsettled_inputs(&self, key: &ProductKey) -> bool {
+        self.displaced.contains_key(key)
+            || self.fact_stale_dependencies.contains_key(key)
+            || self.dirty_descendants.contains(key)
+    }
+
+    fn dependencies_are_unsettled(&self, key: &ProductKey) -> bool {
+        self.rooted.get(key).is_some_and(|rooted| !rooted.dirty.is_empty())
+            || self.produced.get(key).is_some_and(|entry| {
+                entry
+                    .dependencies
+                    .products
+                    .keys()
+                    .any(|dependency| self.has_unsettled_inputs(dependency))
+            })
+    }
+
+    fn external_state(&self, key: &ProductKey) -> FactState {
+        FactState {
+            revision: self
+                .produced
+                .get(key)
+                .or_else(|| self.displaced.get(key))
+                .map(|entry| entry.generation),
+            settled: self.produced.contains_key(key) && !self.has_unsettled_inputs(key),
+        }
+    }
+
+    fn record_external_change(&mut self, key: &ProductKey, before: FactState) {
+        if self.observed_products.contains(key) {
+            let after = self.external_state(key);
+            if before != after {
+                self.external_changes.push(FactChange {
+                    key: key.clone(),
+                    old_revision: before.revision,
+                    new_revision: after.revision,
+                    old_settled: before.settled,
+                    new_settled: after.settled,
+                });
+            }
+        }
+    }
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
         self.produced.get(key).map(|entry| &entry.value)
     }
@@ -286,8 +504,69 @@ impl ProductMemo {
     }
 
     #[cfg(test)]
+    pub fn materialized_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<MaterializedExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (
+                    ProductKey::MaterializedExecutable(executable),
+                    ProductValue::MaterializedExecutable(materialized),
+                ) => Some((executable, materialized)),
+                _ => None,
+            })
+    }
+
+    #[cfg(test)]
+    pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&Rc<MaterializedExecutable>> {
+        match self.get(&ProductKey::MaterializedExecutable(executable.clone())) {
+            Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn abi_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<AbiReadyExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (ProductKey::AbiExecutable(executable), ProductValue::AbiExecutable(abi)) => Some((executable, abi)),
+                _ => None,
+            })
+    }
+
+    #[cfg(test)]
+    pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&Rc<AbiReadyExecutable>> {
+        match self.get(&ProductKey::AbiExecutable(executable.clone())) {
+            Some(ProductValue::AbiExecutable(abi)) => Some(abi),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn backend_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<BackendExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (ProductKey::BackendExecutable(executable), ProductValue::BackendExecutable(backend)) => {
+                    Some((executable, backend))
+                }
+                _ => None,
+            })
+    }
+
+    #[cfg(test)]
     pub(crate) fn product_dependencies(&self, key: &ProductKey) -> Option<&HashMap<ProductKey, Option<u64>>> {
         self.produced.get(key).map(|entry| &entry.dependencies.products)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fact_dependencies(&self, key: &ProductKey) -> Option<&HashMap<FactUse<FactKey>, FactState>> {
+        self.produced.get(key).map(|entry| &entry.dependencies.facts)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn produced_keys(&self) -> impl Iterator<Item = &ProductKey> {
+        self.produced.keys()
     }
 
     /// Has `key` settled -- does reading it answer now, with a value it already
@@ -307,7 +586,7 @@ impl ProductMemo {
                 self.produced
                     .iter()
                     .chain(self.displaced.iter())
-                    .map(|(key, entry)| (key, &entry.dependencies)),
+                    .map(|(key, entry)| (key, entry.dependencies.as_ref())),
             )
             .flat_map(|(key, dependencies)| dependencies.products.keys().map(move |dependency| (key, dependency)))
     }
@@ -316,223 +595,174 @@ impl ProductMemo {
         self.in_progress.contains(key)
     }
 
-    /// Does `from` reach `target` by following the dependencies of products
-    /// that have not settled?
-    ///
-    /// Both askers -- the recursive-group gate and the strong component that
-    /// gate leads to -- are asking one question: would waiting on this
-    /// dependency deadlock, because it is itself waiting on me? Only an
-    /// unsettled product can be waiting on anything. A settled one answers a
-    /// read immediately with the value it already holds, so no chain of waits
-    /// runs through it and the walk has nothing to learn by stepping into one.
-    /// `settled_products_depend_only_on_settled_products` pins the memo state
-    /// that makes ignoring them lossless rather than merely safe.
-    ///
-    /// `overlay` supplies the dependencies of a product that is mid-production
-    /// and so has none recorded in the memo yet.
-    fn dependency_reaches(
-        &self,
-        from: &ProductKey,
-        target: &ProductKey,
-        overlay: Option<(&ProductKey, &ProductDependencies)>,
-    ) -> bool {
-        let mut pending = vec![from];
-        let mut seen = HashSet::new();
-        while let Some(key) = pending.pop() {
-            if key == target {
-                return true;
-            }
-            if !seen.insert(key) {
-                continue;
-            }
-            let dependencies = match overlay {
-                Some((current, dependencies)) if key == current => Some(dependencies),
-                _ => self.unsettled_product_dependencies(key),
-            };
-            if let Some(dependencies) = dependencies {
-                pending.extend(dependencies.products.keys());
-            }
-        }
-        false
-    }
-
     /// The products that are mutually reachable with `current`: the recursive
     /// group that has to settle as one because no member can be believed
     /// before the others are.
     ///
-    /// Only unsettled products are candidates, for the same reason
-    /// `dependency_reaches` only walks them: a settled product is already
+    /// Only unsettled products are candidates: a settled product is already
     /// believed, so it is not waiting on this group and does not belong to it.
     fn pending_strong_component(
         &self,
         current: &ProductKey,
         current_dependencies: &ProductDependencies,
-    ) -> Vec<ProductKey> {
-        let overlay = Some((current, current_dependencies));
-        let mut candidates = self
-            .pending_dependencies
-            .keys()
-            .chain(self.displaced.keys())
-            .filter(|key| key.kind() == current.kind())
-            .collect::<HashSet<_>>();
-        candidates.insert(current);
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                self.dependency_reaches(current, candidate, overlay)
-                    && self.dependency_reaches(candidate, current, overlay)
-            })
-            .cloned()
-            .collect()
+        dependency: &ProductKey,
+        types: &super::types::Types,
+    ) -> (Option<Vec<ProductKey>>, RecursiveGroupSearch) {
+        let (component, candidate_inventory, vertex_visits, edge_scans) =
+            PendingStrongComponent::find(self, current, current_dependencies, dependency);
+        let cycle_closed = component.iter().any(|member| member == current);
+        let members = cycle_closed.then(|| {
+            let mut members = component
+                .into_iter()
+                .filter(|member| member.kind() == current.kind())
+                .collect::<Vec<_>>();
+            sort_product_keys(&mut members, types);
+            members
+        });
+        let search = RecursiveGroupSearch {
+            candidate_inventory,
+            vertex_visits,
+            edge_scans,
+            cycle_closed,
+            group_members: members.as_ref().map_or(0, |members| members.len() as u64),
+        };
+        (members, search)
     }
 
-    fn product_dependencies_for_group(&self, key: &ProductKey) -> Option<&ProductDependencies> {
-        self.pending_dependencies
-            .get(key)
-            .or_else(|| self.produced.get(key).map(|entry| &entry.dependencies))
-            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
-    }
-
-    /// The dependencies of `key` if `key` has not settled: either it is in
-    /// flight and has recorded some, or it was displaced and is waiting to be
-    /// produced again. A settled product is deliberately absent -- see
-    /// `dependency_reaches`, the only caller.
-    fn unsettled_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
-        self.pending_dependencies
-            .get(key)
-            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
-    }
-
-    fn is_displaced(&self, key: &ProductKey) -> bool {
-        self.displaced.contains_key(key)
-    }
-
-    pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        match self.get(&ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
-            Some(
-                ProductValue::Unit
-                | ProductValue::RootBackendProduct(_)
-                | ProductValue::BackendExecutable(_)
-                | ProductValue::AbiExecutable(_)
-                | ProductValue::MaterializedExecutable(_)
-                | ProductValue::ExecutableEffects(_)
-                | ProductValue::ExecutableFacts(_)
-                | ProductValue::OutgoingEdgeFrontier(_)
-                | ProductValue::OutgoingInputEdges(_)
-                | ProductValue::IncomingInputRelations(_)
-                | ProductValue::IncomingInputSlot(_)
-                | ProductValue::TransportShape(_)
-                | ProductValue::CallableConstruction(_),
-            )
-            | None => None,
-        }
+    /// The freshly evaluated dependencies of a formula that completed with
+    /// unresolved waits. Settled and displaced entries are deliberately absent:
+    /// neither is current evidence that a formula is waiting on a cycle.
+    fn pending_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
+        self.pending_dependencies.get(key)
     }
 
     fn begin(&mut self, key: ProductKey) -> bool {
         self.in_progress.insert(key)
     }
 
-    fn finish(
+    fn finish_completion(
         &mut self,
         tel: &impl Telemetry,
-        key: &ProductKey,
-        value: ProductValue,
-        dependencies: ProductDependencies,
+        emit_causal: bool,
+        requested: &ProductKey,
+        mut completion: ProductCompletion,
+        types: &super::types::Types,
     ) -> bool {
-        self.in_progress.remove(key);
-        if self.invalidated_in_progress.remove(key) {
-            self.produced.remove(key);
-            return false;
+        let members = match &mut completion {
+            ProductCompletion::Batch(members) | ProductCompletion::RecursiveGroup(members) => members,
+        };
+        members.sort_by(|(left, _, _), (right, _, _)| left.semantic_cmp(right, types));
+        assert!(
+            members.iter().any(|(key, _, _)| key == requested),
+            "a product completion must commit its requested anchor"
+        );
+        for pair in members.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0, "one completion published a product twice");
+            debug_assert_ne!(
+                pair[0].0.semantic_cmp(&pair[1].0, types),
+                std::cmp::Ordering::Equal,
+                "distinct product keys share one semantic order identity: {:?} vs {:?}",
+                pair[0].0,
+                pair[1].0
+            );
         }
-        let previous = self.produced.remove(key).or_else(|| self.displaced.remove(key));
-        self.remove_reader_dependencies(key, previous.as_ref().map(|entry| &entry.dependencies));
-        self.take_pending_dependencies(key);
-        let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
-        let generation = previous.as_ref().map_or(1, |entry| {
-            if changed {
-                entry.generation + 1
-            } else {
-                entry.generation
+        match completion {
+            ProductCompletion::Batch(members) => {
+                if members
+                    .iter()
+                    .any(|(key, _, _)| self.invalidated_in_progress.contains(key))
+                {
+                    for (key, _, _) in &members {
+                        self.in_progress.remove(key);
+                        self.invalidated_in_progress.remove(key);
+                    }
+                    self.produced.remove(requested);
+                    return false;
+                }
+                self.commit_members(tel, emit_causal, requested, members, None, None, types);
             }
-        });
-        self.install_reader_dependencies(key, &dependencies);
-        self.fact_stale_dependencies.remove(key);
-        self.dirty_descendants.remove(key);
-        self.produced.insert(
-            key.clone(),
-            ProductEntry {
-                value: value.clone(),
-                generation,
-                dependencies,
-            },
-        );
-        if changed {
-            self.invalidate_readers(tel, key);
-        } else {
-            self.refresh_reader_dirtiness(key);
+            ProductCompletion::RecursiveGroup(members) => {
+                let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
+                if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
+                    self.reject_group(tel, &member_keys, types);
+                    return false;
+                }
+                let mut group_dependencies = ProductDependencies::default();
+                for (_, _, dependencies) in &members {
+                    for (dependency, generation) in &dependencies.products {
+                        if member_keys.contains(dependency) {
+                            continue;
+                        }
+                        if group_dependencies
+                            .products
+                            .get(dependency)
+                            .is_some_and(|recorded| recorded != generation)
+                        {
+                            self.reject_group(tel, &member_keys, types);
+                            return false;
+                        }
+                        group_dependencies.products.insert(dependency.clone(), *generation);
+                    }
+                    for (fact, state) in &dependencies.facts {
+                        if group_dependencies
+                            .facts
+                            .get(fact)
+                            .is_some_and(|recorded| recorded != state)
+                        {
+                            self.reject_group(tel, &member_keys, types);
+                            return false;
+                        }
+                        group_dependencies.facts.insert(fact.clone(), *state);
+                    }
+                }
+                self.next_group_id += 1;
+                let group_id = self.next_group_id;
+                self.commit_members(
+                    tel,
+                    emit_causal,
+                    requested,
+                    members,
+                    Some(Rc::new(group_dependencies)),
+                    Some(group_id),
+                    types,
+                );
+            }
         }
-        tel.raw_event3(
-            &["fz", "compiler2", "pull", "product", "settled"],
-            key,
-            &value,
-            &ProductSettlement {
-                generation,
-                changed,
-                group: None,
-            },
-        );
         true
     }
 
-    fn finish_group(
+    fn commit_members(
         &mut self,
         tel: &impl Telemetry,
+        emit_causal: bool,
+        requested: &ProductKey,
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
-    ) -> bool {
-        let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
-        assert_eq!(member_keys.len(), members.len());
-        if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
-            self.reject_group(tel, &member_keys);
-            return false;
-        }
-
-        let mut group_dependencies = ProductDependencies::default();
-        for (_, _, dependencies) in &members {
-            for (dependency, generation) in &dependencies.products {
-                if member_keys.contains(dependency) {
-                    continue;
-                }
-                if group_dependencies
-                    .products
-                    .get(dependency)
-                    .is_some_and(|recorded| recorded != generation)
-                {
-                    self.reject_group(tel, &member_keys);
-                    return false;
-                }
-                group_dependencies.products.insert(dependency.clone(), *generation);
-            }
-            for (fact, state) in &dependencies.facts {
-                if group_dependencies
-                    .facts
-                    .get(fact)
-                    .is_some_and(|recorded| recorded != state)
-                {
-                    self.reject_group(tel, &member_keys);
-                    return false;
-                }
-                group_dependencies.facts.insert(fact.clone(), *state);
-            }
-        }
-
+        shared_dependencies: Option<Rc<ProductDependencies>>,
+        group: Option<u64>,
+        types: &super::types::Types,
+    ) {
         let mut prepared = Vec::with_capacity(members.len());
-        for (key, value, _) in members {
+        let mut external_before = Vec::new();
+        for (key, value, mut dependencies) in members {
+            if self.observed_products.contains(&key) {
+                external_before.push((key.clone(), self.external_state(&key)));
+            }
             self.in_progress.remove(&key);
             let previous = self.produced.remove(&key).or_else(|| self.displaced.remove(&key));
-            self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| &entry.dependencies));
+            self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| entry.dependencies.as_ref()));
             self.take_pending_dependencies(&key);
-            let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
+            let changed = previous
+                .as_ref()
+                .is_none_or(|entry| !same_product_value(&entry.value, &value));
+            let value = if changed {
+                value
+            } else {
+                previous
+                    .as_ref()
+                    .expect("an unchanged product has a previous memo entry")
+                    .value
+                    .clone()
+            };
             let generation = previous.as_ref().map_or(1, |entry| {
                 if changed {
                     entry.generation + 1
@@ -540,12 +770,23 @@ impl ProductMemo {
                     entry.generation
                 }
             });
-            prepared.push((key, value, group_dependencies.clone(), generation, changed));
+            let membership = std::mem::take(&mut dependencies.membership);
+            let previous_membership = previous.map(|entry| entry.membership).unwrap_or_default();
+            let dependencies = shared_dependencies
+                .as_ref()
+                .map_or_else(|| Rc::new(dependencies), Rc::clone);
+            prepared.push((
+                key,
+                value,
+                dependencies,
+                generation,
+                changed,
+                membership,
+                previous_membership,
+            ));
         }
 
-        self.next_group_id += 1;
-        let group_id = self.next_group_id;
-        for (key, value, dependencies, generation, changed) in &prepared {
+        for (key, value, dependencies, generation, changed, membership, _) in &prepared {
             self.install_reader_dependencies(key, dependencies);
             self.fact_stale_dependencies.remove(key);
             self.dirty_descendants.remove(key);
@@ -555,6 +796,7 @@ impl ProductMemo {
                     value: value.clone(),
                     generation: *generation,
                     dependencies: dependencies.clone(),
+                    membership: membership.clone(),
                 },
             );
             tel.raw_event3(
@@ -564,35 +806,58 @@ impl ProductMemo {
                 &ProductSettlement {
                     generation: *generation,
                     changed: *changed,
-                    group: Some(group_id),
+                    group,
                 },
             );
-        }
-        for (key, _, _, _, changed) in prepared {
-            if changed {
-                self.invalidate_readers(tel, &key);
-            } else {
-                self.refresh_reader_dirtiness(&key);
+            if emit_causal && group.is_some() {
+                tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, key);
+            } else if emit_causal && key != requested {
+                tel.raw_event2(PRODUCT_COPUBLISHED_EVENT, requested, key);
             }
         }
-        true
+        for (key, before) in external_before {
+            self.record_external_change(&key, before);
+        }
+        for (key, _, _, _, _, _, previous) in &prepared {
+            self.replace_membership_readers(key, previous);
+        }
+        let mut rooted_mutations = Vec::new();
+        for (key, _, _, _, changed, _, previous) in &prepared {
+            rooted_mutations.extend(self.committed_rooted_member(key, previous, *changed, types));
+        }
+        let mutations = prepared.iter().flat_map(|(key, _, _, _, changed, _, _)| {
+            self.reader_mutations(
+                key,
+                if *changed {
+                    ReaderMutation::Invalidate
+                } else {
+                    ReaderMutation::Refresh
+                },
+            )
+        });
+        let mutations = mutations.chain(rooted_mutations).collect();
+        self.mutate_product_wave(tel, mutations, types);
     }
 
-    fn reject_group(&mut self, tel: &impl Telemetry, member_keys: &HashSet<ProductKey>) {
-        for key in member_keys {
+    fn reject_group(&mut self, tel: &impl Telemetry, member_keys: &HashSet<ProductKey>, types: &super::types::Types) {
+        let mut member_keys = member_keys.iter().cloned().collect::<Vec<_>>();
+        sort_product_keys(&mut member_keys, types);
+        let mut mutations = Vec::new();
+        for key in &member_keys {
             self.in_progress.remove(key);
             self.invalidated_in_progress.remove(key);
             self.take_pending_dependencies(key);
             if let Some(entry) = self.produced.remove(key) {
                 self.remove_reader_dependencies(key, Some(&entry.dependencies));
                 self.displaced.insert(key.clone(), entry);
-                self.mark_readers_dirty(key);
+                mutations.extend(self.reader_mutations(key, ReaderMutation::Dirty));
                 tel.raw_event1(&["fz", "compiler2", "pull", "product", "displaced"], key);
             }
             if let Some(entry) = self.displaced.get_mut(key) {
-                entry.dependencies = ProductDependencies::default();
+                entry.dependencies = Rc::new(ProductDependencies::default());
             }
         }
+        self.mutate_product_wave(tel, mutations, types);
     }
 
     fn unblock(&mut self, key: &ProductKey, dependencies: ProductDependencies) {
@@ -606,29 +871,48 @@ impl ProductMemo {
         self.pending_dependencies.insert(key.clone(), retained);
     }
 
-    fn remove(&mut self, tel: &impl Telemetry, key: &ProductKey) {
-        self.displace_for_reproduction(tel, key);
+    fn abort(&mut self, key: &ProductKey) {
+        self.in_progress.remove(key);
+        self.invalidated_in_progress.remove(key);
+        self.take_pending_dependencies(key);
     }
 
-    fn displace_for_reproduction(&mut self, tel: &impl Telemetry, key: &ProductKey) {
+    #[cfg(test)]
+    fn remove(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
+        self.invalidate_products(tel, [key.clone()], types);
+    }
+
+    fn invalidate_products(
+        &mut self,
+        tel: &impl Telemetry,
+        keys: impl IntoIterator<Item = ProductKey>,
+        types: &super::types::Types,
+    ) {
+        self.mutate_product_wave(
+            tel,
+            keys.into_iter().map(|key| (ReaderMutation::Invalidate, key)).collect(),
+            types,
+        );
+    }
+
+    fn displace_for_reproduction_shallow(&mut self, tel: &impl Telemetry, key: &ProductKey) -> (bool, bool) {
         if self.in_progress.contains(key) {
             self.invalidated_in_progress.insert(key.clone());
         }
         let pending = self.take_pending_dependencies(key).is_some();
+        let mut produced = false;
         if let Some(entry) = self.produced.remove(key) {
+            produced = true;
             self.remove_reader_dependencies(key, Some(&entry.dependencies));
             self.displaced.insert(key.clone(), entry);
-            self.mark_readers_dirty(key);
             tel.raw_event1(&["fz", "compiler2", "pull", "product", "displaced"], key);
         }
-        if pending {
-            self.invalidate_readers(tel, key);
-        }
+        (pending, produced)
     }
 
-    fn prepare_stale_for_reproduction(&mut self, tel: &impl Telemetry, key: &ProductKey) {
+    fn prepare_stale_for_reproduction(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
         self.fact_stale_dependencies.remove(key);
-        self.displace_for_reproduction(tel, key);
+        self.invalidate_products(tel, [key.clone()], types);
     }
 
     fn install_reader_dependencies(&mut self, reader: &ProductKey, dependencies: &ProductDependencies) {
@@ -641,10 +925,13 @@ impl ProductMemo {
             }
         }
         for fact in dependencies.facts.keys() {
-            self.fact_readers
-                .entry(fact.fact().clone())
-                .or_default()
-                .insert(reader.clone());
+            let fact = fact.fact().clone();
+            let readers = self.fact_readers.entry(fact.clone()).or_default();
+            let was_empty = readers.is_empty();
+            readers.insert(reader.clone());
+            if was_empty {
+                self.fact_subscription_changes.push((fact, true));
+            }
         }
     }
 
@@ -667,9 +954,15 @@ impl ProductMemo {
                 readers.is_empty()
             });
             if remove_entry {
-                self.fact_readers.remove(fact.fact());
+                let fact = fact.fact().clone();
+                self.fact_readers.remove(&fact);
+                self.fact_subscription_changes.push((fact, false));
             }
         }
+    }
+
+    fn take_fact_subscription_changes(&mut self) -> Vec<(FactKey, bool)> {
+        std::mem::take(&mut self.fact_subscription_changes)
     }
 
     fn take_pending_dependencies(&mut self, reader: &ProductKey) -> Option<ProductDependencies> {
@@ -678,17 +971,137 @@ impl ProductMemo {
         pending
     }
 
-    fn invalidate_readers(&mut self, tel: &impl Telemetry, key: &ProductKey) {
-        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
-        for reader in readers {
-            self.displace_for_reproduction(tel, &reader);
+    fn reader_mutations(
+        &self,
+        key: &ProductKey,
+        mutation: ReaderMutation,
+    ) -> impl Iterator<Item = (ReaderMutation, ProductKey)> + '_ {
+        self.product_readers
+            .get(key)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(move |reader| (mutation, reader))
+    }
+
+    fn mutate_product_wave(
+        &mut self,
+        tel: &impl Telemetry,
+        mut pending: Vec<(ReaderMutation, ProductKey)>,
+        types: &super::types::Types,
+    ) {
+        let mut seen = HashSet::new();
+        while !pending.is_empty() {
+            let next = pending
+                .iter()
+                .enumerate()
+                .min_by(|(_, (left_mutation, left)), (_, (right_mutation, right))| {
+                    left.semantic_cmp(right, types)
+                        .then_with(|| left_mutation.rank().cmp(&right_mutation.rank()))
+                })
+                .map(|(index, _)| index)
+                .expect("non-empty reader mutation worklist");
+            let (mutation, reader) = pending.swap_remove(next);
+            if !seen.insert((mutation, reader.clone())) {
+                continue;
+            }
+            let external_before = self
+                .observed_products
+                .contains(&reader)
+                .then(|| (reader.clone(), self.external_state(&reader)));
+            match mutation {
+                ReaderMutation::Invalidate => {
+                    pending.extend(
+                        self.rooted_member_dirty(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Dirty, root)),
+                    );
+                    let (was_pending, was_produced) = self.displace_for_reproduction_shallow(tel, &reader);
+                    let next = if was_pending {
+                        Some(ReaderMutation::Invalidate)
+                    } else if was_produced {
+                        Some(ReaderMutation::Dirty)
+                    } else {
+                        None
+                    };
+                    if let Some(next) = next {
+                        pending.extend(
+                            self.product_readers
+                                .get(&reader)
+                                .into_iter()
+                                .flatten()
+                                .cloned()
+                                .map(|reader| (next, reader)),
+                        );
+                    }
+                }
+                ReaderMutation::Dirty => {
+                    pending.extend(
+                        self.rooted_member_dirty(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Dirty, root)),
+                    );
+                    if self.pending_dependencies.contains_key(&reader) {
+                        pending.push((ReaderMutation::Invalidate, reader));
+                        continue;
+                    }
+                    if self.dirty_descendants.insert(reader.clone()) {
+                        pending.extend(
+                            self.product_readers
+                                .get(&reader)
+                                .into_iter()
+                                .flatten()
+                                .cloned()
+                                .map(|reader| (ReaderMutation::Dirty, reader)),
+                        );
+                    }
+                }
+                ReaderMutation::Refresh => {
+                    let dirty = self.dependencies_are_unsettled(&reader);
+                    if dirty {
+                        self.dirty_descendants.insert(reader.clone());
+                    } else if self.dirty_descendants.remove(&reader) {
+                        pending.extend(
+                            self.product_readers
+                                .get(&reader)
+                                .into_iter()
+                                .flatten()
+                                .cloned()
+                                .map(|reader| (ReaderMutation::Refresh, reader)),
+                        );
+                    }
+                    pending.extend(
+                        self.rooted_member_refresh(&reader)
+                            .into_iter()
+                            .map(|root| (ReaderMutation::Refresh, root)),
+                    );
+                }
+            }
+            if let Some((observed, before)) = external_before {
+                self.record_external_change(&observed, before);
+            }
         }
     }
 
-    fn reconcile_fact_movements(&mut self, tel: &impl Telemetry, pending: &HashMap<FactKey, FactState>) {
-        for (fact_key, final_state) in pending {
+    fn reconcile_fact_movements(
+        &mut self,
+        tel: &impl Telemetry,
+        pending: &HashMap<FactKey, FactState>,
+        types: &super::types::Types,
+    ) {
+        let mut facts = pending.iter().collect::<Vec<_>>();
+        facts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
+        let mut prior_stale = HashMap::<ProductKey, bool>::new();
+        let mut external_before = HashMap::new();
+        let mut mutations = Vec::new();
+        for (fact_key, final_state) in facts {
             let readers = self.fact_readers.get(fact_key).cloned().unwrap_or_default();
             for reader in readers {
+                if self.observed_products.contains(&reader) {
+                    external_before
+                        .entry(reader.clone())
+                        .or_insert_with(|| self.external_state(&reader));
+                }
                 let pending_stale = self.pending_dependencies.get(&reader).is_some_and(|dependencies| {
                     dependencies
                         .facts
@@ -696,7 +1109,7 @@ impl ProductMemo {
                         .any(|(fact, recorded)| fact.fact() == fact_key && final_state.projected(fact) != *recorded)
                 });
                 if pending_stale {
-                    self.displace_for_reproduction(tel, &reader);
+                    mutations.push((ReaderMutation::Invalidate, reader));
                     continue;
                 }
                 let stale = self.produced.get(&reader).is_some_and(|entry| {
@@ -706,7 +1119,9 @@ impl ProductMemo {
                         .iter()
                         .any(|(fact, recorded)| fact.fact() == fact_key && final_state.projected(fact) != *recorded)
                 });
-                let was_stale = self.fact_stale_dependencies.contains_key(&reader);
+                prior_stale
+                    .entry(reader.clone())
+                    .or_insert_with(|| self.fact_stale_dependencies.contains_key(&reader));
                 if stale {
                     self.fact_stale_dependencies
                         .entry(reader.clone())
@@ -718,62 +1133,59 @@ impl ProductMemo {
                         self.fact_stale_dependencies.remove(&reader);
                     }
                 }
-                let is_stale = self.fact_stale_dependencies.contains_key(&reader);
-                if !was_stale && is_stale {
-                    self.mark_readers_dirty(&reader);
-                } else if was_stale && !is_stale {
-                    self.refresh_reader_dirtiness(&reader);
-                }
             }
+        }
+        mutations.extend(prior_stale.into_iter().filter_map(|(reader, was_stale)| {
+            let is_stale = self.fact_stale_dependencies.contains_key(&reader);
+            match (was_stale, is_stale) {
+                (false, true) => Some((ReaderMutation::Dirty, reader)),
+                (true, false) => Some((ReaderMutation::Refresh, reader)),
+                _ => None,
+            }
+        }));
+        self.mutate_product_wave(tel, mutations, types);
+        for (key, before) in external_before {
+            self.record_external_change(&key, before);
         }
     }
 
-    fn mark_readers_dirty(&mut self, key: &ProductKey) {
-        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
-        for reader in readers {
-            if self.dirty_descendants.insert(reader.clone()) {
-                self.mark_readers_dirty(&reader);
-            }
-        }
+    fn stale_dependency(&self, key: &ProductKey, types: &super::types::Types) -> Option<ProductKey> {
+        self.stale_dependency_inner(key, &mut HashSet::new(), types)
     }
 
-    fn refresh_reader_dirtiness(&mut self, key: &ProductKey) {
-        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
-        for reader in readers {
-            let dirty = self.produced.get(&reader).is_some_and(|entry| {
-                entry.dependencies.products.keys().any(|dependency| {
-                    self.displaced.contains_key(dependency)
-                        || self.fact_stale_dependencies.contains_key(dependency)
-                        || self.dirty_descendants.contains(dependency)
-                })
-            });
-            if dirty {
-                self.dirty_descendants.insert(reader.clone());
-            } else if self.dirty_descendants.remove(&reader) {
-                self.refresh_reader_dirtiness(&reader);
-            }
-        }
-    }
-
-    fn stale_dependency(&self, key: &ProductKey) -> Option<ProductKey> {
-        self.stale_dependency_inner(key, &mut HashSet::new())
-    }
-
-    fn stale_dependency_inner(&self, key: &ProductKey, visiting: &mut HashSet<ProductKey>) -> Option<ProductKey> {
+    fn stale_dependency_inner(
+        &self,
+        key: &ProductKey,
+        visiting: &mut HashSet<ProductKey>,
+        types: &super::types::Types,
+    ) -> Option<ProductKey> {
         if self.fact_stale_dependencies.contains_key(key) {
             return Some(key.clone());
         }
         if self.displaced.contains_key(key) {
             return Some(key.clone());
         }
-        if !self.dirty_descendants.contains(key) {
+        if !self.dirty_descendants.contains(key) && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty()) {
             return None;
         }
-        let entry = self.produced.get(key)?;
         if !visiting.insert(key.clone()) {
             return Some(key.clone());
         }
-        for (dependency, generation) in &entry.dependencies.products {
+        if let Some(stale) = self.rooted_stale_dependency(key, visiting, types) {
+            visiting.remove(key);
+            return Some(stale);
+        }
+        if !self.dirty_descendants.contains(key) {
+            visiting.remove(key);
+            return None;
+        }
+        let Some(entry) = self.produced.get(key) else {
+            visiting.remove(key);
+            return None;
+        };
+        let mut dependencies = entry.dependencies.products.iter().collect::<Vec<_>>();
+        dependencies.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
+        for (dependency, generation) in dependencies {
             let current = self.produced.get(dependency).map(|entry| entry.generation);
             if current != *generation {
                 visiting.remove(key);
@@ -784,7 +1196,7 @@ impl ProductMemo {
                 });
             }
             if generation.is_some()
-                && let Some(stale) = self.stale_dependency_inner(dependency, visiting)
+                && let Some(stale) = self.stale_dependency_inner(dependency, visiting, types)
             {
                 visiting.remove(key);
                 return Some(stale);
@@ -795,89 +1207,16 @@ impl ProductMemo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct IncomingInputSource {
-    pub producer: ExecutableKey,
-    pub value: ValueId,
-    pub role: IncomingInputRole,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IncomingInputRole {
-    CallArgument,
-    CallableCapture {
-        construction: ValueId,
-        capture_index: usize,
-    },
-}
-
 #[derive(Debug)]
 pub struct PullSession {
+    id: Option<PullSessionId>,
+    request_ids: ProductRequestIds,
     root: RootId,
     memo: ProductMemo,
-    outgoing_edge_request_set: HashSet<ExecutableKey>,
     demanded_executables: HashSet<ExecutableKey>,
-    runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Reverse callable-flow demand edges `resolution -> producers`, kept apart
-    // from `runtime_demand_dependents` (direct callsite reads) so the
-    // edge-derived transport invalidation walks only the direct graph while
-    // the demand EPOCH wipe reaches flow-coupled members too.
-    demand_flow_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // The demand-relevant callee set each executable's demand settle used (its
-    // cone edges). Re-materialization is the demand epoch gate: a materialized
-    // call-edge set that escapes this settled set re-keys the call graph, so
-    // the executable's demand cone is invalidated and re-settled -- the ONLY
-    // path that retracts settled demand, mirroring how the effect projection
-    // gate re-settles effects.
-    settled_demand_callees: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // The effect-relevant projection (local effect summary + local callee
-    // set) of the latest materialized executable recorded per key. Effect
-    // products are invalidated only when this projection moves; re-derived
-    // materialized values that only carry demand/transport wobble leave the
-    // effect cone standing.
-    latest_effect_inputs: HashMap<ExecutableKey, (EffectSummary, HashSet<ExecutableKey>)>,
-    // Reverse effect edges `callee -> callers`, maintained in lockstep with
-    // `latest_effect_inputs`: whenever a materialized executable is recorded,
-    // its callee set (the SAME `CallEdge::local_callees` set the effects
-    // producer traverses -- Direct targets plus every Dispatch arm, which
-    // includes closure/boundary-resolved callees) replaces the caller's
-    // previous edges. `invalidate_effect_cone` walks THIS graph, so every
-    // caller whose ExecutableEffects consumed a callee's projection is
-    // reachable by construction. The runtime-demand dependents graph only
-    // carries CallSiteSummary direct-target edges and MUST NOT be used for
-    // effect invalidation.
-    effect_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Per-caller SETTLED return-demand evidence, keyed `caller -> (callee ->
-    // demand)` -- the cross-settle channel a demand cone reads as external
-    // caller input (`external_return_demand`). A callee present here is
-    // OBSERVED (even when its demand is the bottom `ignore` discard marker); a
-    // callee absent is not-yet-observed. Every entry is a settled fixpoint
-    // value: producers replace their contributions only at settle time, and a
-    // re-settled caller whose contribution DROPS (an epoch event) retracts
-    // cleanly because the `return_demands` join is rebuilt from current
-    // contributions -- the join is not a monotone accumulator.
-    return_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
-    return_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    return_demands: HashMap<ExecutableKey, RuntimeDemand>,
-    // The INPUT-side sibling of the three fields above: a boundary-published
-    // callable's contract can pin specific argument POSITIONS on a resolved
-    // target even when the target's own body elides them (a destructor that
-    // ignores its payload). Keyed the same way, with an extra position level
-    // (`usize` = semantic input index) nested under the target.
-    input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
-    input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-    materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
-    executable_effects: HashMap<ExecutableKey, EffectSummary>,
-    abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
-    backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
-    executable_index: HashMap<ExecutableKey, usize>,
+    // Request-local counters reset whenever this retained session is
+    // reactivated. The memo and dependency indexes above remain durable.
     producer_pokes: u64,
-    /// The world's cumulative work-start attribution snapshot, recorded by the
-    /// caller that has `World` in scope at `finish_session` time (mirrors
-    /// `record_producer_pokes`'s pattern for the same reason: the session
-    /// itself never touches `World`). `unsanctioned_work_starts()` must be zero
-    /// on every production-driven path; see `WorkStartReason::Unclassified`.
     work_starts: WorkStartTally,
     pending_fact_states: HashMap<FactKey, FactState>,
 }
@@ -885,26 +1224,11 @@ pub struct PullSession {
 impl PullSession {
     pub fn new(root: RootId) -> Self {
         Self {
+            id: None,
+            request_ids: ProductRequestIds::new(),
             root,
             memo: ProductMemo::default(),
-            outgoing_edge_request_set: HashSet::new(),
             demanded_executables: HashSet::new(),
-            runtime_demand_dependents: HashMap::new(),
-            demand_flow_dependents: HashMap::new(),
-            settled_demand_callees: HashMap::new(),
-            latest_effect_inputs: HashMap::new(),
-            effect_dependents: HashMap::new(),
-            return_demand_contributions: HashMap::new(),
-            return_demand_contributors: HashMap::new(),
-            return_demands: HashMap::new(),
-            input_demand_contributions: HashMap::new(),
-            input_demand_contributors: HashMap::new(),
-            input_demands: HashMap::new(),
-            materialized_executables: HashMap::new(),
-            executable_effects: HashMap::new(),
-            abi_executables: HashMap::new(),
-            backend_executables: HashMap::new(),
-            executable_index: HashMap::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
             pending_fact_states: HashMap::new(),
@@ -915,482 +1239,40 @@ impl PullSession {
         self.root
     }
 
-    fn outgoing_edge_requests(&self) -> &HashSet<ExecutableKey> {
-        &self.outgoing_edge_request_set
+    pub fn id(&self) -> Option<PullSessionId> {
+        self.id
     }
 
     pub fn memo(&self) -> &ProductMemo {
         &self.memo
     }
 
-    pub fn product_is_in_progress(&self, key: &ProductKey) -> bool {
-        self.memo.in_progress.contains(key)
-    }
-
+    #[cfg(test)]
     pub fn demanded_executables(&self) -> &HashSet<ExecutableKey> {
         &self.demanded_executables
-    }
-
-    pub fn record_runtime_demand_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
-        if dependency == dependent {
-            return;
-        }
-        self.runtime_demand_dependents
-            .entry(dependency)
-            .or_default()
-            .insert(dependent);
-    }
-
-    /// Record a callable-flow demand dependency `resolution <- producer`. These
-    /// edges join the demand EPOCH wipe's walk only; they never widen the
-    /// edge-derived transport invalidation.
-    pub fn record_demand_flow_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
-        if dependency == dependent {
-            return;
-        }
-        self.demand_flow_dependents
-            .entry(dependency)
-            .or_default()
-            .insert(dependent);
-    }
-
-    /// Memoize one cone member's settled runtime demand. The demand SCC settles
-    /// inside its producer, so every member is published here at once -- only
-    /// the settled fixpoint is ever observable. A re-settle that changes a
-    /// member's value invalidates the member's transport and artifact products
-    /// (they consumed the displaced demand); an unchanged re-settle leaves them
-    /// standing.
-    #[cfg(test)]
-    pub fn record_settled_runtime_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: ExecutableKey,
-        demand: ExecutableRuntimeDemand,
-    ) {
-        let key = ProductKey::RuntimeDemand(executable.clone());
-        let previous = match self.memo.produced.get(&key).or_else(|| self.memo.displaced.get(&key)) {
-            Some(ProductEntry {
-                value: ProductValue::RuntimeDemand(previous),
-                ..
-            }) => Some(previous.as_ref().clone()),
-            _ => None,
-        };
-        let changed = previous.is_some_and(|previous| previous != demand);
-        self.memo.finish(
-            tel,
-            &key,
-            ProductValue::RuntimeDemand(Box::new(demand)),
-            ProductDependencies::default(),
-        );
-        if changed {
-            self.invalidate_artifact_products(tel, &executable);
-        }
-    }
-
-    /// Record the demand-relevant callee set a settle derived for `executable`
-    /// -- the epoch baseline `record_materialized_executable` gates on.
-    pub fn record_settled_demand_callees(&mut self, executable: ExecutableKey, callees: HashSet<ExecutableKey>) {
-        self.settled_demand_callees.insert(executable, callees);
-    }
-
-    /// The demand-relevant callee set recorded for `executable`, including any
-    /// materialized call edges an epoch gate folded in -- a settled call-edge
-    /// fact source for demand-cone discovery.
-    pub fn settled_demand_callees(&self, executable: &ExecutableKey) -> Option<&HashSet<ExecutableKey>> {
-        self.settled_demand_callees.get(executable)
-    }
-
-    /// The joined return demand contributed to `target` by settled contributors
-    /// OUTSIDE `members` -- the cross-settle evidence a cone consumes as an
-    /// external input. Contributions from `members` are excluded: they are
-    /// re-derived inside the ascent, and a member's stored entry may belong to
-    /// a displaced epoch.
-    pub fn external_return_demand(
-        &self,
-        target: &ExecutableKey,
-        members: &HashSet<ExecutableKey>,
-    ) -> Option<RuntimeDemand> {
-        self.return_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .filter(|contributor| !members.contains(*contributor))
-            .filter_map(|contributor| {
-                self.return_demand_contributions
-                    .get(contributor)
-                    .and_then(|contributions| contributions.get(target))
-            })
-            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
-                Some(mut acc) => {
-                    acc.join_assign(demand);
-                    Some(acc)
-                }
-                None => Some(demand.clone()),
-            })
-    }
-
-    /// The INPUT-side sibling of [`Self::external_return_demand`]: the joined
-    /// per-position demand contributed to `target` by settled contributors
-    /// OUTSIDE `members` (a boundary contract pinning an argument position on
-    /// a resolution this cone treats as an already-settled external).
-    pub fn external_input_demand(
-        &self,
-        target: &ExecutableKey,
-        members: &HashSet<ExecutableKey>,
-    ) -> HashMap<usize, RuntimeDemand> {
-        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
-        for contributor in self.input_demand_contributors.get(target).into_iter().flatten() {
-            if members.contains(contributor) {
-                continue;
-            }
-            let Some(positions) = self
-                .input_demand_contributions
-                .get(contributor)
-                .and_then(|c| c.get(target))
-            else {
-                continue;
-            };
-            for (index, demand) in positions {
-                joined
-                    .entry(*index)
-                    .and_modify(|current| current.join_assign(demand))
-                    .or_insert_with(|| demand.clone());
-            }
-        }
-        joined
-    }
-
-    pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
-        self.materialized_executables.get(executable)
-    }
-
-    pub fn invalidate_artifact_products_for(&mut self, tel: &impl Telemetry, executable: &ExecutableKey) {
-        self.invalidate_artifact_products(tel, executable);
-    }
-
-    pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, MaterializedExecutable> {
-        &self.materialized_executables
-    }
-
-    pub fn executable_effects(&self, executable: &ExecutableKey) -> Option<EffectSummary> {
-        self.executable_effects.get(executable).copied()
-    }
-
-    pub fn executable_effects_inventory(&self) -> &HashMap<ExecutableKey, EffectSummary> {
-        &self.executable_effects
-    }
-
-    pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&AbiReadyExecutable> {
-        self.abi_executables.get(executable)
-    }
-
-    pub fn abi_executables(&self) -> &HashMap<ExecutableKey, AbiReadyExecutable> {
-        &self.abi_executables
-    }
-
-    pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&SymbolicBackendExecutable> {
-        self.backend_executables.get(executable)
-    }
-
-    pub fn backend_executables(&self) -> &HashMap<ExecutableKey, SymbolicBackendExecutable> {
-        &self.backend_executables
-    }
-
-    pub fn executable_index(&self) -> &HashMap<ExecutableKey, usize> {
-        &self.executable_index
     }
 
     pub fn producer_pokes(&self) -> u64 {
         self.producer_pokes
     }
 
-    /// The recorded work-start attribution snapshot (per-reason agenda-entry
-    /// counts plus whole-fact-table scans). Zero until `record_work_starts`
-    /// runs at finish time.
+    /// This activation's work-start attribution (per-reason agenda-entry
+    /// counts plus whole-fact-table scans and global drain-discovery sweeps).
     pub fn work_starts(&self) -> WorkStartTally {
         self.work_starts
     }
 
-    /// Records the world's cumulative work-start attribution snapshot
-    /// (`World::work_start_tally`) so `emit_finished` and the guard can read
-    /// it. The caller is the pull-drive site that still has `World` in scope
-    /// (`ProductDriver::finish_session` cannot -- `PullSession` never holds a
-    /// `World` reference).
-    pub fn record_work_starts(&mut self, tally: WorkStartTally) {
+    fn begin_activation(&mut self) {
+        self.producer_pokes = 0;
+        self.work_starts = WorkStartTally::default();
+    }
+
+    fn finish_activation(&mut self, tally: WorkStartTally) {
         self.work_starts = tally;
     }
 
     pub fn record_producer_pokes(&mut self, count: u64) {
         self.producer_pokes += count;
-    }
-
-    /// Replace `caller`'s full set of SETTLED return-demand contributions.
-    /// Every callee the caller names becomes (or stays) OBSERVED; any callee the
-    /// caller named on a previous settle but not this one has its contribution
-    /// withdrawn. Each affected callee's joined return demand is rebuilt from
-    /// all current contributors.
-    ///
-    /// Retraction is epoch-scoped by construction: within one settlement the
-    /// joins are quiescent (`settled_members` carries the cone that was just
-    /// solved together, and its members' joins equal the fixpoint the settle
-    /// computed), so only a NON-member target whose join moves -- a settled
-    /// executable outside the re-settled cone consuming displaced evidence --
-    /// has its demand-derived products invalidated and re-settled.
-    ///
-    /// Returns every executable whose demand-derived products the moved joins
-    /// displaced (the moved targets plus their transitive demand readers). The
-    /// publishing producer inspects this set: a displaced executable it
-    /// consumed as an EXTERNAL input means its just-settled members were
-    /// derived against pre-growth demands, and the cone must re-settle with
-    /// the displaced executable absorbed (the stale-caller window).
-    pub fn replace_settled_return_demand_contributions(
-        &mut self,
-        tel: &impl Telemetry,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, RuntimeDemand>,
-        settled_members: &HashSet<ExecutableKey>,
-    ) -> HashSet<ExecutableKey> {
-        let previous = self.return_demand_contributions.remove(&caller).unwrap_or_default();
-        let mut affected: HashSet<ExecutableKey> = HashSet::new();
-        for target in previous.keys() {
-            affected.insert(target.clone());
-            if let Some(contributors) = self.return_demand_contributors.get_mut(target) {
-                contributors.remove(&caller);
-            }
-        }
-        for target in contributions.keys() {
-            affected.insert(target.clone());
-            self.return_demand_contributors
-                .entry(target.clone())
-                .or_default()
-                .insert(caller.clone());
-        }
-        if !contributions.is_empty() {
-            self.return_demand_contributions.insert(caller, contributions);
-        }
-        let mut displaced = HashSet::new();
-        for target in affected {
-            displaced.extend(self.recompute_return_demand(tel, &target, settled_members));
-        }
-        displaced
-    }
-
-    fn recompute_return_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        target: &ExecutableKey,
-        settled_members: &HashSet<ExecutableKey>,
-    ) -> HashSet<ExecutableKey> {
-        let joined = self
-            .return_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .filter_map(|caller| {
-                self.return_demand_contributions
-                    .get(caller)
-                    .and_then(|contributions| contributions.get(target))
-            })
-            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
-                Some(mut acc) => {
-                    acc.join_assign(demand);
-                    Some(acc)
-                }
-                None => Some(demand.clone()),
-            });
-        let changed = self.return_demands.get(target) != joined.as_ref();
-        match joined {
-            Some(demand) => {
-                self.demanded_executables.insert(target.clone());
-                self.return_demands.insert(target.clone(), demand);
-            }
-            None => {
-                self.return_demand_contributors.remove(target);
-                self.return_demands.remove(target);
-            }
-        }
-        debug_assert_eq!(
-            self.return_demand_contributors
-                .get(target)
-                .is_some_and(|c| !c.is_empty()),
-            self.return_demands.contains_key(target),
-            "return_demand_contributors[target] and return_demands must stay in lockstep: a \
-             target is present in one iff present in the other (absent from both = \
-             not-yet-observed; present in both = observed, possibly joined to an `ignore` \
-             marker). A target present in only one map means the two fell out of sync."
-        );
-        if changed && !settled_members.contains(target) {
-            self.invalidate_demand_derived_products(tel, target)
-        } else {
-            HashSet::new()
-        }
-    }
-
-    /// The INPUT-side sibling of [`Self::replace_settled_return_demand_contributions`]:
-    /// replace `caller`'s full set of SETTLED boundary input-demand pins
-    /// (target -> position -> demand). Same OBSERVED/retraction semantics —
-    /// a re-settled caller whose pin drops retracts cleanly because each
-    /// target's joined positions are rebuilt from current contributors.
-    pub fn replace_settled_input_demand_contributions(
-        &mut self,
-        tel: &impl Telemetry,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-        settled_members: &HashSet<ExecutableKey>,
-    ) -> HashSet<ExecutableKey> {
-        let previous = self.input_demand_contributions.remove(&caller).unwrap_or_default();
-        let mut affected: HashSet<ExecutableKey> = HashSet::new();
-        for target in previous.keys() {
-            affected.insert(target.clone());
-            if let Some(contributors) = self.input_demand_contributors.get_mut(target) {
-                contributors.remove(&caller);
-            }
-        }
-        for target in contributions.keys() {
-            affected.insert(target.clone());
-            self.input_demand_contributors
-                .entry(target.clone())
-                .or_default()
-                .insert(caller.clone());
-        }
-        if !contributions.is_empty() {
-            self.input_demand_contributions.insert(caller, contributions);
-        }
-        let mut displaced = HashSet::new();
-        for target in affected {
-            displaced.extend(self.recompute_input_demand(tel, &target, settled_members));
-        }
-        displaced
-    }
-
-    fn recompute_input_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        target: &ExecutableKey,
-        settled_members: &HashSet<ExecutableKey>,
-    ) -> HashSet<ExecutableKey> {
-        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
-        for contributor in self.input_demand_contributors.get(target).into_iter().flatten() {
-            let Some(positions) = self
-                .input_demand_contributions
-                .get(contributor)
-                .and_then(|c| c.get(target))
-            else {
-                continue;
-            };
-            for (index, demand) in positions {
-                joined
-                    .entry(*index)
-                    .and_modify(|current| current.join_assign(demand))
-                    .or_insert_with(|| demand.clone());
-            }
-        }
-        let changed = self.input_demands.get(target).cloned().unwrap_or_default() != joined;
-        if joined.is_empty() {
-            self.input_demand_contributors.remove(target);
-            self.input_demands.remove(target);
-        } else {
-            self.demanded_executables.insert(target.clone());
-            self.input_demands.insert(target.clone(), joined);
-        }
-        debug_assert_eq!(
-            self.input_demand_contributors
-                .get(target)
-                .is_some_and(|c| !c.is_empty()),
-            self.input_demands.contains_key(target),
-            "input_demand_contributors[target] and input_demands must stay in lockstep: a \
-             target is present in one iff present in the other (absent from both = \
-             not-yet-observed; present in both = observed, possibly joined to per-position \
-             demand). A target present in only one map means the two fell out of sync."
-        );
-        if changed && !settled_members.contains(target) {
-            self.invalidate_demand_derived_products(tel, target)
-        } else {
-            HashSet::new()
-        }
-    }
-
-    pub fn record_materialized_executable(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: ExecutableKey,
-        materialized: MaterializedExecutable,
-    ) {
-        self.demanded_executables.insert(executable.clone());
-        // The demand epoch gate: materialization resolving a call edge the
-        // demand settle never derived means the settled cone was keyed against
-        // a smaller call graph -- re-key and re-settle it. Edges within the
-        // settled callee set (the overwhelming case: the cone over-approximates
-        // from settled facts) leave settled demand standing.
-        if let Some(settled_callees) = self.settled_demand_callees.get(&executable) {
-            let materialized_callees: HashSet<ExecutableKey> = materialized
-                .call_edges
-                .values()
-                .flat_map(|edge| edge.target.local_callees())
-                .cloned()
-                .collect();
-            if !materialized_callees.is_subset(settled_callees) {
-                self.settled_demand_callees
-                    .entry(executable.clone())
-                    .or_default()
-                    .extend(materialized_callees);
-                self.invalidate_demand_derived_products(tel, &executable);
-            }
-        }
-        let effect_inputs = effect_relevant_inputs(&materialized);
-        let effect_inputs_changed = self.latest_effect_inputs.get(&executable) != Some(&effect_inputs);
-        let previous = self.latest_effect_inputs.insert(executable.clone(), effect_inputs);
-        self.replace_effect_dependent_edges(&executable, previous.map(|(_, callees)| callees));
-        self.materialized_executables.insert(executable.clone(), materialized);
-        if effect_inputs_changed {
-            self.invalidate_effect_cone(tel, &executable);
-        }
-    }
-
-    /// Rebuild `caller`'s reverse effect edges from its just-recorded callee
-    /// set, retracting edges to callees the re-materialization dropped --
-    /// `effect_dependents` and `latest_effect_inputs` move in lockstep at
-    /// this single site.
-    fn replace_effect_dependent_edges(&mut self, caller: &ExecutableKey, previous: Option<HashSet<ExecutableKey>>) {
-        let current = &self
-            .latest_effect_inputs
-            .get(caller)
-            .expect("caller's effect inputs are recorded before its reverse edges")
-            .1;
-        for callee in previous.iter().flatten() {
-            if current.contains(callee) {
-                continue;
-            }
-            if let Some(dependents) = self.effect_dependents.get_mut(callee) {
-                dependents.remove(caller);
-                if dependents.is_empty() {
-                    self.effect_dependents.remove(callee);
-                }
-            }
-        }
-        let added = current
-            .iter()
-            .filter(|callee| !previous.as_ref().is_some_and(|previous| previous.contains(*callee)))
-            .cloned()
-            .collect::<Vec<_>>();
-        for callee in added {
-            self.effect_dependents.entry(callee).or_default().insert(caller.clone());
-        }
-    }
-
-    pub fn record_executable_effects(&mut self, executable: ExecutableKey, effects: EffectSummary) {
-        self.demanded_executables.insert(executable.clone());
-        self.executable_effects.insert(executable, effects);
-    }
-
-    pub fn record_abi_executable(&mut self, executable: ExecutableKey, abi: AbiReadyExecutable) {
-        self.demanded_executables.insert(executable.clone());
-        self.abi_executables.insert(executable, abi);
-    }
-
-    pub fn record_backend_executable(&mut self, executable: ExecutableKey, backend: SymbolicBackendExecutable) {
-        self.demanded_executables.insert(executable.clone());
-        self.backend_executables.insert(executable, backend);
     }
 
     fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
@@ -1399,143 +1281,12 @@ impl PullSession {
         }
     }
 
-    fn reconcile_fact_movements(&mut self, tel: &impl Telemetry) {
+    fn reconcile_fact_movements(&mut self, tel: &impl Telemetry, types: &super::types::Types) {
         let pending = std::mem::take(&mut self.pending_fact_states);
-        self.memo.reconcile_fact_movements(tel, &pending);
+        self.memo.reconcile_fact_movements(tel, &pending, types);
     }
 
-    pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
-        self.demanded_executables.insert(executable.clone());
-        self.executable_index.insert(executable, index);
-    }
-
-    /// The demand EPOCH wipe: settled demand retracts only here. Walks the
-    /// demand-read dependents (callers) transitively, displacing each member's
-    /// RuntimeDemand memo plus the transport/artifact products derived from it,
-    /// so the next demand pull re-settles the affected cone against the new
-    /// call graph. Returns the displaced executables.
-    fn invalidate_demand_derived_products(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: &ExecutableKey,
-    ) -> HashSet<ExecutableKey> {
-        let mut stack = vec![executable.clone()];
-        let mut seen = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            self.memo.remove(tel, &ProductKey::RuntimeDemand(current.clone()));
-            self.invalidate_artifact_products(tel, &current);
-            if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
-                stack.extend(dependents);
-            }
-            if let Some(dependents) = self.demand_flow_dependents.get(&current).cloned() {
-                stack.extend(dependents);
-            }
-        }
-        seen
-    }
-
-    fn discard_product_side_effects(&mut self, key: &ProductKey) {
-        match key {
-            ProductKey::MaterializedExecutable(executable) => {
-                self.materialized_executables.remove(executable);
-            }
-            ProductKey::ExecutableEffects(executable) => {
-                self.executable_effects.remove(executable);
-            }
-            ProductKey::AbiExecutable(executable) => {
-                self.abi_executables.remove(executable);
-            }
-            ProductKey::BackendExecutable(executable) => {
-                self.backend_executables.remove(executable);
-            }
-            ProductKey::TransportShape(_) => {}
-            ProductKey::RootBackendProduct(_)
-            | ProductKey::ExecutableFacts(_)
-            | ProductKey::RuntimeDemand(_)
-            | ProductKey::OutgoingEdgeFrontier(_)
-            | ProductKey::OutgoingInputEdges(_)
-            | ProductKey::IncomingInputRelations(_)
-            | ProductKey::IncomingInputSlot(_)
-            | ProductKey::CallableConstruction(_) => {}
-        }
-    }
-
-    fn invalidate_artifact_products(&mut self, tel: &impl Telemetry, executable: &ExecutableKey) {
-        self.memo
-            .remove(tel, &ProductKey::MaterializedExecutable(executable.clone()));
-        self.memo.remove(tel, &ProductKey::AbiExecutable(executable.clone()));
-        self.memo
-            .remove(tel, &ProductKey::BackendExecutable(executable.clone()));
-        self.materialized_executables.remove(executable);
-        self.abi_executables.remove(executable);
-        self.backend_executables.remove(executable);
-    }
-
-    /// A materialized executable's effect-relevant content (local effect
-    /// summary or local callee set) actually changed: the effect summaries
-    /// derived from it are stale. Effects read the callee cone through
-    /// callers, so wipe the effects of the executable and its transitive
-    /// dependents along the reverse effect edges -- the graph built from the
-    /// same materialized call edges the effects producer traverses, so every
-    /// consumer (including closure/boundary-resolved callers absent from the
-    /// runtime-demand dependents graph) is reached. Materialized
-    /// re-derivations that leave the projection unchanged leave the effect
-    /// cone standing.
-    fn invalidate_effect_cone(&mut self, tel: &impl Telemetry, executable: &ExecutableKey) {
-        let mut stack = vec![executable.clone()];
-        let mut seen = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            self.memo.remove(tel, &ProductKey::ExecutableEffects(current.clone()));
-            self.executable_effects.remove(&current);
-            if let Some(dependents) = self.effect_dependents.get(&current).cloned() {
-                stack.extend(dependents);
-            }
-        }
-    }
-
-    /// End-of-session freshness audit (debug builds): every cached
-    /// ExecutableEffects value must equal the effects recomputed from scratch
-    /// -- the union of local effect summaries over the transitive closure of
-    /// the current effect-relevant projections. Any under-invalidation that
-    /// leaves a stale summary standing fails loudly here instead of lingering
-    /// as a schedule-protected latent hole.
-    #[cfg(debug_assertions)]
-    fn assert_executable_effects_fresh(&self) {
-        for (key, cached) in &self.executable_effects {
-            let mut expected = EffectSummary::default();
-            let mut stack = vec![key.clone()];
-            let mut seen = HashSet::new();
-            let mut complete = true;
-            while let Some(current) = stack.pop() {
-                if !seen.insert(current.clone()) {
-                    continue;
-                }
-                let Some((local, callees)) = self.latest_effect_inputs.get(&current) else {
-                    complete = false;
-                    break;
-                };
-                expected.union_with(*local);
-                stack.extend(callees.iter().cloned());
-            }
-            assert!(
-                !complete || *cached == expected,
-                "stale ExecutableEffects at session finish for {key:?}: cached {cached:?}, recomputed {expected:?}"
-            );
-        }
-    }
-
-    fn note_product_request(&mut self, tel: &impl Telemetry, key: &ProductKey) {
-        if let ProductKey::OutgoingInputEdges(executable) = key
-            && self.outgoing_edge_request_set.insert(executable.clone())
-        {
-            self.memo.remove(tel, &ProductKey::OutgoingEdgeFrontier(self.root));
-        }
+    fn note_product_request(&mut self, key: &ProductKey) {
         if let Some(executable) = key.executable() {
             self.demanded_executables.insert(executable.clone());
         }
@@ -1546,20 +1297,396 @@ impl PullSession {
     }
 }
 
-fn effect_relevant_inputs(materialized: &MaterializedExecutable) -> (EffectSummary, HashSet<ExecutableKey>) {
-    let callees = materialized
-        .call_edges
-        .values()
-        .flat_map(|edge| edge.target.local_callees())
-        .cloned()
-        .collect();
-    (materialized.effects, callees)
+/// Compiler-owned retained product sessions and their exact fact-movement
+/// routing index. `World` owns facts; this store owns every root's product
+/// spreadsheet and only the reverse routing needed to deliver a moved fact to
+/// sessions that currently read it.
+#[derive(Debug, Default)]
+pub(crate) struct ProductSessions {
+    sessions: HashMap<RootId, Rc<RefCell<PullSession>>>,
+    subscriptions_by_root: HashMap<RootId, HashSet<FactKey>>,
+    roots_by_fact: HashMap<FactKey, HashSet<RootId>>,
+    active_roots: HashMap<RootId, ActiveRootProduct>,
+    work_start_cursor: WorkStartTally,
+    active_work_starts: Vec<WorkStartOwner>,
+    pending_requests: super::agenda::Agenda<ProductAddress>,
+    requested: HashSet<ProductAddress>,
+}
+
+#[derive(Debug, Default)]
+struct ActiveRootProduct {
+    movements: HashMap<FactKey, FactState>,
+    parked_requests: Vec<ProductAddress>,
+}
+
+#[derive(Debug)]
+enum WorkStartOwner {
+    StandaloneDrive,
+    Root(RootId, WorkStartTally),
+}
+
+impl ProductSessions {
+    pub(crate) fn observe(&mut self, address: &ProductAddress) {
+        self.sessions
+            .entry(address.root)
+            .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(address.root))))
+            .borrow_mut()
+            .memo
+            .observed_products
+            .insert(address.key.clone());
+        if !self
+            .get(address.root)
+            .expect("observed root exists")
+            .memo
+            .external_state(&address.key)
+            .settled
+        {
+            self.request(address.clone());
+        }
+    }
+
+    pub(crate) fn unobserve(&mut self, address: &ProductAddress) {
+        if let Some(session) = self.sessions.get(&address.root) {
+            session.borrow_mut().memo.observed_products.remove(&address.key);
+        }
+        self.requested.remove(address);
+    }
+
+    fn request(&mut self, address: ProductAddress) {
+        if self.requested.insert(address.clone()) {
+            self.pending_requests.enqueue(address);
+        }
+    }
+
+    pub(crate) fn next_request(&mut self) -> Option<ProductAddress> {
+        while let Some(address) = self.pending_requests.pop() {
+            if !self.requested.contains(&address) {
+                continue;
+            }
+            if let Some(active) = self.active_roots.get_mut(&address.root) {
+                active.parked_requests.push(address);
+            } else {
+                self.observe(&address);
+                return Some(address);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn retry_request(&mut self, address: ProductAddress) {
+        self.pending_requests.enqueue(address);
+    }
+
+    pub(crate) fn product(&self, address: &ProductAddress) -> Option<ProductValue> {
+        let session = self.get(address.root)?;
+        session
+            .memo
+            .external_state(&address.key)
+            .settled
+            .then(|| session.memo.get(&address.key).cloned())
+            .flatten()
+    }
+
+    pub(crate) fn take_product_changes(
+        &mut self,
+        root: RootId,
+        types: &super::types::Types,
+    ) -> Vec<FactChange<DependencyKey>> {
+        let Some(session) = self.sessions.get(&root) else {
+            return Vec::new();
+        };
+        let changes = std::mem::take(&mut session.borrow_mut().memo.external_changes);
+        let mut coalesced = HashMap::<ProductKey, FactChange<ProductKey>>::new();
+        for change in changes {
+            coalesced
+                .entry(change.key.clone())
+                .and_modify(|prior| {
+                    prior.new_revision = change.new_revision;
+                    prior.new_settled = change.new_settled;
+                })
+                .or_insert(change);
+        }
+        let mut changes = coalesced
+            .into_values()
+            .filter(|change| change.content_changed() || change.readiness_changed())
+            .map(|change| FactChange {
+                key: DependencyKey::Product(ProductAddress { root, key: change.key }),
+                old_revision: change.old_revision,
+                new_revision: change.new_revision,
+                old_settled: change.old_settled,
+                new_settled: change.new_settled,
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by(|left, right| left.key.semantic_cmp(&right.key, types));
+        for change in &changes {
+            let DependencyKey::Product(address) = &change.key else {
+                unreachable!()
+            };
+            if change.new_settled {
+                self.requested.remove(address);
+            } else {
+                self.request(address.clone());
+            }
+        }
+        changes
+    }
+    pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkStartTally) {
+        assert!(
+            self.active_work_starts.is_empty() && self.active_roots.is_empty(),
+            "a standalone drive cannot begin inside a root product activation"
+        );
+        let _ = self.take_work_start_delta(work_starts);
+        self.active_work_starts.push(WorkStartOwner::StandaloneDrive);
+    }
+
+    pub(crate) fn finish_standalone_drive(&mut self, work_starts: WorkStartTally) {
+        let _ = self.take_work_start_delta(work_starts);
+        match self.active_work_starts.pop() {
+            Some(WorkStartOwner::StandaloneDrive) => {}
+            Some(WorkStartOwner::Root(..)) => panic!("a root product activation outlived its standalone drive"),
+            None => panic!("finishing a standalone drive that never began"),
+        }
+        assert!(
+            self.active_roots.is_empty(),
+            "a root product activation outlived its standalone drive"
+        );
+    }
+
+    pub(crate) fn take(&mut self, root: RootId, work_starts: WorkStartTally) -> (Rc<RefCell<PullSession>>, bool) {
+        assert!(
+            self.active_roots.insert(root, ActiveRootProduct::default()).is_none(),
+            "one root product session cannot be driven recursively"
+        );
+        let delta = self.take_work_start_delta(work_starts);
+        let initial = match self.active_work_starts.last_mut() {
+            Some(WorkStartOwner::StandaloneDrive) => WorkStartTally::default(),
+            Some(WorkStartOwner::Root(_, outer)) => {
+                outer.add(delta);
+                WorkStartTally::default()
+            }
+            None => delta,
+        };
+        self.active_work_starts.push(WorkStartOwner::Root(root, initial));
+        let retained = self.sessions.contains_key(&root);
+        let session = Rc::clone(
+            self.sessions
+                .entry(root)
+                .or_insert_with(|| Rc::new(RefCell::new(PullSession::new(root)))),
+        );
+        session.borrow_mut().begin_activation();
+        (session, retained)
+    }
+
+    pub(crate) fn finish_activation(&mut self, root: RootId, session: &mut PullSession, work_starts: WorkStartTally) {
+        let delta = self.take_work_start_delta(work_starts);
+        let (active_root, mut tally) = match self.active_work_starts.pop() {
+            Some(WorkStartOwner::Root(active_root, tally)) => (active_root, tally),
+            Some(WorkStartOwner::StandaloneDrive) => {
+                panic!("finishing a root without an active root work tally")
+            }
+            None => panic!("finishing a root without an active work tally"),
+        };
+        assert_eq!(active_root, root, "root product activations must finish in stack order");
+        tally.add(delta);
+        session.finish_activation(tally);
+    }
+
+    fn take_work_start_delta(&mut self, current: WorkStartTally) -> WorkStartTally {
+        let delta = current.delta_since(self.work_start_cursor);
+        self.work_start_cursor = current;
+        delta
+    }
+
+    pub(crate) fn sync_subscriptions(&mut self, root: RootId, session: &mut PullSession) {
+        for (fact, subscribe) in session.memo.take_fact_subscription_changes() {
+            if subscribe {
+                let inserted = self.subscriptions_by_root.entry(root).or_default().insert(fact.clone());
+                if inserted {
+                    self.roots_by_fact.entry(fact).or_default().insert(root);
+                }
+            } else {
+                let removed = self
+                    .subscriptions_by_root
+                    .get_mut(&root)
+                    .is_some_and(|facts| facts.remove(&fact));
+                if removed {
+                    let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
+                        roots.remove(&root);
+                        roots.is_empty()
+                    });
+                    if remove_fact {
+                        self.roots_by_fact.remove(&fact);
+                    }
+                }
+                if self.subscriptions_by_root.get(&root).is_some_and(HashSet::is_empty) {
+                    self.subscriptions_by_root.remove(&root);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn publish(
+        &mut self,
+        tel: &impl Telemetry,
+        types: &super::types::Types,
+        movements: &[FactMovement<FactKey>],
+    ) -> Vec<FactChange<DependencyKey>> {
+        let Self {
+            sessions,
+            roots_by_fact,
+            active_roots,
+            ..
+        } = self;
+        let mut observed_roots = HashSet::new();
+        for movement in movements {
+            for root in roots_by_fact.get(&movement.key).into_iter().flatten() {
+                let session = sessions.get(root).expect("subscribed root retains its session");
+                if !session.borrow().memo.observed_products.is_empty() {
+                    session
+                        .borrow_mut()
+                        .apply_fact_movements(std::slice::from_ref(movement));
+                    observed_roots.insert(*root);
+                } else if let Some(active) = active_roots.get_mut(root) {
+                    active.movements.insert(movement.key.clone(), movement.state);
+                } else {
+                    session
+                        .borrow_mut()
+                        .apply_fact_movements(std::slice::from_ref(movement));
+                }
+            }
+        }
+        let mut changes = Vec::new();
+        let mut observed_roots = observed_roots.into_iter().collect::<Vec<_>>();
+        observed_roots.sort_unstable();
+        for root in observed_roots {
+            self.sessions[&root].borrow_mut().reconcile_fact_movements(tel, types);
+            changes.extend(self.take_product_changes(root, types));
+        }
+        changes
+    }
+
+    pub(crate) fn drain_active_movements(&mut self, root: RootId, session: &mut PullSession) {
+        let pending = self
+            .active_roots
+            .get_mut(&root)
+            .map(|active| &mut active.movements)
+            .expect("draining a root that is not active");
+        if !pending.is_empty() {
+            session.pending_fact_states.extend(std::mem::take(pending));
+        }
+    }
+
+    pub(crate) fn restore(&mut self, session: Rc<RefCell<PullSession>>) {
+        let root = session.borrow().root();
+        self.drain_active_movements(root, &mut session.borrow_mut());
+        self.sync_subscriptions(root, &mut session.borrow_mut());
+        let active = self
+            .active_roots
+            .remove(&root)
+            .expect("restoring a root that is not active");
+        for address in active.parked_requests {
+            self.pending_requests.enqueue(address);
+        }
+        assert!(Rc::ptr_eq(
+            self.sessions.get(&root).expect("active root retains its session"),
+            &session
+        ));
+    }
+
+    pub(crate) fn get(&self, root: RootId) -> Option<Ref<'_, PullSession>> {
+        self.sessions.get(&root).map(|session| session.borrow())
+    }
+
+    pub(crate) fn retire(&mut self, root: RootId, types: &super::types::Types) -> bool {
+        assert!(
+            !self.active_roots.contains_key(&root),
+            "cannot retire an active root session"
+        );
+        let Some(session) = self.sessions.remove(&root) else {
+            return false;
+        };
+        let mut observed = session
+            .borrow()
+            .memo
+            .observed_products
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        observed.sort_by(|left, right| left.semantic_cmp(right, types));
+        for key in observed {
+            self.request(ProductAddress { root, key });
+        }
+        for fact in self.subscriptions_by_root.remove(&root).unwrap_or_default() {
+            let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
+                roots.remove(&root);
+                roots.is_empty()
+            });
+            if remove_fact {
+                self.roots_by_fact.remove(&fact);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn retirement_changes(&self, root: RootId) -> Vec<FactChange<DependencyKey>> {
+        let Some(session) = self.get(root) else {
+            return Vec::new();
+        };
+        session
+            .memo
+            .observed_products
+            .iter()
+            .map(|key| {
+                let before = session.memo.external_state(key);
+                FactChange {
+                    key: DependencyKey::Product(ProductAddress { root, key: key.clone() }),
+                    old_revision: before.revision,
+                    new_revision: None,
+                    old_settled: before.settled,
+                    new_settled: false,
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (
+            self.sessions.len(),
+            self.subscriptions_by_root.values().map(HashSet::len).sum(),
+        )
+    }
+}
+
+impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessions {
+    fn has_unsettled_dependencies(&self) -> bool {
+        !self.requested.is_empty()
+    }
+    fn external_state(&self, key: &DependencyKey) -> Option<FactState> {
+        match key {
+            DependencyKey::Fact(_) => None,
+            DependencyKey::Product(address) => Some(self.get(address.root).map_or(
+                FactState {
+                    revision: None,
+                    settled: false,
+                },
+                |session| session.memo.external_state(&address.key),
+            )),
+        }
+    }
 }
 
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
-    finished_group: bool,
+    staged: Vec<ProductCommitMember>,
+    recursive_group: Option<Vec<ProductCommitMember>>,
+}
+
+pub(crate) enum RecursiveProductRead<'a> {
+    Ready(&'a ProductValue),
+    Waiting,
+    Group(Vec<ProductKey>),
 }
 
 impl<'s> ProductReadContext<'s> {
@@ -1567,39 +1694,75 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
-            finished_group: false,
+            staged: Vec::new(),
+            recursive_group: None,
         }
     }
 
-    pub fn read_product(&mut self, tel: &impl Telemetry, key: ProductKey) -> Option<&ProductValue> {
-        self.read_product_entry(tel, key)
+    pub fn read_product(
+        &mut self,
+        tel: &impl Telemetry,
+        key: ProductKey,
+        types: &super::types::Types,
+    ) -> Option<&ProductValue> {
+        self.read_product_entry(tel, key, types)
     }
 
-    /// Would reading `from` close a cycle back onto `target`, the product being
-    /// produced right now? A `true` answer means `from` belongs to `target`'s
-    /// recursive group and must settle with it rather than be waited on.
-    pub(crate) fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
-        self.session.memo.dependency_reaches(from, target, None)
+    /// Record the prospective read, then borrow the dependency graph for one
+    /// traversal that decides whether it closes a recursive group. A pending
+    /// formula snapshot is already the current evidence that the dependency is
+    /// waiting; stale-read normalization applies only to ordinary settled or
+    /// displaced reads outside the group.
+    pub(crate) fn read_recursive_product(
+        &mut self,
+        tel: &impl Telemetry,
+        dependency: ProductKey,
+        current: &ProductKey,
+        types: &super::types::Types,
+    ) -> RecursiveProductRead<'_> {
+        let generation = self.session.memo.generation(&dependency);
+        self.dependencies.products.insert(dependency.clone(), generation);
+        let (members, search) =
+            self.session
+                .memo
+                .pending_strong_component(current, &self.dependencies, &dependency, types);
+        if search.vertex_visits > 0 {
+            tel.raw_event3(
+                &["fz", "compiler2", "pull", "recursive_group", "searched"],
+                current,
+                &dependency,
+                &search,
+            );
+        }
+        if let Some(members) = members {
+            return RecursiveProductRead::Group(members);
+        }
+        match self.read_product_entry(tel, dependency, types) {
+            Some(value) => RecursiveProductRead::Ready(value),
+            None => RecursiveProductRead::Waiting,
+        }
     }
 
-    pub(crate) fn pending_recursive_group(&self, current: &ProductKey) -> Vec<ProductKey> {
-        self.session.memo.pending_strong_component(current, &self.dependencies)
-    }
-
-    pub(crate) fn recursive_group_callable_owners(&self, members: &[ProductKey]) -> Vec<CallableConstructionOwner> {
+    pub(crate) fn recursive_group_callable_owners(
+        &self,
+        current: &ProductKey,
+        members: &[ProductKey],
+        types: &super::types::Types,
+    ) -> Vec<Rc<CallableConstructionOwner>> {
         let member_set = members.iter().collect::<HashSet<_>>();
-        members
-            .iter()
-            .flat_map(|member| {
-                self.session
-                    .memo
-                    .product_dependencies_for_group(member)
-                    .into_iter()
-                    .flat_map(|dependencies| dependencies.products.keys())
-            })
+        let mut dependencies = self
+            .recorded_recursive_group_dependencies(current, members)
+            .into_iter()
+            .flat_map(|dependencies| dependencies.products.keys())
             .filter(|dependency| !member_set.contains(dependency))
+            .cloned()
+            .collect::<Vec<_>>();
+        dependencies.sort_by(|left, right| left.semantic_cmp(right, types));
+        dependencies.dedup();
+        dependencies
+            .iter()
             .filter_map(|dependency| match self.session.memo.get(dependency) {
-                Some(ProductValue::CallableConstruction(owner)) => Some(owner.as_ref().clone()),
+                Some(ProductValue::CallableConstruction(owner)) => Some(Rc::clone(owner)),
                 _ => None,
             })
             .collect()
@@ -1615,73 +1778,99 @@ impl<'s> ProductReadContext<'s> {
         }
     }
 
-    /// A group member's own `ExecutableFacts`, read without recording a
-    /// dependency -- like `callable_group_layout`, and for the same reason:
-    /// every SCC member recorded these reads before it could acquire the dep
-    /// edge that makes it a member, and `finish_group` writes EVERY member
-    /// under the UNION of all members' dependencies (products and facts),
-    /// so an ascent of any peeked key displaces the whole group and
-    /// re-derives every projection. No stale-projection window exists.
-    pub(crate) fn settled_executable_facts(&self, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
-        match self.session.memo.get(&ProductKey::ExecutableFacts(executable.clone())) {
-            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
-            _ => None,
-        }
+    pub(crate) fn recorded_recursive_group_inputs(
+        &self,
+        current: &ProductKey,
+        members: &[ProductKey],
+        types: &super::types::Types,
+    ) -> Vec<(ProductKey, Option<ProductValue>)> {
+        let member_set = members.iter().collect::<HashSet<_>>();
+        let mut inputs = self
+            .recorded_recursive_group_dependencies(current, members)
+            .into_iter()
+            .flat_map(|dependencies| dependencies.products.keys())
+            .filter(|dependency| !member_set.contains(dependency))
+            .cloned()
+            .collect::<Vec<_>>();
+        sort_product_keys(&mut inputs, types);
+        inputs.dedup();
+        inputs
+            .into_iter()
+            .map(|key| {
+                let value = self.session.memo.get(&key).cloned();
+                (key, value)
+            })
+            .collect()
     }
 
-    /// A group member's own runtime demand, read on the same terms as
-    /// `settled_executable_facts`.
-    pub(crate) fn settled_runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        self.session.memo.runtime_demand(executable)
-    }
-
-    pub(crate) fn finish_callable_construction_group(
+    pub(crate) fn stage_recursive_group(
         &mut self,
-        tel: &impl Telemetry,
         current: &ProductKey,
         members: &[ProductKey],
         values: Vec<ProductValue>,
-    ) -> bool {
-        self.finish_product_group(tel, current, members, values)
-    }
-
-    fn finish_product_group(
-        &mut self,
-        tel: &impl Telemetry,
-        current: &ProductKey,
-        members: &[ProductKey],
-        values: Vec<ProductValue>,
-    ) -> bool {
+    ) -> ProductValue {
         assert_eq!(members.len(), values.len());
+        assert!(
+            self.staged.is_empty(),
+            "recursive completion cannot also stage ordinary peer products"
+        );
+        let current_value = members
+            .iter()
+            .zip(&values)
+            .find_map(|(member, value)| (member == current).then(|| value.clone()))
+            .expect("recursive completion must contain its requested anchor");
+        let dependencies = self
+            .recorded_recursive_group_dependencies(current, members)
+            .into_iter()
+            .cloned();
         let entries = members
             .iter()
             .cloned()
             .zip(values)
-            .map(|(key, value)| {
-                let dependencies = if &key == current {
-                    self.dependencies.clone()
+            .zip(dependencies)
+            .map(|((key, value), dependencies)| (key, value, dependencies))
+            .collect();
+        assert!(
+            self.recursive_group.replace(entries).is_none(),
+            "one producer staged two recursive completions"
+        );
+        current_value
+    }
+
+    fn recorded_recursive_group_dependencies<'a>(
+        &'a self,
+        current: &ProductKey,
+        members: &[ProductKey],
+    ) -> Vec<&'a ProductDependencies> {
+        assert!(
+            members.contains(current),
+            "a recursive group must contain its current member"
+        );
+        members
+            .iter()
+            .map(|member| {
+                if member == current {
+                    &self.dependencies
                 } else {
                     self.session
                         .memo
-                        .product_dependencies_for_group(&key)
-                        .cloned()
-                        .unwrap_or_default()
-                };
-                (key, value, dependencies)
+                        .pending_product_dependencies(member)
+                        .expect("a non-current recursive member must have a freshly evaluated pending formula")
+                }
             })
-            .collect();
-        self.finished_group = self.session.memo.finish_group(tel, entries);
-        if !self.finished_group {
-            self.dependencies = ProductDependencies::default();
-        }
-        self.finished_group
+            .collect()
     }
 
-    fn read_product_entry(&mut self, tel: &impl Telemetry, key: ProductKey) -> Option<&ProductValue> {
-        if let Some(stale) = self.session.memo.stale_dependency(&key) {
-            self.session.memo.prepare_stale_for_reproduction(tel, &stale);
+    fn read_product_entry(
+        &mut self,
+        tel: &impl Telemetry,
+        key: ProductKey,
+        types: &super::types::Types,
+    ) -> Option<&ProductValue> {
+        if let Some(stale) = self.session.memo.stale_dependency(&key, types) {
+            self.session.memo.prepare_stale_for_reproduction(tel, &stale, types);
             let generation = self.session.memo.generation(&key);
-            self.dependencies.products.insert(key, generation);
+            self.dependencies.products.insert(key.clone(), generation);
             return None;
         }
         let generation = self.session.memo.generation(&key);
@@ -1689,41 +1878,42 @@ impl<'s> ProductReadContext<'s> {
         self.session.memo.get(&key)
     }
 
-    pub fn read_runtime_demand(
+    pub(crate) fn read_runtime_demand_fact(
         &mut self,
-        tel: &impl Telemetry,
+        world: &World,
         executable: &ExecutableKey,
-    ) -> Option<ExecutableRuntimeDemand> {
-        match self.read_product(tel, ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref().clone()),
-            Some(other) => panic!("runtime demand product produced unexpected value {other:?}"),
-            None => None,
-        }
+    ) -> Option<Rc<ExecutableRuntimeDemand>> {
+        let fact = FactUse::settled(FactKey::RuntimeDemand(executable.clone()));
+        self.read_fact(world, fact).then(|| {
+            Rc::clone(
+                world
+                    .runtime_demand(executable)
+                    .expect("settled runtime demand should have a value"),
+            )
+        })
     }
 
     pub(crate) fn read_executable_facts(
         &mut self,
-        tel: &impl Telemetry,
+        world: &World,
         executable: &ExecutableKey,
     ) -> Option<Rc<ExecutableFacts>> {
-        match self.read_product(tel, ProductKey::ExecutableFacts(executable.clone())) {
-            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
-            Some(other) => panic!("executable facts product produced unexpected value {other:?}"),
-            None => None,
-        }
+        let fact = FactUse::settled(FactKey::ExecutableFacts(executable.clone()));
+        self.read_fact(world, fact).then(|| {
+            Rc::clone(
+                world
+                    .executable_facts(executable)
+                    .expect("settled executable facts should have a value"),
+            )
+        })
     }
 
     pub fn read_fact(&mut self, world: &World, fact: FactUse<FactKey>) -> bool {
         let state = FactState {
-            revision: match &fact {
-                FactUse::SettledPresence(_) => None,
-                _ => world.fact_revision(fact.fact()),
-            },
-            settled: match &fact {
-                FactUse::Current(_) => false,
-                _ => world.fact_is_settled(fact.fact()),
-            },
-        };
+            revision: world.fact_revision(fact.fact()),
+            settled: world.fact_is_settled(fact.fact()),
+        }
+        .projected(&fact);
         let ready = match fact.readiness() {
             super::facts::FactReadiness::Current => state.revision.is_some(),
             super::facts::FactReadiness::Settled => state.settled,
@@ -1737,81 +1927,24 @@ impl<'s> ProductReadContext<'s> {
         self.dependencies.facts.insert(fact, state);
     }
 
-    pub(crate) fn publish_product(&mut self, tel: &impl Telemetry, key: ProductKey, value: ProductValue) {
-        self.session.memo.finish(tel, &key, value, self.dependencies.clone());
-    }
-
-    pub(crate) fn remove_product_dependencies(&mut self, dependencies: impl IntoIterator<Item = ProductKey>) {
-        for dependency in dependencies {
-            self.dependencies.products.remove(&dependency);
-        }
-    }
-
     pub fn session(&self) -> &PullSession {
         self.session
     }
 
-    pub fn session_mut(&mut self) -> &mut PullSession {
-        self.session
-    }
-
-    fn into_dependencies(self) -> (ProductDependencies, bool) {
-        (self.dependencies, self.finished_group)
+    fn into_completion(
+        self,
+    ) -> (
+        ProductDependencies,
+        Vec<ProductCommitMember>,
+        Option<Vec<ProductCommitMember>>,
+    ) {
+        (self.dependencies, self.staged, self.recursive_group)
     }
 }
 
 pub trait ProductProducers {
-    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_backend_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_abi_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_materialized_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_executable_effects(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_executable_facts(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_runtime_demand(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_outgoing_input_edges(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
-    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome;
-    fn produce_transport_shape(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome;
-    fn produce_callable_construction(
-        &mut self,
-        _context: &mut ProductReadContext<'_>,
-        _position: &TransportPosition,
-    ) -> PullOutcome {
-        panic!("callable construction producer is not installed")
-    }
+    fn product_types(&self) -> &super::types::Types;
+    fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome;
 }
 
 pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
@@ -1826,139 +1959,69 @@ impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
 }
 
 impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
-    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-        super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, root)
+    fn product_types(&self) -> &super::types::Types {
+        self.world.types()
     }
 
-    fn produce_backend_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::backend::produce_backend_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_abi_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_materialized_executable(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_materialized_executable_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_executable_effects(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::artifact::produce_executable_effects_product(self.telemetry, context, executable)
-    }
-
-    fn produce_executable_facts(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_executable_facts_product(self.world, context, executable)
-    }
-
-    fn produce_runtime_demand(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(
-            context.session().outgoing_edge_requests().clone(),
-        )))
-    }
-
-    fn produce_outgoing_input_edges(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_outgoing_input_edges_product(
-            self.world,
-            self.telemetry,
-            context,
-            executable,
-        )
-    }
-
-    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
-        let publishers = match context.read_product(self.telemetry, frontier_key.clone()) {
-            Some(ProductValue::OutgoingEdgeFrontier(publishers)) => Rc::clone(publishers),
-            Some(value) => panic!("outgoing edge frontier produced unexpected value {value:?}"),
-            None => return PullOutcome::wait_on_product(frontier_key),
-        };
-        let mut slots: HashMap<InputSlot, HashSet<IncomingInputSource>> = HashMap::new();
-        let mut waits = Vec::new();
-        for publisher in publishers.iter() {
-            let key = ProductKey::OutgoingInputEdges(publisher.clone());
-            match context.read_product(self.telemetry, key.clone()) {
-                Some(ProductValue::OutgoingInputEdges(contribution)) => {
-                    for (slot, published) in contribution.iter() {
-                        slots.entry(slot.clone()).or_default().extend(published.iter().cloned());
-                    }
-                }
-                Some(value) => panic!("outgoing input product produced unexpected value {value:?}"),
-                None => waits.push(PullWait::Product(key)),
+    fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+        match key {
+            ProductKey::RootBackendProduct(root) => {
+                super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, *root)
+            }
+            ProductKey::StructSchema(module) => {
+                super::jobs::backend::produce_struct_schema(self.world, context, *module)
+            }
+            ProductKey::NativeProgram(root) => {
+                super::jobs::produce_native_program(self.world, self.telemetry, context, *root)
+            }
+            ProductKey::BackendExecutable(executable) => super::jobs::backend::produce_backend_executable_product(
+                self.world,
+                self.telemetry,
+                context,
+                executable,
+            ),
+            ProductKey::AbiExecutable(executable) => {
+                super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, context, executable)
+            }
+            ProductKey::MaterializedExecutable(executable) => {
+                super::jobs::artifact::produce_materialized_executable_product(
+                    self.world,
+                    self.telemetry,
+                    context,
+                    executable,
+                )
+            }
+            ProductKey::ExecutableEffects(executable) => super::jobs::artifact::produce_executable_effects_product(
+                self.telemetry,
+                context,
+                executable,
+                self.world.types(),
+            ),
+            ProductKey::TransportShape(position) => {
+                super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
+            }
+            ProductKey::CallableConstruction(position) => {
+                super::jobs::transport::produce_callable_construction_product(
+                    self.world,
+                    self.telemetry,
+                    context,
+                    position,
+                )
             }
         }
-        if waits.is_empty() {
-            PullOutcome::Produced(ProductValue::IncomingInputRelations(Rc::new(slots)))
-        } else {
-            PullOutcome::Waiting(waits)
-        }
-    }
-
-    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome {
-        let relations_key = ProductKey::IncomingInputRelations(context.session().root());
-        match context.read_product(self.telemetry, relations_key.clone()) {
-            Some(ProductValue::IncomingInputRelations(relations)) => PullOutcome::Produced(
-                ProductValue::IncomingInputSlot(relations.get(slot).cloned().unwrap_or_default()),
-            ),
-            Some(value) => panic!("incoming input relations produced unexpected value {value:?}"),
-            None => PullOutcome::wait_on_product(relations_key),
-        }
-    }
-
-    fn produce_transport_shape(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome {
-        super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
-    }
-
-    fn produce_callable_construction(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome {
-        super::jobs::transport::produce_callable_construction_product(self.world, self.telemetry, context, position)
     }
 }
 
 pub struct ProductDriver<'a, T: Telemetry> {
     tel: &'a T,
-    session: PullSession,
+    session: Option<Rc<RefCell<PullSession>>>,
+    emit_causal_products: bool,
+    emit_session_lifecycle: bool,
+    finished: Cell<bool>,
 }
 
 impl<'a, T: Telemetry> ProductDriver<'a, T> {
+    #[cfg(test)]
     pub fn new(tel: &'a T, root: RootId) -> Self {
         Self::with_session(tel, PullSession::new(root))
     }
@@ -1968,100 +2031,166 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.tel
     }
 
+    #[cfg(test)]
     pub fn with_session(tel: &'a T, session: PullSession) -> Self {
-        Self { tel, session }
+        Self::with_session_id_source(tel, session, || allocate_pull_session_id(&NEXT_PULL_SESSION_ID))
     }
 
-    pub fn session(&self) -> &PullSession {
-        &self.session
+    pub(crate) fn with_shared_session(tel: &'a T, session: Rc<RefCell<PullSession>>) -> Self {
+        Self::with_shared_session_id_source(tel, session, || allocate_pull_session_id(&NEXT_PULL_SESSION_ID))
     }
 
-    pub fn session_mut(&mut self) -> &mut PullSession {
-        &mut self.session
+    #[cfg(test)]
+    fn with_session_id_source(
+        tel: &'a T,
+        session: PullSession,
+        allocate_session_id: impl FnOnce() -> PullSessionId,
+    ) -> Self {
+        Self::with_shared_session_id_source(tel, Rc::new(RefCell::new(session)), allocate_session_id)
     }
 
+    fn with_shared_session_id_source(
+        tel: &'a T,
+        shared: Rc<RefCell<PullSession>>,
+        allocate_session_id: impl FnOnce() -> PullSessionId,
+    ) -> Self {
+        let mut session = shared.borrow_mut();
+        let emit_session_lifecycle =
+            tel.is_raw_event_enabled(SESSION_STARTED_EVENT) || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT);
+        if session.id.is_none() && emit_session_lifecycle {
+            session.id = Some(allocate_session_id());
+        }
+        if emit_session_lifecycle {
+            tel.raw_event1(
+                SESSION_STARTED_EVENT,
+                &session.id.expect("enabled session telemetry requires an identity"),
+            );
+        }
+        drop(session);
+        Self {
+            tel,
+            session: Some(shared),
+            emit_causal_products: causal_product_events_enabled(tel),
+            emit_session_lifecycle,
+            finished: Cell::new(false),
+        }
+    }
+
+    pub fn session(&self) -> Ref<'_, PullSession> {
+        self.session
+            .as_ref()
+            .expect("product driver session already retained")
+            .borrow()
+    }
+
+    pub fn session_mut(&mut self) -> RefMut<'_, PullSession> {
+        self.session
+            .as_ref()
+            .expect("product driver session already retained")
+            .borrow_mut()
+    }
+
+    pub(crate) fn into_session(mut self) -> Rc<RefCell<PullSession>> {
+        self.emit_finished_once();
+        self.session.take().expect("product driver session already retained")
+    }
+
+    #[cfg(test)]
     pub fn finish_session(&self) {
-        #[cfg(debug_assertions)]
-        self.session.assert_executable_effects_fresh();
-        self.session.emit_finished(self.tel);
+        self.emit_finished_once();
     }
 
     pub(crate) fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
-        self.session.apply_fact_movements(movements);
+        self.session_mut().apply_fact_movements(movements);
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
-        self.session.reconcile_fact_movements(self.tel);
-        self.session.note_product_request(self.tel, &key);
-        if let Some(stale) = self.session.memo.stale_dependency(&key) {
-            self.session.memo.prepare_stale_for_reproduction(self.tel, &stale);
+        let tel = self.tel;
+        let emit_causal_products = self.emit_causal_products;
+        assert!(
+            !self.session().memo.contains_in_progress(&key),
+            "safe product producers cannot recursively enter ProductDriver::pull"
+        );
+        let request = self.session_mut().request_ids.allocate();
+        if self.emit_causal_products {
+            tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
+        }
+        self.session_mut()
+            .reconcile_fact_movements(tel, producers.product_types());
+        self.session_mut().note_product_request(&key);
+        let stale = self.session().memo.stale_dependency(&key, producers.product_types());
+        if let Some(stale) = stale {
+            self.session_mut()
+                .memo
+                .prepare_stale_for_reproduction(tel, &stale, producers.product_types());
             if stale != key {
                 return PullOutcome::wait_on_product(stale);
             }
         }
-        if let Some(value) = self.session.memo.get(&key) {
+        if let Some(value) = self.session().memo.get(&key) {
             self.emit("cache_hit", &key);
             return PullOutcome::Produced(value.clone());
         }
-        if self.session.memo.is_displaced(&key) {
-            self.session.discard_product_side_effects(&key);
-        }
-        if !self.session.memo.begin(key.clone()) {
-            self.emit("reentered", &key);
-            return PullOutcome::Waiting(vec![PullWait::Product(key)]);
-        }
+        assert!(
+            self.session_mut().memo.begin(key.clone()),
+            "safe product producers cannot recursively enter ProductDriver::pull"
+        );
 
-        let mut context = ProductReadContext::new(&mut self.session);
-        let outcome = match &key {
-            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut context, *root),
-            ProductKey::BackendExecutable(executable) => producers.produce_backend_executable(&mut context, executable),
-            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(&mut context, executable),
-            ProductKey::MaterializedExecutable(executable) => {
-                producers.produce_materialized_executable(&mut context, executable)
-            }
-            ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
-            ProductKey::ExecutableFacts(executable) => producers.produce_executable_facts(&mut context, executable),
-            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut context, executable),
-            ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
-            ProductKey::OutgoingInputEdges(executable) => {
-                producers.produce_outgoing_input_edges(&mut context, executable)
-            }
-            ProductKey::IncomingInputRelations(root) => producers.produce_incoming_input_relations(&mut context, *root),
-            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut context, slot),
-            ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut context, position),
-            ProductKey::CallableConstruction(position) => {
-                producers.produce_callable_construction(&mut context, position)
-            }
+        let (outcome, dependencies, mut staged, recursive_group) = {
+            let mut session = self.session_mut();
+            let mut context = ProductReadContext::new(&mut session);
+            let outcome = producers.produce(&mut context, &key);
+            let (dependencies, staged, recursive_group) = context.into_completion();
+            (outcome, dependencies, staged, recursive_group)
         };
-        let (dependencies, finished_group) = context.into_dependencies();
-        if let PullOutcome::Waiting(waits) = &outcome {
-            for wait in waits {
-                if let PullWait::Product(product) = wait {
-                    self.session.note_product_request(self.tel, product);
-                }
-            }
+        if self.emit_causal_products {
+            tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
         }
 
         match outcome {
             PullOutcome::Produced(value) => {
-                if finished_group {
-                    // The memo already emitted one `settled` event per group
-                    // member -- including this key -- from inside
-                    // `ProductMemo::finish_group`. Nothing left to report here.
-                    return PullOutcome::Produced(value);
-                }
-                let settled = self.session.memo.finish(self.tel, &key, value.clone(), dependencies);
+                let completion = if let Some(members) = recursive_group {
+                    assert!(
+                        staged.is_empty(),
+                        "recursive completion cannot also stage ordinary peer products"
+                    );
+                    ProductCompletion::RecursiveGroup(members)
+                } else {
+                    staged.push((key.clone(), value, dependencies));
+                    ProductCompletion::Batch(staged)
+                };
+                let settled = self.session_mut().memo.finish_completion(
+                    tel,
+                    emit_causal_products,
+                    &key,
+                    completion,
+                    producers.product_types(),
+                );
                 if !settled {
-                    self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
                     PullOutcome::Waiting(waits)
                 } else {
-                    PullOutcome::Produced(value)
+                    PullOutcome::Produced(
+                        self.session()
+                            .memo
+                            .get(&key)
+                            .expect("settled completion must install its requested product")
+                            .clone(),
+                    )
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session.memo.unblock(&key, dependencies);
+                self.session_mut().memo.unblock(&key, dependencies);
                 PullOutcome::Waiting(waits)
+            }
+            PullOutcome::Failed(failure) => {
+                assert!(staged.is_empty(), "a failed product cannot publish peers");
+                assert!(
+                    recursive_group.is_none(),
+                    "a failed product cannot publish a recursive group"
+                );
+                self.session_mut().memo.abort(&key);
+                PullOutcome::Failed(failure)
             }
         }
     }
@@ -2069,21 +2198,570 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     fn emit(&self, event: &'static str, key: &ProductKey) {
         self.tel.raw_event1(&["fz", "compiler2", "pull", "product", event], key);
     }
+
+    fn emit_finished_once(&self) {
+        if self.emit_session_lifecycle && !self.finished.replace(true) {
+            self.session().emit_finished(self.tel);
+        }
+    }
+}
+
+impl<T: Telemetry> Drop for ProductDriver<'_, T> {
+    fn drop(&mut self) {
+        self.emit_finished_once();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::rc::Rc;
 
-    use crate::telemetry::ConfiguredTelemetry;
+    use crate::telemetry::causal::{
+        CausalReport, ProductEvaluationCause, ProductEvaluationTriggerKind, ProductEvaluationWait, parse_public_trace,
+    };
+    use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
+    use super::super::artifact::{
+        CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
+        MaterializedExecutableTransport,
+    };
+    use super::super::body::{
+        ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
+    };
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
-    use super::super::scheduler::DerivationEffects;
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
+
+    fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
+        ProductDependencies {
+            membership: HashSet::new(),
+            products: HashMap::from([(dependency.clone(), None)]),
+            facts: HashMap::new(),
+        }
+    }
+
+    fn finish_test_entry(
+        memo: &mut ProductMemo,
+        tel: &impl Telemetry,
+        key: &ProductKey,
+        value: ProductValue,
+        dependencies: ProductDependencies,
+        types: &super::super::types::Types,
+    ) -> bool {
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            key,
+            ProductCompletion::Batch(vec![(key.clone(), value, dependencies)]),
+            types,
+        )
+    }
+
+    fn finish_test_batch(
+        memo: &mut ProductMemo,
+        tel: &impl Telemetry,
+        requested: &ProductKey,
+        members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
+        types: &super::super::types::Types,
+    ) -> bool {
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::Batch(members),
+            types,
+        )
+    }
+
+    fn finish_test_group(
+        memo: &mut ProductMemo,
+        tel: &impl Telemetry,
+        requested: &ProductKey,
+        members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
+        types: &super::super::types::Types,
+    ) -> bool {
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::RecursiveGroup(members),
+            types,
+        )
+    }
+
+    fn retained_test_session(root: RootId, fact: &FactKey, types: &super::super::types::Types) -> PullSession {
+        let tel = ConfiguredTelemetry::new();
+        let mut session = PullSession::new(root);
+        let key = ProductKey::RootBackendProduct(root);
+        assert!(finish_test_entry(
+            &mut session.memo,
+            &tel,
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled(fact.clone()),
+                    FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                )]),
+            },
+            types,
+        ));
+        session
+    }
+
+    #[test]
+    fn retiring_a_never_produced_observed_product_preserves_its_pending_demand() {
+        use super::super::scheduler::Scheduler;
+
+        let types = fake_types();
+        let root = RootId::for_test(1);
+        let address = ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        };
+        let mut sessions = ProductSessions::default();
+        sessions.observe(&address);
+        let mut scheduler = Scheduler::new();
+        scheduler.complete_ordered_with_external(
+            &super::super::Job::SeedRoot(root),
+            HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+            Vec::new(),
+            &sessions,
+            &types,
+        );
+        assert_eq!(sessions.next_request(), Some(address.clone()));
+        sessions.retry_request(address.clone());
+        let withdrawal = sessions.retirement_changes(root);
+        assert!(sessions.retire(root, &types));
+        scheduler.apply_external_changes_ordered(withdrawal, &sessions, &types);
+        assert_eq!(
+            scheduler.pending_jobs(),
+            0,
+            "missing-to-missing withdrawal does not wake the standing waiter"
+        );
+        assert!(scheduler.has_dependency_consumers(&DependencyKey::Product(address.clone())));
+        assert!(
+            sessions.get(root).is_none(),
+            "retirement must release the memo before any later drive"
+        );
+        assert_eq!(
+            sessions.next_request(),
+            Some(address.clone()),
+            "an unchanged missing state cannot wake the standing scheduler waiter; its original demand must survive"
+        );
+        assert!(
+            sessions
+                .get(root)
+                .unwrap()
+                .memo
+                .observed_products
+                .contains(&address.key)
+        );
+        assert!(
+            sessions.next_request().is_none(),
+            "retirement must not duplicate the already queued failed demand"
+        );
+        sessions.unobserve(&address);
+        sessions.retry_request(address);
+        assert!(
+            sessions.next_request().is_none(),
+            "detaching the actual scheduler consumer cancels demand"
+        );
+    }
+
+    #[test]
+    fn renewed_product_demand_does_not_revive_duplicate_stale_queue_entries() {
+        let root = RootId::for_test(1);
+        let address = ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        };
+        let mut sessions = ProductSessions::default();
+        sessions.observe(&address);
+        sessions.unobserve(&address);
+        sessions.observe(&address);
+        assert!(sessions.retire(root, &fake_types()));
+        assert_eq!(sessions.next_request(), Some(address));
+        assert!(
+            sessions.next_request().is_none(),
+            "renewed demand must not turn stale queue entries into duplicate validations"
+        );
+    }
+
+    #[test]
+    fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_active_roots_once() {
+        let types = fake_types();
+        let fact = FactKey::RuntimeDemand(fake_executable_with_function(RootId::for_test(99), 99));
+        let left = RootId::for_test(1);
+        let right = RootId::for_test(2);
+        let dormant = RootId::for_test(3);
+        let mut sessions = ProductSessions::default();
+        for session in [
+            retained_test_session(left, &fact, &types),
+            retained_test_session(right, &fact, &types),
+            retained_test_session(dormant, &fact, &types),
+        ] {
+            let root = session.root();
+            sessions.active_roots.insert(root, ActiveRootProduct::default());
+            let session = Rc::new(RefCell::new(session));
+            sessions.sessions.insert(root, Rc::clone(&session));
+            sessions.restore(session);
+        }
+        assert_eq!(sessions.counts(), (3, 3));
+
+        let (active_left, _) = sessions.take(left, WorkStartTally::default());
+        let (active_right, _) = sessions.take(right, WorkStartTally::default());
+        let tel = ConfiguredTelemetry::new();
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact.clone(),
+                state: FactState {
+                    revision: Some(2),
+                    settled: false,
+                },
+            }],
+        );
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact.clone(),
+                state: FactState {
+                    revision: Some(2),
+                    settled: true,
+                },
+            }],
+        );
+        sessions.drain_active_movements(left, &mut active_left.borrow_mut());
+        sessions.drain_active_movements(right, &mut active_right.borrow_mut());
+        let final_state = FactState {
+            revision: Some(2),
+            settled: true,
+        };
+        assert_eq!(
+            active_left.borrow().pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        assert_eq!(
+            active_right.borrow().pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        assert_eq!(
+            sessions.sessions[&dormant].borrow().pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        sessions.finish_activation(right, &mut active_right.borrow_mut(), WorkStartTally::default());
+        sessions.restore(active_right);
+        sessions.finish_activation(left, &mut active_left.borrow_mut(), WorkStartTally::default());
+        sessions.restore(active_left);
+
+        assert!(sessions.retire(left, &types));
+        assert_eq!(sessions.counts(), (2, 2));
+        assert_eq!(sessions.roots_by_fact[&fact], HashSet::from([right, dormant]));
+    }
+
+    #[test]
+    fn equal_fact_delivery_keeps_both_retained_root_products_settled() {
+        let types = fake_types();
+        let tel = ConfiguredTelemetry::new();
+        let fact = FactKey::RootEntry(RootId::for_test(99));
+        let roots = [RootId::for_test(1), RootId::for_test(2)];
+        let mut sessions = ProductSessions::default();
+        for root in roots {
+            let session = retained_test_session(root, &fact, &types);
+            sessions.active_roots.insert(root, ActiveRootProduct::default());
+            let session = Rc::new(RefCell::new(session));
+            sessions.sessions.insert(root, Rc::clone(&session));
+            sessions.restore(session);
+        }
+        sessions.publish(
+            &tel,
+            &types,
+            &[FactMovement {
+                key: fact,
+                state: FactState {
+                    revision: Some(1),
+                    settled: true,
+                },
+            }],
+        );
+        for root in roots {
+            let mut session = sessions.sessions.get(&root).expect("retained root").borrow_mut();
+            session.reconcile_fact_movements(&tel, &types);
+            assert!(session.memo.get(&ProductKey::RootBackendProduct(root)).is_some());
+        }
+    }
+
+    /// Recursive search work is a property of the pending graph, not of the
+    /// fresh `RandomState` assigned to each memo. The side branch made the old
+    /// early-exit gate visit a variable prefix before its repeated component
+    /// scans. One traversal must inspect each reachable vertex and edge once.
+    #[test]
+    fn recursive_group_search_work_is_a_function_of_the_pending_graph() {
+        let types = fake_types();
+        let root = RootId::for_test(81);
+        let callable = |function, value| {
+            ProductKey::CallableConstruction(TransportPosition::Value {
+                executable: executable_symbol_for_test(&fake_executable_with_function(root, function)),
+                value: ValueId::from_u32(value),
+            })
+        };
+        let current = callable(810, 0);
+        let target = callable(811, 1);
+        let detour_1 = callable(812, 2);
+        let detour_2 = callable(813, 3);
+        let detour_3 = callable(814, 4);
+
+        for _ in 0..32 {
+            let mut memo = ProductMemo::default();
+            for (key, dependencies) in [
+                (
+                    target.clone(),
+                    ProductDependencies {
+                        membership: HashSet::new(),
+                        products: HashMap::from([(current.clone(), None), (detour_1.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    detour_1.clone(),
+                    ProductDependencies {
+                        membership: HashSet::new(),
+                        products: HashMap::from([(detour_2.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    detour_2.clone(),
+                    ProductDependencies {
+                        membership: HashSet::new(),
+                        products: HashMap::from([(detour_3.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (detour_3.clone(), ProductDependencies::default()),
+            ] {
+                memo.unblock(&key, dependencies);
+            }
+
+            let (members, search) =
+                memo.pending_strong_component(&current, &prospective_dependency(&target), &target, &types);
+            assert_eq!(
+                members.map(|members| members.into_iter().collect::<HashSet<_>>()),
+                Some(HashSet::from([current.clone(), target.clone()]))
+            );
+            assert_eq!(
+                search,
+                RecursiveGroupSearch {
+                    candidate_inventory: 5,
+                    vertex_visits: 5,
+                    edge_scans: 5,
+                    cycle_closed: true,
+                    group_members: 2,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_group_search_matches_pending_graph_boundaries() {
+        let types = fake_types();
+        let root = RootId::for_test(84);
+        let current = ProductKey::AbiExecutable(fake_executable_with_function(root, 840));
+        let dependency = ProductKey::AbiExecutable(fake_executable_with_function(root, 841));
+        let peer = ProductKey::AbiExecutable(fake_executable_with_function(root, 842));
+        let bridge = ProductKey::RootBackendProduct(root);
+        let missing = ProductMemo::default();
+        assert_eq!(
+            missing.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 0,
+                    vertex_visits: 0,
+                    edge_scans: 0,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+
+        let mut displaced = ProductMemo::default();
+        finish_test_product(&mut displaced, &dependency, ProductValue::Unit, [current.clone()]);
+        displaced.remove(&ConfiguredTelemetry::new(), &dependency, &types);
+        assert_eq!(
+            displaced.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types,),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 0,
+                    vertex_visits: 0,
+                    edge_scans: 0,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            ),
+            "a displaced product's last settled dependencies are not pending cycle evidence"
+        );
+
+        let mut self_cycle = ProductMemo::default();
+        self_cycle.unblock(&current, ProductDependencies::default());
+        assert_eq!(
+            self_cycle.pending_strong_component(&current, &prospective_dependency(&current), &current, &types),
+            (
+                Some(vec![current.clone()]),
+                RecursiveGroupSearch {
+                    candidate_inventory: 1,
+                    vertex_visits: 1,
+                    edge_scans: 1,
+                    cycle_closed: true,
+                    group_members: 1,
+                }
+            )
+        );
+
+        let mut disjoint = ProductMemo::default();
+        disjoint.unblock(
+            &dependency,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(peer.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        disjoint.unblock(
+            &peer,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(dependency.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        assert_eq!(
+            disjoint.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types,),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 2,
+                    vertex_visits: 2,
+                    edge_scans: 2,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+
+        let mut cross_kind = ProductMemo::default();
+        cross_kind.unblock(
+            &dependency,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(bridge.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        cross_kind.unblock(
+            &bridge,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(current.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        let (members, search) =
+            cross_kind.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency, &types);
+        assert_eq!(
+            members.map(|members| members.into_iter().collect::<HashSet<_>>()),
+            Some(HashSet::from([current.clone(), dependency.clone()]))
+        );
+        assert_eq!(
+            search,
+            RecursiveGroupSearch {
+                candidate_inventory: 2,
+                vertex_visits: 3,
+                edge_scans: 3,
+                cycle_closed: true,
+                group_members: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let root = RootId::for_test(85);
+        let current = ProductKey::AbiExecutable(fake_executable_with_function(root, 850));
+        let missing = ProductKey::AbiExecutable(fake_executable_with_function(root, 851));
+        let ready = ProductKey::AbiExecutable(fake_executable_with_function(root, 852));
+        let cyclic = ProductKey::AbiExecutable(fake_executable_with_function(root, 853));
+        let mut session = PullSession::new(root);
+
+        {
+            let mut context = ProductReadContext::new(&mut session);
+            assert!(matches!(
+                context.read_recursive_product(&tel, missing.clone(), &current, &types),
+                RecursiveProductRead::Waiting
+            ));
+            assert_eq!(context.dependencies.products.get(&missing), Some(&None));
+        }
+
+        finish_test_product(&mut session.memo, &ready, ProductValue::Unit, []);
+        assert_eq!(
+            session
+                .memo
+                .pending_strong_component(&current, &prospective_dependency(&ready), &ready, &types),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 0,
+                    vertex_visits: 0,
+                    edge_scans: 0,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+        {
+            let mut context = ProductReadContext::new(&mut session);
+            assert!(matches!(
+                context.read_recursive_product(&tel, ready.clone(), &current, &types),
+                RecursiveProductRead::Ready(ProductValue::Unit)
+            ));
+            assert_eq!(context.dependencies.products.get(&ready), Some(&Some(1)));
+        }
+
+        session.memo.unblock(
+            &cyclic,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(current.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        let mut context = ProductReadContext::new(&mut session);
+        let RecursiveProductRead::Group(members) =
+            context.read_recursive_product(&tel, cyclic.clone(), &current, &types)
+        else {
+            panic!("the prospective edge should close the pending cycle");
+        };
+        assert_eq!(
+            members.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([current, cyclic.clone()])
+        );
+        assert_eq!(context.dependencies.products.get(&cyclic), Some(&None));
+    }
 
     fn fact_movement(key: FactKey, revision: Option<u64>, settled: bool) -> FactMovement<FactKey> {
         FactMovement {
@@ -2117,20 +2795,204 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
+    #[test]
+    fn completion_batch_commits_one_semantic_sequence_for_every_requested_anchor() {
+        let root = RootId::for_test(86);
+        let mut types = super::super::Types::new();
+        let keys =
+            [860, 861, 862].map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
+        let mut expected = keys.to_vec();
+        sort_product_keys(&mut expected, &types);
+
+        for requested in &keys {
+            for reverse in [false, true] {
+                let tel = ConfiguredTelemetry::new();
+                let observed = Rc::new(RefCell::new(Vec::new()));
+                let sink = Rc::clone(&observed);
+                tel.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
+                    &["fz", "compiler2", "pull", "product", "settled"],
+                    move |_, _, _, key, _, _| sink.borrow_mut().push(key.clone()),
+                );
+                let mut order = keys.to_vec();
+                if reverse {
+                    order.reverse();
+                }
+                let entries = order
+                    .into_iter()
+                    .map(|key| (key, ProductValue::Unit, ProductDependencies::default()))
+                    .collect();
+                let mut memo = ProductMemo::default();
+                assert!(memo.begin(requested.clone()));
+                assert!(finish_test_batch(&mut memo, &tel, requested, entries, &types));
+                assert_eq!(*observed.borrow(), expected);
+                assert!(keys.iter().all(|key| memo.generation(key) == Some(1)));
+            }
+        }
+    }
+
+    #[test]
+    fn recursive_group_commits_one_semantic_sequence_for_every_requested_anchor() {
+        let root = RootId::for_test(88);
+        let mut types = super::super::Types::new();
+        let keys =
+            [880, 881, 882].map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
+        let mut expected = keys.to_vec();
+        sort_product_keys(&mut expected, &types);
+
+        for requested in &keys {
+            for reverse in [false, true] {
+                let tel = ConfiguredTelemetry::new();
+                let observed = Rc::new(RefCell::new(Vec::new()));
+                let sink = Rc::clone(&observed);
+                tel.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
+                    &["fz", "compiler2", "pull", "product", "settled"],
+                    move |_, _, _, key, _, settlement| sink.borrow_mut().push((key.clone(), settlement.group)),
+                );
+                let mut order = keys.to_vec();
+                if reverse {
+                    order.reverse();
+                }
+                let entries = order
+                    .into_iter()
+                    .map(|key| (key, ProductValue::Unit, ProductDependencies::default()))
+                    .collect();
+                let mut memo = ProductMemo::default();
+                for key in &keys {
+                    assert!(memo.begin(key.clone()));
+                }
+                assert!(finish_test_group(&mut memo, &tel, requested, entries, &types));
+                let observed = observed.borrow();
+                assert_eq!(
+                    observed.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>(),
+                    expected
+                );
+                let groups = observed.iter().map(|(_, group)| *group).collect::<HashSet<_>>();
+                assert_eq!(groups.len(), 1);
+                assert!(!groups.contains(&None));
+            }
+        }
+    }
+
+    #[test]
+    fn changed_batch_drains_produced_and_pending_reader_diamond_in_semantic_order() {
+        let root = RootId::for_test(87);
+        let mut types = super::super::Types::new();
+        let keys = [870, 871, 872, 873, 874, 875, 876]
+            .map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
+        let [left, right, left_reader, right_reader, join, pending, pending_child] = &keys;
+        let mut expected_displaced = vec![left_reader.clone(), right_reader.clone()];
+        sort_product_keys(&mut expected_displaced, &types);
+
+        for reverse in [false, true] {
+            let tel = ConfiguredTelemetry::new();
+            let mut memo = ProductMemo::default();
+            let mut sources = vec![left.clone(), right.clone()];
+            if reverse {
+                sources.reverse();
+            }
+            for source in &sources {
+                finish_test_product(&mut memo, source, ProductValue::Unit, []);
+            }
+            finish_test_product(&mut memo, left_reader, ProductValue::Unit, [left.clone()]);
+            finish_test_product(&mut memo, right_reader, ProductValue::Unit, [right.clone()]);
+            finish_test_product(
+                &mut memo,
+                join,
+                ProductValue::Unit,
+                [left_reader.clone(), right_reader.clone()],
+            );
+            memo.unblock(
+                pending,
+                ProductDependencies {
+                    membership: HashSet::new(),
+                    products: HashMap::from([
+                        (left.clone(), memo.generation(left)),
+                        (right.clone(), memo.generation(right)),
+                    ]),
+                    facts: HashMap::new(),
+                },
+            );
+            memo.unblock(
+                pending_child,
+                ProductDependencies {
+                    membership: HashSet::new(),
+                    products: HashMap::from([(pending.clone(), None)]),
+                    facts: HashMap::new(),
+                },
+            );
+
+            let displaced = Rc::new(RefCell::new(Vec::new()));
+            let sink = Rc::clone(&displaced);
+            tel.attach_raw_event1::<ProductKey, _>(
+                &["fz", "compiler2", "pull", "product", "displaced"],
+                move |_, _, _, key| sink.borrow_mut().push(key.clone()),
+            );
+            let replacement = ProductValue::ExecutableEffects(EffectSummary::default());
+            let entries = sources
+                .iter()
+                .cloned()
+                .map(|key| (key, replacement.clone(), ProductDependencies::default()))
+                .collect();
+            assert!(finish_test_batch(&mut memo, &tel, left, entries, &types));
+
+            assert_eq!(*displaced.borrow(), expected_displaced);
+            assert!(memo.get(join).is_some());
+            assert!(memo.dirty_descendants.contains(join));
+            assert!(!memo.pending_dependencies.contains_key(pending));
+            assert!(!memo.pending_dependencies.contains_key(pending_child));
+        }
+    }
+
+    #[test]
+    fn transitive_dirtiness_retracts_pending_readers_but_leaves_settled_readers_lazy() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let root = RootId::for_test(99);
+        let source = ProductKey::AbiExecutable(fake_executable_with_function(root, 990));
+        let intermediate = ProductKey::AbiExecutable(fake_executable_with_function(root, 991));
+        let pending = ProductKey::AbiExecutable(fake_executable_with_function(root, 992));
+        let settled = ProductKey::AbiExecutable(fake_executable_with_function(root, 993));
+        let mut memo = ProductMemo::default();
+        finish_test_product(&mut memo, &source, ProductValue::Unit, []);
+        finish_test_product(&mut memo, &intermediate, ProductValue::Unit, [source.clone()]);
+        memo.unblock(
+            &pending,
+            ProductDependencies {
+                membership: HashSet::new(),
+                products: HashMap::from([(intermediate.clone(), Some(1))]),
+                facts: HashMap::new(),
+            },
+        );
+        finish_test_product(&mut memo, &settled, ProductValue::Unit, [intermediate.clone()]);
+
+        memo.remove(&tel, &source, &types);
+
+        assert!(!memo.pending_dependencies.contains_key(&pending));
+        assert!(memo.get(&settled).is_some());
+        assert!(memo.dirty_descendants.contains(&intermediate));
+        assert!(memo.dirty_descendants.contains(&settled));
+    }
+
+    #[derive(Default)]
     struct FakeProducers {
+        types: super::super::Types,
         produced: HashSet<ProductKey>,
         calls: Vec<ProductKey>,
-        reenter: Option<ProductKey>,
+        self_wait: Option<ProductKey>,
         root_entry: Option<ExecutableKey>,
         root_prerequisites: Vec<ProductKey>,
+        root_recursive_prerequisite: Option<ProductKey>,
+        recursive_telemetry: Option<Rc<ConfiguredTelemetry>>,
         facts: HashMap<FactKey, FactState>,
         runtime_fact: Option<FactUse<FactKey>>,
         runtime_value: Option<ProductValue>,
-        runtime_child: Option<ProductKey>,
+        runtime_children: HashMap<ProductKey, ProductKey>,
+        materialized_value: Option<ProductValue>,
         backend_fact: Option<FactUse<FactKey>>,
         backend_value: Option<ProductValue>,
         fact_state_reads: usize,
+        fail_native_once: bool,
+        native_fact: Option<FactUse<FactKey>>,
     }
 
     impl FakeProducers {
@@ -2142,186 +3004,228 @@ mod tests {
             })
         }
 
-        fn produce(&mut self, key: ProductKey) -> PullOutcome {
+        fn produce_unit(&mut self, key: ProductKey) -> PullOutcome {
             self.calls.push(key.clone());
-            if self.reenter.as_ref() == Some(&key) {
-                return PullOutcome::wait_on_product(key);
+            self.produced.insert(key);
+            PullOutcome::Produced(ProductValue::Unit)
+        }
+    }
+
+    impl ProductProducers for FakeProducers {
+        fn product_types(&self) -> &super::super::Types {
+            &self.types
+        }
+
+        fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+            if self.self_wait.as_ref() == Some(key) {
+                self.calls.push(key.clone());
+                return PullOutcome::wait_on_product(key.clone());
             }
             match key {
                 ProductKey::RootBackendProduct(root) => {
+                    let tel = ConfiguredTelemetry::new();
+                    self.calls.push(key.clone());
+                    let mut waits = self
+                        .root_prerequisites
+                        .iter()
+                        .filter(|prerequisite| {
+                            context
+                                .read_product_entry(&tel, (*prerequisite).clone(), &self.types)
+                                .is_none()
+                        })
+                        .cloned()
+                        .map(PullWait::Product)
+                        .collect::<Vec<_>>();
+                    if let Some(prerequisite) = self.root_recursive_prerequisite.clone() {
+                        let telemetry = self
+                            .recursive_telemetry
+                            .as_ref()
+                            .expect("a recursive fake producer needs its driver telemetry");
+                        if matches!(
+                            context.read_recursive_product(telemetry.as_ref(), prerequisite.clone(), key, &self.types,),
+                            RecursiveProductRead::Waiting
+                        ) {
+                            waits.push(PullWait::Product(prerequisite));
+                        }
+                    }
+                    if !waits.is_empty() {
+                        return PullOutcome::Waiting(waits);
+                    }
                     let prerequisite =
-                        ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
-                    if self.produced.contains(&prerequisite) {
-                        self.produced.insert(ProductKey::RootBackendProduct(root));
+                        ProductKey::AbiExecutable(self.root_entry.clone().expect("fake root entry should be set"));
+                    if context
+                        .read_product_entry(&tel, prerequisite.clone(), &self.types)
+                        .is_some()
+                    {
+                        self.produced.insert(ProductKey::RootBackendProduct(*root));
                         PullOutcome::Produced(ProductValue::Unit)
                     } else {
                         PullOutcome::wait_on_product(prerequisite)
                     }
                 }
-                ProductKey::RuntimeDemand(_) => {
-                    self.produced.insert(key);
-                    PullOutcome::Produced(ProductValue::Unit)
+                ProductKey::NativeProgram(_) => {
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.native_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        context.record_fact_state(fact.clone(), state);
+                        if !state.settled {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    }
+                    if std::mem::take(&mut self.fail_native_once) {
+                        PullOutcome::Failed(ProductFailure::NativeLowering)
+                    } else {
+                        PullOutcome::Produced(ProductValue::Unit)
+                    }
                 }
                 ProductKey::BackendExecutable(_) => {
-                    PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO)))
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.backend_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        let ready = match fact.readiness() {
+                            FactReadiness::Current => state.revision.is_some(),
+                            FactReadiness::Settled => state.settled,
+                        };
+                        context.record_fact_state(fact.clone(), state);
+                        if !ready {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    } else if self.backend_value.is_none() {
+                        return PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(
+                            super::super::CodeId::ZERO,
+                        )));
+                    }
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.backend_value.clone().unwrap_or(ProductValue::Unit))
                 }
-                _ => {
-                    self.produced.insert(key);
-                    PullOutcome::Produced(ProductValue::Unit)
+                ProductKey::MaterializedExecutable(_) => {
+                    self.calls.push(key.clone());
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.materialized_value.clone().unwrap_or(ProductValue::Unit))
                 }
+                ProductKey::AbiExecutable(_) => {
+                    self.calls.push(key.clone());
+                    if let Some(fact) = self.runtime_fact.clone() {
+                        let state = self.fact_state(&fact);
+                        let ready = match fact.readiness() {
+                            FactReadiness::Current => state.revision.is_some(),
+                            FactReadiness::Settled => state.settled,
+                        };
+                        context.record_fact_state(fact.clone(), state);
+                        if !ready {
+                            return PullOutcome::wait_on_fact(fact);
+                        }
+                    }
+                    if let Some(child) = self.runtime_children.get(key).cloned()
+                        && context
+                            .read_product_entry(&ConfiguredTelemetry::new(), child.clone(), &self.types)
+                            .is_none()
+                    {
+                        return PullOutcome::wait_on_product(child);
+                    }
+                    self.produced.insert(key.clone());
+                    PullOutcome::Produced(self.runtime_value.clone().unwrap_or(ProductValue::Unit))
+                }
+                _ => self.produce_unit(key.clone()),
             }
         }
     }
 
-    impl ProductProducers for FakeProducers {
-        fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-            let tel = ConfiguredTelemetry::new();
-            let key = ProductKey::RootBackendProduct(root);
-            self.calls.push(key.clone());
-            if !self.root_prerequisites.is_empty() {
-                let waits = self
-                    .root_prerequisites
-                    .iter()
-                    .filter(|prerequisite| context.read_product_entry(&tel, (*prerequisite).clone()).is_none())
-                    .cloned()
-                    .map(PullWait::Product)
-                    .collect::<Vec<_>>();
-                if !waits.is_empty() {
-                    return PullOutcome::Waiting(waits);
-                }
-            }
-            let prerequisite =
-                ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
-            if context.read_product_entry(&tel, prerequisite.clone()).is_some() {
-                self.produced.insert(key);
-                PullOutcome::Produced(ProductValue::Unit)
-            } else {
-                PullOutcome::wait_on_product(prerequisite)
-            }
-        }
+    #[test]
+    fn failed_product_is_not_memoized_and_can_be_retried() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(0);
+        let key = ProductKey::NativeProgram(root);
+        let prerequisite = FactUse::settled(FactKey::RootEntry(root));
+        let mut producers = FakeProducers {
+            fail_native_once: true,
+            native_fact: Some(prerequisite.clone()),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(&tel, root);
 
-        fn produce_backend_executable(
-            &mut self,
-            context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            let key = ProductKey::BackendExecutable(executable.clone());
-            self.calls.push(key.clone());
-            if let Some(fact) = self.backend_fact.clone() {
-                let state = self.fact_state(&fact);
-                let ready = match fact.readiness() {
-                    FactReadiness::Current => state.revision.is_some(),
-                    FactReadiness::Settled => state.settled,
-                };
-                context.record_fact_state(fact.clone(), state);
-                if !ready {
-                    return PullOutcome::wait_on_fact(fact);
-                }
-            }
-            self.produced.insert(key);
-            PullOutcome::Produced(self.backend_value.clone().unwrap_or(ProductValue::Unit))
-        }
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::wait_on_fact(prerequisite.clone())
+        );
+        assert!(driver.session().memo.pending_product_dependencies(&key).is_some());
+        producers.facts.insert(
+            prerequisite.fact().clone(),
+            FactState {
+                revision: Some(1),
+                settled: true,
+            },
+        );
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Failed(ProductFailure::NativeLowering)
+        );
+        assert!(!driver.session().memo.contains_in_progress(&key));
+        assert!(driver.session().memo.pending_product_dependencies(&key).is_none());
+        assert_eq!(driver.session().memo.get(&key), None);
+        assert_eq!(driver.session().memo.generation(&key), None);
 
-        fn produce_abi_executable(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::AbiExecutable(executable.clone()))
-        }
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo.generation(&key), Some(1));
+    }
 
-        fn produce_materialized_executable(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::MaterializedExecutable(executable.clone()))
-        }
+    #[test]
+    fn equal_root_reproduction_retains_root_allocation_and_native_generation() {
+        let root = RootId::for_test(0);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let native_key = ProductKey::NativeProgram(root);
+        let backend = Rc::new(super::super::artifact::BackendProgram::empty_for_test());
+        let mut memo = ProductMemo::default();
+        finish_test_product(
+            &mut memo,
+            &root_key,
+            ProductValue::RootBackendProduct(Rc::clone(&backend)),
+            [],
+        );
+        finish_test_product(&mut memo, &native_key, ProductValue::Unit, [root_key.clone()]);
+        let generation = memo.generation(&root_key);
+        let native_generation = memo.generation(&native_key);
+        finish_test_product(
+            &mut memo,
+            &root_key,
+            ProductValue::RootBackendProduct(Rc::new((*backend).clone())),
+            [],
+        );
+        let Some(ProductValue::RootBackendProduct(reproduced)) = memo.get(&root_key) else {
+            panic!("retained root");
+        };
+        assert!(Rc::ptr_eq(&backend, reproduced));
+        assert_eq!(memo.generation(&root_key), generation);
+        assert!(memo.get(&native_key).is_some());
+        assert_eq!(memo.generation(&native_key), native_generation);
+    }
 
-        fn produce_executable_effects(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::ExecutableEffects(executable.clone()))
-        }
+    #[test]
+    fn equal_native_reproduction_retains_allocation_and_generation() {
+        let root = RootId::for_test(0);
+        let key = ProductKey::NativeProgram(root);
+        let native = || NativeProgram {
+            entry: crate::fz_ir::FnId(0),
+            module: crate::fz_ir::Module::default(),
+            executable_entries: Vec::new(),
+            bodies: Vec::new(),
+            callable_boundaries: Vec::new(),
+        };
+        let original = Rc::new(native());
+        let mut memo = ProductMemo::default();
 
-        fn produce_executable_facts(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::ExecutableFacts(executable.clone()))
-        }
+        finish_test_product(&mut memo, &key, ProductValue::NativeProgram(Rc::clone(&original)), []);
+        let generation = memo.generation(&key);
+        finish_test_product(&mut memo, &key, ProductValue::NativeProgram(Rc::new(native())), []);
 
-        fn produce_runtime_demand(
-            &mut self,
-            context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            let key = ProductKey::RuntimeDemand(executable.clone());
-            self.calls.push(key.clone());
-            if let Some(fact) = self.runtime_fact.clone() {
-                let state = self.fact_state(&fact);
-                let ready = match fact.readiness() {
-                    FactReadiness::Current => state.revision.is_some(),
-                    FactReadiness::Settled => state.settled,
-                };
-                context.record_fact_state(fact.clone(), state);
-                if !ready {
-                    return PullOutcome::wait_on_fact(fact);
-                }
-            }
-            if let Some(child) = self.runtime_child.clone()
-                && context
-                    .read_product_entry(&ConfiguredTelemetry::new(), child.clone())
-                    .is_none()
-            {
-                return PullOutcome::wait_on_product(child);
-            }
-            self.produced.insert(key);
-            PullOutcome::Produced(self.runtime_value.clone().unwrap_or(ProductValue::Unit))
-        }
-
-        fn produce_outgoing_edge_frontier(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            root: RootId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::OutgoingEdgeFrontier(root))
-        }
-
-        fn produce_outgoing_input_edges(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::OutgoingInputEdges(executable.clone()))
-        }
-
-        fn produce_incoming_input_relations(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            root: RootId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::IncomingInputRelations(root))
-        }
-
-        fn produce_incoming_input_slot(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            slot: &InputSlot,
-        ) -> PullOutcome {
-            self.produce(ProductKey::IncomingInputSlot(slot.clone()))
-        }
-
-        fn produce_transport_shape(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            position: &TransportPosition,
-        ) -> PullOutcome {
-            self.produce(ProductKey::TransportShape(position.clone()))
-        }
+        let Some(ProductValue::NativeProgram(retained)) = memo.get(&key) else {
+            panic!("native program must remain settled");
+        };
+        assert!(Rc::ptr_eq(retained, &original));
+        assert_eq!(memo.generation(&key), generation);
     }
 
     #[test]
@@ -2331,7 +3235,7 @@ mod tests {
         let root = RootId::for_test(0);
         let executable = fake_executable(root);
         let root_key = ProductKey::RootBackendProduct(root);
-        let prerequisite = ProductKey::RuntimeDemand(executable.clone());
+        let prerequisite = ProductKey::AbiExecutable(executable.clone());
         let mut producers = FakeProducers {
             root_entry: Some(executable),
             ..FakeProducers::default()
@@ -2359,12 +3263,175 @@ mod tests {
     }
 
     #[test]
+    fn product_driver_correlates_waiting_producer_runs_and_cache_hits() {
+        let tel = Rc::new(ConfiguredTelemetry::new());
+        let (buf, writer) = crate::telemetry::capture::vec_writer();
+        JsonlBackend::new_writer(writer).install(tel.as_ref());
+        let root = RootId::for_test(90);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let dependency = ProductKey::AbiExecutable(fake_executable_with_function(root, 901));
+        let dependency_child = ProductKey::AbiExecutable(fake_executable_with_function(root, 902));
+        let moved = ProductKey::AbiExecutable(fake_executable_with_function(root, 903));
+        let mut producers = FakeProducers {
+            root_entry: match &dependency {
+                ProductKey::AbiExecutable(executable) => Some(executable.clone()),
+                _ => unreachable!(),
+            },
+            root_prerequisites: vec![moved.clone()],
+            root_recursive_prerequisite: Some(dependency.clone()),
+            recursive_telemetry: Some(Rc::clone(&tel)),
+            runtime_children: HashMap::from([(dependency.clone(), dependency_child.clone())]),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(tel.as_ref(), root);
+
+        assert_eq!(
+            driver.pull(&mut producers, dependency.clone()),
+            PullOutcome::wait_on_product(dependency_child.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::Waiting(vec![
+                PullWait::Product(moved.clone()),
+                PullWait::Product(dependency.clone())
+            ])
+        );
+        assert_eq!(
+            driver.pull(&mut producers, moved),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::wait_on_product(dependency.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, dependency_child),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, dependency),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        driver.finish_session();
+
+        let events = parse_public_trace(&buf.borrow());
+        let requested_name = ["fz", "compiler2", "pull", "product", "requested"].map(str::to_string);
+        let evaluated_name = ["fz", "compiler2", "pull", "product", "evaluated"].map(str::to_string);
+        let settled_name = ["fz", "compiler2", "pull", "product", "settled"].map(str::to_string);
+        let normalized_product = |event: &crate::telemetry::causal::PublicEvent| {
+            let mut product = event.metadata["product"].clone();
+            product
+                .as_object_mut()
+                .expect("product identity is an object")
+                .remove("opaque_type");
+            product
+        };
+        let is_root = |event: &&crate::telemetry::causal::PublicEvent| {
+            event.metadata["product"]["kind"] == "root_backend_product"
+                && event.metadata["product"]["root_id"] == u64::from(root.as_u32())
+        };
+        let all_requests = events
+            .iter()
+            .filter(|event| event.name == requested_name)
+            .map(|event| event.metadata["request_id"].as_u64().expect("request identity"))
+            .collect::<Vec<_>>();
+        let all_evaluations = events
+            .iter()
+            .filter(|event| event.name == evaluated_name)
+            .map(|event| event.metadata["request_id"].as_u64().expect("evaluation identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(all_requests, (1..=8).collect::<Vec<_>>());
+        assert_eq!(all_evaluations, (1..=7).collect::<Vec<_>>());
+        let requests = events
+            .iter()
+            .filter(|event| event.name == requested_name && is_root(event))
+            .map(|event| event.metadata["request_id"].as_u64().expect("request identity"))
+            .collect::<Vec<_>>();
+        let evaluations = events
+            .iter()
+            .filter(|event| event.name == evaluated_name && is_root(event))
+            .map(|event| event.metadata["request_id"].as_u64().expect("evaluation identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(requests, [2, 4, 7, 8]);
+        assert_eq!(evaluations, [2, 4, 7]);
+
+        let (moved_position, moved_event) = events
+            .iter()
+            .enumerate()
+            .find(|(_, event)| event.name == settled_name && event.metadata["product"]["function_id"] == 903)
+            .expect("the exact moved dependency settlement");
+        let moved_product = normalized_product(moved_event);
+        let dependency_product = events
+            .iter()
+            .find(|event| event.name == requested_name && event.metadata["request_id"] == 1)
+            .map(normalized_product)
+            .expect("the recursive dependency request");
+        let request_position = events
+            .iter()
+            .position(|event| event.name == requested_name && event.metadata["request_id"] == 4)
+            .expect("the moved producer request");
+
+        let report = CausalReport::derive(&events);
+        let initial_evaluation = report
+            .product_evaluations
+            .iter()
+            .find(|evaluation| evaluation.request == 2)
+            .expect("initial root producer run");
+        let moved_evaluation = report
+            .product_evaluations
+            .iter()
+            .find(|evaluation| evaluation.request == 4)
+            .expect("producer run after dependency movement");
+        assert_eq!(moved_evaluation.prior_evaluation, Some(initial_evaluation.position));
+        assert_eq!(moved_evaluation.cause, ProductEvaluationCause::ProductMovement);
+        assert_eq!(moved_evaluation.prior_waits.len(), 2);
+        assert!(matches!(
+            &moved_evaluation.prior_waits[0],
+            ProductEvaluationWait::Product(product) if product.raw == moved_product
+        ));
+        assert!(matches!(
+            &moved_evaluation.prior_waits[1],
+            ProductEvaluationWait::Product(product) if product.raw == dependency_product
+        ));
+        assert_eq!(moved_evaluation.triggers.len(), 1);
+        let trigger = &moved_evaluation.triggers[0];
+        assert_eq!(trigger.position, moved_position);
+        assert_eq!(trigger.kind, ProductEvaluationTriggerKind::ProductSettlement);
+        assert!(matches!(
+            &trigger.dependency,
+            ProductEvaluationWait::Product(product) if product.raw == moved_product
+        ));
+        let search = report
+            .recursive_searches
+            .iter()
+            .find(|search| search.request == Some(4) && search.product == moved_evaluation.product)
+            .expect("recursive search inside the moved producer run");
+        assert_eq!(search.session, moved_evaluation.session);
+        assert_eq!(search.dependency.raw, dependency_product);
+        assert_eq!(search.cause, Some(ProductEvaluationCause::ProductMovement));
+        assert!(
+            initial_evaluation.position < moved_position
+                && moved_position < request_position
+                && request_position < search.position
+                && search.position < moved_evaluation.position
+        );
+    }
+
+    #[test]
     fn product_driver_refreshes_deepest_stale_child_without_waking_equal_value_readers() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(7);
         let executable = fake_executable(root);
         let parent = ProductKey::RootBackendProduct(root);
-        let child = ProductKey::RuntimeDemand(executable.clone());
+        let child = ProductKey::AbiExecutable(executable.clone());
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: Some(executable),
@@ -2458,13 +3525,15 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(70);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().memo.finish(
+        finish_test_entry(
+            &mut driver.session_mut().memo,
             &tel,
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([
                     (
@@ -2483,6 +3552,7 @@ mod tests {
                     ),
                 ]),
             },
+            &fake_types(),
         );
 
         driver.apply_fact_movements(&[fact_movement(fact, Some(1), false)]);
@@ -2501,13 +3571,15 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(71);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().memo.finish(
+        finish_test_entry(
+            &mut driver.session_mut().memo,
             &tel,
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
@@ -2517,6 +3589,7 @@ mod tests {
                     },
                 )]),
             },
+            &fake_types(),
         );
         for _ in 0..100 {
             driver.apply_fact_movements(&[fact_movement(fact.clone(), Some(1), false)]);
@@ -2539,13 +3612,15 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(72);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().memo.finish(
+        finish_test_entry(
+            &mut driver.session_mut().memo,
             &tel,
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
@@ -2555,94 +3630,9 @@ mod tests {
                     },
                 )]),
             },
+            &fake_types(),
         );
         driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
-
-        let mut producers = FakeProducers::default();
-        assert_eq!(
-            driver.pull(&mut producers, key.clone()),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        assert_eq!(producers.calls, vec![key]);
-    }
-
-    #[test]
-    fn settled_presence_reader_ignores_content_only_movement() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(73);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
-        let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().memo.finish(
-            &tel,
-            &key,
-            ProductValue::Unit,
-            ProductDependencies {
-                products: HashMap::new(),
-                facts: HashMap::from([(
-                    FactUse::settled_presence(fact.clone()),
-                    FactState {
-                        revision: None,
-                        settled: true,
-                    },
-                )]),
-            },
-        );
-        driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
-
-        let mut producers = FakeProducers::default();
-        assert_eq!(
-            driver.pull(&mut producers, key),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        assert!(producers.calls.is_empty());
-    }
-
-    #[test]
-    fn settled_presence_reader_reproduces_after_same_key_publication_then_dirtying() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(74);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let missing = FactKey::RootEntry(root);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
-        let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().memo.finish(
-            &tel,
-            &key,
-            ProductValue::Unit,
-            ProductDependencies {
-                products: HashMap::new(),
-                facts: HashMap::from([(
-                    FactUse::settled_presence(fact.clone()),
-                    FactState {
-                        revision: None,
-                        settled: true,
-                    },
-                )]),
-            },
-        );
-        let mut scheduler = super::super::scheduler::Scheduler::<u32, FactKey>::new();
-        scheduler.complete(
-            &1,
-            HashSet::new(),
-            vec![DerivationEffects::sole(
-                HashSet::new(),
-                vec![fact.clone()],
-                vec![fact.clone()],
-                true,
-            )],
-        );
-        let blocked = scheduler.complete(
-            &1,
-            HashSet::from([FactUse::current(missing)]),
-            vec![DerivationEffects::sole(
-                HashSet::new(),
-                vec![fact.clone()],
-                vec![fact],
-                false,
-            )],
-        );
-        driver.apply_fact_movements(&blocked.movements);
 
         let mut producers = FakeProducers::default();
         assert_eq!(
@@ -2658,15 +3648,15 @@ mod tests {
         let root = RootId::for_test(17);
         let executable = fake_executable(root);
         let grandparent = ProductKey::RootBackendProduct(root);
-        let parent = ProductKey::RuntimeDemand(executable.clone());
+        let parent = ProductKey::AbiExecutable(executable.clone());
         let child = ProductKey::BackendExecutable(executable);
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: match &parent {
-                ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
+                ProductKey::AbiExecutable(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
-            runtime_child: Some(child.clone()),
+            runtime_children: HashMap::from([(parent.clone(), child.clone())]),
             backend_fact: Some(fact.clone()),
             facts: HashMap::from([(
                 fact.fact().clone(),
@@ -2769,555 +3759,711 @@ mod tests {
     }
 
     #[test]
-    fn product_driver_turns_reentry_into_a_product_wait() {
+    fn product_driver_rejects_an_in_progress_key_before_request_telemetry() {
         let tel = ConfiguredTelemetry::new();
+        let requests = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&requests);
+        tel.attach_raw_event2::<ProductKey, ProductRequestId, _>(PRODUCT_REQUESTED_EVENT, move |_, _, _, _, _| {
+            observed.set(observed.get() + 1)
+        });
         let root = RootId::for_test(2);
         let executable = fake_executable(root);
         let key = ProductKey::ExecutableEffects(executable);
         let mut driver = ProductDriver::new(&tel, root);
-        let mut producers = FakeProducers {
-            reenter: Some(key.clone()),
-            ..FakeProducers::default()
-        };
+        let mut producers = FakeProducers::default();
 
-        assert!(driver.session.memo.begin(key.clone()));
-        let outcome = driver.pull(&mut producers, key.clone());
-
-        assert_eq!(outcome, PullOutcome::wait_on_product(key));
+        assert!(driver.session_mut().memo.begin(key.clone()));
+        assert!(catch_unwind(AssertUnwindSafe(|| driver.pull(&mut producers, key.clone()))).is_err());
+        assert_eq!(requests.get(), 0);
+        assert_eq!(driver.session().request_ids.next, NonZeroU64::new(1));
+        assert!(driver.session().memo.contains_in_progress(&key));
+        assert!(producers.calls.is_empty());
     }
 
     #[test]
-    fn outgoing_edge_frontier_tracks_actual_publisher_requests_as_a_set() {
+    fn executable_effects_reads_only_its_local_projection_and_direct_callee_products() {
         let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(3);
-        let first = fake_executable(root);
-        let second = fake_executable_with_function(root, 4);
-        let frontier = ProductKey::OutgoingEdgeFrontier(root);
+        let root = RootId::for_test(79);
+        let caller = fake_executable_with_function(root, 790);
+        let callee = fake_executable_with_function(root, 791);
+        let leaf = fake_executable_with_function(root, 792);
         let mut driver = ProductDriver::new(&tel, root);
-        let mut fake = FakeProducers::default();
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
+        record_effect_product(&mut driver.session_mut(), &callee, &[&leaf], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
         let mut world = World::new();
+        let caller_effects = ProductKey::ExecutableEffects(caller.clone());
+        let callee_effects = ProductKey::ExecutableEffects(callee);
+        let caller_materialized = ProductKey::MaterializedExecutable(caller);
 
-        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
-        let first_frontier = {
+        let outcome = {
             let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier.clone())
+            driver.pull(&mut producers, caller_effects.clone())
         };
-        assert_eq!(
-            first_frontier,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
-                first.clone(),
-            ]))))
-        );
-        let first_generation = driver.session().memo().generation(&frontier);
 
-        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
-        driver.pull(&mut fake, ProductKey::BackendExecutable(first.clone()));
-        assert_eq!(driver.session().memo().generation(&frontier), first_generation);
-
-        fake.reenter = Some(ProductKey::OutgoingInputEdges(second.clone()));
-        assert_eq!(
-            driver.pull(&mut fake, ProductKey::OutgoingInputEdges(second.clone())),
-            PullOutcome::wait_on_product(ProductKey::OutgoingInputEdges(second.clone()))
-        );
-        let expanded = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier.clone())
-        };
-        assert_eq!(
-            expanded,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
-                first, second,
-            ]))))
-        );
-        assert_ne!(driver.session().memo().generation(&frontier), first_generation);
-    }
-
-    #[test]
-    fn publisher_frontier_moves_once_for_an_atomic_sibling_wait_set() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(5);
-        let first = fake_executable(root);
-        let second = fake_executable_with_function(root, 6);
-        let later = fake_executable_with_function(root, 7);
-        let first_key = ProductKey::OutgoingInputEdges(first.clone());
-        let second_key = ProductKey::OutgoingInputEdges(second.clone());
-        let later_key = ProductKey::OutgoingInputEdges(later.clone());
-        let root_key = ProductKey::RootBackendProduct(root);
-        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut fake = FakeProducers {
-            root_prerequisites: vec![first_key.clone(), second_key.clone()],
-            ..Default::default()
-        };
-        let mut world = World::new();
-
-        assert_eq!(
-            driver.pull(&mut fake, root_key.clone()),
-            PullOutcome::Waiting(vec![
-                PullWait::Product(first_key.clone()),
-                PullWait::Product(second_key.clone())
-            ])
-        );
-        let initial = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier_key.clone())
-        };
-        assert_eq!(
-            initial,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
-                first, second,
-            ]))))
-        );
-        let initial_generation = driver.session().memo().generation(&frontier_key);
-
-        driver.pull(&mut fake, second_key);
-        driver.pull(&mut fake, first_key);
-        driver.pull(&mut fake, ProductKey::BackendExecutable(later));
-        assert_eq!(driver.session().memo().generation(&frontier_key), initial_generation);
-
-        fake.root_prerequisites.push(later_key.clone());
-        assert_eq!(
-            driver.pull(&mut fake, root_key),
-            PullOutcome::wait_on_product(later_key)
-        );
-        let expanded = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, frontier_key.clone())
-        };
-        assert_eq!(
-            expanded,
-            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
-                fake_executable_with_function(root, 7),
-                fake_executable_with_function(root, 6),
-                fake_executable(root),
-            ]))))
-        );
-        assert_ne!(driver.session().memo().generation(&frontier_key), initial_generation);
-    }
-
-    #[test]
-    fn pull_session_invalidates_runtime_demand_when_return_demand_grows() {
-        let tel = ConfiguredTelemetry::new();
-        let caller = fake_executable(RootId::for_test(5));
-        let callee = fake_executable(RootId::for_test(5));
-        let mut session = PullSession::new(RootId::for_test(5));
-        session.memo.finish(
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
-            ProductDependencies::default(),
-        );
-
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller,
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-        );
-
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new()),
-            Some(RuntimeDemand::whole()),
-            "the joined return demand should be retained for the next pull"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "an epoch contribution that grows a non-member target's return demand re-settles it"
-        );
-    }
-
-    #[test]
-    fn pull_session_retracts_return_demand_when_a_caller_collapses_to_a_discard() {
-        // The "unknown is not none" guard at the session layer, epoch-scoped: a
-        // caller re-settled across an epoch whose contribution collapses to an
-        // observed discard must DROP its callee's joined demand, not bake the
-        // stale `whole`. An observed discard is the bottom `ignore` cell --
-        // still present (observed), distinct from a callee no caller has named
-        // (absent -> None).
-        let tel = ConfiguredTelemetry::new();
-        let caller = fake_executable(RootId::for_test(7));
-        let callee = fake_executable(RootId::for_test(7));
-        let mut session = PullSession::new(RootId::for_test(7));
-
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-        );
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new()),
-            Some(RuntimeDemand::whole())
-        );
-
-        session.memo.finish(
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
-            ProductDependencies::default(),
-        );
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::ignore())]),
-            &HashSet::new(),
-        );
-
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new()),
-            Some(RuntimeDemand::ignore()),
-            "a collapsed caller retracts its callee's whole demand down to the observed discard"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
-            "retracting a non-member callee's return demand re-settles its runtime demand"
-        );
-
-        session.replace_settled_return_demand_contributions(&tel, caller, HashMap::new(), &HashSet::new());
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new()),
-            None,
-            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
-        );
-    }
-
-    #[test]
-    fn pull_session_invalidates_runtime_demand_when_input_demand_grows() {
-        let tel = ConfiguredTelemetry::new();
-        let caller = fake_executable(RootId::for_test(9));
-        let callee = fake_executable(RootId::for_test(9));
-        let mut session = PullSession::new(RootId::for_test(9));
-        session.memo.finish(
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
-            ProductDependencies::default(),
-        );
-
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller,
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
-            &HashSet::new(),
-        );
-
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new()),
-            HashMap::from([(0, RuntimeDemand::whole())]),
-            "the joined input demand should be retained for the next pull"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "an epoch contribution that grows a non-member target's input demand re-settles it"
-        );
-    }
-
-    #[test]
-    fn pull_session_retracts_input_demand_when_a_caller_collapses_to_a_discard() {
-        // The input-side sibling of the return-demand retraction test above:
-        // a caller re-settled across an epoch whose contribution collapses to
-        // an observed discard must DROP its callee's joined position demand,
-        // not bake the stale `whole`.
-        let tel = ConfiguredTelemetry::new();
-        let caller = fake_executable(RootId::for_test(11));
-        let callee = fake_executable(RootId::for_test(11));
-        let mut session = PullSession::new(RootId::for_test(11));
-
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
-            &HashSet::new(),
-        );
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new()),
-            HashMap::from([(0, RuntimeDemand::whole())])
-        );
-
-        session.memo.finish(
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
-            ProductDependencies::default(),
-        );
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::ignore())]))]),
-            &HashSet::new(),
-        );
-
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new()),
-            HashMap::from([(0, RuntimeDemand::ignore())]),
-            "a collapsed caller retracts its callee's whole position demand down to the observed discard"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
-            "retracting a non-member callee's input demand re-settles its runtime demand"
-        );
-
-        session.replace_settled_input_demand_contributions(&tel, caller, HashMap::new(), &HashSet::new());
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new()),
-            HashMap::new(),
-            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
-        );
-        assert!(
-            !session.input_demand_contributors.contains_key(&callee),
-            "withdrawing the last contributor must remove the stale empty contributor entry, \
-             not leave it behind as an empty HashSet"
-        );
-    }
-
-    #[test]
-    fn incoming_input_relations_follow_frontier_generations_and_slots_project_exact_values() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(6);
-        let caller = fake_executable(root);
-        let unrelated = fake_executable_with_function(root, 7);
-        let callee = fake_executable_with_function(root, 8);
-        let slot = InputSlot {
-            executable: callee,
-            semantic_index: 0,
-        };
-        let source = IncomingInputSource {
-            producer: caller.clone(),
-            value: ValueId::from_u32(9),
-            role: IncomingInputRole::CallArgument,
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut fake = FakeProducers::default();
-        let mut world = World::new();
-        let caller_key = ProductKey::OutgoingInputEdges(caller);
-        driver.pull(&mut fake, caller_key.clone());
-        driver.session.memo.remove(&tel, &caller_key);
-        driver.session.memo.finish(
-            &tel,
-            &caller_key,
-            ProductValue::OutgoingInputEdges(Rc::new(HashMap::from([(
-                slot.clone(),
-                HashSet::from([source.clone()]),
-            )]))),
-            ProductDependencies::default(),
-        );
-
-        let incoming_key = ProductKey::IncomingInputSlot(slot);
-        let relations_key = ProductKey::IncomingInputRelations(root);
-        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
-        {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::wait_on_product(relations_key.clone())
-            );
-            assert_eq!(
-                driver.pull(&mut producers, relations_key.clone()),
-                PullOutcome::wait_on_product(frontier_key.clone())
-            );
-            driver.pull(&mut producers, frontier_key.clone());
-            driver.pull(&mut producers, relations_key.clone());
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::from([source.clone()])))
-            );
-        }
-        let source_generation = driver.session.memo.generation(&incoming_key);
-        let relations_generation = driver.session.memo.generation(&relations_key);
-
-        let unrelated_key = ProductKey::OutgoingInputEdges(unrelated);
-        driver.pull(&mut fake, unrelated_key.clone());
-        driver.session.memo.remove(&tel, &unrelated_key);
-        driver.session.memo.finish(
-            &tel,
-            &unrelated_key,
-            ProductValue::OutgoingInputEdges(Rc::new(HashMap::new())),
-            ProductDependencies::default(),
-        );
-        {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::wait_on_product(frontier_key.clone())
-            );
-            driver.pull(&mut producers, frontier_key);
-            driver.pull(&mut producers, relations_key.clone());
-            assert_eq!(
-                driver.pull(&mut producers, incoming_key.clone()),
-                PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::from([source])))
-            );
-        }
-        assert_eq!(driver.session.memo.generation(&incoming_key), source_generation);
-        assert_eq!(driver.session.memo.generation(&relations_key), relations_generation);
-
-        driver.session.memo.remove(&tel, &caller_key);
-        driver.session.memo.finish(
-            &tel,
-            &caller_key,
-            ProductValue::OutgoingInputEdges(Rc::new(HashMap::new())),
-            ProductDependencies::default(),
-        );
-        let withdrawn_wait = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, incoming_key.clone())
-        };
-        assert_eq!(withdrawn_wait, PullOutcome::wait_on_product(relations_key.clone()));
-        let withdrawn = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, relations_key);
-            driver.pull(&mut producers, incoming_key)
-        };
-        assert_eq!(
-            withdrawn,
-            PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::new()))
-        );
+        assert_eq!(outcome, PullOutcome::wait_on_product(callee_effects.clone()));
+        let dependencies = driver
+            .session()
+            .memo()
+            .dependency_edges()
+            .filter(|(reader, _)| *reader == &caller_effects)
+            .map(|(_, dependency)| dependency.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(dependencies, HashSet::from([caller_materialized, callee_effects]));
     }
 
     #[test]
     fn executable_effects_product_settles_symbolic_mutual_recursion_without_root_loop() {
-        use super::super::artifact::{
-            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-            MaterializedExecutableTransport,
-        };
-        use super::super::body::{
-            ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
-        };
-        use super::super::transport::ExecutableSymbol;
-        use crate::source::Span;
-
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(8);
         let first = fake_executable_with_function(root, 80);
         let second = fake_executable_with_function(root, 81);
-        let first_symbol = executable_symbol_for_test(&first);
-        let second_symbol = executable_symbol_for_test(&second);
+        let leaf = fake_executable_with_function(root, 82);
         let mut driver = ProductDriver::new(&tel, root);
-        record_materialized_product(
-            driver.session_mut(),
-            first.clone(),
-            fake_materialized_executable(
-                allocating_body(),
-                first_symbol.clone(),
-                Some(fake_call_edge(
-                    second.clone(),
-                    first_symbol.clone(),
-                    second_symbol.clone(),
-                )),
-            ),
-        );
-        record_materialized_product(
-            driver.session_mut(),
-            second.clone(),
-            fake_materialized_executable(
-                empty_body(),
-                second_symbol.clone(),
-                Some(fake_call_edge(first.clone(), second_symbol, first_symbol)),
-            ),
-        );
+        record_effect_product(&mut driver.session_mut(), &first, &[&second], false);
+        record_effect_product(&mut driver.session_mut(), &second, &[&first, &leaf], false);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
         let mut world = World::new();
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-
-        let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(second.clone()));
-
-        let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) = outcome else {
-            panic!("effects product should settle the local symbolic SCC, got {outcome:?}")
-        };
+        let effects = pull_effects_until_produced(&mut driver, &mut world, &second);
         assert!(effects.allocates, "effects should propagate through mutual recursion");
-        assert!(
-            driver
+        assert!(memo_effects(&driver.session(), &first).is_some_and(|effects| effects.allocates));
+        assert!(memo_effects(&driver.session(), &second).is_some_and(|effects| effects.allocates));
+        let expected_dependencies = HashSet::from([
+            ProductKey::MaterializedExecutable(first.clone()),
+            ProductKey::MaterializedExecutable(second.clone()),
+            ProductKey::ExecutableEffects(leaf),
+        ]);
+        for member in [&first, &second] {
+            let dependencies = driver
                 .session()
-                .executable_effects(&first)
-                .is_some_and(|effects| effects.allocates)
-        );
-        assert!(
-            driver
-                .session()
-                .executable_effects(&second)
-                .is_some_and(|effects| effects.allocates)
-        );
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(member.clone()))
+                .expect("every recursive member has a dependency snapshot")
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>();
+            assert_eq!(
+                dependencies, expected_dependencies,
+                "the group retains exactly the external inputs of its member formulas"
+            );
+        }
         assert_eq!(driver.session().producer_pokes(), 0);
+    }
 
-        fn fake_materialized_executable(
-            body: super::super::LoweredBody,
-            executable: ExecutableSymbol,
-            edge: Option<MaterializedCallEdge>,
-        ) -> MaterializedExecutable {
-            let return_position = TransportPosition::ExecutableReturn {
-                executable: executable.clone(),
+    #[test]
+    fn executable_effects_selects_the_group_after_all_direct_reads() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(88);
+        let anchor = fake_executable_with_function(root, 880);
+        let first = fake_executable_with_function(root, 881);
+        let second = fake_executable_with_function(root, 882);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &anchor, &[&first, &second], false);
+        record_effect_product(&mut driver.session_mut(), &first, &[&anchor], false);
+        record_effect_product(&mut driver.session_mut(), &second, &[&anchor], true);
+        let mut world = World::new();
+        for member in [&first, &second] {
+            let outcome = {
+                let mut producers = WorldProductProducers::new(&mut world, &tel);
+                driver.pull(&mut producers, ProductKey::ExecutableEffects(member.clone()))
             };
-            MaterializedExecutable {
-                entry_dispatch: None,
-                return_ty: test_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
-                transport: MaterializedExecutableTransport {
-                    executable,
-                    position_layouts: Vec::new(),
-                    input_positions: Vec::new(),
-                    return_position,
-                    resume_positions: Vec::new(),
-                    return_payload_positions: Vec::new(),
-                    entry_capture_positions: Vec::new(),
-                    call_arg_positions: Vec::new(),
-                    value_positions: Vec::new(),
-                },
-                original_entry_ids: Vec::new(),
-                value_types: HashMap::new(),
-                effects: EffectSummary::default(),
-                body,
-                call_edges: edge
-                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
-                    .unwrap_or_default(),
-            }
+            assert_eq!(
+                outcome,
+                PullOutcome::wait_on_product(ProductKey::ExecutableEffects(anchor.clone()))
+            );
         }
 
-        fn fake_call_edge(
-            callee: ExecutableKey,
-            caller_symbol: ExecutableSymbol,
-            callee_symbol: ExecutableSymbol,
-        ) -> MaterializedCallEdge {
-            MaterializedCallEdge {
-                target: CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: CallReturnFlow::Tail {
-                        source: TransportPosition::ExecutableReturn {
-                            executable: callee_symbol,
-                        },
-                        payload: TransportPosition::ReturnPayload {
-                            executable: caller_symbol.clone(),
-                            callsite: CallSiteId::from_u32(0),
-                        },
-                        caller_return: TransportPosition::ExecutableReturn {
-                            executable: caller_symbol,
-                        },
-                    },
-                    extern_marshals: None,
-                }),
-                return_ty: test_ty(),
+        let effects = pull_effects_until_produced(&mut driver, &mut world, &anchor);
+
+        assert!(effects.allocates);
+        let expected_dependencies = HashSet::from([
+            ProductKey::MaterializedExecutable(anchor.clone()),
+            ProductKey::MaterializedExecutable(first.clone()),
+            ProductKey::MaterializedExecutable(second.clone()),
+        ]);
+        for member in [&anchor, &first, &second] {
+            assert_eq!(
+                driver
+                    .session()
+                    .memo()
+                    .product_dependencies(&ProductKey::ExecutableEffects(member.clone()))
+                    .expect("every member of the complete group must settle")
+                    .keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                expected_dependencies
+            );
+            assert!(memo_effects(&driver.session(), member).is_some_and(|effects| effects.allocates));
+        }
+    }
+
+    #[test]
+    fn executable_effects_self_cycle_uses_the_generic_recursive_group() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(89);
+        let executable = fake_executable_with_function(root, 890);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &executable, &[&executable], true);
+        let mut world = World::new();
+
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &executable),
+            EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
             }
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(executable.clone()))
+                .expect("self-recursive effects settle with one external dependency snapshot")
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            HashSet::from([ProductKey::MaterializedExecutable(executable)])
+        );
+    }
+
+    #[test]
+    fn unchanged_local_effect_reproduces_once_without_waking_its_caller() {
+        let tel = ConfiguredTelemetry::new();
+        let evaluations = capture_product_evaluations(&tel);
+        let root = RootId::for_test(90);
+        let caller = fake_executable_with_function(root, 90);
+        let callee = fake_executable_with_function(root, 91);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
+        let callee_materialized = fake_effect_materialized(&callee, &[], false);
+        record_materialized_product(&mut driver.session_mut(), callee.clone(), callee_materialized.clone());
+        let mut world = World::new();
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &caller),
+            EffectSummary::default()
+        );
+        let callee_generation = driver
+            .session()
+            .memo()
+            .generation(&ProductKey::ExecutableEffects(callee.clone()));
+        let caller_generation = driver
+            .session()
+            .memo()
+            .generation(&ProductKey::ExecutableEffects(caller.clone()));
+        evaluations.borrow_mut().clear();
+
+        let mut changed_materialized = callee_materialized;
+        changed_materialized.original_entry_ids = vec![ControlEntryId::from_u32(17)];
+        record_materialized_product(&mut driver.session_mut(), callee.clone(), changed_materialized);
+
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &caller),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            evaluations.borrow().as_slice(),
+            &[ProductKey::ExecutableEffects(callee.clone())],
+            "the moved local product must re-evaluate its formula without re-evaluating an unchanged dependent"
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .generation(&ProductKey::ExecutableEffects(callee)),
+            callee_generation,
+            "equal effect reproduction preserves its generation"
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .generation(&ProductKey::ExecutableEffects(caller)),
+            caller_generation
+        );
+    }
+
+    #[test]
+    fn effect_dependencies_follow_edge_add_remove_and_changed_leaf_exactly() {
+        let tel = ConfiguredTelemetry::new();
+        let evaluations = capture_product_evaluations(&tel);
+        let root = RootId::for_test(93);
+        let grand = fake_executable_with_function(root, 93);
+        let caller = fake_executable_with_function(root, 94);
+        let callee = fake_executable_with_function(root, 95);
+        let unreachable = fake_executable_with_function(root, 96);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &grand, &[&caller], false);
+        record_effect_product(&mut driver.session_mut(), &caller, &[], false);
+        record_effect_product(&mut driver.session_mut(), &callee, &[], false);
+        record_effect_product(&mut driver.session_mut(), &unreachable, &[], false);
+        let mut world = World::new();
+        for executable in [&grand, &callee, &unreachable] {
+            assert_eq!(
+                pull_effects_until_produced(&mut driver, &mut world, executable),
+                EffectSummary::default()
+            );
         }
 
-        fn allocating_body() -> super::super::LoweredBody {
-            let value = ValueId::from_u32(0);
-            clauses_with_projection(vec![LoweredStep::Tuple {
-                value,
+        evaluations.borrow_mut().clear();
+        record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &grand),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            evaluations.borrow().as_slice(),
+            &[ProductKey::ExecutableEffects(caller.clone())],
+            "adding an effect-free edge re-evaluates its owner, while equal retention keeps its caller quiet"
+        );
+
+        evaluations.borrow_mut().clear();
+        record_effect_product(&mut driver.session_mut(), &callee, &[], true);
+        let allocating = EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        };
+        assert_eq!(pull_effects_until_produced(&mut driver, &mut world, &grand), allocating);
+        assert_eq!(
+            evaluations.borrow().as_slice(),
+            &[
+                ProductKey::ExecutableEffects(callee.clone()),
+                ProductKey::ExecutableEffects(caller.clone()),
+                ProductKey::ExecutableEffects(grand.clone()),
+            ],
+            "a changed leaf re-evaluates only the exact reverse dependents"
+        );
+
+        evaluations.borrow_mut().clear();
+        record_effect_product(&mut driver.session_mut(), &caller, &[], false);
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &grand),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            evaluations.borrow().as_slice(),
+            &[
+                ProductKey::ExecutableEffects(caller),
+                ProductKey::ExecutableEffects(grand.clone()),
+            ],
+            "removing the edge re-evaluates its owner and the dependent whose answer changes"
+        );
+
+        evaluations.borrow_mut().clear();
+        record_effect_product(&mut driver.session_mut(), &callee, &[], false);
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &callee),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &grand),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &unreachable),
+            EffectSummary::default()
+        );
+        assert_eq!(
+            evaluations.borrow().as_slice(),
+            &[ProductKey::ExecutableEffects(callee)],
+            "after edge removal, neither former dependents nor unreachable products re-evaluate"
+        );
+    }
+
+    #[test]
+    fn displaced_effect_dependencies_cannot_close_a_reversed_edge_cycle() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(97);
+        let first = fake_executable_with_function(root, 970);
+        let second = fake_executable_with_function(root, 971);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &first, &[], true);
+        record_effect_product(&mut driver.session_mut(), &second, &[&first], false);
+        let mut world = World::new();
+        assert!(pull_effects_until_produced(&mut driver, &mut world, &second).allocates);
+
+        record_effect_product(&mut driver.session_mut(), &first, &[&second], true);
+        record_effect_product(&mut driver.session_mut(), &second, &[], false);
+
+        assert!(pull_effects_until_produced(&mut driver, &mut world, &first).allocates);
+        assert_eq!(
+            memo_effects(&driver.session(), &second),
+            Some(EffectSummary::default()),
+            "the displaced second formula's retired edge must not make it a member of the reversed dependency"
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(second.clone()))
+                .expect("the second effects formula must settle independently")
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            HashSet::from([ProductKey::MaterializedExecutable(second.clone())])
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(first.clone()))
+                .expect("the first effects formula must retain its new edge")
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            HashSet::from([
+                ProductKey::MaterializedExecutable(first),
+                ProductKey::ExecutableEffects(second),
+            ])
+        );
+    }
+
+    #[test]
+    fn dirty_external_chain_retracts_a_pending_effect_group_snapshot() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(98);
+        let leaf = fake_executable_with_function(root, 980);
+        let external = fake_executable_with_function(root, 981);
+        let anchor = fake_executable_with_function(root, 982);
+        let peer = fake_executable_with_function(root, 983);
+        let mut driver = ProductDriver::new(&tel, root);
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
+        record_effect_product(&mut driver.session_mut(), &external, &[&leaf], false);
+        record_effect_product(&mut driver.session_mut(), &anchor, &[&peer], false);
+        record_effect_product(&mut driver.session_mut(), &peer, &[&external, &anchor], false);
+        let mut world = World::new();
+        assert!(pull_effects_until_produced(&mut driver, &mut world, &external).allocates);
+        let pending = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, ProductKey::ExecutableEffects(peer.clone()))
+        };
+        assert_eq!(
+            pending,
+            PullOutcome::wait_on_product(ProductKey::ExecutableEffects(anchor.clone()))
+        );
+
+        record_effect_product(&mut driver.session_mut(), &leaf, &[], false);
+
+        assert_eq!(
+            pull_effects_until_produced(&mut driver, &mut world, &anchor),
+            EffectSummary::default(),
+            "the group must wait for the dirty external chain instead of publishing its stale effect"
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .generation(&ProductKey::ExecutableEffects(leaf.clone())),
+            Some(2)
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .generation(&ProductKey::ExecutableEffects(external.clone())),
+            Some(2)
+        );
+        let session = driver.session();
+        let group_dependencies = session
+            .memo()
+            .product_dependencies(&ProductKey::ExecutableEffects(anchor.clone()))
+            .expect("the refreshed group must settle");
+        assert_eq!(
+            group_dependencies.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from([
+                ProductKey::MaterializedExecutable(anchor),
+                ProductKey::MaterializedExecutable(peer),
+                ProductKey::ExecutableEffects(external.clone()),
+            ])
+        );
+        assert_eq!(
+            group_dependencies.get(&ProductKey::ExecutableEffects(external.clone())),
+            Some(&Some(2))
+        );
+        assert_eq!(
+            driver
+                .session()
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(external))
+                .expect("the external formula must refresh after its leaf")
+                .get(&ProductKey::ExecutableEffects(leaf)),
+            Some(&Some(2))
+        );
+    }
+
+    #[test]
+    fn pull_session_lifecycle_finishes_on_drop_and_reports_producer_pokes() {
+        let tel = ConfiguredTelemetry::new();
+        let observed = Rc::new(Cell::new(None));
+        let sink = Rc::clone(&observed);
+        tel.attach_raw_event1::<PullSession, _>(
+            &["fz", "compiler2", "pull", "session", "finished"],
+            move |_, _, _, session| {
+                sink.set(Some((
+                    session.id().expect("emitted sessions have identities"),
+                    session.demanded_executables.len(),
+                    session.producer_pokes,
+                )));
+            },
+        );
+        let root = RootId::for_test(5);
+        let executable = fake_executable(root);
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut producers = FakeProducers::default();
+
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::AbiExecutable(executable)),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        driver.session_mut().record_producer_pokes(2);
+        let session_id = driver.session().id().expect("enabled session telemetry");
+        drop(driver);
+
+        assert_eq!(observed.get(), Some((session_id, 1, 2)));
+        let second = ProductDriver::new(&tel, RootId::for_test(6));
+        let second_id = second.session().id().expect("enabled session telemetry");
+        drop(second);
+        assert_ne!(second_id, session_id);
+    }
+
+    #[test]
+    fn pull_session_id_exhaustion_never_wraps_or_emits_a_reserved_identity() {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(allocate_pull_session_id(&counter).get(), u64::MAX - 1);
+        assert_eq!(allocate_pull_session_id(&counter).get(), u64::MAX);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert!(catch_unwind(|| allocate_pull_session_id(&counter)).is_err());
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "exhaustion must be permanent");
+
+        let tel = ConfiguredTelemetry::new();
+        let starts = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&starts);
+        tel.attach_raw_event1::<PullSessionId, _>(SESSION_STARTED_EVENT, move |_, _, _, _| {
+            observed.set(observed.get() + 1);
+        });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            ProductDriver::with_session_id_source(&tel, PullSession::new(RootId::for_test(8)), || {
+                panic!("pull session identity exhausted")
+            })
+        }));
+        assert!(result.is_err());
+        assert_eq!(starts.get(), 0, "identity exhaustion must precede session telemetry");
+    }
+
+    #[test]
+    fn product_request_id_exhaustion_precedes_telemetry_and_cannot_reuse_zero() {
+        let tel = ConfiguredTelemetry::new();
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&requests);
+        tel.attach_raw_event2::<ProductKey, ProductRequestId, _>(
+            PRODUCT_REQUESTED_EVENT,
+            move |_, _, _, _, request| observed.borrow_mut().push(*request),
+        );
+        let root = RootId::for_test(9);
+        let key = ProductKey::AbiExecutable(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().request_ids.next = NonZeroU64::new(u64::MAX);
+        let mut producers = FakeProducers::default();
+
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            requests
+                .borrow()
+                .iter()
+                .map(|request| request.get())
+                .collect::<Vec<_>>(),
+            [u64::MAX]
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| driver.pull(&mut producers, key))).is_err(),
+            "the request after the last nonzero identity must fail"
+        );
+        assert_eq!(
+            requests
+                .borrow()
+                .iter()
+                .map(|request| request.get())
+                .collect::<Vec<_>>(),
+            [u64::MAX],
+            "exhaustion must happen before a request event"
+        );
+        assert!(
+            driver.session().request_ids.next.is_none(),
+            "exhaustion must be permanent"
+        );
+    }
+
+    #[test]
+    fn disabled_telemetry_does_not_mint_a_session_identity() {
+        let driver = ProductDriver::new(&crate::telemetry::sink::NullTelemetry, RootId::for_test(5));
+        assert_eq!(driver.session().id(), None);
+
+        let configured = ConfiguredTelemetry::new();
+        let driver = ProductDriver::new(&configured, RootId::for_test(5));
+        assert_eq!(driver.session().id(), None);
+    }
+
+    fn fake_executable(root: RootId) -> ExecutableKey {
+        fake_executable_with_function(root, root.as_u32() + 10)
+    }
+
+    fn fake_executable_with_function(root: RootId, function: u32) -> ExecutableKey {
+        let mut types = super::super::Types::new();
+        fake_executable_in(&mut types, root, function)
+    }
+
+    fn fake_executable_in(types: &mut super::super::Types, root: RootId, function: u32) -> ExecutableKey {
+        let function = super::super::FunctionId::for_test(function);
+        let activation = super::super::ActivationKey::from_inputs(root, function, &[], types);
+        ExecutableKey {
+            activation,
+            need: super::super::ExecutableNeed::Value,
+        }
+    }
+
+    fn fake_types() -> super::super::Types {
+        let mut types = super::super::Types::new();
+        let _ = super::super::ActivationKey::from_inputs(
+            RootId::for_test(0),
+            super::super::FunctionId::for_test(0),
+            &[],
+            &mut types,
+        );
+        types
+    }
+
+    fn record_materialized_product(
+        session: &mut PullSession,
+        executable: ExecutableKey,
+        materialized: MaterializedExecutable,
+    ) {
+        let tel = ConfiguredTelemetry::new();
+        finish_test_entry(
+            &mut session.memo,
+            &tel,
+            &ProductKey::MaterializedExecutable(executable),
+            ProductValue::MaterializedExecutable(Rc::new(materialized)),
+            ProductDependencies::default(),
+            &fake_types(),
+        );
+    }
+
+    fn record_effect_product(
+        session: &mut PullSession,
+        executable: &ExecutableKey,
+        callees: &[&ExecutableKey],
+        allocates: bool,
+    ) {
+        record_materialized_product(
+            session,
+            executable.clone(),
+            fake_effect_materialized(executable, callees, allocates),
+        );
+    }
+
+    fn memo_effects(session: &PullSession, executable: &ExecutableKey) -> Option<EffectSummary> {
+        match session.memo().get(&ProductKey::ExecutableEffects(executable.clone())) {
+            Some(ProductValue::ExecutableEffects(effects)) => Some(*effects),
+            _ => None,
+        }
+    }
+
+    fn pull_effects_until_produced(
+        driver: &mut ProductDriver<'_, ConfiguredTelemetry>,
+        world: &mut World,
+        executable: &ExecutableKey,
+    ) -> EffectSummary {
+        let requested = ProductKey::ExecutableEffects(executable.clone());
+        let mut stack = vec![requested.clone()];
+        while let Some(key) = stack.pop() {
+            let outcome = {
+                let mut producers = WorldProductProducers::new(world, driver.telemetry());
+                driver.pull(&mut producers, key.clone())
+            };
+            match outcome {
+                PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) if key == requested => {
+                    return effects;
+                }
+                PullOutcome::Produced(ProductValue::ExecutableEffects(_)) => {}
+                PullOutcome::Produced(other) => panic!("effect pull produced unexpected value {other:?}"),
+                PullOutcome::Waiting(waits) => {
+                    stack.push(key);
+                    for wait in waits.into_iter().rev() {
+                        match wait {
+                            PullWait::Product(product) => stack.push(product),
+                            PullWait::Fact(fact) => panic!("effect-only fixture unexpectedly waited on {fact:?}"),
+                        }
+                    }
+                }
+                PullOutcome::Failed(failure) => panic!("effect product failed: {failure:?}"),
+            }
+        }
+        unreachable!("the requested effects product remains on the work stack until it settles")
+    }
+
+    fn capture_product_evaluations(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<ProductKey>>> {
+        let evaluations = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&evaluations);
+        tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
+            PRODUCT_EVALUATED_EVENT,
+            move |_, _, _, product, _, _| sink.borrow_mut().push(product.clone()),
+        );
+        evaluations
+    }
+
+    /// Build production-consistent effect inputs: the stored projection and
+    /// the body from which the effect product derives it always agree.
+    fn fake_effect_materialized(
+        executable: &ExecutableKey,
+        callees: &[&ExecutableKey],
+        allocates: bool,
+    ) -> MaterializedExecutable {
+        let executable = executable_symbol_for_test(executable);
+        let effects = EffectSummary {
+            allocates,
+            ..EffectSummary::default()
+        };
+        let projections = if allocates {
+            vec![LoweredStep::Tuple {
+                value: ValueId::from_u32(0),
                 items: Vec::new(),
-            }])
-        }
-
-        fn empty_body() -> super::super::LoweredBody {
-            clauses_with_projection(Vec::new())
-        }
-
-        fn clauses_with_projection(projections: Vec<LoweredStep>) -> super::super::LoweredBody {
-            super::super::LoweredBody::Clauses {
+            }]
+        } else {
+            Vec::new()
+        };
+        let return_position = TransportPosition::ExecutableReturn {
+            executable: executable.clone(),
+        };
+        MaterializedExecutable {
+            entry_dispatch: None,
+            return_ty: effect_test_ty(),
+            runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
+            transport: MaterializedExecutableTransport {
+                executable: executable.clone(),
+                position_layouts: Vec::new(),
+                input_positions: Vec::new(),
+                return_position,
+                resume_positions: Vec::new(),
+                return_payload_positions: Vec::new(),
+                entry_capture_positions: Vec::new(),
+                call_arg_positions: Vec::new(),
+                value_positions: Vec::new(),
+            },
+            original_entry_ids: Vec::new(),
+            value_types: HashMap::new(),
+            effects,
+            struct_modules: Box::default(),
+            body: super::super::LoweredBody::Clauses {
                 clauses: vec![LoweredClause {
-                    span: Span::DUMMY,
+                    span: crate::source::Span::DUMMY,
                     params: Vec::new(),
                     projections,
                     entry: ControlEntryId::from_u32(0),
                 }],
                 entries: vec![LoweredEntry {
-                    span: Span::DUMMY,
+                    span: crate::source::Span::DUMMY,
                     origin: ControlEntryOrigin::Clause,
                     params: Vec::new(),
                     captures: Vec::new(),
@@ -3328,437 +4474,53 @@ mod tests {
                     },
                 }],
                 generated: Vec::new(),
-            }
-        }
-
-        fn test_ty() -> super::super::Ty {
-            let mut types = super::super::Types::new();
-            types.none()
-        }
-    }
-
-    #[test]
-    fn effect_products_survive_rematerialization_with_unchanged_effect_projection() {
-        // A materialized executable re-derived with the same local effect
-        // summary and the same local callee set must leave the effect cone
-        // standing (no re-production); only a projection change (a new local
-        // effect or callee) may wipe the executable's effects and its caller
-        // cone's.
-        use super::super::artifact::{
-            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-            MaterializedExecutableTransport,
-        };
-        use super::super::body::{ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredTail};
-        use super::super::transport::ExecutableSymbol;
-        use crate::source::Span;
-
-        let tel = ConfiguredTelemetry::new();
-        let capture = ProductTelemetryCapture::install(&tel);
-        let root = RootId::for_test(90);
-        let caller = fake_executable_with_function(root, 90);
-        let callee = fake_executable_with_function(root, 91);
-        let caller_symbol = executable_symbol_for_test(&caller);
-        let callee_symbol = executable_symbol_for_test(&callee);
-        let effects_key = ProductKey::ExecutableEffects(callee.clone());
-        let mut driver = ProductDriver::new(&tel, root);
-        driver
-            .session_mut()
-            .record_runtime_demand_dependency(callee.clone(), caller.clone());
-        record_materialized_product(
-            driver.session_mut(),
-            caller.clone(),
-            fake_materialized(
-                caller_symbol.clone(),
-                Some(fake_edge(callee.clone(), caller_symbol.clone(), callee_symbol.clone())),
-                EffectSummary::default(),
-            ),
-        );
-        let callee_materialized = fake_materialized(
-            callee_symbol.clone(),
-            Some(fake_edge(caller.clone(), callee_symbol, caller_symbol)),
-            EffectSummary::default(),
-        );
-        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
-        let mut world = World::new();
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-        assert!(matches!(
-            driver.pull(&mut producers, effects_key.clone()),
-            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-        ));
-        let produced_after_settle = capture.produced.get();
-
-        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
-
-        assert!(
-            driver.session().executable_effects(&callee).is_some()
-                && driver.session().executable_effects(&caller).is_some(),
-            "an unchanged effect projection must leave the settled effect cone standing"
-        );
-        assert!(matches!(
-            driver.pull(&mut producers, effects_key.clone()),
-            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-        ));
-        assert_eq!(
-            capture.produced.get(),
-            produced_after_settle,
-            "an unchanged effect projection must not re-produce the effects product"
-        );
-
-        let mut changed = callee_materialized;
-        changed.effects = EffectSummary {
-            scheduler_visible: true,
-            ..EffectSummary::default()
-        };
-        record_materialized_product(driver.session_mut(), callee.clone(), changed);
-
-        assert!(
-            driver.session().executable_effects(&callee).is_none(),
-            "a changed local effect summary must invalidate the executable's effects"
-        );
-        assert!(
-            driver.session().executable_effects(&caller).is_none(),
-            "a changed local effect summary must invalidate the caller cone's effects"
-        );
-        assert!(matches!(
-            driver.pull(&mut producers, effects_key),
-            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-        ));
-        assert!(
-            capture.produced.get() > produced_after_settle,
-            "a changed effect projection must re-produce the effects product"
-        );
-
-        fn fake_materialized(
-            executable: ExecutableSymbol,
-            edge: Option<MaterializedCallEdge>,
-            effects: EffectSummary,
-        ) -> MaterializedExecutable {
-            let return_position = TransportPosition::ExecutableReturn {
-                executable: executable.clone(),
-            };
-            MaterializedExecutable {
-                entry_dispatch: None,
-                return_ty: fake_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
-                transport: MaterializedExecutableTransport {
-                    executable,
-                    position_layouts: Vec::new(),
-                    input_positions: Vec::new(),
-                    return_position,
-                    resume_positions: Vec::new(),
-                    return_payload_positions: Vec::new(),
-                    entry_capture_positions: Vec::new(),
-                    call_arg_positions: Vec::new(),
-                    value_positions: Vec::new(),
-                },
-                original_entry_ids: Vec::new(),
-                value_types: HashMap::new(),
-                effects,
-                body: super::super::LoweredBody::Clauses {
-                    clauses: vec![LoweredClause {
-                        span: Span::DUMMY,
-                        params: Vec::new(),
-                        projections: Vec::new(),
-                        entry: ControlEntryId::from_u32(0),
-                    }],
-                    entries: vec![LoweredEntry {
-                        span: Span::DUMMY,
-                        origin: ControlEntryOrigin::Clause,
-                        params: Vec::new(),
-                        captures: Vec::new(),
-                        reusable_cons_captures: Vec::new(),
-                        steps: Vec::new(),
-                        tail: LoweredTail::Halt {
-                            atom: "done".to_string(),
-                        },
-                    }],
-                    generated: Vec::new(),
-                },
-                call_edges: edge
-                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
-                    .unwrap_or_default(),
-            }
-        }
-
-        fn fake_edge(
-            callee: ExecutableKey,
-            caller_symbol: ExecutableSymbol,
-            callee_symbol: ExecutableSymbol,
-        ) -> MaterializedCallEdge {
-            MaterializedCallEdge {
-                target: CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: CallReturnFlow::Tail {
-                        source: TransportPosition::ExecutableReturn {
-                            executable: callee_symbol,
-                        },
-                        payload: TransportPosition::ReturnPayload {
-                            executable: caller_symbol.clone(),
-                            callsite: CallSiteId::from_u32(0),
-                        },
-                        caller_return: TransportPosition::ExecutableReturn {
-                            executable: caller_symbol,
-                        },
-                    },
-                    extern_marshals: None,
-                }),
-                return_ty: fake_ty(),
-            }
-        }
-
-        fn fake_ty() -> super::super::Ty {
-            let mut types = super::super::Types::new();
-            types.none()
-        }
-    }
-
-    #[test]
-    fn effect_cone_invalidation_reaches_dependents_without_runtime_demand_edges() {
-        // Closure/boundary-resolved call edges materialize as ordinary local
-        // call edges WITHOUT ever registering a runtime-demand dependency
-        // (that graph carries CallSiteSummary direct targets only). When such
-        // a callee's effect projection changes after its dependents settled,
-        // the whole caller cone's effects must still be invalidated -- the
-        // effect-dependents graph is derived from the materialized call edges
-        // themselves, so no edge here is hand-registered.
-        use super::super::artifact::{
-            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-            MaterializedExecutableTransport,
-        };
-        use super::super::body::{
-            ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
-        };
-        use super::super::transport::ExecutableSymbol;
-        use crate::source::Span;
-
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(93);
-        let grand = fake_executable_with_function(root, 93);
-        let caller = fake_executable_with_function(root, 94);
-        let callee = fake_executable_with_function(root, 95);
-        let grand_symbol = executable_symbol_for_test(&grand);
-        let caller_symbol = executable_symbol_for_test(&caller);
-        let callee_symbol = executable_symbol_for_test(&callee);
-        let mut driver = ProductDriver::new(&tel, root);
-        record_materialized_product(
-            driver.session_mut(),
-            grand.clone(),
-            fake_materialized(
-                grand_symbol.clone(),
-                Some(fake_edge(caller.clone(), grand_symbol, caller_symbol.clone())),
-                EffectSummary::default(),
-            ),
-        );
-        record_materialized_product(
-            driver.session_mut(),
-            caller.clone(),
-            fake_materialized(
-                caller_symbol.clone(),
-                Some(fake_edge(callee.clone(), caller_symbol, callee_symbol.clone())),
-                EffectSummary::default(),
-            ),
-        );
-        record_materialized_product(
-            driver.session_mut(),
-            callee.clone(),
-            fake_materialized(callee_symbol, None, EffectSummary::default()),
-        );
-        let mut world = World::new();
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-        for key in [&callee, &caller, &grand] {
-            assert!(matches!(
-                driver.pull(&mut producers, ProductKey::ExecutableEffects(key.clone())),
-                PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-            ));
-        }
-
-        let changed = fake_materialized(
-            executable_symbol_for_test(&callee),
-            None,
-            EffectSummary {
-                allocates: true,
-                ..EffectSummary::default()
             },
-        );
-        record_materialized_product(driver.session_mut(), callee.clone(), changed);
-
-        assert!(
-            driver.session().executable_effects(&callee).is_none(),
-            "the changed callee's own effects must be invalidated"
-        );
-        assert!(
-            driver.session().executable_effects(&caller).is_none(),
-            "the direct caller's effects must be invalidated without a runtime-demand edge"
-        );
-        assert!(
-            driver.session().executable_effects(&grand).is_none(),
-            "the transitive dependent's effects must be invalidated without runtime-demand edges"
-        );
-        for key in [&callee, &caller] {
-            assert!(matches!(
-                driver.pull(&mut producers, ProductKey::ExecutableEffects(key.clone())),
-                PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-            ));
+            call_edges: callees
+                .iter()
+                .enumerate()
+                .map(|(index, callee)| {
+                    (
+                        CallSiteId::from_u32(index as u32),
+                        fake_effect_edge(
+                            (*callee).clone(),
+                            executable.clone(),
+                            executable_symbol_for_test(callee),
+                        ),
+                    )
+                })
+                .collect(),
         }
-        let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(grand));
-        let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) = outcome else {
-            panic!("re-pulled effects should re-produce, got {outcome:?}")
-        };
-        assert!(
-            effects.allocates,
-            "the transitive dependent must observe the callee's new effect projection"
-        );
-        driver.finish_session();
+    }
 
-        // The body is kept consistent with the requested local effect summary
-        // (an allocating step iff `allocates`) the way production
-        // materialization derives `effects` from the body, so the effects
-        // producer's recompute and the recorded projection agree.
-        fn fake_materialized(
-            executable: ExecutableSymbol,
-            edge: Option<MaterializedCallEdge>,
-            effects: EffectSummary,
-        ) -> MaterializedExecutable {
-            let projections = if effects.allocates {
-                vec![LoweredStep::Tuple {
-                    value: ValueId::from_u32(0),
-                    items: Vec::new(),
-                }]
-            } else {
-                Vec::new()
-            };
-            let return_position = TransportPosition::ExecutableReturn {
-                executable: executable.clone(),
-            };
-            MaterializedExecutable {
-                entry_dispatch: None,
-                return_ty: fake_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
-                transport: MaterializedExecutableTransport {
-                    executable,
-                    position_layouts: Vec::new(),
-                    input_positions: Vec::new(),
-                    return_position,
-                    resume_positions: Vec::new(),
-                    return_payload_positions: Vec::new(),
-                    entry_capture_positions: Vec::new(),
-                    call_arg_positions: Vec::new(),
-                    value_positions: Vec::new(),
-                },
-                original_entry_ids: Vec::new(),
-                value_types: HashMap::new(),
-                effects,
-                body: super::super::LoweredBody::Clauses {
-                    clauses: vec![LoweredClause {
-                        span: Span::DUMMY,
-                        params: Vec::new(),
-                        projections,
-                        entry: ControlEntryId::from_u32(0),
-                    }],
-                    entries: vec![LoweredEntry {
-                        span: Span::DUMMY,
-                        origin: ControlEntryOrigin::Clause,
-                        params: Vec::new(),
-                        captures: Vec::new(),
-                        reusable_cons_captures: Vec::new(),
-                        steps: Vec::new(),
-                        tail: LoweredTail::Halt {
-                            atom: "done".to_string(),
-                        },
-                    }],
-                    generated: Vec::new(),
-                },
-                call_edges: edge
-                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
-                    .unwrap_or_default(),
-            }
-        }
-
-        fn fake_edge(
-            callee: ExecutableKey,
-            caller_symbol: ExecutableSymbol,
-            callee_symbol: ExecutableSymbol,
-        ) -> MaterializedCallEdge {
-            MaterializedCallEdge {
-                target: CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: CallReturnFlow::Tail {
-                        source: TransportPosition::ExecutableReturn {
-                            executable: callee_symbol,
-                        },
-                        payload: TransportPosition::ReturnPayload {
-                            executable: caller_symbol.clone(),
-                            callsite: CallSiteId::from_u32(0),
-                        },
-                        caller_return: TransportPosition::ExecutableReturn {
-                            executable: caller_symbol,
-                        },
+    fn fake_effect_edge(
+        callee: ExecutableKey,
+        caller_symbol: ExecutableSymbol,
+        callee_symbol: ExecutableSymbol,
+    ) -> MaterializedCallEdge {
+        MaterializedCallEdge {
+            target: CallEdge::Direct(DirectCallEdge {
+                callee: CallTarget::Local(callee),
+                return_flow: CallReturnFlow::Tail {
+                    source: TransportPosition::ExecutableReturn {
+                        executable: callee_symbol,
                     },
-                    extern_marshals: None,
-                }),
-                return_ty: fake_ty(),
-            }
+                    payload: TransportPosition::ReturnPayload {
+                        executable: caller_symbol.clone(),
+                        callsite: CallSiteId::from_u32(0),
+                    },
+                    caller_return: TransportPosition::ExecutableReturn {
+                        executable: caller_symbol,
+                    },
+                },
+                extern_marshals: None,
+            }),
+            return_ty: effect_test_ty(),
         }
-
-        fn fake_ty() -> super::super::Ty {
-            let mut types = super::super::Types::new();
-            types.none()
-        }
     }
 
-    #[test]
-    fn pull_session_finished_telemetry_reports_producer_pokes() {
-        let tel = ConfiguredTelemetry::new();
-        let observed = Rc::new(Cell::new(None));
-        let sink = Rc::clone(&observed);
-        tel.attach_raw_event1::<PullSession, _>(
-            &["fz", "compiler2", "pull", "session", "finished"],
-            move |_, _, _, session| {
-                sink.set(Some((session.demanded_executables.len(), session.producer_pokes)));
-            },
-        );
-        let root = RootId::for_test(5);
-        let executable = fake_executable(root);
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut producers = FakeProducers::default();
-
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::RuntimeDemand(executable)),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        driver.session_mut().record_producer_pokes(2);
-        driver.finish_session();
-
-        assert_eq!(observed.get(), Some((1, 2)));
-    }
-
-    fn fake_executable(root: RootId) -> ExecutableKey {
-        fake_executable_with_function(root, root.as_u32() + 10)
-    }
-
-    fn fake_executable_with_function(root: RootId, function: u32) -> ExecutableKey {
-        let function = super::super::FunctionId::for_test(function);
+    fn effect_test_ty() -> super::super::Ty {
         let mut types = super::super::Types::new();
-        let activation = super::super::ActivationKey::from_inputs(root, function, &[], &mut types);
-        ExecutableKey {
-            activation,
-            need: super::super::ExecutableNeed::Value,
-        }
-    }
-
-    fn record_materialized_product(
-        session: &mut PullSession,
-        executable: ExecutableKey,
-        materialized: MaterializedExecutable,
-    ) {
-        let tel = ConfiguredTelemetry::new();
-        session.record_materialized_executable(&tel, executable.clone(), materialized.clone());
-        session.memo.finish(
-            &tel,
-            &ProductKey::MaterializedExecutable(executable),
-            ProductValue::MaterializedExecutable(Box::new(materialized)),
-            ProductDependencies::default(),
-        );
+        types.none()
     }
 
     fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {
@@ -3821,7 +4583,7 @@ mod tests {
         boundary: BoundaryId,
         resolution: ExecutableSymbol,
     ) -> ProductValue {
-        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+        ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
             callable_facts: HashMap::from([(
@@ -3844,7 +4606,7 @@ mod tests {
     }
 
     fn withdrawn_callable_owner_answer(layout: TransportLayout) -> ProductValue {
-        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+        ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
             callable_facts: HashMap::new(),
@@ -3867,19 +4629,23 @@ mod tests {
                 (dependency, generation)
             })
             .collect();
-        assert!(memo.finish(
+        assert!(finish_test_entry(
+            memo,
             &tel,
             key,
             value,
             ProductDependencies {
+                membership: HashSet::new(),
                 products,
                 facts: HashMap::new(),
             },
+            &fake_types(),
         ));
     }
 
     #[test]
     fn callable_owner_products_aggregate_order_free_and_retract_independently() {
+        let types = fake_types();
         let root = RootId::for_test(35);
         let left_position = TransportPosition::Value {
             executable: executable_symbol_for_test(&fake_executable_with_function(root, 350)),
@@ -3897,8 +4663,7 @@ mod tests {
             function: Some(FunctionId::for_test(355)),
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(8);
         let layout = TransportLayout::structural(ShapeId::for_test(9));
@@ -3931,27 +4696,7 @@ mod tests {
         finish_test_product(
             &mut memo,
             &root_key,
-            ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
-                program: super::super::artifact::BackendProgram {
-                    backend_revision: 0,
-                    entry: 0,
-                    atom_names: Vec::new(),
-                    struct_schemas: Default::default(),
-                    executables: Vec::new(),
-                    construction_wrappers: Vec::new(),
-                },
-                transport: super::super::artifact::MaterializedTransportPlan {
-                    entry: left_resolution.clone(),
-                    executable_membership: Box::default(),
-                    position_layouts: Vec::new(),
-                    callable_boundaries: Vec::new(),
-                    boundary_ids: Vec::new(),
-                    codegen_seam_facts: Box::default(),
-                    callable_owners: Box::default(),
-                    callable_facts: HashMap::new(),
-                    boundary_facts: HashMap::new(),
-                },
-            })),
+            ProductValue::RootBackendProduct(Rc::new(super::super::artifact::BackendProgram::empty_for_test())),
             [left_abi.clone(), right_abi.clone()],
         );
 
@@ -3980,7 +4725,7 @@ mod tests {
         );
 
         let right_generation = memo.generation(&right_key);
-        memo.remove(&tel, &left_key);
+        memo.remove(&tel, &left_key, &types);
         finish_test_product(
             &mut memo,
             &left_key,
@@ -4001,17 +4746,17 @@ mod tests {
         );
         assert!(!replaced.callables[&callable].resolutions.contains(&left_resolution));
         assert_eq!(memo.generation(&right_key), right_generation);
-        assert!(memo.stale_dependency(&left_abi).is_some());
-        assert!(memo.stale_dependency(&right_abi).is_none());
-        assert!(memo.stale_dependency(&root_key).is_some());
+        assert!(memo.stale_dependency(&left_abi, &types).is_some());
+        assert!(memo.stale_dependency(&right_abi, &types).is_none());
+        assert!(memo.stale_dependency(&root_key, &types).is_some());
 
         let reproduced = memo.get(&left_key).cloned().expect("replaced owner product");
-        memo.remove(&tel, &left_key);
+        memo.remove(&tel, &left_key, &types);
         finish_test_product(&mut memo, &left_key, reproduced, []);
         assert_eq!(memo.generation(&left_key), replaced_generation);
         assert_eq!(memo.generation(&right_key), right_generation);
 
-        memo.remove(&tel, &left_key);
+        memo.remove(&tel, &left_key, &types);
         finish_test_product(&mut memo, &left_key, withdrawn_callable_owner_answer(layout), []);
         let withdrawn = aggregate_callable_owners(&memo, &[left_key, right_key]);
         assert_eq!(
@@ -4108,7 +4853,7 @@ mod tests {
                 .collect();
             let mut publications = self.publications.iter().cloned().collect::<Vec<_>>();
             publications.sort_by_key(owner_position_key);
-            ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+            ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
                 layout: self.layout,
                 construction: None,
                 callable_facts: (!resolutions.is_empty())
@@ -4206,17 +4951,25 @@ mod tests {
                     keys[index].clone(),
                     answers[index].product_value(callable, boundary),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products,
                         facts: HashMap::new(),
                     },
                 )
             })
             .collect();
-        assert!(memo.finish_group(&tel, entries));
+        assert!(finish_test_group(
+            memo,
+            &tel,
+            keys.first().expect("owner group is non-empty"),
+            entries,
+            &fake_types(),
+        ));
     }
 
     #[test]
     fn transport_shape_group_retains_every_external_dependency_for_every_member() {
+        let types = fake_types();
         let root = RootId::for_test(38);
         let symbol = executable_symbol_for_test(&fake_executable_with_function(root, 380));
         let left = ProductKey::TransportShape(TransportPosition::Value {
@@ -4227,21 +4980,18 @@ mod tests {
             executable: symbol,
             value: ValueId::from_u32(2),
         });
-        let external = ProductKey::IncomingInputSlot(InputSlot {
-            executable: fake_executable_with_function(root, 381),
-            semantic_index: 0,
+        let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 381)),
         });
         let left_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 382));
         let right_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 383));
         let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 384));
         let first_layout = TransportLayout::structural(ShapeId::for_test(110));
         let second_layout = TransportLayout::structural(ShapeId::for_test(111));
-        let external_value = |producer| {
-            ProductValue::IncomingInputSlot(HashSet::from([IncomingInputSource {
-                producer: fake_executable_with_function(root, producer),
-                value: ValueId::from_u32(1),
-                role: IncomingInputRole::CallArgument,
-            }]))
+        let external_value = |shape| {
+            ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout::structural(
+                ShapeId::for_test(shape),
+            )))
         };
 
         for reverse in [false, true] {
@@ -4256,6 +5006,7 @@ mod tests {
                     left.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([
                             (right.clone(), None),
                             (external.clone(), memo.generation(&external)),
@@ -4267,6 +5018,7 @@ mod tests {
                     right.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(left.clone(), None)]),
                         facts: HashMap::new(),
                     },
@@ -4275,7 +5027,7 @@ mod tests {
             if reverse {
                 entries.reverse();
             }
-            assert!(memo.finish_group(&tel, entries));
+            assert!(finish_test_group(&mut memo, &tel, &left, entries, &types));
             for key in [&left, &right] {
                 assert_eq!(
                     memo.product_dependencies(key),
@@ -4288,7 +5040,7 @@ mod tests {
             finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
             let unrelated_generation = memo.generation(&unrelated);
 
-            memo.remove(&tel, &external);
+            memo.remove(&tel, &external, &types);
             finish_test_product(&mut memo, &external, external_value(386), []);
             assert!(memo.get(&left).is_none());
             assert!(memo.get(&right).is_none());
@@ -4297,16 +5049,22 @@ mod tests {
             for key in [&left, &right] {
                 assert!(memo.begin(key.clone()));
             }
-            assert!(memo.finish_group(
+            let left_generation = memo.generation(&left);
+            let right_generation = memo.generation(&right);
+            let external_generation = memo.generation(&external);
+            assert!(finish_test_group(
+                &mut memo,
                 &tel,
+                &left,
                 vec![
                     (
                         left.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
+                            membership: HashSet::new(),
                             products: HashMap::from([
-                                (right.clone(), memo.generation(&right)),
-                                (external.clone(), memo.generation(&external)),
+                                (right.clone(), right_generation),
+                                (external.clone(), external_generation),
                             ]),
                             facts: HashMap::new(),
                         },
@@ -4315,11 +5073,13 @@ mod tests {
                         right.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
-                            products: HashMap::from([(left.clone(), memo.generation(&left))]),
+                            membership: HashSet::new(),
+                            products: HashMap::from([(left.clone(), left_generation)]),
                             facts: HashMap::new(),
                         },
                     ),
-                ]
+                ],
+                &types,
             ));
             assert_eq!(memo.generation(&left), Some(2));
             assert_eq!(memo.generation(&right), Some(2));
@@ -4330,7 +5090,7 @@ mod tests {
     }
 
     /// fz-kdt.34.4 TDD 4: a group settle must emit one `pull.product.settled`
-    /// event PER MEMBER (not just the anchor `finish_group` was called for),
+    /// event PER MEMBER (not just the anchor `finish_completion` was called for),
     /// each carrying its own generation and changed flag, all sharing one
     /// `group` id -- and a second, independent group settle must get a
     /// DIFFERENT group id. Red before fz-kdt.34.4: only the driver's single
@@ -4349,8 +5109,8 @@ mod tests {
         );
 
         let root = RootId::for_test(60);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 600));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 601));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 600));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 601));
         let mut memo = ProductMemo::default();
 
         let first_value = ProductValue::ExecutableEffects(EffectSummary::default());
@@ -4362,12 +5122,15 @@ mod tests {
         for key in [&left, &right] {
             assert!(memo.begin(key.clone()));
         }
-        assert!(memo.finish_group(
+        assert!(finish_test_group(
+            &mut memo,
             &tel,
+            &left,
             vec![
                 (left.clone(), first_value.clone(), ProductDependencies::default()),
                 (right.clone(), first_value.clone(), ProductDependencies::default()),
             ],
+            &fake_types(),
         ));
 
         let first_group_events = events.borrow().clone();
@@ -4393,12 +5156,15 @@ mod tests {
         for key in [&left, &right] {
             assert!(memo.begin(key.clone()));
         }
-        assert!(memo.finish_group(
+        assert!(finish_test_group(
+            &mut memo,
             &tel,
+            &left,
             vec![
                 (left.clone(), first_value, ProductDependencies::default()),
                 (right.clone(), second_value, ProductDependencies::default()),
             ],
+            &fake_types(),
         ));
 
         let second_group_events = events.borrow().clone();
@@ -4436,12 +5202,47 @@ mod tests {
     }
 
     #[test]
+    fn recursive_group_members_share_one_dependency_snapshot() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let root = RootId::for_test(61);
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 611));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 612));
+        let dependencies = ProductDependencies {
+            membership: HashSet::new(),
+            products: HashMap::from([(external, Some(7))]),
+            facts: HashMap::new(),
+        };
+        let mut memo = ProductMemo::default();
+        assert!(memo.begin(left.clone()));
+        assert!(memo.begin(right.clone()));
+        assert!(finish_test_group(
+            &mut memo,
+            &tel,
+            &left,
+            vec![
+                (left.clone(), ProductValue::Unit, dependencies.clone()),
+                (right.clone(), ProductValue::Unit, dependencies),
+            ],
+            &types,
+        ));
+        let left_dependencies = &memo.produced[&left].dependencies;
+        let right_dependencies = &memo.produced[&right].dependencies;
+        assert!(
+            Rc::ptr_eq(left_dependencies, right_dependencies),
+            "one recursive publication must retain one shared dependency snapshot",
+        );
+    }
+
+    #[test]
     fn changed_product_authority_discards_pending_reader_snapshots_before_group_settlement() {
+        let types = fake_types();
         let root = RootId::for_test(39);
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 390));
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 391));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 392));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 393));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 390));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 391));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 392));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 393));
         let first = ProductValue::ExecutableEffects(EffectSummary::default());
         let second = ProductValue::ExecutableEffects(EffectSummary {
             allocates: true,
@@ -4459,13 +5260,14 @@ mod tests {
             memo.unblock(
                 &left,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(right.clone(), None), (external.clone(), Some(1))]),
                     facts: HashMap::new(),
                 },
             );
             assert!(memo.pending_dependencies.contains_key(&left));
 
-            memo.remove(&tel, &external);
+            memo.remove(&tel, &external, &types);
             finish_test_product(&mut memo, &external, second.clone(), []);
 
             assert!(!memo.pending_dependencies.contains_key(&left));
@@ -4488,6 +5290,7 @@ mod tests {
                     left.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(right.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
@@ -4496,6 +5299,7 @@ mod tests {
                     right.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        membership: HashSet::new(),
                         products: HashMap::from([(left.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
@@ -4504,7 +5308,7 @@ mod tests {
             if reverse {
                 entries.reverse();
             }
-            assert!(memo.finish_group(&tel, entries));
+            assert!(finish_test_group(&mut memo, &tel, &left, entries, &types));
             for key in [&left, &right] {
                 assert_eq!(
                     memo.product_dependencies(key),
@@ -4517,9 +5321,10 @@ mod tests {
 
     #[test]
     fn changed_fact_authority_discards_only_pending_readers_of_that_fact() {
+        let types = fake_types();
         let root = RootId::for_test(40);
-        let reader = ProductKey::RuntimeDemand(fake_executable_with_function(root, 400));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 401));
+        let reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 400));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 401));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let other_fact = FactUse::settled(FactKey::RootEntry(root));
         let first = FactState {
@@ -4548,15 +5353,16 @@ mod tests {
             memo.unblock(
                 key,
                 ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::new(),
                     facts: HashMap::from([(dependency, state)]),
                 },
             );
         }
 
-        memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), first)]));
+        memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), first)]), &types);
         assert!(memo.pending_dependencies.contains_key(&reader));
-        memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), second)]));
+        memo.reconcile_fact_movements(&tel, &HashMap::from([(fact.fact().clone(), second)]), &types);
 
         assert!(!memo.pending_dependencies.contains_key(&reader));
         assert!(memo.pending_dependencies.contains_key(&unrelated));
@@ -4575,10 +5381,10 @@ mod tests {
     #[test]
     fn group_settlement_rejects_discordant_dependency_snapshots_before_publication() {
         let root = RootId::for_test(41);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 410));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 411));
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 412));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 413));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 410));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 411));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 412));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 413));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let fact_one = FactState {
             revision: Some(1),
@@ -4596,10 +5402,12 @@ mod tests {
                 finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
                 let unrelated_generation = memo.generation(&unrelated);
                 let left_dependencies = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
                     facts: HashMap::from([(fact.clone(), fact_one)]),
                 };
                 let right_dependencies = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
                 };
@@ -4614,7 +5422,7 @@ mod tests {
                     entries.reverse();
                 }
 
-                assert!(!memo.finish_group(&tel, entries));
+                assert!(!finish_test_group(&mut memo, &tel, &left, entries, &fake_types()));
                 for key in [&left, &right] {
                     assert!(memo.get(key).is_none());
                     assert!(!memo.pending_dependencies.contains_key(key));
@@ -4636,15 +5444,19 @@ mod tests {
                     assert!(memo.begin(key.clone()));
                 }
                 let concordant = ProductDependencies {
+                    membership: HashSet::new(),
                     products: HashMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), fact_two)]),
                 };
-                assert!(memo.finish_group(
+                assert!(finish_test_group(
+                    &mut memo,
                     &tel,
+                    &left,
                     vec![
                         (left.clone(), ProductValue::Unit, concordant.clone()),
                         (right.clone(), ProductValue::Unit, concordant),
-                    ]
+                    ],
+                    &fake_types(),
                 ));
             }
         }
@@ -4652,10 +5464,11 @@ mod tests {
 
     #[test]
     fn rejected_group_retries_without_displaced_dependency_snapshots() {
+        let types = fake_types();
         let root = RootId::for_test(42);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 420));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 421));
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 422));
+        let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 420));
+        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 421));
+        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 422));
 
         for reverse in [false, true] {
             let mut memo = ProductMemo::default();
@@ -4664,22 +5477,27 @@ mod tests {
                 assert!(memo.begin(key.clone()));
             }
             let first = ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(external.clone(), Some(1))]),
                 facts: HashMap::new(),
             };
-            assert!(memo.finish_group(
+            assert!(finish_test_group(
+                &mut memo,
                 &tel,
+                &left,
                 vec![
                     (left.clone(), ProductValue::Unit, first.clone()),
                     (right.clone(), ProductValue::Unit, first),
-                ]
+                ],
+                &types,
             ));
             for key in [&left, &right] {
-                memo.remove(&tel, key);
+                memo.remove(&tel, key, &types);
             }
 
             assert!(memo.begin(right.clone()));
             let current = ProductDependencies {
+                membership: HashSet::new(),
                 products: HashMap::from([(external.clone(), Some(2))]),
                 facts: HashMap::new(),
             };
@@ -4692,13 +5510,13 @@ mod tests {
                 .dependencies
                 .clone();
             let mut entries = vec![
-                (left.clone(), ProductValue::Unit, stale),
+                (left.clone(), ProductValue::Unit, stale.as_ref().clone()),
                 (right.clone(), ProductValue::Unit, current.clone()),
             ];
             if reverse {
                 entries.reverse();
             }
-            assert!(!memo.finish_group(&tel, entries));
+            assert!(!finish_test_group(&mut memo, &tel, &left, entries, &types));
 
             for key in [&left, &right] {
                 let displaced = memo
@@ -4706,15 +5524,18 @@ mod tests {
                     .get(key)
                     .expect("rejected member should retain its prior value and generation");
                 assert_eq!(displaced.generation, 1);
-                assert_eq!(displaced.dependencies, ProductDependencies::default());
+                assert_eq!(displaced.dependencies.as_ref(), &ProductDependencies::default());
                 assert!(memo.begin(key.clone()));
             }
-            assert!(memo.finish_group(
+            assert!(finish_test_group(
+                &mut memo,
                 &tel,
+                &left,
                 vec![
                     (left.clone(), ProductValue::Unit, current.clone()),
                     (right.clone(), ProductValue::Unit, current),
-                ]
+                ],
+                &types,
             ));
             assert_eq!(memo.generation(&left), Some(1));
             assert_eq!(memo.generation(&right), Some(1));
@@ -4740,7 +5561,7 @@ mod tests {
         let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 363));
         let x_layout = TransportLayout {
             structural: ShapeId::for_test(91),
-            carrier: TransportCarrier::ValueRef,
+            carrier: TransportCarrier::ValueRef(LaneId::for_test(0)),
         };
         let y_layout = TransportLayout::structural(ShapeId::for_test(92));
         let no_anchor = [OwnerEquation {
@@ -4802,8 +5623,7 @@ mod tests {
             function: None,
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         for answer in pair_forward.0 {
             let ProductValue::CallableConstruction(answer) = answer.product_value(callable, BoundaryId::for_test(9))
@@ -4819,6 +5639,7 @@ mod tests {
 
     #[test]
     fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
+        let types = fake_types();
         let root = RootId::for_test(37);
         let x_position = TransportPosition::ExecutableInput {
             executable: executable_symbol_for_test(&fake_executable_with_function(root, 370)),
@@ -4835,10 +5656,7 @@ mod tests {
         let x = ProductKey::CallableConstruction(x_position.clone());
         let y = ProductKey::CallableConstruction(y_position);
         let terminal = ProductKey::CallableConstruction(terminal_position.clone());
-        let slot = ProductKey::IncomingInputSlot(InputSlot {
-            executable: fake_executable_with_function(root, 370),
-            semantic_index: 1,
-        });
+        let slot = ProductKey::TransportShape(x_position.clone());
         let parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 370));
         let unrelated = ProductKey::CallableConstruction(TransportPosition::Value {
             executable: executable_symbol_for_test(&fake_executable_with_function(root, 372)),
@@ -4850,13 +5668,12 @@ mod tests {
             function: None,
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(10);
         let layout = TransportLayout {
             structural: ShapeId::for_test(101),
-            carrier: TransportCarrier::ValueRef,
+            carrier: TransportCarrier::ValueRef(LaneId::for_test(0)),
         };
         let first_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 373));
         let second_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 374));
@@ -4880,11 +5697,7 @@ mod tests {
             settle_owner_equations(&equations(first_resolution.clone(), terminal_position.clone()), false).0;
         let keys = [x.clone(), y.clone()];
         let external = [terminal.clone(), slot.clone()];
-        let slot_value = ProductValue::IncomingInputSlot(HashSet::from([IncomingInputSource {
-            producer: fake_executable_with_function(root, 371),
-            value: ValueId::from_u32(1),
-            role: IncomingInputRole::CallArgument,
-        }]));
+        let slot_value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));
 
         let mut memos = Vec::new();
         for reverse in [false, true] {
@@ -4924,7 +5737,7 @@ mod tests {
 
         let generations = keys.clone().map(|key| memo.generation(&key));
         for key in &keys {
-            memo.remove(&tel, key);
+            memo.remove(&tel, key, &types);
         }
         finish_owner_group(&mut memo, &keys, &first_answers, &external, callable, boundary, true);
         assert_eq!(keys.clone().map(|key| memo.generation(&key)), generations);
@@ -4933,7 +5746,7 @@ mod tests {
             executable: executable_symbol_for_test(&fake_executable_with_function(root, 371)),
             value: ValueId::from_u32(2),
         };
-        memo.remove(&tel, &terminal);
+        memo.remove(&tel, &terminal, &types);
         finish_test_product(
             &mut memo,
             &terminal,
@@ -4947,7 +5760,7 @@ mod tests {
             [],
         );
         assert!(keys.iter().all(|key| memo.get(key).is_none()));
-        assert!(memo.stale_dependency(&parent).is_some());
+        assert!(memo.stale_dependency(&parent, &types).is_some());
         let replacement_answers = settle_owner_equations(
             &equations(second_resolution.clone(), replacement_position.clone()),
             true,
@@ -4965,7 +5778,7 @@ mod tests {
         assert!(keys.iter().all(|key| memo.generation(key) == Some(2)));
         assert!(memo.get(&parent).is_none());
 
-        memo.remove(&tel, &terminal);
+        memo.remove(&tel, &terminal, &types);
         finish_test_product(
             &mut memo,
             &terminal,
@@ -4974,7 +5787,7 @@ mod tests {
         );
         assert!(keys.iter().all(|key| memo.generation(key) == Some(2)));
 
-        memo.remove(&tel, &terminal);
+        memo.remove(&tel, &terminal, &types);
         finish_test_product(&mut memo, &terminal, withdrawn_callable_owner_answer(layout), []);
         assert!(keys.iter().all(|key| memo.get(key).is_none()));
         let empty = settle_owner_equations(
@@ -4991,22 +5804,14 @@ mod tests {
         finish_owner_group(&mut memo, &keys, &empty, &external, callable, boundary, false);
         assert!(keys.iter().all(|key| memo.generation(key) == Some(3)));
 
-        memo.remove(&tel, &slot);
+        memo.remove(&tel, &slot, &types);
         finish_test_product(
             &mut memo,
             &slot,
-            ProductValue::IncomingInputSlot(HashSet::from([
-                IncomingInputSource {
-                    producer: fake_executable_with_function(root, 371),
-                    value: ValueId::from_u32(1),
-                    role: IncomingInputRole::CallArgument,
-                },
-                IncomingInputSource {
-                    producer: fake_executable_with_function(root, 375),
-                    value: ValueId::from_u32(2),
-                    role: IncomingInputRole::CallArgument,
-                },
-            ])),
+            ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout {
+                structural: ShapeId::for_test(102),
+                ..layout
+            })),
             [],
         );
         assert!(keys.iter().all(|key| memo.get(key).is_none()));

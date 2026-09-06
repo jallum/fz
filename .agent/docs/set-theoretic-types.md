@@ -311,9 +311,9 @@ looked up. `mint_brand(inner, name)` is the constructor that establishes a
 brand; it is called once, where the name is defined (see
 [`type-naming`](type-naming.md)), so the symbol is complete from birth. There is
 no constructor for a bare tag with no inner: a refinement of nothing denotes
-nothing. Opaque source definitions publish the tag itself; places that need
-structure, such as a struct value, model it as the opaque tag intersected with
-the relevant structural shape.
+nothing. Opaque source definitions publish the tag itself. Structs are not
+opaques: a `MapSig` carries `MapTag::Struct(ModuleId, name)` and its fields in
+one atomic record leaf.
 
 **Brands carry no runtime witness.** There is no brand `ValueKind` (the runtime
 kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the
@@ -386,14 +386,14 @@ defstruct [:first, :last, :step]              # field order
 @type t :: %Range{first: integer, ...}        # field types
 ```
 
-A struct value's hard type is the nominal opaque tag for the implementation target:
-`opaque(impl-target::Range)`. A source record type also preserves field information
-in its resolved structural shape (`ResolvedTypeShape::StructRecord`), so spec
-machinery can see the declared field names and field type shapes without pretending
-the opaque tag is a tuple. Field projection at runtime follows the actual struct
-value/schema path; unknown or ambiguous receivers stay `any`. The nominal tag is the
-same identity protocol dispatch uses (see [`protocols`](protocols.md)) and keeps
-`Range` distinct from any structurally similar value.
+A struct value's hard type is one tagged map signature: typed `ModuleId`, stable
+qualified display name, and declared fields are conjunctive. Plain maps use the
+disjoint `MapTag::Plain`; therefore `%Range{first: integer}` cannot become
+`%{first: integer}` during overload carving. Record-axis top contains both
+families, while `map_top` contains only plain maps. Runtime test envelopes derive
+the observable schema-tag question by clearing positive field constraints;
+positional tuple storage is derived later from the settled schema, never unioned
+into the semantic type. Unknown or ambiguous field projection stays `any`.
 
 ## Proof gates
 

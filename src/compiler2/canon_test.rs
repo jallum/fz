@@ -29,7 +29,7 @@ const TARGETS: [(&str, &str); 2] = [
     ),
 ];
 
-/// Drives one fixture to its published `BackendProgram` — the same stage the
+/// Drives one fixture to its retained `BackendProgram` — the same stage the
 /// `--dump backend` path reaches — and renders it.
 fn canon_of(name: &str, text: &str) -> String {
     let (mut compiler, root) = submit(name, text);
@@ -37,7 +37,7 @@ fn canon_of(name: &str, text: &str) -> String {
         .drive_root_to_dump_stage(root, DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
     let world = compiler.world();
-    canon_backend_program(world, &world.backend_program(root))
+    canon_backend_program(world, &compiler.retained_backend_program(root))
 }
 
 fn submit(name: &str, text: &str) -> (Compiler2<ConfiguredTelemetry>, RootId) {
@@ -221,6 +221,10 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
             "the canonical form must not carry the interned id `{id}`"
         );
     }
+    assert!(
+        !rendered.lines().any(|line| line.trim_start().starts_with("revision ")),
+        "the canonical form must not carry synthetic artifact revisions"
+    );
     // A generated lambda's NAME mints its owner's raw id; `function_label` has
     // to resolve that away rather than pass it through.
     assert!(
@@ -423,9 +427,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         compiler
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
-        let world = compiler.world();
         assert_eq!(
-            world.backend_program(root).executables.len(),
+            compiler.retained_backend_program(root).executables().len(),
             executables,
             "{name}: the emitted executable inventory moved off its fz-kdt.63 pin; \
              re-measure, name the cause, and re-pin"
@@ -457,12 +460,12 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
         let world = compiler.world();
-        let program = world.backend_program(root);
+        let program = compiler.retained_backend_program(root);
         let unordered = program
-            .executables
+            .executables()
             .iter()
             .filter_map(|executable| {
-                let clause_ids = executable.entry_dispatch.as_ref()?.clause_ids();
+                let clause_ids = executable.abi.materialized.entry_dispatch.as_ref()?.clause_ids();
                 let ascends = clause_ids.windows(2).all(|pair| pair[0] < pair[1]);
                 (!ascends).then(|| {
                     format!(
@@ -496,7 +499,7 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
 /// same types under different ids.
 ///
 /// The invariant that removes the freedom: siblings break their tie on
-/// fz-kdt.105's canonical, id-free structural comparator (`Types::cmp_tys`), so
+/// the canonical typed activation comparator (`Types::cmp_activation_tys`), so
 /// two entries a reader cannot tell apart still have ONE order, and it is a
 /// function of what they say rather than of when they were interned.
 #[test]
@@ -515,15 +518,17 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
         let world = compiler.world();
         let types = world.types();
-        let program = world.backend_program(root);
+        let program = compiler.retained_backend_program(root);
         let descents = program
-            .executables
+            .executables()
+            .iter()
+            .collect::<Vec<_>>()
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)
             .filter(|(_, pair)| {
                 types
-                    .cmp_tys(
+                    .cmp_activation_tys(
                         &pair[0].key.activation.inputs(types),
                         &pair[1].key.activation.inputs(types),
                     )
@@ -601,10 +606,10 @@ const LENSES: [(&str, &str); 4] = [
 ///
 /// `enum_map_family` used to move between the schedules by 1170 backend-canon
 /// lines; fz-kdt.108 closes it (0 either way) by giving the callable-flow
-/// construction wrapper one canonical `cmp_tys` edge order. TWO corpus
+/// construction wrapper one canonical typed activation edge order. TWO corpus
 /// fixtures still move and are not this gate's business:
 /// `00277_enum_tier0_fixture` (562 lines -- fz-kdt.107's dispatch-twin class
-/// plus a `cmp_tys` free-var tie whose fallback to `TypeVarId` mint order is
+/// plus a structural free-var tie whose fallback to `TypeVarId` mint order is
 /// itself schedule-visible, fz-kdt.161) and `dead_closure_capture_empty_list`
 /// (2 lines -- fz-kdt.120's return-precision residue). Measured base-vs-head
 /// on 2026-09-02: enum_map_family 1170 -> 0, the other two unchanged at
@@ -630,14 +635,9 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        assert!(
-            compiler.demand(super::Job::LowerNativeProgram(root)),
-            "{name} should explicitly demand the native program",
-        );
-        assert!(
-            matches!(compiler.drive(), super::DriveOutcome::Resolved),
-            "{name} should drive to a settled native program",
-        );
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
+            .unwrap_or_else(|error| panic!("{name} should drive to a settled native program: {error}"));
 
         let collapses = capture
             .find(&["fz", "compiler2", "activation_inputs", "budget_collapsed"])

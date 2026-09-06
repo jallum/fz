@@ -1,5 +1,6 @@
 mod agenda;
 mod artifact;
+mod backend_program;
 mod body;
 pub(crate) mod callsite_dispatch;
 mod canon;
@@ -12,10 +13,12 @@ mod dispatch;
 mod dispatch_reachability;
 mod drive;
 mod dump;
+mod executable_facts;
 mod facts;
 mod fixture_metadata;
 mod frontdoor;
 mod identity;
+pub(crate) mod incoming_inputs;
 mod jobs;
 mod keying;
 mod module_interface;
@@ -24,8 +27,7 @@ mod native_codegen;
 mod ordered_set;
 mod product_drive;
 mod protocol;
-#[doc(hidden)]
-pub mod pull;
+pub(crate) mod pull;
 mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
@@ -34,6 +36,7 @@ mod runtime;
 mod scheduler;
 mod scope;
 mod semantic;
+mod shared_order;
 mod source;
 mod source_diagnostics;
 mod source_publish;
@@ -41,6 +44,8 @@ mod source_sugar;
 mod structdef;
 mod token_payload;
 pub mod transport;
+#[cfg(test)]
+mod transport_relation_incremental_test;
 mod type_expr;
 mod typedef;
 mod types;
@@ -50,10 +55,9 @@ pub use agenda::Agenda;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap, BackendReceive, BackendReturnLayout,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
     BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyExecutable, ExecutableDispatch,
-    MaterializedCallEdge, MaterializedExecutable,
+    DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};
@@ -65,11 +69,14 @@ pub use body::{
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
 pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
+pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
-pub use drive::{FactKey, Job, WorkGraph};
+#[cfg(test)]
+mod macro_product_test;
+pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 #[cfg(test)]
 pub use fixture_metadata::fixture_frontmatter_prefix_bytes;
@@ -84,7 +91,6 @@ pub use identity::{
     ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeName,
 };
-pub(crate) use jobs::runtime_demand::DemandConeSettlement;
 pub(crate) use keying::InputDemand;
 pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
@@ -102,6 +108,7 @@ pub use semantic::{
     EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticClosure, SemanticClosureMap,
     ShapeDemand,
 };
+pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
@@ -145,6 +152,8 @@ mod identity_test;
 #[cfg(test)]
 #[cfg(test)]
 mod namespace_test;
+#[cfg(test)]
+mod native_inventory_test;
 #[cfg(test)]
 mod port_codegen_test;
 #[cfg(test)]
