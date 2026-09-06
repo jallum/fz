@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.46",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Preserve exact dependency ownership across failed compiler derivations",
   "type": "bug",
-  "updated_at": "2026-09-06T00:38:36Z"
+  "updated_at": "2026-09-06T00:38:48Z"
 }
