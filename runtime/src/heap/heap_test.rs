@@ -993,7 +993,6 @@ fn deep_copy_clears_list_alias_metadata() {
 }
 
 #[test]
-#[serial_test::serial]
 fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 
@@ -1579,7 +1578,11 @@ fn gc_handles_cycle_via_forwarding() {
 
 // ===== fz-q8d.1 — ProcBin + intrusive MSO + post-Cheney sweep =========
 
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, live_count};
+use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr};
+
+fn shared_refs(handle: &SharedBinHandle) -> usize {
+    unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
+}
 
 /// Walk the heap's MSO chain and return the contained tagged pointers
 /// in chain order (head → tail).
@@ -1601,31 +1604,30 @@ fn mso_chain(h: &Heap) -> Vec<u64> {
 
 /// `alloc_procbin` writes a strict 16-byte ProcBin and pushes onto the chain.
 #[test]
-#[serial_test::serial]
 fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
-    let baseline = live_count();
+    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
     {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32));
+        let pb = alloc_procbin(&mut h, witness.clone());
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
         assert_eq!(object_size(tagged), 16);
         assert_eq!(mso_chain(&h), vec![tagged]);
+        assert_eq!(shared_refs(&witness), 2);
     }
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1, "heap drop removes its exact owned edge");
 }
 
 /// A rooted ProcBin survives Cheney: chain rewritten to to-space copy.
 #[test]
-#[serial_test::serial]
 fn procbin_survives_gc_via_mso_rewrite() {
-    let baseline = live_count();
+    let witness = SharedBinHandle::from_bytes(&[0xaa; 8], 64);
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0xaa; 8], 64));
+    let pb = alloc_procbin(&mut h, witness.clone());
     let shared_p = pb.shared_raw();
     let from_pb = pb.as_raw();
     let mut root = heap_object_word(from_pb as *const u8, ValueKind::PROCBIN) as *mut u8;
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(shared_refs(&witness), 2);
     h.gc(&mut root);
     let new_pb = procbin_addr_from_tagged(root as u64).unwrap();
     assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
@@ -1634,41 +1636,39 @@ fn procbin_survives_gc_via_mso_rewrite() {
         vec![heap_object_word(new_pb as *const u8, ValueKind::PROCBIN)],
         "chain rewritten"
     );
-    assert_eq!(live_count(), baseline + 1, "shared bin unchanged across GC");
+    assert_eq!(shared_refs(&witness), 2, "GC preserves the same heap-owned edge");
     let pb_to = unsafe { ProcBin::from_raw(new_pb) };
     assert_eq!(pb_to.shared_raw(), shared_p);
     drop(h);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1);
 }
 
 /// Unrooted ProcBin: MSO sweep releases its SharedBin.
 #[test]
-#[serial_test::serial]
 fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
-    let baseline = live_count();
+    let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0x55; 16], 128));
-    assert_eq!(live_count(), baseline + 1);
+    let _ = alloc_procbin(&mut h, witness.clone());
+    assert_eq!(shared_refs(&witness), 2);
     let mut root: *mut u8 = null_mut();
     h.gc(&mut root);
     assert_eq!(h.mso_head, 0, "dead ProcBin swept from MSO");
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
 /// Mixed live/dead ProcBins: sweep must read the next link from
 /// from-space while reading the survivor's shared_ptr from to-space.
 #[test]
-#[serial_test::serial]
 fn procbin_mso_chain_intact_through_gc_partial_survival() {
-    let baseline = live_count();
+    let witnesses = [1, 2, 3].map(|value| SharedBinHandle::from_bytes(&[value], 8));
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let _dead_tail = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1], 8));
-    let live = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[2], 8));
-    let _dead_head = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3], 8));
+    let _dead_tail = alloc_procbin(&mut h, witnesses[0].clone());
+    let live = alloc_procbin(&mut h, witnesses[1].clone());
+    let _dead_head = alloc_procbin(&mut h, witnesses[2].clone());
     let live_from = live.as_raw();
     let live_shared = live.shared_raw();
     assert_eq!(mso_chain(&h).len(), 3);
-    assert_eq!(live_count(), baseline + 3);
+    assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2, 2]);
 
     let mut root = heap_object_word(live_from as *const u8, ValueKind::PROCBIN) as *mut u8;
     h.gc(&mut root);
@@ -1680,36 +1680,42 @@ fn procbin_mso_chain_intact_through_gc_partial_survival() {
         vec![heap_object_word(live_to as *const u8, ValueKind::PROCBIN)]
     );
     assert_eq!(unsafe { ProcBin::from_raw(live_to).shared_raw() }, live_shared);
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(
+        witnesses.each_ref().map(shared_refs),
+        [1, 2, 1],
+        "only the rooted binary keeps its heap edge"
+    );
     drop(h);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1, 1]);
 }
 
 /// Heap::drop releases every chain entry's shared_ptr.
 #[test]
-#[serial_test::serial]
 fn heap_drop_releases_all_mso_shared_refs() {
-    let baseline = live_count();
+    let witnesses = [
+        SharedBinHandle::from_bytes(&[1, 2], 16),
+        SharedBinHandle::from_bytes(&[3, 4, 5], 24),
+    ];
     {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2], 16));
-        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3, 4, 5], 24));
-        assert_eq!(live_count(), baseline + 2);
+        for witness in &witnesses {
+            alloc_procbin(&mut h, witness.clone());
+        }
+        assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
         assert_eq!(mso_chain(&h).len(), 2);
     }
-    assert_eq!(live_count(), baseline);
+    assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1]);
 }
 
 // ===== deep_copy_slot handles ProcBin via retain =====================
 
 /// Cross-heap deep_copy of a ProcBin shares the SharedBin.
 #[test]
-#[serial_test::serial]
 fn deep_copy_procbin_shares_via_retain() {
-    let baseline = live_count();
+    let witness = SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32);
     let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
     let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
-    let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
+    let src_pb = alloc_procbin(&mut src, witness.clone());
     let shared_p = src_pb.shared_raw();
     let mut fwd = HashMap::new();
     let copied = deep_copy_slot(
@@ -1724,25 +1730,19 @@ fn deep_copy_procbin_shares_via_retain() {
     assert_eq!(dst_pb.shared_raw(), shared_p);
     assert_eq!(mso_chain(&src).len(), 1);
     assert_eq!(mso_chain(&dst).len(), 1);
-    unsafe {
-        assert_eq!((*shared_p).refcount.load(Ordering::Relaxed), 2);
-    }
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(shared_refs(&witness), 3, "one witness plus two heap-owned edges");
     drop(dst);
-    unsafe {
-        assert_eq!((*shared_p).refcount.load(Ordering::Relaxed), 1);
-    }
+    assert_eq!(shared_refs(&witness), 2);
     assert_eq!(mso_chain(&src).len(), 1);
     drop(src);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1);
 }
 
 /// Shared structure: a tuple containing the same ProcBin twice
-/// deep-copies to a single retained reference (refcount 2, not 3).
+/// deep-copies to one retained heap edge, not one per alias.
 #[test]
-#[serial_test::serial]
 fn deep_copy_procbin_dedup_via_forwarding_map() {
-    let baseline = live_count();
+    let witness = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
     let reg = empty_registry();
     let pair_id = reg.borrow_mut().register(Schema {
         name: "Pair".into(),
@@ -1762,8 +1762,7 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     });
     let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut dst = Heap::new(SIZE_TABLE[0], reg);
-    let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[0xab, 0xcd], 16));
-    let shared_p = src_pb.shared_raw();
+    let src_pb = alloc_procbin(&mut src, witness.clone());
     let proc_bits = heap_object_word(src_pb.as_raw() as *const u8, ValueKind::PROCBIN);
     let pair = src.alloc_struct(pair_id);
     let proc_value = heap_root(proc_bits);
@@ -1772,12 +1771,15 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     let mut fwd = HashMap::new();
     let _ = deep_copy_slot(AnyValue::heap_ptr(pair, ValueKind::STRUCT), &src, &mut dst, &mut fwd);
     assert_eq!(mso_chain(&dst).len(), 1, "dedup");
-    unsafe {
-        assert_eq!((*shared_p).refcount.load(Ordering::Relaxed), 2);
-    }
+    assert_eq!(
+        shared_refs(&witness),
+        3,
+        "one witness plus one edge per heap despite two aliases"
+    );
     drop(dst);
+    assert_eq!(shared_refs(&witness), 2);
     drop(src);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1);
 }
 
 // ===== alloc_bitstring threshold + dispatch ===========================
@@ -1800,12 +1802,11 @@ fn alloc_bitstring_small_stays_inline() {
 }
 
 #[test]
-#[serial_test::serial]
 fn alloc_bitstring_large_routes_to_shared_zone() {
-    let baseline = live_count();
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let bytes: Vec<u8> = (0..128u8).collect();
     let p = h.alloc_bitstring(&bytes, 1024);
+    let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
     unsafe {
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
@@ -1817,21 +1818,20 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
         }
     }
     assert_eq!(mso_chain(&h).len(), 1);
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(shared_refs(&witness), 2);
     drop(h);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1);
 }
 
 /// Full spawn-and-share scenario at the heap layer.
 #[test]
-#[serial_test::serial]
 fn shared_heap_acceptance_spawn_and_share() {
     const N: usize = 4;
-    let baseline = live_count();
     let payload: Vec<u8> = (0..128u8).collect();
     let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
     let bs_in_sender = sender.alloc_bitstring(&payload, 1024);
-    assert_eq!(live_count(), baseline + 1);
+    let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(bs_in_sender).shared_raw()) };
+    assert_eq!(shared_refs(&witness), 2);
 
     let mut receivers: Vec<Heap> = (0..N).map(|_| Heap::new(SIZE_TABLE[0], empty_registry())).collect();
     let sender_bits = heap_object_word(bs_in_sender as *const u8, ValueKind::PROCBIN);
@@ -1841,12 +1841,11 @@ fn shared_heap_acceptance_spawn_and_share() {
         let copied = deep_copy_slot(heap_root(sender_bits), &sender, r, &mut fwd);
         receiver_roots.push(tagged_bits(copied));
     }
-    let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
-    let shared_p = sender_pb.shared_raw();
-    unsafe {
-        assert_eq!((*shared_p).refcount.load(Ordering::Relaxed), 1 + N);
-    }
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(
+        shared_refs(&witness),
+        2 + N,
+        "the witness and sender keep one edge each"
+    );
 
     for (r, root_ptr) in receivers.iter_mut().zip(receiver_roots.iter_mut()) {
         let mut root_u8 = *root_ptr as *mut u8;
@@ -1856,7 +1855,7 @@ fn shared_heap_acceptance_spawn_and_share() {
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0], *root_ptr);
     }
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(shared_refs(&witness), 2 + N, "moving stubs preserve their shared edges");
 
     for root_ptr in &receiver_roots {
         unsafe {
@@ -1870,13 +1869,10 @@ fn shared_heap_acceptance_spawn_and_share() {
 
     let _ = receiver_roots;
     drop(receivers);
-    unsafe {
-        assert_eq!((*shared_p).refcount.load(Ordering::Relaxed), 1);
-    }
-    assert_eq!(live_count(), baseline + 1);
+    assert_eq!(shared_refs(&witness), 2, "all receiver edges are released");
 
     drop(sender);
-    assert_eq!(live_count(), baseline);
+    assert_eq!(shared_refs(&witness), 1, "the sender releases its edge too");
 }
 
 // ===== fz-q8d.4 — heap fragments ======================================
@@ -2073,7 +2069,6 @@ fn heap_drop_releases_fragments_without_leak() {
 }
 
 #[test]
-#[serial_test::serial]
 fn procbin_round_trips_through_bitstring_dispatchers() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let bytes: Vec<u8> = (0..100u8).collect();

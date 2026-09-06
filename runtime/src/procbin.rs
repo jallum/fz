@@ -29,7 +29,6 @@ use crate::any_value::{
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{forget, size_of};
 use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
-use std::sync::atomic;
 
 // ===== SharedBin layout =====================================================
 
@@ -70,11 +69,6 @@ pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.bytes_len + 1)) };
     drop(bytes);
     drop(bin);
-    // The LIVE_COUNT gauge is a production debug counter; loom doesn't
-    // model it (and shouldn't — it's incidental to the ordering claims
-    // we're trying to verify). Skip the update under cfg(loom).
-    #[cfg(not(loom))]
-    LIVE_COUNT.fetch_sub(1, atomic::Ordering::Relaxed);
 }
 
 /// No-op destructor for compiler-baked static SharedBins (fz-q8d.2). The
@@ -110,7 +104,6 @@ pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
         bytes_len,
         destructor: shared_bin_destructor_heap,
     });
-    LIVE_COUNT.fetch_add(1, atomic::Ordering::Relaxed);
     Box::into_raw(bin)
 }
 
@@ -141,23 +134,6 @@ pub unsafe fn shared_bin_release(p: *mut SharedBin) {
             (bin.destructor)(p);
         }
     }
-}
-
-// ===== Live-count gauge =====================================================
-//
-// Tracks heap-allocated SharedBin objects. Heap destructor decrements;
-// static SharedBins from fz-q8d.2 will not touch it (their dtor is noop).
-// `pub(crate)` so tests inside the crate can baseline-delta against it.
-
-// LIVE_COUNT is always a std atomic — not part of the ordering claim
-// the loom test verifies. Use std types directly so cfg(loom) builds
-// don't accidentally pull this gauge into the model.
-static LIVE_COUNT: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
-
-/// Number of currently-live heap-allocated SharedBin objects.
-#[cfg(test)]
-pub(crate) fn live_count() -> usize {
-    LIVE_COUNT.load(atomic::Ordering::Relaxed)
 }
 
 // ===== SharedBinHandle ======================================================
@@ -505,14 +481,12 @@ mod procbin_test;
 // ===== fz-q8d.3 — loom verification of retain/release ordering ==============
 //
 // Enabled only under `RUSTFLAGS="--cfg loom"`. The two-thread model
-// constructs a SharedBin manually (so LIVE_COUNT isn't exercised — that
-// gauge is not part of the ordering claim), spawns two children that
+// constructs a SharedBin with an observed destructor, spawns two children that
 // each retain+release, then the "main" thread performs the final
 // release. Across every legal interleaving loom can produce, the test
 // destructor must fire exactly once.
 //
 // Run: `RUSTFLAGS="--cfg loom" cargo test --release -p fz-runtime loom_`.
-// See `runtime/RUNNING_LOOM.md`.
 
 #[cfg(all(test, loom))]
 mod loom_tests {

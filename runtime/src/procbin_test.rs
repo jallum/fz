@@ -2,47 +2,66 @@ use super::*;
 use crate::any_value::object_size;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
-use std::hint::spin_loop;
 use std::rc::Rc;
 use std::slice::from_raw_parts;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Barrier, atomic};
 use std::thread;
 
 fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
-/// RAII guard: snapshots `live_count()` on construction; Drop asserts
-/// the count returned to baseline. Use in scopes where every bin
-/// allocated must also be freed before the guard goes out of scope.
-pub(crate) struct LiveCountGuard {
-    baseline: usize,
+#[test]
+fn independent_allocators_do_not_share_lifetime_observations() {
+    let (own, own_drops) = observed_bin();
+    let barrier = Barrier::new(2);
+    let (observed, unrelated_drops) = thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            let (unrelated, drops) = observed_bin();
+            barrier.wait();
+            barrier.wait();
+            let before = drops.load(Ordering::Relaxed);
+            drop(unrelated);
+            (drops, before)
+        });
+        barrier.wait();
+        drop(own);
+        let observed = own_drops.load(Ordering::Relaxed);
+        barrier.wait();
+        (observed, worker.join().unwrap())
+    });
+    assert_eq!(
+        observed, 1,
+        "another allocator cannot change this owner's lifetime observation"
+    );
+    let (unrelated_drops, before) = unrelated_drops;
+    assert_eq!(before, 0, "the independent object remains live after the first release");
+    assert_eq!(unrelated_drops.load(Ordering::Relaxed), 1);
+    assert_eq!(Arc::strong_count(&own_drops), 1);
+    assert_eq!(Arc::strong_count(&unrelated_drops), 1);
 }
-impl LiveCountGuard {
-    pub(crate) fn snap() -> Self {
-        Self { baseline: live_count() }
+
+fn observed_bin() -> (SharedBinHandle, Arc<atomic::AtomicUsize>) {
+    unsafe extern "C" fn destroy(p: *mut SharedBin) {
+        let bytes = unsafe { from_raw_parts((*p).bytes_ptr, size_of::<usize>()) };
+        let observer = usize::from_ne_bytes(bytes.try_into().unwrap()) as *const atomic::AtomicUsize;
+        let drops = unsafe { Arc::from_raw(observer) };
+        unsafe { shared_bin_destructor_heap(p) };
+        drops.fetch_add(1, Ordering::Relaxed);
     }
-    pub(crate) fn baseline(&self) -> usize {
-        self.baseline
-    }
-}
-impl Drop for LiveCountGuard {
-    fn drop(&mut self) {
-        assert_eq!(
-            live_count(),
-            self.baseline,
-            "LiveCountGuard: live_count did not return to baseline"
-        );
-    }
+    let drops = Arc::new(atomic::AtomicUsize::new(0));
+    let observer = Arc::into_raw(Arc::clone(&drops)) as usize;
+    let handle = SharedBinHandle::from_bytes(&observer.to_ne_bytes(), usize::BITS.into());
+    // Install before publication or retain. The payload owns one observer edge;
+    // the real heap destructor still reclaims the byte buffer and header.
+    unsafe { (*handle.as_raw()).destructor = destroy };
+    (handle, drops)
 }
 
 #[test]
-#[serial_test::serial]
 fn alloc_retain_release_free_pattern() {
-    let g = LiveCountGuard::snap();
-    let p = shared_bin_alloc(&[1, 2, 3, 4], 32);
-    assert_eq!(live_count(), g.baseline() + 1);
+    let (handle, drops) = observed_bin();
+    let p = handle.into_raw();
     unsafe {
         shared_bin_retain(p);
         shared_bin_retain(p);
@@ -50,22 +69,21 @@ fn alloc_retain_release_free_pattern() {
         shared_bin_release(p);
         shared_bin_release(p);
         assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
         shared_bin_release(p);
     }
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-#[serial_test::serial]
 fn alloc_release_immediately_frees() {
-    let _g = LiveCountGuard::snap();
-    let p = shared_bin_alloc(b"hello", 40);
-    unsafe { shared_bin_release(p) };
+    let (handle, drops) = observed_bin();
+    unsafe { shared_bin_release(handle.into_raw()) };
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-#[serial_test::serial]
 fn bytes_preserved_across_retain_release() {
-    let _g = LiveCountGuard::snap();
     let p = shared_bin_alloc(&[0xde, 0xad, 0xbe, 0xef], 32);
     unsafe {
         shared_bin_retain(p);
@@ -81,45 +99,44 @@ fn bytes_preserved_across_retain_release() {
 }
 
 #[test]
-#[serial_test::serial]
-fn concurrent_retain_release_is_consistent() {
-    let _g = LiveCountGuard::snap();
-    let p = shared_bin_alloc(&[7; 64], 512);
-    let p_addr = p as usize;
-    let start = Arc::new(AtomicBool::new(false));
-    let mut handles = Vec::new();
-    for _ in 0..2 {
-        let start = start.clone();
-        handles.push(thread::spawn(move || {
-            while !start.load(Ordering::Acquire) {
-                spin_loop();
-            }
-            let p = p_addr as *mut SharedBin;
-            for _ in 0..100 {
-                unsafe {
-                    shared_bin_retain(p);
-                    shared_bin_release(p);
+fn concurrent_retain_release_frees_on_the_last_workers_release() {
+    let (handle, drops) = observed_bin();
+    let barrier = Barrier::new(3);
+    thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let address = handle.clone().into_raw() as usize;
+            let barrier = &barrier;
+            workers.push(scope.spawn(move || {
+                let owner = unsafe { SharedBinHandle::from_raw_already_retained(address as *mut SharedBin) };
+                barrier.wait();
+                for _ in 0..100 {
+                    drop(owner.clone());
                 }
-            }
-        }));
-    }
-    start.store(true, Ordering::Release);
-    for h in handles {
-        h.join().unwrap();
-    }
-    unsafe {
-        assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
-        shared_bin_release(p);
-    }
+                drop(owner);
+            }));
+        }
+        drop(handle);
+        let before = drops.load(Ordering::Relaxed);
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(before, 0);
+    });
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        Arc::strong_count(&drops),
+        1,
+        "the final worker consumes the observer edge"
+    );
 }
 
 /// fz-wu9 — every heap-allocated SharedBin's buffer has a trailing
 /// zero byte at offset `bytes_len` (not counted toward bytes_len /
 /// bit_len). Underwrites the cstring extern marshal contract.
 #[test]
-#[serial_test::serial]
 fn shared_bin_alloc_has_trailing_nul() {
-    let _g = LiveCountGuard::snap();
     // Non-empty payload.
     let p = shared_bin_alloc(b"hello", 40);
     unsafe {
@@ -145,9 +162,7 @@ fn shared_bin_alloc_has_trailing_nul() {
 
 /// Heap-allocated bin's destructor field equals `shared_bin_destructor_heap`.
 #[test]
-#[serial_test::serial]
 fn alloc_installs_heap_destructor() {
-    let _g = LiveCountGuard::snap();
     let p = shared_bin_alloc(&[0u8; 4], 32);
     unsafe {
         let d = (*p).destructor as *const () as usize;
@@ -157,62 +172,26 @@ fn alloc_installs_heap_destructor() {
     }
 }
 
-/// Construct a SharedBin manually with a test destructor that flips
-/// an AtomicBool; retain/release exactly to zero fires it once.
-#[test]
-#[serial_test::serial]
-fn custom_destructor_fires_exactly_once() {
-    static FIRED: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
-    unsafe extern "C" fn test_dtor(_p: *mut SharedBin) {
-        FIRED.fetch_add(1, atomic::Ordering::Relaxed);
-    }
-    FIRED.store(0, atomic::Ordering::Relaxed);
-    // Allocate bytes + bin without entering shared_bin_alloc (so the
-    // global LIVE_COUNT isn't touched and the test destructor isn't
-    // shared_bin_destructor_heap). We leak both — test_dtor is a no-op.
-    let bytes: Box<[u8]> = vec![0u8; 4].into_boxed_slice();
-    let bytes_len = bytes.len();
-    let bytes_ptr = Box::leak(bytes).as_ptr();
-    let bin = Box::new(SharedBin {
-        refcount: AtomicUsize::new(1),
-        bit_len: 32,
-        bytes_ptr,
-        bytes_len,
-        destructor: test_dtor,
-    });
-    let p = Box::into_raw(bin);
-    unsafe {
-        shared_bin_retain(p);
-        shared_bin_release(p);
-        assert_eq!(FIRED.load(atomic::Ordering::Relaxed), 0, "still has 1 ref");
-        shared_bin_release(p);
-    }
-    assert_eq!(FIRED.load(atomic::Ordering::Relaxed), 1, "fired exactly once");
-    // Reclaim manually so we don't actually leak. test_dtor was a noop.
-    unsafe {
-        let _ = Box::from_raw(p);
-        let _ = Box::from_raw(slice_from_raw_parts_mut(bytes_ptr as *mut u8, bytes_len));
-    }
-}
-
 /// SharedBinHandle Drop releases.
 #[test]
-#[serial_test::serial]
 fn handle_drop_releases() {
-    let g = LiveCountGuard::snap();
-    {
-        let _h = SharedBinHandle::from_bytes(&[1, 2, 3], 24);
-        assert_eq!(live_count(), g.baseline() + 1);
-    }
+    let (handle, drops) = observed_bin();
+    assert_eq!(Arc::strong_count(&drops), 2, "the allocation owns one observer edge");
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    drop(handle);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        Arc::strong_count(&drops),
+        1,
+        "final free consumes exactly that observer edge"
+    );
 }
 
 /// SharedBinHandle Clone retains; the destructor fires exactly when
 /// the second Drop runs.
 #[test]
-#[serial_test::serial]
 fn handle_clone_retains_then_balanced_drops_free() {
-    let g = LiveCountGuard::snap();
-    let h = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
+    let (h, drops) = observed_bin();
     let p = h.as_raw();
     let h2 = h.clone();
     unsafe {
@@ -223,36 +202,36 @@ fn handle_clone_retains_then_balanced_drops_free() {
         assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
     }
     drop(h2);
-    assert_eq!(live_count(), g.baseline());
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 /// alloc_procbin pushes onto MSO chain; Heap::drop releases SharedBin.
 #[test]
-#[serial_test::serial]
 fn alloc_procbin_pushes_into_mso_chain() {
-    let g = LiveCountGuard::snap();
+    let (handle, drops) = observed_bin();
     {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let handle = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
         let pb = alloc_procbin(&mut h, handle);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
         assert_eq!(object_size(tagged), 16);
         assert_eq!(h.mso_head, tagged);
         assert_eq!(pb.mso_next(), 0);
-        assert_eq!(live_count(), g.baseline() + 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
     }
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 /// Three ProcBins on one heap: intrusive chain links latest → earlier.
 #[test]
-#[serial_test::serial]
-fn mso_chain_threads_through_procbins() {
-    let _g = LiveCountGuard::snap();
+fn mso_chain_threads_through_procbins_and_frees_every_entry() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1], 8));
-    let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[2], 8));
-    let pb3 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3], 8));
+    let (first, first_drops) = observed_bin();
+    let (second, second_drops) = observed_bin();
+    let (third, third_drops) = observed_bin();
+    let pb1 = alloc_procbin(&mut h, first);
+    let pb2 = alloc_procbin(&mut h, second);
+    let pb3 = alloc_procbin(&mut h, third);
     let pb1_bits = heap_object_word(pb1.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb2_bits = heap_object_word(pb2.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb3_bits = heap_object_word(pb3.as_raw() as *const u8, ValueKind::PROCBIN);
@@ -260,17 +239,46 @@ fn mso_chain_threads_through_procbins() {
     assert_eq!(pb3.mso_next(), pb2_bits);
     assert_eq!(pb2.mso_next(), pb1_bits);
     assert_eq!(pb1.mso_next(), 0);
+    for drops in [&first_drops, &second_drops, &third_drops] {
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+    }
+    drop(h);
+    for drops in [first_drops, second_drops, third_drops] {
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
 }
 
-/// Heap::drop releases every chain entry.
 #[test]
-#[serial_test::serial]
-fn heap_drop_releases_all_chain_entries() {
-    let g = LiveCountGuard::snap();
-    {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2], 16));
-        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3, 4, 5], 24));
-        assert_eq!(live_count(), g.baseline() + 2);
-    }
+fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
+    let (handle, drops) = observed_bin();
+    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    alloc_procbin(&mut heap, handle);
+    heap.gc(&mut std::ptr::null_mut());
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(heap.mso_head, 0);
+    drop(heap);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
+    let (handle, drops) = observed_bin();
+    let mut source = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], empty_registry());
+    let pb = alloc_procbin(&mut source, handle);
+    crate::heap::deep_copy_slot(
+        AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
+        &source,
+        &mut destination,
+        &mut std::collections::HashMap::new(),
+    );
+    drop(source);
+    assert_eq!(
+        drops.load(Ordering::Relaxed),
+        0,
+        "the copied heap still owns the binary"
+    );
+    drop(destination);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(Arc::strong_count(&drops), 1);
 }
