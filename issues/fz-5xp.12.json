@@ -4,7 +4,9 @@
     "fz-5xp.3",
     "fz-5xp.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.16"
+  ],
   "created": "2026-09-06T23:44:34Z",
   "description": "The map is a FLAT SORTED ARRAY, not a HAMT. Elixir's structural-sharing intuitions do not transfer, and the module's shape must reflect that.\n\n  op        Elixir (HAMT)   fz (flat sorted array)\n  get       O(log32 n)      O(n) LINEAR SCAN -- sorted but not binary-searched\n                            (runtime/src/heap/imp.rs:806)\n  put       O(log32 n)      O(n) full copy\n  delete    O(log32 n)      DOES NOT EXIST -- no fz_map_delete anywhere\n  merge     O(m log n)      O(n+m) linear merge -- BETTER than Elixir, relatively\n  fold acc  O(n log n)      O(n^2)\n\nToday only 3 of the 22 fz_map_* runtime symbols are reachable from fz source\n(map.fz:4 -- count, entry_key, entry_value). Map has zero of Elixir's 40-pair API,\nand zero fixtures use it by name.\n\nWork:\n  - binary search in Heap::read_map_addr_value_ref (the array is already sorted)\n  - fz_map_delete\n  - a Map module whose FIRST-CLASS surface is bulk and single-pass -- new/1, merge/2,\n    take/2, drop/2, filter/2, split/2 -- built through the existing\n    fz_map_dest_begin/put/freeze builder, with put/3 and delete/2 documented as the\n    slow path callers must not use in loops. That emphasis is the opposite of\n    Elixir's docs and must be written down.\n\nConsequence to record: Enum.frequencies, frequencies_by, group_by, uniq, uniq_by and\nMap.new are O(n^2) with a map accumulator. Prefer sort-then-group once fz-5xp.8 lands.",
   "id": "fz-5xp.12",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Map: binary-search lookup, delete primitive, and a bulk-first Map module",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:48Z"
+  "updated_at": "2026-09-06T23:44:50Z"
 }
