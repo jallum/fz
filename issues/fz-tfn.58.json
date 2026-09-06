@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-06T16:26:38Z",
   "description": "Found by the fz-kdt.185 full-corpus warning census at `40563eeb756636153df0aac67d01940864fe2556`.\n\n## Status\n\nLIVE, nonblocking follow-on at the fz-tfn epic tail. After fz-kdt.185 gives exact domains to membership and with-index helpers, `enum_map_family` still reports 13 controlled `warning[type/no-matching-clause]` diagnostics from the same runtime-library contract-evidence class.\n\n## Goal\n\nGive every remaining private Enum list walker the exact producer-owned domain it consumes, so empty/cons coverage is total by construction. Do not suppress diagnostics, add wildcard clauses for impossible values, or infer helper authority from whichever activations one program happened to create.\n\n## Live population\n\nThe remaining warnings name:\n\n- `map_list`\n- `filter_list`\n- `flat_map_list`\n- `concat_list`\n- `map_reduce_list`\n- `scan_first`\n- `scan_list`\n- `intersperse_list` and `intersperse_tail`\n- `map_join_list` and `map_join_tail`\n- `map_intersperse_list` and `map_intersperse_tail`\n\nThe current durable reproducer is `fixtures2/behavior/enum_map_family.fz`; its diagnostics sidecar contains the exact lines.\n\n## Strategy\n\nUse the semantic Output Contract Loop. Pin the 13-warning RED at the production diagnostic boundary; trace each callers actual list/callback/accumulator/result relation; declare the smallest shared type schemes at the runtime source authority; then delete the superseded warning golden rows. Fold concordant helper families and avoid thirteen one-off fixes.\n\n## Acceptance\n\n- `enum_map_family` retains exact Elixir-owned stdout on run, interp, and build while all 13 named warnings disappear.\n- Exact contracts preserve element, callback, accumulator, and result correlations; valid public Enum inputs are not narrowed.\n- Genuine user partial functions still warn.\n- Full-corpus diagnostic movers are only proved removals from this named population; stdout and exit status do not move.\n- Canonical artifact and causal-work movers are classified deterministically.\n- Obsolete warning sidecars/rows and stale documentation are deleted after cutover.\n- Focused RED/GREEN tests, formatting, strict clippy, doctests, library tests, and the serial fixture matrix pass.",
   "id": "fz-tfn.58",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Declare exact domains for the remaining Enum private list walkers",
   "type": "bug",
-  "updated_at": "2026-09-06T16:26:38Z"
+  "updated_at": "2026-09-06T16:26:45Z"
 }
