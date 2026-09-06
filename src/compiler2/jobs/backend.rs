@@ -117,7 +117,7 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         _world: &World,
         tel: &T,
         root: RootId,
-        _last_wait: Option<(ProductKey, Vec<PullWait>)>,
+        _last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         emit_backend_product_error(
             tel,

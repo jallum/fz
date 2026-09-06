@@ -150,6 +150,14 @@ alternate reparenting feed only the affected branches to that same frame,
 after complete publication and witness repair. Request marks in dirty nodes
 prevent duplicate admission and are released on frame teardown. They are
 routing state, not another membership or value authority.
+The frame and the last budget diagnostic share one immutable `ProductWaitBatch`:
+its owner and original sorted waits remain available even after the frame drains.
+The heap selects batch indices or newly admitted owned keys; the fact pump borrows
+the original fact prefix. Product pulls borrow selected keys. A child borrowed
+from a batch that itself waits gets one independent owner copy, so its new batch
+cannot retain parent batches. Newly admitted owned children move into their batch.
+Completed owners move into a later waiting observation. The diagnostic borrows
+the last full observation only when the budget is exhausted.
 A sparse index over dirty members and their actual witness
 ancestors replaces a flat dirty inventory. Its first-live-child cursor advances
 only after authoritative clearing; local reparenting preserves the unaffected

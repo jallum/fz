@@ -2360,34 +2360,39 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session_mut().memo.wait_frame_exposures.clear();
     }
 
-    pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
+    pub fn pull(
+        &mut self,
+        producers: &mut impl ProductProducers,
+        key: impl std::borrow::Borrow<ProductKey>,
+    ) -> PullOutcome {
+        let key = key.borrow();
         let tel = self.tel;
         let emit_causal_products = self.emit_causal_products;
         assert!(
-            !self.session().memo.contains_in_progress(&key),
+            !self.session().memo.contains_in_progress(key),
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
         let request = self.session_mut().request_ids.allocate();
         if self.emit_causal_products {
-            tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
+            tel.raw_event2(PRODUCT_REQUESTED_EVENT, key, &request);
         }
         self.session_mut()
             .reconcile_fact_movements(tel, producers.product_types());
-        self.session_mut().note_product_request(&key);
+        self.session_mut().note_product_request(key);
         let stale = self
             .session_mut()
             .memo
-            .stale_dependency(tel, &key, producers.product_types());
+            .stale_dependency(tel, key, producers.product_types());
         if let Some(stale) = stale {
             self.session_mut()
                 .memo
                 .prepare_stale_for_reproduction(tel, &stale, producers.product_types());
-            if stale != key {
+            if &stale != key {
                 return PullOutcome::wait_on_product(stale);
             }
         }
-        if let Some(value) = self.session().memo.get(&key) {
-            self.emit("cache_hit", &key);
+        if let Some(value) = self.session().memo.get(key) {
+            self.emit("cache_hit", key);
             return PullOutcome::Produced(value.clone());
         }
         assert!(
@@ -2398,12 +2403,12 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         let (outcome, dependencies, recursive_group) = {
             let mut session = self.session_mut();
             let mut context = ProductReadContext::new(&mut session);
-            let outcome = producers.produce(&mut context, &key);
+            let outcome = producers.produce(&mut context, key);
             let (dependencies, recursive_group) = context.into_completion();
             (outcome, dependencies, recursive_group)
         };
         if self.emit_causal_products {
-            tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
+            tel.raw_event3(PRODUCT_EVALUATED_EVENT, key, &request, &outcome);
         }
 
         match outcome {
@@ -2416,7 +2421,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 let settled = self.session_mut().memo.finish_completion(
                     tel,
                     emit_causal_products,
-                    &key,
+                    key,
                     completion,
                     producers.product_types(),
                 );
@@ -2427,14 +2432,14 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     PullOutcome::Produced(
                         self.session()
                             .memo
-                            .get(&key)
+                            .get(key)
                             .expect("settled completion must install its requested product")
                             .clone(),
                     )
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session_mut().memo.unblock(request, &key, dependencies);
+                self.session_mut().memo.unblock(request, key, dependencies);
                 PullOutcome::Waiting(waits)
             }
             PullOutcome::Failed(failure) => {
@@ -2442,7 +2447,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     recursive_group.is_none(),
                     "a failed product cannot publish a recursive group"
                 );
-                self.session_mut().memo.abort(&key);
+                self.session_mut().memo.abort(key);
                 PullOutcome::Failed(failure)
             }
         }

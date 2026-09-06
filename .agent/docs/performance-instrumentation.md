@@ -84,7 +84,21 @@ ascents. These include marking, branch repair and clearing, not just reads.
 counts its mutation-wave selection and the live wait inventory's heap
 comparisons. There is no dirty-subset sort. Each heap swap follows a counted
 comparison; insertion/removal adds constant logical movement. Heap items move
-without a Clone bound, and the initial sorted wait Vec becomes its storage.
+without a Clone bound. A drive frame indexes its immutable original wait batch;
+newly admitted product keys move into that same heap.
+
+Each waiting observation moves its wait Vec into one shared batch allocation.
+Its product-index heap allocates only for product waits; empty and fact-only
+batches have no heap storage. Fact pumping borrows the original prefix rather
+than building a second fact vector. The latest budget diagnostic shares the
+batch and borrows its full contents on error, including after the frame drains.
+Selection and `ProductDriver::pull` borrow positioned inputs. Only a selected
+child borrowed from a batch that itself waits copies its key into an independent
+owner; that batch holds no parent handle. Newly admitted owned children move.
+Original Vec/input backing and weak batch lifetimes
+are pinned at the drive seam and frame teardown. These tests establish sharing
+and release, not a total allocator count: every wait still adds one shared
+allocation, including an empty batch.
 
 Nested complete proofs contribute to one event at the actual validation/read
 boundary. Mutation, publication, reseeding and retirement drain maintenance

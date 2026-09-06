@@ -5629,7 +5629,7 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         _world: &World,
         _tel: &T,
         root: super::RootId,
-        last_wait: Option<(ProductKey, Vec<PullWait>)>,
+        last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         panic!(
             "root {} product did not settle; last wait: {last_wait:?}",

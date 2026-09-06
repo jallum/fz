@@ -1799,7 +1799,12 @@ fn string_error_reports_did_not_settle_with_last_wait() {
     let root = RootId::for_test(7);
     let last_wait = Some((ProductKey::RootBackendProduct(root), vec![PullWait::Fact(some_fact())]));
 
-    let message = <String as ProductDriveError>::did_not_settle(&world, &tel, root, last_wait.clone());
+    let message = <String as ProductDriveError>::did_not_settle(
+        &world,
+        &tel,
+        root,
+        last_wait.as_ref().map(|(key, waits)| (key, waits.as_slice())),
+    );
 
     assert_eq!(
         message,

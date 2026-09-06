@@ -572,7 +572,7 @@ impl super::product_drive::ProductDriveError for String {
         _world: &World,
         _tel: &T,
         root: RootId,
-        last_wait: Option<(ProductKey, Vec<PullWait>)>,
+        last_wait: Option<(&ProductKey, &[PullWait])>,
     ) -> Self {
         format!(
             "compiler2 root {} product backend did not settle; last wait: {last_wait:?}",
