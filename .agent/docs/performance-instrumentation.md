@@ -87,7 +87,15 @@ mutation; admissions minus pops gives rejected attempts.
 `mutation_edges` counts ordinary reverse-reader traversal, rooted-reader checks
 before filtering, and Refresh's actual short-circuit dependency inspections.
 It does not count dependency unlinking; the witness counters describe rooted
-maintenance separately. `ordering_comparisons` counts initial mutation ordering,
+maintenance separately. `reparent_candidates` counts committed reverse-membership
+candidates inspected for direct alternate support or detached entrance restoration,
+before reachability filtering. `reparent_proof_nodes` counts witness-node inspections
+for direct alternate cycle safety: one child-index inspection per selection with
+a distinct reached candidate, plus each selected-parent node visited by the non-leaf fallback. A witness
+leaf cannot contain a distinct reached candidate, so it needs no ancestor walk,
+regardless of the candidate's depth. Self-candidates are always rejected. This
+does not eliminate ancestor walks for non-leaves or count admission work again.
+`ordering_comparisons` counts initial mutation ordering,
 mutation-heap insertion/selection, and the live wait inventory's heap comparisons.
 Each heap swap follows a counted
 comparison; insertion/removal adds constant logical movement. Heap items move

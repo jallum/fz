@@ -585,6 +585,8 @@ pub struct ProductValidation {
     pub mutation_admissions: u64,
     pub mutation_pops: u64,
     pub mutation_edges: u64,
+    pub reparent_candidates: u64,
+    pub reparent_proof_nodes: u64,
     pub ordering_comparisons: u64,
 }
 
@@ -604,6 +606,8 @@ impl ProductValidation {
         self.mutation_admissions += work.mutation_admissions;
         self.mutation_pops += work.mutation_pops;
         self.mutation_edges += work.mutation_edges;
+        self.reparent_candidates += work.reparent_candidates;
+        self.reparent_proof_nodes += work.reparent_proof_nodes;
         self.ordering_comparisons += work.ordering_comparisons;
     }
 

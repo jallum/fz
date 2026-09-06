@@ -1265,20 +1265,45 @@ fn restoring_an_interior_witness_entrance_admits_its_dirty_branch_before_queued_
 
 #[test]
 fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
-    for size in [8_u32, 32, 64] {
+    let mut repeated_prefixes = Vec::new();
+    for (size, candidate_depth, candidate_count, alternating) in [8_u32, 32, 64].into_iter().flat_map(|size| {
+        [
+            (size, 0, 1, false),
+            (size, size, 1, false),
+            (size, size, 2, false),
+            (size, size, 2, true),
+        ]
+    }) {
         let tel = ConfiguredTelemetry::new();
         let visits = Rc::new(Cell::new(0));
         let observed = Rc::clone(&visits);
+        let repairs = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&repairs);
         tel.attach_raw_event2::<ProductKey, ProductValidation, _>(
             &["fz", "compiler2", "pull", "product", "validation"],
-            move |_, _, _, _, work| observed.set(observed.get() + work.witness_visits),
+            move |_, _, _, owner, work| {
+                observed.set(observed.get() + work.witness_visits);
+                if work.reparent_candidates != 0 || work.reparent_proof_nodes != 0 {
+                    recorded.borrow_mut().push((owner.clone(), *work));
+                }
+            },
         );
         let key = |id| ProductKey::RootBackendProduct(RootId::for_test(id));
         let prefix = (0..=size).map(key).collect::<Vec<_>>();
         let owners = (size + 1..size * 2 + 1).map(key).collect::<Vec<_>>();
         let children = (size * 2 + 1..size * 3 + 1).map(key).collect::<Vec<_>>();
-        let alternate = key(size * 3 + 1);
-        let packaging = key(size * 3 + 2);
+        let candidate_paths = (0..candidate_count)
+            .map(|candidate| {
+                let first = size * 3 + 1 + candidate * (candidate_depth + 1);
+                (first..first + candidate_depth + 1).map(key).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let alternates = candidate_paths
+            .iter()
+            .map(|path| path.last().unwrap().clone())
+            .collect::<HashSet<_>>();
+        let packaging_id = size * 3 + 1 + candidate_count * (candidate_depth + 1);
+        let packaging = key(packaging_id);
         let mut formulas = HashMap::new();
         for (index, member) in prefix.iter().enumerate() {
             let next = prefix
@@ -1295,10 +1320,19 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
             );
             formulas.insert(child.clone(), OwnershipFormula::Value(ProductValue::Unit));
         }
-        formulas.insert(
-            alternate.clone(),
-            OwnershipFormula::Seed(children.clone(), ProductValue::Unit),
-        );
+        for (candidate, path) in candidate_paths.iter().enumerate() {
+            for (index, member) in path.iter().enumerate() {
+                let next = path.get(index + 1).cloned().map(|key| vec![key]).unwrap_or_else(|| {
+                    children
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !alternating || index % candidate_count as usize == candidate)
+                        .map(|(_, child)| child.clone())
+                        .collect()
+                });
+                formulas.insert(member.clone(), OwnershipFormula::Seed(next, ProductValue::Unit));
+            }
+        }
         formulas.insert(packaging.clone(), OwnershipFormula::Root(prefix[0].clone()));
         let mut producers = OwnershipProducers {
             telemetry: &tel,
@@ -1312,7 +1346,7 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
             PullOutcome::Produced(ProductValue::Unit)
         );
         let mut next = owners.clone();
-        next.push(alternate);
+        next.extend(candidate_paths.iter().map(|path| path[0].clone()));
         producers.formulas.insert(
             prefix[size as usize].clone(),
             OwnershipFormula::Seed(next, ProductValue::Unit),
@@ -1325,6 +1359,18 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
             ownership_pull(&mut driver, &mut producers, &packaging),
             PullOutcome::Produced(ProductValue::Unit)
         );
+        let retained = prefix
+            .iter()
+            .chain(candidate_paths.iter().flatten())
+            .map(|key| {
+                (
+                    key.clone(),
+                    driver.session().memo.produced[key].generation,
+                    Rc::clone(&driver.session().memo.produced[key].dependencies),
+                )
+            })
+            .collect::<Vec<_>>();
+        repairs.borrow_mut().clear();
         visits.set(0);
         driver.session_mut().memo.invalidate_products(
             &tel,
@@ -1345,15 +1391,108 @@ fn reparent_admission_reuses_the_unchanged_common_witness_prefix() {
             ownership_pull(&mut driver, &mut producers, &packaging),
             PullOutcome::Produced(ProductValue::Unit)
         );
-        assert!(
-            visits.get() <= u64::from(size) * 8 + 8,
-            "admitting sibling reparent branches must not rescan their unchanged common prefix: {}",
-            visits.get()
-        );
+        let admission_visits = visits.get();
+        if candidate_depth == 0 && candidate_count == 1 {
+            assert!(
+                admission_visits <= u64::from(size) * 8 + 8,
+                "admitting sibling reparent branches must not rescan their unchanged common prefix: {admission_visits}",
+            );
+        }
         for key in owners.iter().chain(&children) {
             assert_eq!(producers.calls.iter().filter(|called| *called == key).count(), 1);
+            assert_eq!(
+                driver.session().memo.generation(key),
+                Some(1),
+                "equal reproduction keeps its generation"
+            );
+        }
+        for (key, generation, dependencies) in &retained {
+            let session = driver.session();
+            let entry = &session.memo.produced[key];
+            assert_eq!(entry.generation, *generation);
+            assert!(Rc::ptr_eq(&entry.dependencies, dependencies));
+            assert!(
+                !producers.calls.contains(key),
+                "the unchanged prefix and alternate are retained"
+            );
+        }
+        for owner in &owners {
+            assert!(driver.session().memo.produced[owner].membership.is_empty());
+        }
+        for (index, child) in children.iter().enumerate() {
+            let expected = if alternating {
+                HashSet::from([candidate_paths[index % candidate_count as usize]
+                    .last()
+                    .unwrap()
+                    .clone()])
+            } else {
+                alternates.clone()
+            };
+            assert_eq!(driver.session().memo.membership_readers[child], expected);
+            assert!(driver.session().memo.rooted_readers[child].contains(&packaging));
+        }
+        let repair = repairs
+            .borrow()
+            .iter()
+            .fold(ProductValidation::default(), |mut total, (_, work)| {
+                total.include(*work);
+                total
+            });
+        let candidates_per_child = if alternating { 1 } else { candidate_count };
+        assert_eq!(repair.reparent_candidates, u64::from(size * candidates_per_child));
+        assert_eq!(
+            repairs.borrow().len(),
+            size as usize,
+            "the repeated prefix spans separate committed owners"
+        );
+        assert_eq!(
+            repairs
+                .borrow()
+                .iter()
+                .map(|(owner, _)| owner.clone())
+                .collect::<HashSet<_>>(),
+            owners.iter().cloned().collect()
+        );
+        repairs.borrow_mut().clear();
+        visits.set(0);
+        producers.calls.clear();
+        assert_eq!(
+            ownership_pull(&mut driver, &mut producers, &packaging),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert!(producers.calls.is_empty());
+        assert!(repairs.borrow().is_empty());
+        assert_eq!(visits.get(), 0);
+        let unrelated = key(packaging_id + 1);
+        producers
+            .formulas
+            .insert(unrelated.clone(), OwnershipFormula::Value(ProductValue::Unit));
+        assert_eq!(
+            ownership_pull(&mut driver, &mut producers, &unrelated),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        driver
+            .session_mut()
+            .memo
+            .invalidate_products(&tel, [unrelated], &producers.types);
+        producers.calls.clear();
+        assert_eq!(
+            ownership_pull(&mut driver, &mut producers, &packaging),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert!(producers.calls.is_empty());
+        assert!(repairs.borrow().is_empty());
+        assert_eq!(visits.get(), 0);
+        let bound = u64::from(size);
+        if repair.reparent_proof_nodes != bound {
+            repeated_prefixes.push(format!("D=K={size}, candidate_depth={candidate_depth}, candidate_count={candidate_count}, alternating={alternating}, admission_visits={admission_visits}, candidates={}, proof_nodes={}, bound={bound}", repair.reparent_candidates, repair.reparent_proof_nodes));
         }
     }
+    assert!(
+        repeated_prefixes.is_empty(),
+        "alternate repair must stop before rescanning the clean common prefix:\n{}",
+        repeated_prefixes.join("\n")
+    );
 }
 
 #[test]
@@ -2196,6 +2335,8 @@ fn equal_recursive_validation_visits_shared_inputs_once_and_only_mutates_its_ext
                 mutation_admissions: 1,
                 mutation_pops: 1,
                 mutation_edges: 1,
+                reparent_candidates: 0,
+                reparent_proof_nodes: 0,
                 ordering_comparisons: 0,
             },
             "validation checks each internal edge once and refreshes only the one external reader"

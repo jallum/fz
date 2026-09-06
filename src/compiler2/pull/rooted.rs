@@ -81,9 +81,10 @@ impl RootedProducts {
         added
     }
 
-    fn below(&self, key: &ProductKey, ancestor: &ProductKey) -> bool {
+    fn below(&self, key: &ProductKey, ancestor: &ProductKey, work: &mut ProductValidation) -> bool {
         let mut cursor = Some(key);
         while let Some(key) = cursor {
+            work.reparent_proof_nodes += 1;
             if key == ancestor {
                 return true;
             }
@@ -111,16 +112,28 @@ impl RootedProducts {
         key: &ProductKey,
         types: &super::super::types::Types,
         reparented: &mut Vec<ProductKey>,
+        work: &mut ProductValidation,
     ) -> HashSet<ProductKey> {
         if self.parents.get(key) != Some(&Some(parent.clone())) {
             return HashSet::new();
         }
+        let mut leaf = None;
         if let Some(alternate) = memo
             .membership_readers
             .get(key)
             .into_iter()
             .flatten()
-            .filter(|candidate| self.parents.contains_key(*candidate) && !self.below(candidate, key))
+            .filter(|candidate| {
+                work.reparent_candidates += 1;
+                if *candidate == key || !self.parents.contains_key(*candidate) {
+                    return false;
+                }
+                let leaf = *leaf.get_or_insert_with(|| {
+                    work.reparent_proof_nodes += 1;
+                    self.children.get(key).is_none_or(HashSet::is_empty)
+                });
+                leaf || !self.below(candidate, key, work)
+            })
             .min_by(|left, right| left.semantic_cmp(right, types))
         {
             self.reparent(key, alternate.clone());
@@ -154,6 +167,7 @@ impl RootedProducts {
         for member in detached.keys() {
             self.parents.remove(member);
         }
+        let entrance_candidates = Cell::new(0);
         let mut entrances = detached
             .keys()
             .flat_map(|member| {
@@ -161,10 +175,14 @@ impl RootedProducts {
                     .get(member)
                     .into_iter()
                     .flatten()
-                    .filter(|parent| self.parents.contains_key(*parent))
+                    .filter(|parent| {
+                        entrance_candidates.set(entrance_candidates.get() + 1);
+                        self.parents.contains_key(*parent)
+                    })
                     .map(|parent| (member.clone(), parent.clone()))
             })
             .collect::<Vec<_>>();
+        work.reparent_candidates += entrance_candidates.get();
         entrances.sort_by(|(left, parent), (right, next_parent)| {
             left.semantic_cmp(right, types)
                 .then_with(|| parent.semantic_cmp(next_parent, types))
@@ -201,6 +219,7 @@ impl RootedProducts {
         owner: &ProductKey,
         previous: &HashSet<ProductKey>,
         types: &super::super::types::Types,
+        work: &mut ProductValidation,
     ) -> (HashSet<ProductKey>, Vec<ProductKey>) {
         #[cfg(test)]
         {
@@ -220,7 +239,7 @@ impl RootedProducts {
             touched.extend(self.attach(memo, child.clone(), Some(owner.clone()), types));
         }
         for child in removed {
-            touched.extend(self.remove_edge(memo, owner, child, types, &mut reparented));
+            touched.extend(self.remove_edge(memo, owner, child, types, &mut reparented, work));
         }
         (touched, reparented)
     }
@@ -550,7 +569,8 @@ impl ProductMemo {
         let mut invalidated = Vec::new();
         for reader in readers {
             let mut rooted = self.rooted.remove(&reader).expect("registered root reader");
-            let (touched, reparented) = rooted.replace_edges(self, owner, previous, types);
+            let mut work = ProductValidation::default();
+            let (touched, reparented) = rooted.replace_edges(self, owner, previous, types, &mut work);
             let waiting = rooted.dirty.waiting(owner);
             rooted.dirty.remove(owner, &rooted.parents);
             if changed {
@@ -579,7 +599,6 @@ impl ProductMemo {
             } else if rooted.dirty.is_empty() {
                 invalidated.push((ReaderMutation::Refresh, reader.clone()));
             }
-            let mut work = ProductValidation::default();
             rooted.collect_maintenance(&mut work);
             work.report(tel, owner);
             self.rooted.insert(reader.clone(), rooted);
@@ -705,11 +724,14 @@ mod tests {
     }
 
     fn graph(memo: &mut ProductMemo, node: u32, children: &[u32]) {
+        graph_with_telemetry(memo, node, children, &ConfiguredTelemetry::new());
+    }
+
+    fn graph_with_telemetry(memo: &mut ProductMemo, node: u32, children: &[u32], tel: &ConfiguredTelemetry) {
         let types = crate::compiler2::Types::new();
-        let tel = ConfiguredTelemetry::new();
         let current = key(node);
         memo.finish_completion(
-            &tel,
+            tel,
             false,
             &current,
             ProductCompletion::Single(
@@ -741,6 +763,59 @@ mod tests {
         graph(&mut memo, 3, &[]);
         graph(&mut memo, 0, &[1]);
         assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(2), key(3)]));
+    }
+
+    #[test]
+    fn alternate_repair_uses_current_children_after_reparent_and_reattachment() {
+        let mut memo = ProductMemo::default();
+        graph(&mut memo, 0, &[1]);
+        graph(&mut memo, 1, &[2]);
+        graph(&mut memo, 2, &[2]);
+        memo.register_rooted(key(99), key(0), &super::super::super::types::Types::new());
+        graph(&mut memo, 0, &[1, 4]);
+        graph(&mut memo, 4, &[2]);
+        graph(&mut memo, 1, &[]);
+        assert_eq!(memo.rooted[&key(99)].parents[&key(2)], Some(key(4)));
+        assert_eq!(memo.rooted[&key(99)].last_detached, 0);
+
+        graph(&mut memo, 2, &[2, 3]);
+        graph(&mut memo, 3, &[2]);
+        for _ in 0..2 {
+            assert_eq!(memo.rooted[&key(99)].parents[&key(3)], Some(key(2)));
+            memo.rooted.get_mut(&key(99)).unwrap().changes.clear();
+            graph(&mut memo, 4, &[]);
+            assert_eq!(members(&memo), HashSet::from([key(0), key(1), key(4)]));
+            assert_eq!(memo.rooted[&key(99)].changes, HashSet::from([key(2), key(3)]));
+            assert_eq!(memo.rooted[&key(99)].last_detached, 2);
+            assert!(!memo.rooted_readers.contains_key(&key(2)));
+            assert!(!memo.rooted_readers.contains_key(&key(3)));
+            graph(&mut memo, 4, &[2]);
+            assert_eq!(members(&memo), (0..5).map(key).collect());
+        }
+    }
+
+    #[test]
+    fn absent_self_and_unreached_alternates_need_no_cycle_proof() {
+        for candidates in [vec![], vec![1], vec![1, 2]] {
+            let mut memo = ProductMemo::default();
+            graph(&mut memo, 0, &[1]);
+            graph(&mut memo, 1, &[]);
+            for candidate in &candidates {
+                graph(&mut memo, *candidate, &[1]);
+            }
+            memo.register_rooted(key(99), key(0), &super::super::super::types::Types::new());
+            let tel = ConfiguredTelemetry::new();
+            let proof = Rc::new(RefCell::new(ProductValidation::default()));
+            let observed = Rc::clone(&proof);
+            tel.attach_raw_event2::<ProductKey, ProductValidation, _>(
+                &["fz", "compiler2", "pull", "product", "validation"],
+                move |_, _, _, _, work| observed.borrow_mut().include(*work),
+            );
+            graph_with_telemetry(&mut memo, 0, &[], &tel);
+            assert_eq!(members(&memo), HashSet::from([key(0)]));
+            assert_eq!(proof.borrow().reparent_candidates, (candidates.len() * 2) as u64);
+            assert_eq!(proof.borrow().reparent_proof_nodes, 0);
+        }
     }
 
     #[test]
@@ -960,14 +1035,38 @@ mod tests {
             for (member, parent) in &rooted.parents {
                 if let Some(parent) = parent {
                     assert!(memo.membership(parent).unwrap().contains(member));
-                    assert!(
-                        !rooted.below(parent, member),
-                        "the witness is acyclic even when the demand graph is not"
-                    );
+                    let mut ancestors = HashSet::from([member]);
+                    let mut cursor = Some(parent);
+                    while let Some(ancestor) = cursor {
+                        assert!(
+                            ancestors.insert(ancestor),
+                            "the witness is acyclic even when the demand graph is not"
+                        );
+                        cursor = rooted.parents[ancestor].as_ref();
+                    }
                 } else {
                     assert_eq!(member, &rooted.seed);
                 }
             }
+            let mut expected_children = HashMap::<ProductKey, HashSet<ProductKey>>::new();
+            for (member, parent) in &rooted.parents {
+                if let Some(parent) = parent {
+                    expected_children
+                        .entry(parent.clone())
+                        .or_default()
+                        .insert(member.clone());
+                }
+            }
+            let actual_children = rooted
+                .children
+                .iter()
+                .filter(|(_, children)| !children.is_empty())
+                .map(|(parent, children)| (parent.clone(), children.clone()))
+                .collect::<HashMap<_, _>>();
+            assert_eq!(
+                actual_children, expected_children,
+                "the child index is exactly the selected-parent relation"
+            );
         }
     }
 }

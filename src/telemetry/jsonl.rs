@@ -1751,6 +1751,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ("mutation_admissions", work.mutation_admissions),
             ("mutation_pops", work.mutation_pops),
             ("mutation_edges", work.mutation_edges),
+            ("reparent_candidates", work.reparent_candidates),
+            ("reparent_proof_nodes", work.reparent_proof_nodes),
             ("ordering_comparisons", work.ordering_comparisons),
         ] {
             out.push(',');

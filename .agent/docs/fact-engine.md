@@ -726,6 +726,12 @@ recursive group handoff. Accepted members publish only their own membership.
 rooted parent/child witness. Cutting a witness edge repairs support from the
 remaining committed edges; an isolated recursive cycle cannot retain itself.
 The witness stores reachability evidence, not a second copy of the graph.
+Alternate selection uses its current child index: a witness leaf cannot contain
+a distinct reached candidate, so repairing a leaf never walks the candidate's
+ancestors. Self-candidates are rejected; non-leaves retain the exact parent-chain
+cycle check. The typed minimum among valid candidates remains the selected
+parent. No clearance cache exists, and no subtree scan
+is substituted for the ancestor walk.
 Its sparse dirty-path index advances through current owners before descendants;
 the formula's actual rooted-read observation, not registration lifetime,
 authorizes that demand. Complete member proofs can clear independently, but
@@ -741,8 +747,8 @@ the frame's existing move-only ordered wait inventory. Dirty-node request marks
 deduplicate live admissions; failed and successful teardown release them.
 Events are transient effects of the existing witness updates, not a retained
 frontier or a second dependency graph. Complete group repair precedes event
-consumption. A clear exact active prefix bounds local reparent checks without
-revisiting shared ancestors.
+consumption. A clear exact active prefix bounds admission checks along that
+prefix; candidate-cycle checks and non-prefix admission paths are separate work.
 The memo's derived readiness bit covers both value readers and rooted members.
 Refresh recomputes it from those inputs; external notifications observe the
 bit's transition through the ordinary mutation wave, not partially updated

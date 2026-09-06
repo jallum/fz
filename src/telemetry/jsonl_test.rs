@@ -411,6 +411,8 @@ fn product_validation_work_survives_the_public_trace_boundary() {
         mutation_admissions: 5,
         mutation_pops: 4,
         mutation_edges: 2,
+        reparent_candidates: 6,
+        reparent_proof_nodes: 9,
         ordering_comparisons: 0,
     };
     telemetry.raw_event2(&["fz", "compiler2", "pull", "product", "validation"], &product, &work);
@@ -426,6 +428,8 @@ fn product_validation_work_survives_the_public_trace_boundary() {
     assert_eq!(measured["mutation_admissions"], 5);
     assert_eq!(measured["mutation_pops"], 4);
     assert_eq!(measured["mutation_edges"], 2);
+    assert_eq!(measured["reparent_candidates"], 6);
+    assert_eq!(measured["reparent_proof_nodes"], 9);
     assert_eq!(measured["ordering_comparisons"], 0);
 }
 
