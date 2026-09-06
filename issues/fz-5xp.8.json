@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-06T23:43:23Z",
+  "description": "Blocks Enum sort_by/max/max_by/min/min_by/min_max/min_max_by (20 pairs), List.keysort, and the O(n log n) sort-then-group strategy that fz's flat-array Map needs.\n\nVERIFIED at 67e09d373:\n  fz:      Enum.sort([\"pear\", \"apple\", \"fig\"])  =\u003e  [\"pear\", \"fig\", \"apple\"]\n  Elixir:  Enum.sort([\"pear\", \"apple\", \"fig\"])  =\u003e  [\"apple\", \"fig\", \"pear\"]\n\nIt does not error -- it silently produces a wrong ordering. Enum.sort/1 is\n'fn (l, r) -\u003e l \u003c= r end', and \u003c, \u003c=, \u003e, \u003e= are numeric-only (ir_interp/binop.rs:21\ndoes as_float().ok_or_else(|| \"lhs is not numeric\"); native uses IntCC/FloatCC at\nprim.rs:1759).\n\nErlang defines a total order across all terms:\n  number \u003c atom \u003c reference \u003c fun \u003c port \u003c pid \u003c tuple \u003c map \u003c list \u003c bitstring\n\nNeeds a runtime fz_term_cmp primitive (non-allocating, returns i64) and a decision\nabout whether \u003c=/\u003c on mixed terms adopt term order or stay numeric-only with a\nseparate comparison entry point.",
+  "id": "fz-5xp.8",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "There is no term ordering: Enum.sort is silently wrong on non-numerics",
+  "type": "bug",
+  "updated_at": "2026-09-06T23:43:23Z"
+}
