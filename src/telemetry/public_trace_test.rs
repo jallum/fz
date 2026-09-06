@@ -1106,29 +1106,12 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
     );
 }
 
-/// fz-kdt.34.4: before this ticket, `pull.product.settled` fired at most
-/// once per `ProductDriver::pull` call -- an anchor-only event with no
-/// generation/changed/group at all -- so a settled GROUP's co-published
-/// members (every member besides the one the driver happened to pull, e.g.
-/// a callable-construction SCC) settled INVISIBLY. This
-/// proves, against the real public stream a production compile writes, that
-/// the undercount is closed: (a) is the handler-fires proof from the arity
-/// trap in the ticket -- it can only pass if the new arity-3
-/// `attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>`
-/// handler in `jsonl.rs` actually fired and `write_opaque`'s new
-/// `ProductSettlement` arm actually rendered; (b) proves the group
-/// co-publication path specifically, by requiring more than one distinct
-/// `transport_shape` product key among the settled rows -- probed and
-/// confirmed stable: `transport_shape` reliably produces over a dozen distinct member keys
-/// even on this small a program; (c) proves the newly-public
-/// `cache_hit`/`displaced` events ride the existing
-/// `["fz","compiler2","pull","product"]` prefix projection without a code
-/// change, and that adding `pull.product.settled`'s new arity did not
-/// silently disable that sibling arity-1 registration on the same prefix
-/// (the exact trap this ticket calls out).
+/// Public settlement payloads and their sibling cache-hit registration both render.
+/// Multiple independent positioned products exercise distinct settlement keys;
+/// an explicit unchanged request exercises retained reuse without incidental work.
 #[test]
-fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_settle_with_a_cache_hit() {
-    let trace = PublicTrace::compile(SAME_FUNCTION_TWO_TYPES_SOURCE);
+fn public_settled_and_retained_cache_hit_events_keep_their_typed_payloads() {
+    let trace = PublicTrace::compile_requests(SAME_FUNCTION_TWO_TYPES_SOURCE, &[None]);
     assert!(matches!(trace.outcome, DriveOutcome::Resolved));
 
     let settled = trace.events_named(&["fz", "compiler2", "pull", "product", "settled"]);
@@ -1170,8 +1153,7 @@ fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_
         );
     }
 
-    // (b) the previously-silent group co-publication path: more than one
-    // distinct settled `transport_shape` product key appears.
+    // Independent positioned products each report their own settlement.
     let transport_shape_keys: std::collections::HashSet<String> = settled
         .iter()
         .filter_map(|ev| ev.metadata_key("product"))
@@ -1180,13 +1162,20 @@ fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_
         .collect();
     assert!(
         transport_shape_keys.len() > 1,
-        "expected more than one distinct settled transport_shape product key \
-         (a settled group's co-published members), got {transport_shape_keys:?}"
+        "expected more than one distinct settled transport_shape product key, got {transport_shape_keys:?}"
     );
 
     // (c) the allowlist addition is observable: cache_hit is public.
     let cache_hits = trace.events_named(&["fz", "compiler2", "pull", "product", "cache_hit"]);
     assert!(!cache_hits.is_empty(), "expected at least one public cache_hit event");
+    assert!(
+        cache_hits.iter().any(|event| event
+            .metadata_key("product")
+            .and_then(|product| product.get("kind"))
+            .and_then(|kind| kind.as_str())
+            == Some("root_backend_product")),
+        "the explicit unchanged request observes the retained root hit"
+    );
 }
 
 #[test]

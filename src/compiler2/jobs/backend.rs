@@ -159,11 +159,15 @@ pub(crate) fn produce_root_backend_product(
     }
     let entry = world.root_entry_executable(root);
     let key = ProductKey::RootBackendProduct(root);
-    let changes =
-        match context.read_rooted_products(key.clone(), ProductKey::BackendExecutable(entry.clone()), world.types()) {
-            Ok(changes) => changes,
-            Err(waits) => return PullOutcome::Waiting(waits),
-        };
+    let changes = match context.read_rooted_products(
+        tel,
+        key.clone(),
+        ProductKey::BackendExecutable(entry.clone()),
+        world.types(),
+    ) {
+        Ok(changes) => changes,
+        Err(waits) => return PullOutcome::Waiting(waits),
+    };
     let mut program = match context.previous_product(&key) {
         Some(ProductValue::RootBackendProduct(program)) => (**program).clone(),
         None => {

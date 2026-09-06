@@ -7,6 +7,8 @@
 
 mod rooted;
 
+use indexmap::IndexMap;
+
 #[cfg(test)]
 use super::body::{CallSiteId, ValueId};
 use super::world::World;
@@ -38,14 +40,12 @@ const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "
 const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
 const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
-const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
 const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
 
 fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
     [
         PRODUCT_REQUESTED_EVENT,
         PRODUCT_EVALUATED_EVENT,
-        PRODUCT_COPUBLISHED_EVENT,
         RECURSIVE_GROUP_PUBLISHED_EVENT,
     ]
     .into_iter()
@@ -252,7 +252,9 @@ impl PullOutcome {
 pub struct ProductMemo {
     produced: HashMap<ProductKey, ProductEntry>,
     displaced: HashMap<ProductKey, ProductEntry>,
-    pending_dependencies: HashMap<ProductKey, ProductDependencies>,
+    pending_dependencies: HashMap<ProductKey, PendingProduct>,
+    canceled_wait_frame: Option<(usize, ProductRequestId)>,
+    wait_frame_exposures: Vec<WaitFrameExposure>,
     product_readers: HashMap<ProductKey, HashSet<ProductKey>>,
     fact_readers: HashMap<FactKey, HashSet<ProductKey>>,
     fact_stale_dependencies: HashMap<ProductKey, HashSet<FactKey>>,
@@ -273,8 +275,24 @@ pub struct ProductMemo {
 
 type ProductCommitMember = (ProductKey, ProductValue, ProductDependencies);
 
+#[derive(Debug)]
+struct PendingProduct {
+    dependencies: ProductDependencies,
+    request: ProductRequestId,
+    waiting_frame: Option<usize>,
+}
+
+#[derive(Debug)]
+struct WaitFrameExposure {
+    reader: ProductKey,
+    request: ProductRequestId,
+    position: usize,
+    branch: ProductKey,
+    reparented: bool,
+}
+
 enum ProductCompletion {
-    Batch(Vec<ProductCommitMember>),
+    Single(ProductValue, ProductDependencies),
     RecursiveGroup(Vec<ProductCommitMember>),
 }
 
@@ -437,7 +455,42 @@ pub struct RecursiveGroupSearch {
     pub group_members: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProductValidation {
+    pub vertex_visits: u64,
+    pub edge_scans: u64,
+    pub witness_visits: u64,
+    pub witness_updates: u64,
+    pub cursor_rewinds: u64,
+    pub refresh_visits: u64,
+    pub ordering_comparisons: u64,
+}
+
+#[derive(Default)]
+struct ProductValidationWalk {
+    checked: HashSet<ProductKey>,
+    work: ProductValidation,
+}
+
+impl ProductValidation {
+    fn include(&mut self, work: Self) {
+        self.vertex_visits += work.vertex_visits;
+        self.edge_scans += work.edge_scans;
+        self.witness_visits += work.witness_visits;
+        self.witness_updates += work.witness_updates;
+        self.cursor_rewinds += work.cursor_rewinds;
+        self.refresh_visits += work.refresh_visits;
+        self.ordering_comparisons += work.ordering_comparisons;
+    }
+
+    pub(super) fn report(&self, tel: &impl Telemetry, key: &ProductKey) {
+        if *self != Self::default() {
+            tel.raw_event2(&["fz", "compiler2", "pull", "product", "validation"], key, self);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 struct ProductEntry {
     value: ProductValue,
     generation: u64,
@@ -447,9 +500,17 @@ struct ProductEntry {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ProductDependencies {
-    products: HashMap<ProductKey, Option<u64>>,
+    products: IndexMap<ProductKey, Option<u64>>,
+    rooted_read: Option<RootedRead>,
     facts: HashMap<FactUse<FactKey>, FactState>,
     membership: HashSet<ProductKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootedRead {
+    position: usize,
+    delivered: bool,
+    controls_delivered: bool,
 }
 
 impl ProductMemo {
@@ -555,7 +616,7 @@ impl ProductMemo {
     }
 
     #[cfg(test)]
-    pub(crate) fn product_dependencies(&self, key: &ProductKey) -> Option<&HashMap<ProductKey, Option<u64>>> {
+    pub(crate) fn product_dependencies(&self, key: &ProductKey) -> Option<&IndexMap<ProductKey, Option<u64>>> {
         self.produced.get(key).map(|entry| &entry.dependencies.products)
     }
 
@@ -582,6 +643,7 @@ impl ProductMemo {
     pub(crate) fn dependency_edges(&self) -> impl Iterator<Item = (&ProductKey, &ProductKey)> {
         self.pending_dependencies
             .iter()
+            .map(|(key, pending)| (key, &pending.dependencies))
             .chain(
                 self.produced
                     .iter()
@@ -633,7 +695,7 @@ impl ProductMemo {
     /// unresolved waits. Settled and displaced entries are deliberately absent:
     /// neither is current evidence that a formula is waiting on a cycle.
     fn pending_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
-        self.pending_dependencies.get(key)
+        self.pending_dependencies.get(key).map(|pending| &pending.dependencies)
     }
 
     fn begin(&mut self, key: ProductKey) -> bool {
@@ -645,87 +707,74 @@ impl ProductMemo {
         tel: &impl Telemetry,
         emit_causal: bool,
         requested: &ProductKey,
-        mut completion: ProductCompletion,
+        completion: ProductCompletion,
         types: &super::types::Types,
     ) -> bool {
-        let members = match &mut completion {
-            ProductCompletion::Batch(members) | ProductCompletion::RecursiveGroup(members) => members,
-        };
-        members.sort_by(|(left, _, _), (right, _, _)| left.semantic_cmp(right, types));
-        assert!(
-            members.iter().any(|(key, _, _)| key == requested),
-            "a product completion must commit its requested anchor"
-        );
-        for pair in members.windows(2) {
-            assert_ne!(pair[0].0, pair[1].0, "one completion published a product twice");
-            debug_assert_ne!(
-                pair[0].0.semantic_cmp(&pair[1].0, types),
-                std::cmp::Ordering::Equal,
-                "distinct product keys share one semantic order identity: {:?} vs {:?}",
-                pair[0].0,
-                pair[1].0
-            );
-        }
         match completion {
-            ProductCompletion::Batch(members) => {
-                if members
-                    .iter()
-                    .any(|(key, _, _)| self.invalidated_in_progress.contains(key))
-                {
-                    for (key, _, _) in &members {
-                        self.in_progress.remove(key);
-                        self.invalidated_in_progress.remove(key);
-                    }
+            ProductCompletion::Single(value, dependencies) => {
+                if self.invalidated_in_progress.remove(requested) {
+                    self.in_progress.remove(requested);
                     self.produced.remove(requested);
                     return false;
                 }
-                self.commit_members(tel, emit_causal, requested, members, None, None, types);
+                self.commit_members(
+                    tel,
+                    emit_causal,
+                    requested,
+                    std::iter::once((requested.clone(), value, dependencies)),
+                    None,
+                    types,
+                );
             }
-            ProductCompletion::RecursiveGroup(members) => {
+            ProductCompletion::RecursiveGroup(mut members) => {
+                members.sort_by(|(left, _, _), (right, _, _)| left.semantic_cmp(right, types));
+                assert!(
+                    members.iter().any(|(key, _, _)| key == requested),
+                    "a recursive completion must include its actual owner"
+                );
+                for pair in members.windows(2) {
+                    assert_ne!(pair[0].0, pair[1].0, "one completion published a product twice");
+                    debug_assert_ne!(
+                        pair[0].0.semantic_cmp(&pair[1].0, types),
+                        std::cmp::Ordering::Equal,
+                        "distinct product keys share one semantic order identity: {:?} vs {:?}",
+                        pair[0].0,
+                        pair[1].0
+                    );
+                }
                 let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
                 if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
                     self.reject_group(tel, &member_keys, types);
                     return false;
                 }
-                let mut group_dependencies = ProductDependencies::default();
+                let mut product_observations = HashMap::new();
+                let mut fact_observations = HashMap::new();
                 for (_, _, dependencies) in &members {
                     for (dependency, generation) in &dependencies.products {
                         if member_keys.contains(dependency) {
                             continue;
                         }
-                        if group_dependencies
-                            .products
-                            .get(dependency)
+                        if product_observations
+                            .insert(dependency, generation)
                             .is_some_and(|recorded| recorded != generation)
                         {
                             self.reject_group(tel, &member_keys, types);
                             return false;
                         }
-                        group_dependencies.products.insert(dependency.clone(), *generation);
                     }
                     for (fact, state) in &dependencies.facts {
-                        if group_dependencies
-                            .facts
-                            .get(fact)
+                        if fact_observations
+                            .insert(fact, state)
                             .is_some_and(|recorded| recorded != state)
                         {
                             self.reject_group(tel, &member_keys, types);
                             return false;
                         }
-                        group_dependencies.facts.insert(fact.clone(), *state);
                     }
                 }
                 self.next_group_id += 1;
                 let group_id = self.next_group_id;
-                self.commit_members(
-                    tel,
-                    emit_causal,
-                    requested,
-                    members,
-                    Some(Rc::new(group_dependencies)),
-                    Some(group_id),
-                    types,
-                );
+                self.commit_members(tel, emit_causal, requested, members.into_iter(), Some(group_id), types);
             }
         }
         true
@@ -736,8 +785,7 @@ impl ProductMemo {
         tel: &impl Telemetry,
         emit_causal: bool,
         requested: &ProductKey,
-        members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
-        shared_dependencies: Option<Rc<ProductDependencies>>,
+        members: impl ExactSizeIterator<Item = ProductCommitMember>,
         group: Option<u64>,
         types: &super::types::Types,
     ) {
@@ -772,9 +820,6 @@ impl ProductMemo {
             });
             let membership = std::mem::take(&mut dependencies.membership);
             let previous_membership = previous.map(|entry| entry.membership).unwrap_or_default();
-            let dependencies = shared_dependencies
-                .as_ref()
-                .map_or_else(|| Rc::new(dependencies), Rc::clone);
             prepared.push((
                 key,
                 value,
@@ -786,7 +831,33 @@ impl ProductMemo {
             ));
         }
 
-        for (key, value, dependencies, generation, changed, membership, _) in &prepared {
+        let group_generations = group.map(|_| {
+            prepared
+                .iter()
+                .map(|(key, _, _, generation, _, _, _)| (key.clone(), *generation))
+                .collect::<HashMap<_, _>>()
+        });
+        if let Some(generations) = &group_generations {
+            for (_, _, dependencies, _, _, _, _) in &mut prepared {
+                for (dependency, generation) in &mut dependencies.products {
+                    if let Some(settled) = generations.get(dependency) {
+                        *generation = Some(*settled);
+                    }
+                }
+            }
+        }
+
+        for (key, value, dependencies, generation, changed, membership, _) in &mut prepared {
+            if dependencies.rooted_read.is_none() {
+                self.retire_rooted(key).report(tel, key);
+            }
+            if dependencies.rooted_read.is_some_and(|read| read.delivered) {
+                self.rooted
+                    .get_mut(key)
+                    .expect("delivered rooted observation")
+                    .changes
+                    .clear();
+            }
             self.install_reader_dependencies(key, dependencies);
             self.fact_stale_dependencies.remove(key);
             self.dirty_descendants.remove(key);
@@ -795,8 +866,8 @@ impl ProductMemo {
                 ProductEntry {
                     value: value.clone(),
                     generation: *generation,
-                    dependencies: dependencies.clone(),
-                    membership: membership.clone(),
+                    dependencies: Rc::new(std::mem::take(dependencies)),
+                    membership: std::mem::take(membership),
                 },
             );
             tel.raw_event3(
@@ -811,8 +882,6 @@ impl ProductMemo {
             );
             if emit_causal && group.is_some() {
                 tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, key);
-            } else if emit_causal && key != requested {
-                tel.raw_event2(PRODUCT_COPUBLISHED_EVENT, requested, key);
             }
         }
         for (key, before) in external_before {
@@ -823,7 +892,7 @@ impl ProductMemo {
         }
         let mut rooted_mutations = Vec::new();
         for (key, _, _, _, changed, _, previous) in &prepared {
-            rooted_mutations.extend(self.committed_rooted_member(key, previous, *changed, types));
+            rooted_mutations.extend(self.committed_rooted_member(tel, key, previous, *changed, types));
         }
         let mutations = prepared.iter().flat_map(|(key, _, _, _, changed, _, _)| {
             self.reader_mutations(
@@ -835,7 +904,14 @@ impl ProductMemo {
                 },
             )
         });
-        let mutations = mutations.chain(rooted_mutations).collect();
+        let mutations = mutations
+            .filter(|(_, reader)| {
+                group_generations
+                    .as_ref()
+                    .is_none_or(|members| !members.contains_key(reader))
+            })
+            .chain(rooted_mutations)
+            .collect();
         self.mutate_product_wave(tel, mutations, types);
     }
 
@@ -854,21 +930,25 @@ impl ProductMemo {
                 tel.raw_event1(&["fz", "compiler2", "pull", "product", "displaced"], key);
             }
             if let Some(entry) = self.displaced.get_mut(key) {
-                entry.dependencies = Rc::new(ProductDependencies::default());
+                entry.dependencies = Rc::default();
             }
         }
         self.mutate_product_wave(tel, mutations, types);
     }
 
-    fn unblock(&mut self, key: &ProductKey, dependencies: ProductDependencies) {
+    fn unblock(&mut self, request: ProductRequestId, key: &ProductKey, dependencies: ProductDependencies) {
         self.in_progress.remove(key);
         self.invalidated_in_progress.remove(key);
-        let previous = self.take_pending_dependencies(key).unwrap_or_default();
-        let mut retained = previous;
-        retained.products.extend(dependencies.products);
-        retained.facts.extend(dependencies.facts);
-        self.install_reader_dependencies(key, &retained);
-        self.pending_dependencies.insert(key.clone(), retained);
+        self.take_pending_dependencies(key);
+        self.install_reader_dependencies(key, &dependencies);
+        self.pending_dependencies.insert(
+            key.clone(),
+            PendingProduct {
+                dependencies,
+                request,
+                waiting_frame: None,
+            },
+        );
     }
 
     fn abort(&mut self, key: &ProductKey) {
@@ -967,8 +1047,19 @@ impl ProductMemo {
 
     fn take_pending_dependencies(&mut self, reader: &ProductKey) -> Option<ProductDependencies> {
         let pending = self.pending_dependencies.remove(reader);
-        self.remove_reader_dependencies(reader, pending.as_ref());
-        pending
+        if let Some(PendingProduct {
+            waiting_frame: Some(position),
+            request,
+            ..
+        }) = &pending
+            && self
+                .canceled_wait_frame
+                .is_none_or(|(previous, _)| *position < previous)
+        {
+            self.canceled_wait_frame = Some((*position, *request));
+        }
+        self.remove_reader_dependencies(reader, pending.as_ref().map(|pending| &pending.dependencies));
+        pending.map(|pending| pending.dependencies)
     }
 
     fn reader_mutations(
@@ -989,13 +1080,15 @@ impl ProductMemo {
         tel: &impl Telemetry,
         mut pending: Vec<(ReaderMutation, ProductKey)>,
         types: &super::types::Types,
-    ) {
+    ) -> (u64, u64) {
         let mut seen = HashSet::new();
+        let mut comparisons = 0;
         while !pending.is_empty() {
             let next = pending
                 .iter()
                 .enumerate()
                 .min_by(|(_, (left_mutation, left)), (_, (right_mutation, right))| {
+                    comparisons += 1;
                     left.semantic_cmp(right, types)
                         .then_with(|| left_mutation.rank().cmp(&right_mutation.rank()))
                 })
@@ -1009,10 +1102,11 @@ impl ProductMemo {
                 .observed_products
                 .contains(&reader)
                 .then(|| (reader.clone(), self.external_state(&reader)));
+            let mut maintenance = ProductValidation::default();
             match mutation {
                 ReaderMutation::Invalidate => {
                     pending.extend(
-                        self.rooted_member_dirty(&reader)
+                        self.rooted_member_dirty(&reader, &mut maintenance)
                             .into_iter()
                             .map(|root| (ReaderMutation::Dirty, root)),
                     );
@@ -1037,11 +1131,12 @@ impl ProductMemo {
                 }
                 ReaderMutation::Dirty => {
                     pending.extend(
-                        self.rooted_member_dirty(&reader)
+                        self.rooted_member_dirty(&reader, &mut maintenance)
                             .into_iter()
                             .map(|root| (ReaderMutation::Dirty, root)),
                     );
                     if self.pending_dependencies.contains_key(&reader) {
+                        maintenance.report(tel, &reader);
                         pending.push((ReaderMutation::Invalidate, reader));
                         continue;
                     }
@@ -1071,16 +1166,18 @@ impl ProductMemo {
                         );
                     }
                     pending.extend(
-                        self.rooted_member_refresh(&reader)
+                        self.rooted_member_refresh(&reader, &mut maintenance)
                             .into_iter()
                             .map(|root| (ReaderMutation::Refresh, root)),
                     );
                 }
             }
+            maintenance.report(tel, &reader);
             if let Some((observed, before)) = external_before {
                 self.record_external_change(&observed, before);
             }
         }
+        (seen.len() as u64, comparisons)
     }
 
     fn reconcile_fact_movements(
@@ -1102,8 +1199,9 @@ impl ProductMemo {
                         .entry(reader.clone())
                         .or_insert_with(|| self.external_state(&reader));
                 }
-                let pending_stale = self.pending_dependencies.get(&reader).is_some_and(|dependencies| {
-                    dependencies
+                let pending_stale = self.pending_dependencies.get(&reader).is_some_and(|pending| {
+                    pending
+                        .dependencies
                         .facts
                         .iter()
                         .any(|(fact, recorded)| fact.fact() == fact_key && final_state.projected(fact) != *recorded)
@@ -1149,15 +1247,83 @@ impl ProductMemo {
         }
     }
 
-    fn stale_dependency(&self, key: &ProductKey, types: &super::types::Types) -> Option<ProductKey> {
-        self.stale_dependency_inner(key, &mut HashSet::new(), types)
+    fn stale_dependency(
+        &mut self,
+        tel: &impl Telemetry,
+        key: &ProductKey,
+        types: &super::types::Types,
+    ) -> Option<ProductKey> {
+        let mut walk = ProductValidationWalk::default();
+        let resumable = self.pending_dependencies.get(key).is_some_and(|pending| {
+            pending
+                .dependencies
+                .rooted_read
+                .is_some_and(|read| !read.delivered && read.controls_delivered)
+                && !self.fact_stale_dependencies.contains_key(key)
+        });
+        let stale = if resumable {
+            self.rooted_stale_dependency(tel, key, &mut walk, types, false)
+                .or_else(|| Some(key.clone()))
+        } else {
+            self.stale_dependency_inner(tel, key, &mut walk, types, false)
+        };
+        self.finish_validation(tel, walk, stale.is_none(), None, types)
+            .report(tel, key);
+        stale
+    }
+
+    fn finish_validation(
+        &mut self,
+        tel: &impl Telemetry,
+        walk: ProductValidationWalk,
+        valid: bool,
+        active_reader: Option<&ProductKey>,
+        types: &super::types::Types,
+    ) -> ProductValidation {
+        let ProductValidationWalk { checked, mut work } = walk;
+        if valid && !checked.is_empty() {
+            let external_before = checked
+                .iter()
+                .filter(|key| self.observed_products.contains(*key))
+                .map(|key| (key.clone(), self.external_state(key)))
+                .collect::<Vec<_>>();
+            for key in &checked {
+                self.dirty_descendants.remove(key);
+                if let Some(rooted) = self.rooted.get_mut(key) {
+                    rooted.dirty.clear();
+                    rooted.collect_maintenance(&mut work);
+                }
+            }
+            let mut mutations = Vec::new();
+            for key in &checked {
+                mutations.extend(
+                    self.reader_mutations(key, ReaderMutation::Refresh)
+                        .filter(|(_, reader)| !checked.contains(reader) && active_reader != Some(reader)),
+                );
+                mutations.extend(
+                    self.rooted_member_refresh(key, &mut work)
+                        .into_iter()
+                        .filter(|root| active_reader != Some(root))
+                        .map(|root| (ReaderMutation::Refresh, root)),
+                );
+            }
+            let (refresh_visits, comparisons) = self.mutate_product_wave(tel, mutations, types);
+            work.refresh_visits += refresh_visits;
+            work.ordering_comparisons += comparisons;
+            for (key, before) in external_before {
+                self.record_external_change(&key, before);
+            }
+        }
+        work
     }
 
     fn stale_dependency_inner(
-        &self,
+        &mut self,
+        tel: &impl Telemetry,
         key: &ProductKey,
-        visiting: &mut HashSet<ProductKey>,
+        visiting: &mut ProductValidationWalk,
         types: &super::types::Types,
+        complete: bool,
     ) -> Option<ProductKey> {
         if self.fact_stale_dependencies.contains_key(key) {
             return Some(key.clone());
@@ -1168,27 +1334,40 @@ impl ProductMemo {
         if !self.dirty_descendants.contains(key) && self.rooted.get(key).is_none_or(|rooted| rooted.dirty.is_empty()) {
             return None;
         }
-        if !visiting.insert(key.clone()) {
-            return Some(key.clone());
-        }
-        if let Some(stale) = self.rooted_stale_dependency(key, visiting, types) {
-            visiting.remove(key);
-            return Some(stale);
-        }
-        if !self.dirty_descendants.contains(key) {
-            visiting.remove(key);
+        if !self.produced.contains_key(key) {
             return None;
         }
-        let Some(entry) = self.produced.get(key) else {
-            visiting.remove(key);
+        if !visiting.checked.insert(key.clone()) {
             return None;
-        };
-        let mut dependencies = entry.dependencies.products.iter().collect::<Vec<_>>();
-        dependencies.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
-        for (dependency, generation) in dependencies {
+        }
+        visiting.work.vertex_visits += 1;
+        self.stale_observation(tel, key, visiting, types, complete)
+    }
+
+    fn stale_observation(
+        &mut self,
+        tel: &impl Telemetry,
+        key: &ProductKey,
+        visiting: &mut ProductValidationWalk,
+        types: &super::types::Types,
+        complete: bool,
+    ) -> Option<ProductKey> {
+        let dependencies = Rc::clone(&self.produced[key].dependencies);
+        let count = dependencies.products.len();
+        let rooted_read = dependencies.rooted_read;
+        for index in 0..count {
+            if let Some(read) = rooted_read.filter(|read| read.position == index) {
+                if let Some(stale) = self.rooted_stale_dependency(tel, key, visiting, types, complete) {
+                    return Some(stale);
+                }
+                if !read.delivered {
+                    return Some(key.clone());
+                }
+            }
+            let (dependency, generation) = dependencies.products.get_index(index).expect("observation index");
+            visiting.work.edge_scans += 1;
             let current = self.produced.get(dependency).map(|entry| entry.generation);
             if current != *generation {
-                visiting.remove(key);
                 return Some(if current.is_none() {
                     dependency.clone()
                 } else {
@@ -1196,13 +1375,16 @@ impl ProductMemo {
                 });
             }
             if generation.is_some()
-                && let Some(stale) = self.stale_dependency_inner(dependency, visiting, types)
+                && let Some(stale) = self.stale_dependency_inner(tel, dependency, visiting, types, complete)
             {
-                visiting.remove(key);
                 return Some(stale);
             }
         }
-        visiting.remove(key);
+        if let Some(read) = rooted_read.filter(|read| read.position == count) {
+            return self
+                .rooted_stale_dependency(tel, key, visiting, types, complete)
+                .or_else(|| (!read.delivered).then(|| key.clone()));
+        }
         None
     }
 }
@@ -1679,7 +1861,7 @@ impl super::scheduler::ExternalDependencyStates<DependencyKey> for ProductSessio
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
-    staged: Vec<ProductCommitMember>,
+    product_reads_delivered: bool,
     recursive_group: Option<Vec<ProductCommitMember>>,
 }
 
@@ -1694,7 +1876,7 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
-            staged: Vec::new(),
+            product_reads_delivered: true,
             recursive_group: None,
         }
     }
@@ -1735,6 +1917,7 @@ impl<'s> ProductReadContext<'s> {
             );
         }
         if let Some(members) = members {
+            self.product_reads_delivered = false;
             return RecursiveProductRead::Group(members);
         }
         match self.read_product_entry(tel, dependency, types) {
@@ -1810,10 +1993,6 @@ impl<'s> ProductReadContext<'s> {
         values: Vec<ProductValue>,
     ) -> ProductValue {
         assert_eq!(members.len(), values.len());
-        assert!(
-            self.staged.is_empty(),
-            "recursive completion cannot also stage ordinary peer products"
-        );
         let current_value = members
             .iter()
             .zip(&values)
@@ -1867,13 +2046,15 @@ impl<'s> ProductReadContext<'s> {
         key: ProductKey,
         types: &super::types::Types,
     ) -> Option<&ProductValue> {
-        if let Some(stale) = self.session.memo.stale_dependency(&key, types) {
+        if let Some(stale) = self.session.memo.stale_dependency(tel, &key, types) {
+            self.product_reads_delivered = false;
             self.session.memo.prepare_stale_for_reproduction(tel, &stale, types);
             let generation = self.session.memo.generation(&key);
             self.dependencies.products.insert(key.clone(), generation);
             return None;
         }
         let generation = self.session.memo.generation(&key);
+        self.product_reads_delivered &= generation.is_some();
         self.dependencies.products.insert(key.clone(), generation);
         self.session.memo.get(&key)
     }
@@ -1931,14 +2112,8 @@ impl<'s> ProductReadContext<'s> {
         self.session
     }
 
-    fn into_completion(
-        self,
-    ) -> (
-        ProductDependencies,
-        Vec<ProductCommitMember>,
-        Option<Vec<ProductCommitMember>>,
-    ) {
-        (self.dependencies, self.staged, self.recursive_group)
+    fn into_completion(self) -> (ProductDependencies, Option<Vec<ProductCommitMember>>) {
+        (self.dependencies, self.recursive_group)
     }
 }
 
@@ -2104,6 +2279,87 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session_mut().apply_fact_movements(movements);
     }
 
+    pub(super) fn reconcile_wait_frames(&mut self, types: &super::types::Types) -> Option<(usize, ProductRequestId)> {
+        self.wait_frames_canceled(types);
+        self.session_mut().memo.canceled_wait_frame.take()
+    }
+
+    pub(super) fn wait_frames_canceled(&mut self, types: &super::types::Types) -> bool {
+        let tel = self.tel;
+        let mut session = self.session_mut();
+        session.reconcile_fact_movements(tel, types);
+        session.memo.canceled_wait_frame.is_some()
+    }
+
+    pub(super) fn register_wait_frame(&mut self, key: &ProductKey, position: usize) -> Option<ProductRequestId> {
+        let mut session = self.session_mut();
+        let pending = session.memo.pending_dependencies.get_mut(key)?;
+        pending.dependencies.rooted_read?;
+        let newly_registered = pending.waiting_frame.is_none();
+        pending.waiting_frame.get_or_insert(position);
+        let request = pending.request;
+        if newly_registered {
+            session.memo.begin_wait_frame_admissions(key);
+        }
+        Some(request)
+    }
+
+    pub(super) fn unregister_wait_frame(&mut self, key: &ProductKey, request: ProductRequestId, position: usize) {
+        let mut session = self.session_mut();
+        if let Some(pending) = session.memo.pending_dependencies.get_mut(key)
+            && pending.request == request
+            && pending.waiting_frame == Some(position)
+        {
+            pending.waiting_frame = None;
+        }
+    }
+
+    pub(super) fn admit_wait_frame_product(
+        &mut self,
+        reader: &ProductKey,
+        request: ProductRequestId,
+        product: &ProductKey,
+    ) {
+        self.session_mut()
+            .memo
+            .admit_wait_frame_product(reader, request, product);
+    }
+
+    pub(super) fn release_wait_frame_product(
+        &mut self,
+        reader: &ProductKey,
+        request: ProductRequestId,
+        product: &ProductKey,
+    ) {
+        self.session_mut()
+            .memo
+            .release_wait_frame_product(reader, request, product);
+    }
+
+    pub(super) fn next_wait_frame_admission(
+        &mut self,
+        work: &mut ProductValidation,
+    ) -> Option<(usize, ProductRequestId, ProductKey)> {
+        self.session_mut().memo.next_wait_frame_admission(work)
+    }
+
+    pub(super) fn product_is_current(&self, key: &ProductKey) -> bool {
+        let session = self.session();
+        session.memo.get(key).is_some()
+            && !session.memo.has_unsettled_inputs(key)
+            && session.memo.rooted.get(key).is_none_or(|root| root.dirty.is_empty())
+    }
+
+    pub(super) fn collect_wait_frame_work(&self, reader: &ProductKey, work: &mut ProductValidation) {
+        if let Some(rooted) = self.session().memo.rooted.get(reader) {
+            rooted.collect_maintenance(work);
+        }
+    }
+
+    pub(super) fn finish_wait_frames(&mut self) {
+        self.session_mut().memo.wait_frame_exposures.clear();
+    }
+
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
         let tel = self.tel;
         let emit_causal_products = self.emit_causal_products;
@@ -2118,7 +2374,10 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session_mut()
             .reconcile_fact_movements(tel, producers.product_types());
         self.session_mut().note_product_request(&key);
-        let stale = self.session().memo.stale_dependency(&key, producers.product_types());
+        let stale = self
+            .session_mut()
+            .memo
+            .stale_dependency(tel, &key, producers.product_types());
         if let Some(stale) = stale {
             self.session_mut()
                 .memo
@@ -2136,12 +2395,12 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
 
-        let (outcome, dependencies, mut staged, recursive_group) = {
+        let (outcome, dependencies, recursive_group) = {
             let mut session = self.session_mut();
             let mut context = ProductReadContext::new(&mut session);
             let outcome = producers.produce(&mut context, &key);
-            let (dependencies, staged, recursive_group) = context.into_completion();
-            (outcome, dependencies, staged, recursive_group)
+            let (dependencies, recursive_group) = context.into_completion();
+            (outcome, dependencies, recursive_group)
         };
         if self.emit_causal_products {
             tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
@@ -2150,14 +2409,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         match outcome {
             PullOutcome::Produced(value) => {
                 let completion = if let Some(members) = recursive_group {
-                    assert!(
-                        staged.is_empty(),
-                        "recursive completion cannot also stage ordinary peer products"
-                    );
                     ProductCompletion::RecursiveGroup(members)
                 } else {
-                    staged.push((key.clone(), value, dependencies));
-                    ProductCompletion::Batch(staged)
+                    ProductCompletion::Single(value, dependencies)
                 };
                 let settled = self.session_mut().memo.finish_completion(
                     tel,
@@ -2180,11 +2434,10 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session_mut().memo.unblock(&key, dependencies);
+                self.session_mut().memo.unblock(request, &key, dependencies);
                 PullOutcome::Waiting(waits)
             }
             PullOutcome::Failed(failure) => {
-                assert!(staged.is_empty(), "a failed product cannot publish peers");
                 assert!(
                     recursive_group.is_none(),
                     "a failed product cannot publish a recursive group"
@@ -2214,6 +2467,7 @@ impl<T: Telemetry> Drop for ProductDriver<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    include!("pull/ownership_test.rs");
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -2238,8 +2492,9 @@ mod tests {
 
     fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
         ProductDependencies {
+            rooted_read: None,
             membership: HashSet::new(),
-            products: HashMap::from([(dependency.clone(), None)]),
+            products: IndexMap::from([(dependency.clone(), None)]),
             facts: HashMap::new(),
         }
     }
@@ -2256,23 +2511,7 @@ mod tests {
             tel,
             causal_product_events_enabled(tel),
             key,
-            ProductCompletion::Batch(vec![(key.clone(), value, dependencies)]),
-            types,
-        )
-    }
-
-    fn finish_test_batch(
-        memo: &mut ProductMemo,
-        tel: &impl Telemetry,
-        requested: &ProductKey,
-        members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
-        types: &super::super::types::Types,
-    ) -> bool {
-        memo.finish_completion(
-            tel,
-            causal_product_events_enabled(tel),
-            requested,
-            ProductCompletion::Batch(members),
+            ProductCompletion::Single(value, dependencies),
             types,
         )
     }
@@ -2303,8 +2542,9 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::new(),
+                products: IndexMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
                     FactState {
@@ -2529,30 +2769,33 @@ mod tests {
                 (
                     target.clone(),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(current.clone(), None), (detour_1.clone(), None)]),
+                        products: IndexMap::from([(current.clone(), None), (detour_1.clone(), None)]),
                         facts: HashMap::new(),
                     },
                 ),
                 (
                     detour_1.clone(),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(detour_2.clone(), None)]),
+                        products: IndexMap::from([(detour_2.clone(), None)]),
                         facts: HashMap::new(),
                     },
                 ),
                 (
                     detour_2.clone(),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(detour_3.clone(), None)]),
+                        products: IndexMap::from([(detour_3.clone(), None)]),
                         facts: HashMap::new(),
                     },
                 ),
                 (detour_3.clone(), ProductDependencies::default()),
             ] {
-                memo.unblock(&key, dependencies);
+                memo.unblock(ProductRequestId(NonZeroU64::MIN), &key, dependencies);
             }
 
             let (members, search) =
@@ -2616,7 +2859,11 @@ mod tests {
         );
 
         let mut self_cycle = ProductMemo::default();
-        self_cycle.unblock(&current, ProductDependencies::default());
+        self_cycle.unblock(
+            ProductRequestId(NonZeroU64::MIN),
+            &current,
+            ProductDependencies::default(),
+        );
         assert_eq!(
             self_cycle.pending_strong_component(&current, &prospective_dependency(&current), &current, &types),
             (
@@ -2633,18 +2880,22 @@ mod tests {
 
         let mut disjoint = ProductMemo::default();
         disjoint.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &dependency,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(peer.clone(), None)]),
+                products: IndexMap::from([(peer.clone(), None)]),
                 facts: HashMap::new(),
             },
         );
         disjoint.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &peer,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(dependency.clone(), None)]),
+                products: IndexMap::from([(dependency.clone(), None)]),
                 facts: HashMap::new(),
             },
         );
@@ -2664,18 +2915,22 @@ mod tests {
 
         let mut cross_kind = ProductMemo::default();
         cross_kind.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &dependency,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(bridge.clone(), None)]),
+                products: IndexMap::from([(bridge.clone(), None)]),
                 facts: HashMap::new(),
             },
         );
         cross_kind.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &bridge,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(current.clone(), None)]),
+                products: IndexMap::from([(current.clone(), None)]),
                 facts: HashMap::new(),
             },
         );
@@ -2743,10 +2998,12 @@ mod tests {
         }
 
         session.memo.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &cyclic,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(current.clone(), None)]),
+                products: IndexMap::from([(current.clone(), None)]),
                 facts: HashMap::new(),
             },
         );
@@ -2796,41 +3053,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_batch_commits_one_semantic_sequence_for_every_requested_anchor() {
-        let root = RootId::for_test(86);
-        let mut types = super::super::Types::new();
-        let keys =
-            [860, 861, 862].map(|function| ProductKey::AbiExecutable(fake_executable_in(&mut types, root, function)));
-        let mut expected = keys.to_vec();
-        sort_product_keys(&mut expected, &types);
-
-        for requested in &keys {
-            for reverse in [false, true] {
-                let tel = ConfiguredTelemetry::new();
-                let observed = Rc::new(RefCell::new(Vec::new()));
-                let sink = Rc::clone(&observed);
-                tel.attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>(
-                    &["fz", "compiler2", "pull", "product", "settled"],
-                    move |_, _, _, key, _, _| sink.borrow_mut().push(key.clone()),
-                );
-                let mut order = keys.to_vec();
-                if reverse {
-                    order.reverse();
-                }
-                let entries = order
-                    .into_iter()
-                    .map(|key| (key, ProductValue::Unit, ProductDependencies::default()))
-                    .collect();
-                let mut memo = ProductMemo::default();
-                assert!(memo.begin(requested.clone()));
-                assert!(finish_test_batch(&mut memo, &tel, requested, entries, &types));
-                assert_eq!(*observed.borrow(), expected);
-                assert!(keys.iter().all(|key| memo.generation(key) == Some(1)));
-            }
-        }
-    }
-
-    #[test]
     fn recursive_group_commits_one_semantic_sequence_for_every_requested_anchor() {
         let root = RootId::for_test(88);
         let mut types = super::super::Types::new();
@@ -2874,7 +3096,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_batch_drains_produced_and_pending_reader_diamond_in_semantic_order() {
+    fn changed_group_drains_produced_and_pending_reader_diamond_in_semantic_order() {
         let root = RootId::for_test(87);
         let mut types = super::super::Types::new();
         let keys = [870, 871, 872, 873, 874, 875, 876]
@@ -2902,10 +3124,12 @@ mod tests {
                 [left_reader.clone(), right_reader.clone()],
             );
             memo.unblock(
+                ProductRequestId(NonZeroU64::MIN),
                 pending,
                 ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([
+                    products: IndexMap::from([
                         (left.clone(), memo.generation(left)),
                         (right.clone(), memo.generation(right)),
                     ]),
@@ -2913,10 +3137,12 @@ mod tests {
                 },
             );
             memo.unblock(
+                ProductRequestId(NonZeroU64::MIN),
                 pending_child,
                 ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([(pending.clone(), None)]),
+                    products: IndexMap::from([(pending.clone(), None)]),
                     facts: HashMap::new(),
                 },
             );
@@ -2933,7 +3159,7 @@ mod tests {
                 .cloned()
                 .map(|key| (key, replacement.clone(), ProductDependencies::default()))
                 .collect();
-            assert!(finish_test_batch(&mut memo, &tel, left, entries, &types));
+            assert!(finish_test_group(&mut memo, &tel, left, entries, &types));
 
             assert_eq!(*displaced.borrow(), expected_displaced);
             assert!(memo.get(join).is_some());
@@ -2956,10 +3182,12 @@ mod tests {
         finish_test_product(&mut memo, &source, ProductValue::Unit, []);
         finish_test_product(&mut memo, &intermediate, ProductValue::Unit, [source.clone()]);
         memo.unblock(
+            ProductRequestId(NonZeroU64::MIN),
             &pending,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(intermediate.clone(), Some(1))]),
+                products: IndexMap::from([(intermediate.clone(), Some(1))]),
                 facts: HashMap::new(),
             },
         );
@@ -3533,8 +3761,9 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::new(),
+                products: IndexMap::new(),
                 facts: HashMap::from([
                     (
                         FactUse::current(fact.clone()),
@@ -3579,8 +3808,9 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::new(),
+                products: IndexMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
                     FactState {
@@ -3620,8 +3850,9 @@ mod tests {
             &key,
             ProductValue::Unit,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::new(),
+                products: IndexMap::new(),
                 facts: HashMap::from([(
                     FactUse::settled(fact.clone()),
                     FactState {
@@ -3828,12 +4059,19 @@ mod tests {
         assert!(effects.allocates, "effects should propagate through mutual recursion");
         assert!(memo_effects(&driver.session(), &first).is_some_and(|effects| effects.allocates));
         assert!(memo_effects(&driver.session(), &second).is_some_and(|effects| effects.allocates));
-        let expected_dependencies = HashSet::from([
-            ProductKey::MaterializedExecutable(first.clone()),
-            ProductKey::MaterializedExecutable(second.clone()),
-            ProductKey::ExecutableEffects(leaf),
-        ]);
         for member in [&first, &second] {
+            let expected_dependencies = if member == &first {
+                HashSet::from([
+                    ProductKey::MaterializedExecutable(first.clone()),
+                    ProductKey::ExecutableEffects(second.clone()),
+                ])
+            } else {
+                HashSet::from([
+                    ProductKey::MaterializedExecutable(second.clone()),
+                    ProductKey::ExecutableEffects(first.clone()),
+                    ProductKey::ExecutableEffects(leaf.clone()),
+                ])
+            };
             let dependencies = driver
                 .session()
                 .memo()
@@ -3844,7 +4082,7 @@ mod tests {
                 .collect::<HashSet<_>>();
             assert_eq!(
                 dependencies, expected_dependencies,
-                "the group retains exactly the external inputs of its member formulas"
+                "each member retains exactly its own local and recursive reads"
             );
         }
         assert_eq!(driver.session().producer_pokes(), 0);
@@ -3876,12 +4114,16 @@ mod tests {
         let effects = pull_effects_until_produced(&mut driver, &mut world, &anchor);
 
         assert!(effects.allocates);
-        let expected_dependencies = HashSet::from([
-            ProductKey::MaterializedExecutable(anchor.clone()),
-            ProductKey::MaterializedExecutable(first.clone()),
-            ProductKey::MaterializedExecutable(second.clone()),
-        ]);
         for member in [&anchor, &first, &second] {
+            let mut expected_dependencies = HashSet::from([ProductKey::MaterializedExecutable(member.clone())]);
+            if member == &anchor {
+                expected_dependencies.extend([
+                    ProductKey::ExecutableEffects(first.clone()),
+                    ProductKey::ExecutableEffects(second.clone()),
+                ]);
+            } else {
+                expected_dependencies.insert(ProductKey::ExecutableEffects(anchor.clone()));
+            }
             assert_eq!(
                 driver
                     .session()
@@ -3918,11 +4160,14 @@ mod tests {
                 .session()
                 .memo()
                 .product_dependencies(&ProductKey::ExecutableEffects(executable.clone()))
-                .expect("self-recursive effects settle with one external dependency snapshot")
+                .expect("self-recursive effects retain their local and recursive reads")
                 .keys()
                 .cloned()
                 .collect::<HashSet<_>>(),
-            HashSet::from([ProductKey::MaterializedExecutable(executable)])
+            HashSet::from([
+                ProductKey::MaterializedExecutable(executable.clone()),
+                ProductKey::ExecutableEffects(executable)
+            ])
         );
     }
 
@@ -4170,13 +4415,16 @@ mod tests {
         assert_eq!(
             group_dependencies.keys().cloned().collect::<HashSet<_>>(),
             HashSet::from([
-                ProductKey::MaterializedExecutable(anchor),
-                ProductKey::MaterializedExecutable(peer),
-                ProductKey::ExecutableEffects(external.clone()),
+                ProductKey::MaterializedExecutable(anchor.clone()),
+                ProductKey::ExecutableEffects(peer.clone()),
             ])
         );
         assert_eq!(
-            group_dependencies.get(&ProductKey::ExecutableEffects(external.clone())),
+            session
+                .memo()
+                .product_dependencies(&ProductKey::ExecutableEffects(peer))
+                .unwrap()
+                .get(&ProductKey::ExecutableEffects(external.clone())),
             Some(&Some(2))
         );
         assert_eq!(
@@ -4635,6 +4883,7 @@ mod tests {
             key,
             value,
             ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
                 products,
                 facts: HashMap::new(),
@@ -4713,15 +4962,15 @@ mod tests {
         );
         assert_eq!(
             memo.product_dependencies(&left_abi).unwrap(),
-            &HashMap::from([(left_key.clone(), Some(1))])
+            &IndexMap::from([(left_key.clone(), Some(1))])
         );
         assert_eq!(
             memo.product_dependencies(&right_abi).unwrap(),
-            &HashMap::from([(right_key.clone(), Some(1))])
+            &IndexMap::from([(right_key.clone(), Some(1))])
         );
         assert_eq!(
             memo.product_dependencies(&root_key).unwrap(),
-            &HashMap::from([(left_abi.clone(), Some(1)), (right_abi.clone(), Some(1))])
+            &IndexMap::from([(left_abi.clone(), Some(1)), (right_abi.clone(), Some(1))])
         );
 
         let right_generation = memo.generation(&right_key);
@@ -4746,9 +4995,9 @@ mod tests {
         );
         assert!(!replaced.callables[&callable].resolutions.contains(&left_resolution));
         assert_eq!(memo.generation(&right_key), right_generation);
-        assert!(memo.stale_dependency(&left_abi, &types).is_some());
-        assert!(memo.stale_dependency(&right_abi, &types).is_none());
-        assert!(memo.stale_dependency(&root_key, &types).is_some());
+        assert!(memo.stale_dependency(&tel, &left_abi, &types).is_some());
+        assert!(memo.stale_dependency(&tel, &right_abi, &types).is_none());
+        assert!(memo.stale_dependency(&tel, &root_key, &types).is_some());
 
         let reproduced = memo.get(&left_key).cloned().expect("replaced owner product");
         memo.remove(&tel, &left_key, &types);
@@ -4951,6 +5200,7 @@ mod tests {
                     keys[index].clone(),
                     answers[index].product_value(callable, boundary),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
                         products,
                         facts: HashMap::new(),
@@ -4968,7 +5218,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_shape_group_retains_every_external_dependency_for_every_member() {
+    fn transport_shape_group_retains_external_dependencies_on_their_owning_member() {
         let types = fake_types();
         let root = RootId::for_test(38);
         let symbol = executable_symbol_for_test(&fake_executable_with_function(root, 380));
@@ -5006,8 +5256,9 @@ mod tests {
                     left.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([
+                        products: IndexMap::from([
                             (right.clone(), None),
                             (external.clone(), memo.generation(&external)),
                         ]),
@@ -5018,8 +5269,9 @@ mod tests {
                     right.clone(),
                     ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(left.clone(), None)]),
+                        products: IndexMap::from([(left.clone(), None)]),
                         facts: HashMap::new(),
                     },
                 ),
@@ -5028,12 +5280,14 @@ mod tests {
                 entries.reverse();
             }
             assert!(finish_test_group(&mut memo, &tel, &left, entries, &types));
-            for key in [&left, &right] {
-                assert_eq!(
-                    memo.product_dependencies(key),
-                    Some(&HashMap::from([(external.clone(), Some(1))]))
-                );
-            }
+            assert_eq!(
+                memo.product_dependencies(&left),
+                Some(&IndexMap::from([(right.clone(), Some(1)), (external.clone(), Some(1))]))
+            );
+            assert_eq!(
+                memo.product_dependencies(&right),
+                Some(&IndexMap::from([(left.clone(), Some(1))]))
+            );
 
             finish_test_product(&mut memo, &left_reader, ProductValue::Unit, [left.clone()]);
             finish_test_product(&mut memo, &right_reader, ProductValue::Unit, [right.clone()]);
@@ -5043,7 +5297,11 @@ mod tests {
             memo.remove(&tel, &external, &types);
             finish_test_product(&mut memo, &external, external_value(386), []);
             assert!(memo.get(&left).is_none());
-            assert!(memo.get(&right).is_none());
+            assert!(memo.get(&right).is_some());
+            assert!(
+                memo.has_unsettled_inputs(&right),
+                "the indirect reader remains retained until its dependency reproduces"
+            );
             assert!(memo.get(&unrelated).is_some());
 
             for key in [&left, &right] {
@@ -5061,8 +5319,9 @@ mod tests {
                         left.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
+                            rooted_read: None,
                             membership: HashSet::new(),
-                            products: HashMap::from([
+                            products: IndexMap::from([
                                 (right.clone(), right_generation),
                                 (external.clone(), external_generation),
                             ]),
@@ -5073,8 +5332,9 @@ mod tests {
                         right.clone(),
                         ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
                         ProductDependencies {
+                            rooted_read: None,
                             membership: HashSet::new(),
-                            products: HashMap::from([(left.clone(), left_generation)]),
+                            products: IndexMap::from([(left.clone(), left_generation)]),
                             facts: HashMap::new(),
                         },
                     ),
@@ -5202,36 +5462,48 @@ mod tests {
     }
 
     #[test]
-    fn recursive_group_members_share_one_dependency_snapshot() {
+    fn publication_moves_observation_and_membership_storage_into_the_entry() {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(61);
         let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
-        let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 611));
-        let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 612));
+        let mut executable = executable_symbol_for_test(&fake_executable_with_function(root, 612));
+        executable.activation.input = vec![executable.activation.arrow; 32].into_boxed_slice();
+        let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
         let dependencies = ProductDependencies {
-            membership: HashSet::new(),
-            products: HashMap::from([(external, Some(7))]),
+            rooted_read: None,
+            membership: HashSet::from([external.clone()]),
+            products: IndexMap::from([(external.clone(), Some(7))]),
             facts: HashMap::new(),
         };
         let mut memo = ProductMemo::default();
+        let product_storage = dependencies.products.get_index(0).unwrap().0 as *const ProductKey;
+        let ProductKey::TransportShape(position) = dependencies.products.get_index(0).unwrap().0 else {
+            unreachable!()
+        };
+        let input_storage = position.executable().activation.input.as_ptr();
+        let membership_storage = dependencies.membership.get(&external).unwrap() as *const ProductKey;
         assert!(memo.begin(left.clone()));
-        assert!(memo.begin(right.clone()));
-        assert!(finish_test_group(
+        assert!(finish_test_entry(
             &mut memo,
             &tel,
             &left,
-            vec![
-                (left.clone(), ProductValue::Unit, dependencies.clone()),
-                (right.clone(), ProductValue::Unit, dependencies),
-            ],
+            ProductValue::Unit,
+            dependencies,
             &types,
         ));
-        let left_dependencies = &memo.produced[&left].dependencies;
-        let right_dependencies = &memo.produced[&right].dependencies;
-        assert!(
-            Rc::ptr_eq(left_dependencies, right_dependencies),
-            "one recursive publication must retain one shared dependency snapshot",
+        let entry = &memo.produced[&left];
+        assert_eq!(
+            entry.dependencies.products.get_index(0).unwrap().0 as *const ProductKey,
+            product_storage
+        );
+        let ProductKey::TransportShape(position) = entry.dependencies.products.get_index(0).unwrap().0 else {
+            unreachable!()
+        };
+        assert_eq!(position.executable().activation.input.as_ptr(), input_storage);
+        assert_eq!(
+            entry.membership.get(&external).unwrap() as *const ProductKey,
+            membership_storage
         );
     }
 
@@ -5258,10 +5530,12 @@ mod tests {
 
             assert!(memo.begin(left.clone()));
             memo.unblock(
+                ProductRequestId(NonZeroU64::MIN),
                 &left,
                 ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([(right.clone(), None), (external.clone(), Some(1))]),
+                    products: IndexMap::from([(right.clone(), None), (external.clone(), Some(1))]),
                     facts: HashMap::new(),
                 },
             );
@@ -5290,8 +5564,9 @@ mod tests {
                     left.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(right.clone(), None), (external.clone(), Some(2))]),
+                        products: IndexMap::from([(right.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
                 ),
@@ -5299,8 +5574,9 @@ mod tests {
                     right.clone(),
                     ProductValue::Unit,
                     ProductDependencies {
+                        rooted_read: None,
                         membership: HashSet::new(),
-                        products: HashMap::from([(left.clone(), None), (external.clone(), Some(2))]),
+                        products: IndexMap::from([(left.clone(), None), (external.clone(), Some(2))]),
                         facts: HashMap::new(),
                     },
                 ),
@@ -5310,9 +5586,10 @@ mod tests {
             }
             assert!(finish_test_group(&mut memo, &tel, &left, entries, &types));
             for key in [&left, &right] {
+                let peer = if key == &left { &right } else { &left };
                 assert_eq!(
                     memo.product_dependencies(key),
-                    Some(&HashMap::from([(external.clone(), Some(2))]))
+                    Some(&IndexMap::from([(peer.clone(), Some(1)), (external.clone(), Some(2))]))
                 );
             }
             assert_eq!(memo.generation(&unrelated), unrelated_generation);
@@ -5351,10 +5628,12 @@ mod tests {
         ] {
             assert!(memo.begin(key.clone()));
             memo.unblock(
+                ProductRequestId(NonZeroU64::MIN),
                 key,
                 ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::new(),
+                    products: IndexMap::new(),
                     facts: HashMap::from([(dependency, state)]),
                 },
             );
@@ -5402,17 +5681,19 @@ mod tests {
                 finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
                 let unrelated_generation = memo.generation(&unrelated);
                 let left_dependencies = ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
+                    products: IndexMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
                     facts: HashMap::from([(fact.clone(), fact_one)]),
                 };
                 let right_dependencies = ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([(external.clone(), Some(2))]),
+                    products: IndexMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
                 };
                 assert!(memo.begin(left.clone()));
-                memo.unblock(&left, left_dependencies.clone());
+                memo.unblock(ProductRequestId(NonZeroU64::MIN), &left, left_dependencies.clone());
                 assert!(memo.begin(right.clone()));
                 let mut entries = vec![
                     (left.clone(), ProductValue::Unit, left_dependencies),
@@ -5444,8 +5725,9 @@ mod tests {
                     assert!(memo.begin(key.clone()));
                 }
                 let concordant = ProductDependencies {
+                    rooted_read: None,
                     membership: HashSet::new(),
-                    products: HashMap::from([(external.clone(), Some(2))]),
+                    products: IndexMap::from([(external.clone(), Some(2))]),
                     facts: HashMap::from([(fact.clone(), fact_two)]),
                 };
                 assert!(finish_test_group(
@@ -5477,8 +5759,9 @@ mod tests {
                 assert!(memo.begin(key.clone()));
             }
             let first = ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(external.clone(), Some(1))]),
+                products: IndexMap::from([(external.clone(), Some(1))]),
                 facts: HashMap::new(),
             };
             assert!(finish_test_group(
@@ -5497,20 +5780,22 @@ mod tests {
 
             assert!(memo.begin(right.clone()));
             let current = ProductDependencies {
+                rooted_read: None,
                 membership: HashSet::new(),
-                products: HashMap::from([(external.clone(), Some(2))]),
+                products: IndexMap::from([(external.clone(), Some(2))]),
                 facts: HashMap::new(),
             };
-            memo.unblock(&right, current.clone());
+            memo.unblock(ProductRequestId(NonZeroU64::MIN), &right, current.clone());
             assert!(memo.begin(left.clone()));
             let stale = memo
                 .displaced
                 .get(&left)
                 .expect("left should retain its prior value while reproducing")
                 .dependencies
+                .as_ref()
                 .clone();
             let mut entries = vec![
-                (left.clone(), ProductValue::Unit, stale.as_ref().clone()),
+                (left.clone(), ProductValue::Unit, stale),
                 (right.clone(), ProductValue::Unit, current.clone()),
             ];
             if reverse {
@@ -5524,7 +5809,7 @@ mod tests {
                     .get(key)
                     .expect("rejected member should retain its prior value and generation");
                 assert_eq!(displaced.generation, 1);
-                assert_eq!(displaced.dependencies.as_ref(), &ProductDependencies::default());
+                assert_eq!(*displaced.dependencies, ProductDependencies::default());
                 assert!(memo.begin(key.clone()));
             }
             assert!(finish_test_group(
@@ -5726,7 +6011,13 @@ mod tests {
             assert_eq!(memo.generation(key), reverse.generation(key));
             assert_eq!(
                 memo.product_dependencies(key),
-                Some(&HashMap::from([(terminal.clone(), Some(1)), (slot.clone(), Some(1))]))
+                Some(
+                    &keys
+                        .iter()
+                        .chain([&terminal, &slot])
+                        .map(|dependency| (dependency.clone(), Some(1)))
+                        .collect::<IndexMap<_, _>>()
+                )
             );
         }
 
@@ -5760,7 +6051,7 @@ mod tests {
             [],
         );
         assert!(keys.iter().all(|key| memo.get(key).is_none()));
-        assert!(memo.stale_dependency(&parent, &types).is_some());
+        assert!(memo.stale_dependency(&tel, &parent, &types).is_some());
         let replacement_answers = settle_owner_equations(
             &equations(second_resolution.clone(), replacement_position.clone()),
             true,

@@ -28,6 +28,57 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
+
+#[test]
+fn retained_closure_source_replacement_does_not_request_obsolete_products() {
+    let tel = ConfiguredTelemetry::new();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&requests);
+    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
+        &["fz", "compiler2", "pull", "product", "requested"],
+        move |_, _, _, product, _| observed.borrow_mut().push(product.clone()),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: None,
+        text: "fn main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(41));
+    let owner = compiler.root_function(root);
+    let generated = compiler
+        .world()
+        .job_outputs(&Job::LowerFunction(owner))
+        .into_iter()
+        .find_map(|fact| match fact {
+            FactKey::FunctionDefined(function) if function != owner => Some(function),
+            _ => None,
+        })
+        .expect("lowering publishes the generated closure definition");
+    requests.borrow_mut().clear();
+    compiler.submit_code(CodeSubmission {
+        name: None,
+        text: "\n\nfn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    assert!(
+        !requests.borrow().iter().any(|product| match product {
+            ProductKey::MaterializedExecutable(executable)
+            | ProductKey::ExecutableEffects(executable)
+            | ProductKey::AbiExecutable(executable)
+            | ProductKey::BackendExecutable(executable) => executable.activation.function == generated,
+            ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) =>
+                position.executable().activation.function == generated,
+            ProductKey::RootBackendProduct(_) | ProductKey::NativeProgram(_) | ProductKey::StructSchema(_) => false,
+        }),
+        "the replaced owner's membership must not request its obsolete generated child"
+    );
+}
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;

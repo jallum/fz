@@ -586,7 +586,6 @@ A producer may say "I need `AbiExecutable(E)`" or "I need settled
 The public causal stream records these as distinct operations: `requested`
 means the stack asked for a key, `evaluated` means its producer body ran and
 names the exact waits it returned, `settled` means a memo value was published,
-`product.copublished` identifies a general publisher/peer settlement, and
 `recursive_group.published` identifies every actual member of a successfully
 settled recursive group. A repeated evaluation retains its prior exact waits
 and the positions of the fact movement, settlement/cache hit, displacement, or
@@ -626,13 +625,14 @@ search counts or component selected from one graph. A settled product answers
 a read with the value it already holds, so it waits on nothing and no cycle of
 waits runs through it — and a settled product never depends on an unsettled
 one, so nothing is missed by not stepping into it.
-Graph traversal establishes component membership only. `ProductReadContext`
-stages every peer value and dependency snapshot produced by one invocation;
-`ProductDriver` adds the requested key, and `ProductMemo` typed-sorts and
-commits that complete same-producer completion. Recursive components use the
-same completion owner, which validates the group and publishes every member
-atomically. This is an ordering envelope around one producer return, not a
-batch across independent product pulls or fact settlements. Each memo entry
+Graph traversal establishes component membership only. An ordinary producer
+completes exactly its requested key; it cannot stage current peers. Its single
+completion passes directly to publication without a one-element batch vector.
+`ProductReadContext` can stage a recursive component from the current formula
+and the other members' actual pending observations. `ProductMemo` typed-sorts,
+validates and publishes that group atomically, never a batch across independent
+pulls or fact settlements. The public trace reader still understands historical
+ordinary `product.copublished` events, but current producers emit none. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
@@ -644,9 +644,11 @@ Large product answers are single-threaded `Rc` values: the producer, memo entry,
 downstream product, direct consumer, and cache hit retain one immutable
 allocation. `PullSession` and `World` already contain
 `Rc`-owned facts and never cross a `Send` boundary, so `Arc` would add atomic
-traffic without adding a valid ownership path. Recursive-group members also
-retain one `Rc<ProductDependencies>` because their validated external snapshot
-is one value. Equality remains structural at both seams: a separately allocated
+traffic without adding a valid ownership path. Each product member retains its
+own immutable `Rc<ProductDependencies>`. A validation walk borrows that record's
+ordered observation keys while complete nested proofs update memo readiness;
+even positioned keys need no per-edge deep copy. Recursive members do not share
+one dependency union. Equality remains structural: a separately allocated
 equal answer preserves its product generation, while changed content advances
 it. Same-handle comparisons short-circuit on typed pointer identity before the
 structural fallback, so ordinary memo handoffs do not rescan payloads.
@@ -656,11 +658,14 @@ equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
 its materialized, ABI, and backend point queries and iterators project
 the stored key/value pairs directly. `PullSession` carries no parallel artifact
 maps.
-Every member of a settled group retains the union of the
-group's external product and fact dependencies when every duplicate dependency
-state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
-and retries from fresh reads. Internal back-edges disappear only after that
-concordance check. Product or fact movement, including dirtiness propagated
+Group completion checks that duplicate external product and fact observations
+agree; a mixed-generation or mixed-fact-state snapshot publishes nothing and
+retries from fresh reads. This transient conflict check does not become a
+retained shared observation record. Each member retains its own local reads
+in actual first-observation order, including internal recursive edges stamped
+with the group's final co-published generations. Current control therefore
+validates before obsolete downstream work, even when control is an indirect
+dirty selector or another recursive member. Product or fact movement, including dirtiness propagated
 through a still-produced dependency, discards pending reader snapshots and
 unregisters their edges before retry. Settled readers remain memoized and carry
 that dirtiness lazily until requested. Equal reproduction preserves its
@@ -703,11 +708,29 @@ encode, so a value tail returning through it reads no value at all
 Root membership is a distinct dependency relation, not a read of every member's
 value. Each backend producer commits its exact executable and schema membership
 edges alongside its value. Pending attempts leave the committed membership
-standing; recursive-group external read unions do not merge producer-owned
-membership. `ProductMemo` keeps the forward edges, their reverse index, and a
+standing while preserving the current attempt's prospective membership for
+recursive group handoff. Accepted members publish only their own membership.
+`ProductMemo` keeps the forward edges, their reverse index, and a
 rooted parent/child witness. Cutting a witness edge repairs support from the
 remaining committed edges; an isolated recursive cycle cannot retain itself.
 The witness stores reachability evidence, not a second copy of the graph.
+Its sparse dirty-path index advances through current owners before descendants;
+the formula's actual rooted-read observation, not registration lifetime,
+authorizes that demand. Complete member proofs can clear independently, but
+nested root/value cycles remain in one fully checked proof before clearing.
+An actual waiting observation retains its inline dependencies and originating
+request identity in `PendingProduct`. Its optional oldest wait-frame position
+routes retirement to the active drive; identity equality, not numeric ordering,
+proves which attempt owns the frame. Cancellation truncates only that nested
+suffix before obsolete work is requested. An undelivered observation whose
+earlier controls delivered can retain its frame while current member gates
+clear. Exact clearance and reparent events admit newly eligible branches into
+the frame's existing move-only ordered wait inventory. Dirty-node request marks
+deduplicate live admissions; failed and successful teardown release them.
+Events are transient effects of the existing witness updates, not a retained
+frontier or a second dependency graph. Complete group repair precedes event
+consumption. A clear exact active prefix bounds local reparent checks without
+revisiting shared ancestors.
 The memo's derived readiness bit covers both value readers and rooted members.
 Refresh recomputes it from those inputs; external notifications observe the
 bit's transition through the ordinary mutation wave, not partially updated

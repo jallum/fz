@@ -483,6 +483,14 @@ impl JsonlBackend {
             },
         );
         let recursive_search_backend = Rc::clone(&backend);
+        let validation_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductValidation, _>(
+            &["fz", "compiler2", "pull", "product", "validation"],
+            move |name, span_id, parent_span_id, product, work| {
+                validation_backend.handle_raw_event(name, span_id, parent_span_id,
+                    crate::metadata! { product: crate::telemetry::opaque(product), work: crate::telemetry::opaque(work) });
+            },
+        );
         telemetry.attach_raw_event3::<
             crate::compiler2::pull::ProductKey,
             crate::compiler2::pull::ProductKey,
@@ -1188,6 +1196,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "displaced"]
             | ["fz", "compiler2", "pull", "product", "requested"]
             | ["fz", "compiler2", "pull", "product", "evaluated"]
+            | ["fz", "compiler2", "pull", "product", "validation"]
             | ["fz", "compiler2", "pull", "product", "copublished"]
             | ["fz", "compiler2", "pull", "recursive_group", "published"]
             | ["fz", "compiler2", "backend_request", ..]
@@ -1731,6 +1740,21 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         match settlement.group {
             Some(group) => push_u64(out, group),
             None => out.push_str("null"),
+        }
+    } else if let Some(work) = opaque.downcast_ref::<crate::compiler2::pull::ProductValidation>() {
+        for (name, value) in [
+            ("vertex_visits", work.vertex_visits),
+            ("edge_scans", work.edge_scans),
+            ("witness_visits", work.witness_visits),
+            ("witness_updates", work.witness_updates),
+            ("cursor_rewinds", work.cursor_rewinds),
+            ("refresh_visits", work.refresh_visits),
+            ("ordering_comparisons", work.ordering_comparisons),
+        ] {
+            out.push(',');
+            write_str_lit(out, name);
+            out.push(':');
+            push_u64(out, value);
         }
     } else if let Some(search) = opaque.downcast_ref::<crate::compiler2::pull::RecursiveGroupSearch>() {
         for (name, value) in [

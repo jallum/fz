@@ -61,15 +61,41 @@ shares the request's session-owned `ProductRequestId`. The allocator remains
 with a retained session, so ids increase across request activations. Exclusive driver
 ownership and the producer's context-only API make overlapping pulls
 impossible; cache requests have no evaluation. The evaluation
-also carries its structured outcome plus exact product/fact waits. A producer
-that settles another key emits `pull.product.copublished` with both publisher
-and peer. Successful recursive settlement emits `pull.recursive_group.published`
+also carries its structured outcome plus exact product/fact waits. An ordinary
+producer settles only its requested key. Successful recursive settlement emits `pull.recursive_group.published`
 for every actual member, again with publisher and peer. Cache hits,
-displacements, settlements, requests, evaluations, general co-publication, and
+displacements, settlements, requests, evaluations, and
 recursive-group membership are distinct observations over the same structured
 `ProductKey` identity. The driver caches whether any typed causal subscriber is
 present; without one these new hot-path events do no registry traversal or
 payload construction, and no session id is minted.
+The public reader still decodes historical ordinary `product.copublished`
+records; current producers do not emit them.
+
+**Retained product validation** — `pull.product.validation` reports the
+product and `work`. `vertex_visits` counts dirty nodes entered into complete
+proofs (distinct within each proof, summed when proofs are nested);
+`edge_scans` counts ordinary observation inspections. `witness_visits` counts
+rooted cursor and admission-branch positions inspected. `witness_updates` counts sparse node
+creation/disposal, dirty and request-routing marker changes, witness-child link changes, and pruning
+inspections; `cursor_rewinds` counts discarded active positions and successor
+ascents. These include marking, branch repair and clearing, not just reads.
+`refresh_visits` counts boundary Refresh propagation. `ordering_comparisons`
+counts its mutation-wave selection and the live wait inventory's heap
+comparisons. There is no dirty-subset sort. Each heap swap follows a counted
+comparison; insertion/removal adds constant logical movement. Heap items move
+without a Clone bound, and the initial sorted wait Vec becomes its storage.
+
+Nested complete proofs contribute to one event at the actual validation/read
+boundary. Mutation, publication, reseeding and retirement drain maintenance
+for the witnesses they touch in that operation, using this same payload;
+Dirty/Invalidate mutations are not counted as Refresh visits. Whole-request
+measurements include those operation events from before invalidation through
+completion. Drive-local admission/selection work emits at drive teardown,
+including failure, after selected and queued routing marks are released.
+Unchanged reads emit no event and allocate no checked-node table or wait frame.
+These are operation counts, not total allocator calls or elapsed time; they
+expose shared-path revisits and cycle cleanup that formula counts alone miss.
 
 **Backend requests and pull sessions** —
 `fz.compiler2.backend_request.started` / `finished` bracket one request for a

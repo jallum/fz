@@ -21,7 +21,7 @@ fn commit(memo: &mut ProductMemo, key: ProductKey, dependencies: ProductDependen
         &ConfiguredTelemetry::new(),
         false,
         &key,
-        ProductCompletion::Batch(vec![(key.clone(), ProductValue::Unit, dependencies)]),
+        ProductCompletion::Single(ProductValue::Unit, dependencies),
         &crate::compiler2::Types::new(),
     )
 }
@@ -51,11 +51,12 @@ fn only_a_successful_replacement_can_change_committed_root_membership() {
     assert_original_membership(&memo);
 
     assert!(memo.begin(member(0)));
-    memo.unblock(&member(0), membership(&[2]));
+    memo.unblock(ProductRequestId(NonZeroU64::MIN), &member(0), membership(&[2]));
     assert_original_membership(&memo);
-    assert!(
-        memo.pending_dependencies[&member(0)].membership.is_empty(),
-        "waiting records reads, but cannot publish prospective membership"
+    assert_eq!(
+        memo.pending_dependencies[&member(0)].dependencies.membership,
+        HashSet::from([member(2)]),
+        "waiting retains the current attempt for group handoff without publishing it"
     );
 
     assert!(memo.begin(member(0)));
@@ -109,7 +110,9 @@ impl ProductProducers for EqualMemberProducers {
         if key == &member(0) {
             context.include_product(member(1));
         } else if key == &packaging() {
-            if let Err(waits) = context.read_rooted_products(packaging(), member(0), &self.types) {
+            if let Err(waits) =
+                context.read_rooted_products(&ConfiguredTelemetry::new(), packaging(), member(0), &self.types)
+            {
                 return PullOutcome::Waiting(waits);
             }
         } else if matches!(key, ProductKey::NativeProgram(_)) {
@@ -258,10 +261,13 @@ fn clean_ordinary_and_rooted_reads_allocate_no_visiting_set() {
     root.dirty.clear();
     root.changes.clear();
     for key in [member(0), packaging()] {
-        let mut visiting = HashSet::new();
-        assert_eq!(memo.stale_dependency_inner(&key, &mut visiting, &types), None);
+        let mut visiting = ProductValidationWalk::default();
         assert_eq!(
-            visiting.capacity(),
+            memo.stale_dependency_inner(&ConfiguredTelemetry::new(), &key, &mut visiting, &types, true),
+            None
+        );
+        assert_eq!(
+            visiting.checked.capacity(),
             0,
             "a clean product must return before allocating a cycle guard"
         );
@@ -269,7 +275,159 @@ fn clean_ordinary_and_rooted_reads_allocate_no_visiting_set() {
 }
 
 #[test]
-fn a_mixed_membership_and_value_backedge_shares_the_stale_visit_guard() {
+fn stale_membership_validates_its_owner_before_demanding_a_retired_child() {
+    let tel = ConfiguredTelemetry::new();
+    let types = crate::compiler2::Types::new();
+    let mut memo = ProductMemo::default();
+    assert!(commit(&mut memo, member(0), membership(&[])));
+    assert!(commit(&mut memo, member(2), membership(&[0])));
+    memo.register_rooted(packaging(), member(2), &types);
+    memo.rooted.get_mut(&packaging()).unwrap().dirty.clear();
+    memo.invalidate_products(&tel, [member(0), member(2)], &types);
+    assert_eq!(
+        memo.rooted_stale_dependency(
+            &ConfiguredTelemetry::new(),
+            &packaging(),
+            &mut ProductValidationWalk::default(),
+            &types,
+            true
+        ),
+        Some(member(2)),
+        "a child's membership is justified only after its dirty owner validates"
+    );
+    assert!(commit(&mut memo, member(2), membership(&[])));
+    assert_eq!(
+        memo.rooted_stale_dependency(
+            &ConfiguredTelemetry::new(),
+            &packaging(),
+            &mut ProductValidationWalk::default(),
+            &types,
+            true
+        ),
+        None
+    );
+    assert!(!retained(&memo).contains(&member(0)));
+}
+
+#[test]
+fn rooted_validation_visits_shared_ancestor_paths_once() {
+    for size in [8_u32, 32, 64] {
+        let tel = ConfiguredTelemetry::new();
+        let measurements = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&measurements);
+        tel.attach_raw_event2::<ProductKey, ProductValidation, _>(
+            &["fz", "compiler2", "pull", "product", "validation"],
+            move |_, _, _, _, work| observed.borrow_mut().push(*work),
+        );
+        let types = crate::compiler2::Types::new();
+        let mut memo = ProductMemo::default();
+        let leaves = (1000..1000 + size).collect::<Vec<_>>();
+        for leaf in &leaves {
+            assert!(commit(&mut memo, member(*leaf), membership(&[])));
+        }
+        for ancestor in (0..size).rev() {
+            let children = if ancestor + 1 == size {
+                leaves.clone()
+            } else {
+                vec![ancestor + 1]
+            };
+            assert!(commit(&mut memo, member(ancestor), membership(&children)));
+        }
+        assert!(commit(&mut memo, packaging(), membership(&[])));
+        memo.register_rooted(packaging(), member(0), &types);
+        Rc::get_mut(&mut memo.produced.get_mut(&packaging()).unwrap().dependencies)
+            .unwrap()
+            .rooted_read = Some(RootedRead {
+            position: 0,
+            delivered: true,
+            controls_delivered: true,
+        });
+        memo.rooted.get_mut(&packaging()).unwrap().dirty.clear();
+        memo.rooted.get_mut(&packaging()).unwrap().changes.clear();
+        memo.mutate_product_wave(
+            &tel,
+            leaves
+                .iter()
+                .map(|leaf| (ReaderMutation::Dirty, member(*leaf)))
+                .collect(),
+            &types,
+        );
+        measurements.borrow_mut().clear();
+        assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+        let recorded = measurements.borrow();
+        assert_eq!(recorded.len(), 1);
+        let work = recorded[0];
+        assert_eq!(work.vertex_visits, u64::from(size) + 1);
+        assert_eq!(work.edge_scans, 0);
+        assert_eq!(
+            work.witness_visits,
+            u64::from(size) * 2,
+            "shared ancestry is walked once across all dirty leaves"
+        );
+        assert_eq!(work.refresh_visits, 0);
+        assert!(
+            work.ordering_comparisons <= u64::from(size) * u64::from(size.ilog2()) * 4,
+            "deterministic owner ordering is bounded by sorting the dirty subset"
+        );
+        assert!(memo.dirty_descendants.is_empty());
+        assert!(memo.rooted[&packaging()].dirty.is_empty());
+    }
+}
+
+#[test]
+fn an_independent_member_proof_does_not_clear_its_readers_stale_later_control() {
+    let tel = ConfiguredTelemetry::new();
+    let types = crate::compiler2::Types::new();
+    let mut memo = ProductMemo::default();
+    for key in [member(0), member(1)] {
+        assert!(commit(&mut memo, key, membership(&[])));
+    }
+    let dependencies = ProductDependencies {
+        products: IndexMap::from([(member(1), Some(1))]),
+        ..ProductDependencies::default()
+    };
+    assert!(commit(&mut memo, packaging(), dependencies));
+    memo.register_rooted(packaging(), member(0), &types);
+    Rc::get_mut(&mut memo.produced.get_mut(&packaging()).unwrap().dependencies)
+        .unwrap()
+        .rooted_read = Some(RootedRead {
+        position: 0,
+        delivered: true,
+        controls_delivered: true,
+    });
+    memo.rooted.get_mut(&packaging()).unwrap().dirty.clear();
+    memo.rooted.get_mut(&packaging()).unwrap().changes.clear();
+    memo.observed_products.extend([packaging(), member(0)]);
+    memo.mutate_product_wave(&tel, vec![(ReaderMutation::Dirty, member(0))], &types);
+    memo.invalidate_products(&tel, [member(1)], &types);
+    memo.external_changes.clear();
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), Some(member(1)));
+    assert!(
+        !memo.dirty_descendants.contains(&member(0)),
+        "independent complete proof is accepted"
+    );
+    assert!(
+        memo.dirty_descendants.contains(&packaging()),
+        "later failed control keeps its reader dirty"
+    );
+    assert!(
+        memo.external_changes
+            .iter()
+            .any(|change| change.key == member(0) && change.new_settled)
+    );
+    assert!(
+        !memo
+            .external_changes
+            .iter()
+            .any(|change| change.key == packaging() && change.new_settled)
+    );
+    assert!(commit(&mut memo, member(1), membership(&[])));
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+    assert!(memo.external_state(&packaging()).settled);
+}
+
+#[test]
+fn a_mixed_membership_and_value_cycle_validates_equal_observations_together() {
     let tel = ConfiguredTelemetry::new();
     let types = crate::compiler2::Types::new();
     let mut memo = ProductMemo::default();
@@ -278,18 +436,28 @@ fn a_mixed_membership_and_value_backedge_shares_the_stale_visit_guard() {
     dependency.products.insert(packaging(), memo.generation(&packaging()));
     assert!(commit(&mut memo, member(0), dependency));
     memo.register_rooted(packaging(), member(0), &types);
+    Rc::get_mut(&mut memo.produced.get_mut(&packaging()).unwrap().dependencies)
+        .unwrap()
+        .rooted_read = Some(RootedRead {
+        position: 0,
+        delivered: true,
+        controls_delivered: true,
+    });
     let root = memo.rooted.get_mut(&packaging()).unwrap();
     root.dirty.clear();
     root.changes.clear();
     memo.mutate_product_wave(&tel, vec![(ReaderMutation::Dirty, member(0))], &types);
-    let mut visiting = HashSet::new();
-    let stale = memo.stale_dependency_inner(&packaging(), &mut visiting, &types);
-    assert!(
-        matches!(stale, Some(key) if key == packaging() || key == member(0)),
-        "a dirty cycle must produce an exact validation request rather than returning a cache hit"
+    let mut visiting = ProductValidationWalk::default();
+    let stale = memo.stale_dependency_inner(&tel, &packaging(), &mut visiting, &types, true);
+    assert_eq!(stale, None, "dirty state alone is not changed evidence");
+    assert_eq!(
+        visiting.checked,
+        HashSet::from([packaging(), member(0)]),
+        "both sides of the cycle must be validated"
     );
-    assert!(
-        visiting.is_empty(),
-        "every stale traversal frame must unwind its own guard"
-    );
+    assert_eq!(memo.stale_dependency(&tel, &packaging(), &types), None);
+    assert!(memo.dirty_descendants.is_empty());
+    assert!(memo.rooted[&packaging()].dirty.is_empty());
+    assert_eq!(memo.generation(&packaging()), Some(1));
+    assert_eq!(memo.generation(&member(0)), Some(1));
 }

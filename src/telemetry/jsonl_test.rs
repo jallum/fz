@@ -397,6 +397,35 @@ fn pull_product_settled_renders_the_value_authority() {
 }
 
 #[test]
+fn product_validation_work_survives_the_public_trace_boundary() {
+    let (buf, writer) = vec_writer();
+    let telemetry = ConfiguredTelemetry::new();
+    JsonlBackend::new_public_writer(writer).install(&telemetry);
+    let product = crate::compiler2::pull::ProductKey::RootBackendProduct(crate::compiler2::RootId::for_test(9));
+    let work = crate::compiler2::pull::ProductValidation {
+        vertex_visits: 8,
+        edge_scans: 16,
+        witness_visits: 0,
+        witness_updates: 7,
+        cursor_rewinds: 3,
+        refresh_visits: 1,
+        ordering_comparisons: 0,
+    };
+    telemetry.raw_event2(&["fz", "compiler2", "pull", "product", "validation"], &product, &work);
+    drop(telemetry);
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    let event: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let measured = &event["metadata"]["work"];
+    assert_eq!(measured["vertex_visits"], 8);
+    assert_eq!(measured["edge_scans"], 16);
+    assert_eq!(measured["witness_updates"], 7);
+    assert_eq!(measured["cursor_rewinds"], 3);
+    assert_eq!(measured["refresh_visits"], 1);
+    assert_eq!(measured["ordering_comparisons"], 0);
+}
+
+#[test]
 fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
     use crate::compiler2::DependencyKey;
     use crate::compiler2::SemanticOrd as _;

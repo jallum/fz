@@ -13,9 +13,10 @@ use std::rc::Rc;
 use super::drive::{ExecutionContext, FactKey, ProductAddress};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
+use super::ordered_worklist::OrderedWorklist;
 use super::pull::{
-    ProductDriver, ProductFailure, ProductKey, ProductSessions, ProductValue, PullOutcome, PullWait,
-    WorldProductProducers,
+    ProductDriver, ProductFailure, ProductKey, ProductRequestId, ProductSessions, ProductValidation, ProductValue,
+    PullOutcome, PullWait, WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError, WorkStartReason};
 use super::semantic::SemanticOrd;
@@ -355,6 +356,133 @@ pub(super) fn drive_root_product_with_producers<T: crate::telemetry::RawSpanTele
     )
 }
 
+struct ProductWaitFrame {
+    owner: ProductKey,
+    request: Option<ProductRequestId>,
+    products: OrderedWorklist<PullWait>,
+}
+
+impl ProductWaitFrame {
+    fn take_selection(
+        current: &mut Option<ProductKey>,
+        request: Option<ProductRequestId>,
+        products: OrderedWorklist<PullWait>,
+    ) -> Self {
+        let owner = current.take().expect("waiting selection transfers to its frame");
+        Self {
+            owner,
+            request,
+            products,
+        }
+    }
+}
+
+fn discard_wait_frames<T: crate::telemetry::Telemetry>(
+    stack: &mut Vec<ProductWaitFrame>,
+    driver: &mut ProductDriver<'_, T>,
+    from: usize,
+    current: Option<&ProductKey>,
+    work: &mut ProductValidation,
+) -> Option<ProductKey> {
+    if let Some(current) = current {
+        release_selected(stack, driver, current, work);
+    }
+    let mut boundary = None;
+    while stack.len() > from {
+        let position = stack.len() - 1;
+        let frame = stack.pop().expect("discarded wait frame");
+        if let Some(request) = frame.request {
+            for wait in frame.products.into_values() {
+                let PullWait::Product(product) = wait else {
+                    unreachable!("product frame")
+                };
+                driver.release_wait_frame_product(&frame.owner, request, &product);
+            }
+            driver.collect_wait_frame_work(&frame.owner, work);
+            driver.unregister_wait_frame(&frame.owner, request, position);
+        }
+        if stack.len() > from {
+            release_selected(stack, driver, &frame.owner, work);
+        }
+        boundary = Some(frame.owner);
+    }
+    boundary
+}
+
+fn release_selected<T: crate::telemetry::Telemetry>(
+    stack: &[ProductWaitFrame],
+    driver: &mut ProductDriver<'_, T>,
+    current: &ProductKey,
+    work: &mut ProductValidation,
+) {
+    if let Some(frame) = stack.last()
+        && let Some(request) = frame.request
+    {
+        driver.release_wait_frame_product(&frame.owner, request, current);
+        driver.collect_wait_frame_work(&frame.owner, work);
+    }
+}
+
+fn reconcile_wait_frames<T: crate::telemetry::Telemetry>(
+    stack: &mut Vec<ProductWaitFrame>,
+    driver: &mut ProductDriver<'_, T>,
+    types: &super::types::Types,
+    current: Option<&ProductKey>,
+    work: &mut ProductValidation,
+) -> Option<ProductKey> {
+    let (position, request) = driver.reconcile_wait_frames(types)?;
+    let frame = stack
+        .get(position)
+        .expect("a canceled observation still has its registered frame");
+    assert_eq!(
+        frame.request,
+        Some(request),
+        "cancellation identifies the actual waiting attempt"
+    );
+    discard_wait_frames(stack, driver, position, current, work)
+}
+
+fn next_waiting_product<T: crate::telemetry::Telemetry>(
+    stack: &mut Vec<ProductWaitFrame>,
+    driver: &mut ProductDriver<'_, T>,
+    types: &super::types::Types,
+    work: &mut ProductValidation,
+) -> Option<ProductKey> {
+    while let Some((position, request, product)) = driver.next_wait_frame_admission(work) {
+        let frame = stack
+            .get_mut(position)
+            .expect("a live admission names its registered frame");
+        assert_eq!(frame.request, Some(request));
+        frame.products.push(PullWait::Product(product), |left, right| {
+            work.ordering_comparisons += 1;
+            compare_product_waits(types, left, right)
+        });
+    }
+    let frame = stack.last_mut()?;
+    while let Some(wait) = frame.products.pop(|left, right| {
+        work.ordering_comparisons += 1;
+        compare_product_waits(types, left, right)
+    }) {
+        let PullWait::Product(product) = wait else {
+            unreachable!("fact waits are driven before products")
+        };
+        if driver.product_is_current(&product) {
+            if let Some(request) = frame.request {
+                driver.release_wait_frame_product(&frame.owner, request, &product);
+                driver.collect_wait_frame_work(&frame.owner, work);
+            }
+            continue;
+        }
+        return Some(product);
+    }
+    let position = stack.len() - 1;
+    let frame = stack.pop().expect("completed wait frame");
+    if let Some(request) = frame.request {
+        driver.unregister_wait_frame(&frame.owner, request, position);
+    }
+    Some(frame.owner)
+}
+
 fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
@@ -369,83 +497,139 @@ fn drive_root_product_with<T: crate::telemetry::RawSpanTelemetry, E: ProductDriv
     // `Vec::new` is allocation-free: a retained root hit returns before the
     // first wait pushes anything onto the expansion stack.
     let mut stack = Vec::new();
-    let mut current = root_key.clone();
+    let mut current = Some(root_key.clone());
     let mut last_wait = None;
-    for _ in 0..product_stack_budget {
-        if let Some(sessions) = sessions.as_deref_mut() {
-            sessions.drain_active_movements(root, &mut driver.session_mut());
-        }
-        let outcome = pull(world, driver, current.clone());
-        if let Some(sessions) = sessions.as_deref_mut() {
-            sessions.sync_subscriptions(root, &mut driver.session_mut());
-            let changes = sessions.take_product_changes(root, world.types());
-            ExecutionContext::with_product_sessions(world, tel, sessions).apply_product_changes(changes);
-        }
-        match outcome {
-            PullOutcome::Produced(value) => {
-                if current == root_key {
-                    ExecutionContext::new(world, tel).flush_reported_warnings();
-                    return Ok(value);
-                }
-                current = stack.pop().unwrap_or_else(|| root_key.clone());
+    let mut work = ProductValidation::default();
+    let result = (|| {
+        for _ in 0..product_stack_budget {
+            if let Some(sessions) = sessions.as_deref_mut() {
+                sessions.drain_active_movements(root, &mut driver.session_mut());
             }
-            PullOutcome::Waiting(mut waits) => {
-                // A pull that reports more than one wait built the list from
-                // a `HashSet<PullWait>` upstream (the standing idiom for
-                // wait-accumulator parameters throughout `jobs::runtime_demand`
-                // and `jobs::artifact`), so its arrival order here is a
-                // per-process `RandomState` artifact, not a property of the
-                // program. Product dependencies still expand in order, and
-                // fact producers are still driven in order, so that order
-                // decides which producer job actually runs first and can flip
-                // a keep-first merge downstream. The settled fact questions
-                // from this ONE evaluation cross the drain arbiter together.
-                // `PullWait`'s
-                // constituents span too many identity types across the
-                // compiler to give it a cheap structural `Ord`, but its
-                // Product keys retain their existing data ordering. Fact uses
-                // can carry activation arrows, whose raw `Ty` ids are mint
-                // history, so they share the World's faithful semantic key
-                // with terminal diagnostics and other fact-wait boundaries.
-                sort_product_waits(world.types(), &mut waits);
-                waits.dedup();
-                last_wait = Some((current.clone(), waits.clone()));
-                stack.push(current);
-                let mut facts = Vec::new();
-                for wait in waits.into_iter().rev() {
-                    match wait {
-                        PullWait::Product(product) => stack.push(product),
-                        PullWait::Fact(fact) => facts.push(fact),
+            if let Some(owner) = reconcile_wait_frames(&mut stack, driver, world.types(), current.as_ref(), &mut work) {
+                current = Some(owner);
+            }
+            let outcome = pull(world, driver, current.as_ref().expect("selected product").clone());
+            if let Some(sessions) = sessions.as_deref_mut() {
+                sessions.sync_subscriptions(root, &mut driver.session_mut());
+                let changes = sessions.take_product_changes(root, world.types());
+                ExecutionContext::with_product_sessions(world, tel, sessions).apply_product_changes(changes);
+            }
+            if let Some(owner) = reconcile_wait_frames(&mut stack, driver, world.types(), current.as_ref(), &mut work) {
+                current = Some(owner);
+                continue;
+            }
+            match outcome {
+                PullOutcome::Produced(value) => {
+                    if current.as_ref() == Some(&root_key) {
+                        ExecutionContext::new(world, tel).flush_reported_warnings();
+                        return Ok(value);
                     }
+                    release_selected(&stack, driver, current.as_ref().expect("produced selection"), &mut work);
+                    current = Some(
+                        next_waiting_product(&mut stack, driver, world.types(), &mut work)
+                            .unwrap_or_else(|| root_key.clone()),
+                    );
                 }
-                let producer_pokes = drive_product_fact_waits_with_sessions::<T, E>(
-                    world,
-                    tel,
-                    root,
-                    driver,
-                    sessions.as_deref_mut(),
-                    &facts,
-                    fact_wait_budget,
-                )?;
-                driver.session_mut().record_producer_pokes(producer_pokes);
-                current = stack.pop().expect("a waiting product leaves itself on the pull stack");
+                PullOutcome::Waiting(mut waits) => {
+                    // A pull that reports more than one wait built the list from
+                    // a `HashSet<PullWait>` upstream (the standing idiom for
+                    // wait-accumulator parameters throughout `jobs::runtime_demand`
+                    // and `jobs::artifact`), so its arrival order here is a
+                    // per-process `RandomState` artifact, not a property of the
+                    // program. Product dependencies still expand in order, and
+                    // fact producers are still driven in order, so that order
+                    // decides which producer job actually runs first and can flip
+                    // a keep-first merge downstream. The settled fact questions
+                    // from this ONE evaluation cross the drain arbiter together.
+                    // `PullWait`'s
+                    // constituents span too many identity types across the
+                    // compiler to give it a cheap structural `Ord`, but its
+                    // Product keys retain their existing data ordering. Fact uses
+                    // can carry activation arrows, whose raw `Ty` ids are mint
+                    // history, so they share the World's faithful semantic key
+                    // with terminal diagnostics and other fact-wait boundaries.
+                    sort_product_waits(world.types(), &mut waits);
+                    waits.dedup();
+                    let owner = current.as_ref().expect("waiting selection");
+                    last_wait = Some((owner.clone(), waits.clone()));
+                    let fact_count = waits
+                        .iter()
+                        .take_while(|wait| matches!(wait, PullWait::Fact(_)))
+                        .count();
+                    let mut facts = waits
+                        .drain(..fact_count)
+                        .map(|wait| {
+                            let PullWait::Fact(fact) = wait else {
+                                unreachable!("sorted fact prefix")
+                            };
+                            fact
+                        })
+                        .collect::<Vec<_>>();
+                    facts.reverse();
+                    let request = driver.register_wait_frame(owner, stack.len());
+                    if let Some(request) = request {
+                        for wait in &waits {
+                            let PullWait::Product(product) = wait else {
+                                unreachable!("product suffix")
+                            };
+                            driver.admit_wait_frame_product(owner, request, product);
+                        }
+                        driver.collect_wait_frame_work(owner, &mut work);
+                    }
+                    let products = OrderedWorklist::from_sorted(waits);
+                    stack.push(ProductWaitFrame::take_selection(&mut current, request, products));
+                    let producer_pokes = drive_product_fact_waits_with_sessions::<T, E>(
+                        world,
+                        tel,
+                        root,
+                        driver,
+                        sessions.as_deref_mut(),
+                        &facts,
+                        fact_wait_budget,
+                    )?;
+                    driver.session_mut().record_producer_pokes(producer_pokes);
+                    current = Some(
+                        reconcile_wait_frames(&mut stack, driver, world.types(), current.as_ref(), &mut work)
+                            .or_else(|| next_waiting_product(&mut stack, driver, world.types(), &mut work))
+                            .expect("a waiting product leaves its owner on the pull stack"),
+                    );
+                }
+                PullOutcome::Failed(failure) => {
+                    return Err(E::product_failed(
+                        world,
+                        tel,
+                        root,
+                        current.as_ref().expect("failed selection"),
+                        failure,
+                    ));
+                }
             }
-            PullOutcome::Failed(failure) => return Err(E::product_failed(world, tel, root, &current, failure)),
         }
-    }
-    Err(E::did_not_settle(world, tel, root, last_wait))
+        Err(E::did_not_settle(world, tel, root, last_wait))
+    })();
+    // A failed fact pump can leave a retirement notification. Consume it while
+    // its positions still name this drive, then unregister only our own frames.
+    let _ = driver.reconcile_wait_frames(world.types());
+    let _ = discard_wait_frames(&mut stack, driver, 0, current.as_ref(), &mut work);
+    driver.finish_wait_frames();
+    work.report(tel, &root_key);
+    result
 }
 
 /// Orders a product producer's unordered wait set before the stack consumes
 /// it. Fact waits use the World's semantic type key because they can contain
 /// activation arrows whose raw handles and display strings are not identities.
 pub(super) fn sort_product_waits(types: &super::types::Types, waits: &mut [PullWait]) {
-    waits.sort_by(|left, right| match (left, right) {
+    waits.sort_by(|left, right| compare_product_waits(types, left, right));
+}
+
+fn compare_product_waits(types: &super::types::Types, left: &PullWait, right: &PullWait) -> std::cmp::Ordering {
+    match (left, right) {
         (PullWait::Fact(left), PullWait::Fact(right)) => left.semantic_cmp(right, types),
         (PullWait::Product(left), PullWait::Product(right)) => left.semantic_cmp(right, types),
         (PullWait::Fact(_), PullWait::Product(_)) => std::cmp::Ordering::Less,
         (PullWait::Product(_), PullWait::Fact(_)) => std::cmp::Ordering::Greater,
-    });
+    }
 }
 
 /// The single-fact test seam over the exact prerequisite-set loop below.
@@ -491,7 +675,16 @@ fn drive_product_fact_waits_with_sessions<T: crate::telemetry::RawSpanTelemetry,
         .collect::<Vec<_>>();
     for fact in facts {
         let mut jobs_ran = 0_u64;
-        while !product_fact_wait_is_satisfied(world, fact) {
+        loop {
+            if let Some(sessions) = sessions.as_deref_mut() {
+                sessions.drain_active_movements(root, &mut driver.session_mut());
+            }
+            if driver.wait_frames_canceled(world.types()) {
+                return Ok(producer_pokes);
+            }
+            if product_fact_wait_is_satisfied(world, fact) {
+                break;
+            }
             if world.work_graph.pending_jobs() == 0
                 && let Some(sessions) = sessions.as_deref_mut()
             {
@@ -652,5 +845,171 @@ fn interpret_request_drain(
             "compiler2 root {} could not apply queued work; unresolved={waits:?}",
             root.as_u32()
         )),
+    }
+}
+
+#[cfg(test)]
+mod wait_frame_tests {
+    use super::*;
+    use crate::compiler2::pull::{ProductProducers, ProductReadContext};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn a_waiting_frame_takes_the_selected_positioned_key_without_copying_its_input() {
+        use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
+        let arrow = crate::compiler2::Types::new().any();
+        let input = vec![arrow; 32].into_boxed_slice();
+        let storage = input.as_ptr();
+        let mut selected = Some(ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: crate::compiler2::FunctionId::for_test(91),
+                    arrow,
+                    input,
+                },
+                need: crate::compiler2::identity::ExecutableNeed::Value,
+            },
+        }));
+        let frame = ProductWaitFrame::take_selection(&mut selected, None, OrderedWorklist::from_sorted(Vec::new()));
+        assert!(
+            selected.is_none(),
+            "the suspended owner has exactly one current location"
+        );
+        let ProductKey::TransportShape(position) = &frame.owner else {
+            unreachable!()
+        };
+        assert_eq!(
+            position.executable().activation.input.as_ptr(),
+            storage,
+            "suspending a selected key moves its boxed input rather than allocating a duplicate"
+        );
+    }
+
+    #[test]
+    fn a_product_wait_batch_drives_facts_in_descending_semantic_order() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let roots = ["missing_first", "missing_second"].map(|name| {
+            world.submit_root(
+                None,
+                name.to_owned(),
+                0,
+                crate::compiler2::identity::ExecutableNeed::Value,
+            )
+        });
+        let mut facts = roots.map(|root| FactUse::settled(FactKey::RootEntry(root)));
+        facts.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+        let root = roots[0];
+        let expected_fact = facts[1].clone();
+        let waits = facts.into_iter().map(PullWait::Fact).collect::<Vec<_>>();
+        let mut driver = ProductDriver::new(&tel, root);
+        let result = drive_root_product_with::<_, String>(
+            &mut world,
+            &tel,
+            root,
+            ProductKey::RootBackendProduct(root),
+            &mut driver,
+            None,
+            PRODUCT_DRIVE_BUDGET,
+            PRODUCT_DRIVE_BUDGET,
+            |_, _, _| PullOutcome::Waiting(waits.clone()),
+        );
+        let expected = <String as ProductDriveError>::no_ready_producer(&world, &tel, root, &expected_fact);
+        assert_eq!(
+            result,
+            Err(expected),
+            "the actual pump must begin with the last semantically sorted fact"
+        );
+    }
+
+    #[test]
+    fn a_fact_pump_rechecks_retired_demand_before_reporting_an_obsolete_missing_producer() {
+        struct Producers<'a> {
+            world: &'a World,
+            tel: &'a ConfiguredTelemetry,
+            indexed: FactKey,
+            missing: FactKey,
+            remove_after_index: bool,
+            keys: [ProductKey; 4],
+        }
+        impl ProductProducers for Producers<'_> {
+            fn product_types(&self) -> &crate::compiler2::Types {
+                self.world.types()
+            }
+            fn produce(&mut self, context: &mut ProductReadContext<'_>, key: &ProductKey) -> PullOutcome {
+                let [owner, old_seed, empty_seed, child] = &self.keys;
+                if key == owner {
+                    let indexed = context.read_fact(self.world, FactUse::current(self.indexed.clone()));
+                    let seed = if indexed && self.remove_after_index {
+                        empty_seed
+                    } else {
+                        old_seed
+                    };
+                    return match context.read_rooted_products(self.tel, key.clone(), seed.clone(), self.world.types()) {
+                        Ok(_) => PullOutcome::Produced(ProductValue::Unit),
+                        Err(waits) => PullOutcome::Waiting(waits),
+                    };
+                }
+                if key == old_seed {
+                    context.include_product(child.clone());
+                }
+                if key == child {
+                    let fact = FactUse::settled(self.missing.clone());
+                    if !context.read_fact(self.world, fact.clone()) {
+                        return PullOutcome::wait_on_fact(fact);
+                    }
+                }
+                PullOutcome::Produced(ProductValue::Unit)
+            }
+        }
+        for remove_after_index in [false, true] {
+            let tel = ConfiguredTelemetry::new();
+            let mut world = World::new();
+            let code = world.submit_code(None, "fn indexed_only() do\n 1\nend\n".to_owned());
+            let root = world.submit_root(
+                None,
+                "undefined_wait_entry".to_owned(),
+                0,
+                crate::compiler2::identity::ExecutableNeed::Value,
+            );
+            let keys = [100, 101, 102, 103].map(|id| ProductKey::RootBackendProduct(RootId::for_test(id)));
+            let mut driver = ProductDriver::new(&tel, root);
+            let result = drive_root_product_with::<_, String>(
+                &mut world,
+                &tel,
+                root,
+                keys[0].clone(),
+                &mut driver,
+                None,
+                PRODUCT_DRIVE_BUDGET,
+                PRODUCT_DRIVE_BUDGET,
+                |world, driver, current| {
+                    driver.pull(
+                        &mut Producers {
+                            world,
+                            tel: &tel,
+                            indexed: FactKey::CodeIndexed(code),
+                            missing: FactKey::RootEntry(root),
+                            remove_after_index,
+                            keys: keys.clone(),
+                        },
+                        current,
+                    )
+                },
+            );
+            if remove_after_index {
+                assert_eq!(
+                    result,
+                    Ok(ProductValue::Unit),
+                    "IndexCode retires the observation that owned the undefined-root wait"
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.contains("no ready producer"),
+                    "a still-required undefined root remains an error: {error}"
+                );
+            }
+        }
     }
 }

@@ -2010,9 +2010,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // Shape/owner answers stay; runtime and definition-macro roots no longer
-        // settle separate pointer-only backend-content projection products.
-        (239, 239, 239, 0, 15, 0),
+        // Answers stay exact. Already-current queued work skips eight cache
+        // queries: three materialized, three shape, and two callable products.
+        (239, 239, 239, 0, 7, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(

@@ -25,6 +25,7 @@ unnecessary_to_owned = "warn"
 workspace = true
 
 [dependencies]
+indexmap = "2.14"
 libc = "0.2"
 cranelift-codegen = { version = "0.131", features = ["disas"] }
 cranelift-frontend = "0.131"

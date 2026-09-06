@@ -103,12 +103,60 @@ and `MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly.
 World fact values are not copied into `ProductMemo` and therefore have no
 product settlement, displacement, cache-hit, or re-entry lifecycle.
 
+Retained product validation follows each formula's product observations in
+read order. A selector is refreshed before a later child that the selector may
+remove; an equal selector keeps its readers' allocation and generation without
+evaluating them. Fact observations are reconciled World snapshots, so changed
+local facts already identify their owning formula for reproduction.
+Recursive publication preserves each member's own local and recursive reads,
+with internal edges stamped with the members' final generations. All members
+publish before external readers are notified. Each member has one immutable
+dependency owner, allowing validation to borrow even positioned observation
+keys while updating readiness. A successful validation checks
+the whole reachable dirty cycle before clearing its dirtiness together.
+Pending producer attempts replace their observations because the producer
+starts its formula again; current prospective membership remains available to
+recursive group handoff but publishes only on accepted completion.
+A rooted membership read records its position among the formula's ordinary
+observations. Both retained answers and waiting attempts validate the preceding
+controls before using that witness. A registered old seed alone cannot authorize
+demand. An undelivered waiting observation whose earlier reads actually
+delivered can finish prerequisites before the formula is evaluated again;
+ordinary reverse-edge invalidation revokes that continuation. Delivered data
+or changed readiness cannot authorize a later obsolete suffix. Reading does
+not consume membership changes: accepted publication acknowledges its delivered
+observation before new same-completion changes. Waiting, failure and rejected
+completion retain changes. A successful formula with no rooted observation
+retires only its own old witness.
+
 `RootBackendProduct(root)` owns one shared `BackendProgram`. Each
 `BackendExecutable` contributes typed membership edges for its local calls,
 positioned callable targets, and reachable `StructSchema` products. The memo
 maintains root membership over those committed edges and supplies changed keys
 to root packaging. The program's persistent ordered inventories share untouched
 branches with prior snapshots; packaging does not rediscover the root closure.
+The root's existing parent witness also orders validation: a dirty owner must
+validate before its children can be demanded. Equal owners expose still-needed
+children; replacement can withdraw obsolete children first. A failed retained
+validation stops that traversal, because its provisional cycle checks cannot
+authorize a later sibling. Immediately missing independent members can share
+one live wait frame. Its existing wait inventory is a move-only semantic
+min-heap: newly exposed children compete with remaining owners before the next
+pull. The exact pending attempt owns that frame through its originating
+request identity. Retiring the observation cancels its nested wait suffix
+before further product requests or fact prerequisites; retrying a nested owner
+preserves its still-live admission in the outer frame. Gate clearance and
+alternate reparenting feed only the affected branches to that same frame,
+after complete publication and witness repair. Request marks in dirty nodes
+prevent duplicate admission and are released on frame teardown. They are
+routing state, not another membership or value authority.
+A sparse index over dirty members and their actual witness
+ancestors replaces a flat dirty inventory. Its first-live-child cursor advances
+only after authoritative clearing; local reparenting preserves the unaffected
+active prefix. An independently complete member proof is cleared before later
+unrelated missing members are visited, so equal cycles do not repeat for every
+waiting owner. Nested root/value obligations remain in that same complete
+proof, never in a retained provisional-permission cache.
 
 Each materialized executable drops value types removed with pruned control,
 then carries the typed `ModuleId` set named by its surviving struct steps and

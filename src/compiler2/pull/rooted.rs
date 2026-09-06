@@ -2,24 +2,52 @@
 
 use super::*;
 
+mod dirty;
+use dirty::DirtyWitness;
+
 #[derive(Debug)]
 pub(super) struct RootedProducts {
     seed: ProductKey,
     parents: HashMap<ProductKey, Option<ProductKey>>,
     children: HashMap<ProductKey, HashSet<ProductKey>>,
-    pub(super) dirty: HashSet<ProductKey>,
+    pub(super) dirty: DirtyWitness,
     pub(super) changes: HashSet<ProductKey>,
     #[cfg(test)]
     last_detached: usize,
 }
 
 impl RootedProducts {
+    fn mark_dirty(&mut self, key: &ProductKey) -> bool {
+        self.dirty.insert(key.clone(), &self.parents)
+    }
+
+    fn visit_dirty(&self, mut blocked: impl FnMut(&ProductKey) -> bool) -> ProductValidation {
+        let (mut cursor, visits) = self.dirty.first(&self.seed);
+        let mut work = ProductValidation {
+            witness_visits: visits,
+            ..ProductValidation::default()
+        };
+        while let Some(key) = cursor {
+            let blocked = self.dirty.contains(&key) && blocked(&key);
+            cursor = self.dirty.next(&key, !blocked, &self.parents);
+            work.witness_visits += u64::from(cursor.is_some());
+        }
+        self.collect_maintenance(&mut work);
+        work
+    }
+
+    pub(super) fn collect_maintenance(&self, work: &mut ProductValidation) {
+        let (updates, rewinds) = self.dirty.take_maintenance();
+        work.witness_updates += updates;
+        work.cursor_rewinds += rewinds;
+    }
+
     fn new(seed: ProductKey) -> Self {
         Self {
             seed,
             parents: HashMap::new(),
             children: HashMap::new(),
-            dirty: HashSet::new(),
+            dirty: DirtyWitness::default(),
             changes: HashSet::new(),
             #[cfg(test)]
             last_detached: 0,
@@ -43,7 +71,7 @@ impl RootedProducts {
                 self.children.entry(parent.clone()).or_default().insert(key.clone());
             }
             self.parents.insert(key.clone(), parent);
-            self.dirty.insert(key.clone());
+            self.dirty.insert(key.clone(), &self.parents);
             self.changes.insert(key.clone());
             added.insert(key.clone());
             let mut children = memo.membership(&key).into_iter().flatten().collect::<Vec<_>>();
@@ -71,6 +99,7 @@ impl RootedProducts {
                 .get_mut(&previous)
                 .expect("witness child index")
                 .remove(key);
+            self.dirty.reparent(key, &previous, &parent, &self.parents);
         }
         self.children.entry(parent).or_default().insert(key.clone());
     }
@@ -81,6 +110,7 @@ impl RootedProducts {
         parent: &ProductKey,
         key: &ProductKey,
         types: &super::super::types::Types,
+        reparented: &mut Vec<ProductKey>,
     ) -> HashSet<ProductKey> {
         if self.parents.get(key) != Some(&Some(parent.clone())) {
             return HashSet::new();
@@ -94,6 +124,7 @@ impl RootedProducts {
             .min_by(|left, right| left.semantic_cmp(right, types))
         {
             self.reparent(key, alternate.clone());
+            reparented.push(key.clone());
             return HashSet::new();
         }
         let mut detached = HashMap::new();
@@ -118,6 +149,9 @@ impl RootedProducts {
             .expect("removed witness has a parent")
             .remove(key);
         for member in detached.keys() {
+            self.dirty.remove(member, &self.parents);
+        }
+        for member in detached.keys() {
             self.parents.remove(member);
         }
         let mut entrances = detached
@@ -137,7 +171,11 @@ impl RootedProducts {
         });
         let mut touched = HashSet::new();
         for (member, parent) in entrances {
-            touched.extend(self.attach(memo, member, Some(parent), types));
+            if self.parents.contains_key(&member) {
+                continue;
+            }
+            touched.extend(self.attach(memo, member.clone(), Some(parent), types));
+            reparented.push(member);
         }
         for (member, (was_changed, was_dirty)) in detached {
             if self.parents.contains_key(&member) {
@@ -146,12 +184,11 @@ impl RootedProducts {
                     self.changes.remove(&member);
                 }
                 if !was_dirty {
-                    self.dirty.remove(&member);
+                    self.dirty.remove(&member, &self.parents);
                 }
                 touched.remove(&member);
                 continue;
             }
-            self.dirty.remove(&member);
             self.changes.insert(member.clone());
             touched.insert(member);
         }
@@ -164,7 +201,7 @@ impl RootedProducts {
         owner: &ProductKey,
         previous: &HashSet<ProductKey>,
         types: &super::super::types::Types,
-    ) -> HashSet<ProductKey> {
+    ) -> (HashSet<ProductKey>, Vec<ProductKey>) {
         #[cfg(test)]
         {
             self.last_detached = 0;
@@ -174,6 +211,7 @@ impl RootedProducts {
             .expect("a successful member has committed dependencies");
         // New entry paths exist before obsolete support is repaired.
         let mut touched = HashSet::new();
+        let mut reparented = Vec::new();
         let mut added = next.difference(previous).collect::<Vec<_>>();
         let mut removed = previous.difference(next).collect::<Vec<_>>();
         added.sort_by(|left, right| left.semantic_cmp(right, types));
@@ -182,28 +220,178 @@ impl RootedProducts {
             touched.extend(self.attach(memo, child.clone(), Some(owner.clone()), types));
         }
         for child in removed {
-            touched.extend(self.remove_edge(memo, owner, child, types));
+            touched.extend(self.remove_edge(memo, owner, child, types, &mut reparented));
         }
-        touched
+        (touched, reparented)
     }
 }
 
 impl ProductMemo {
-    pub(super) fn rooted_member_dirty(&mut self, member: &ProductKey) -> Vec<ProductKey> {
+    pub(super) fn begin_wait_frame_admissions(&mut self, reader: &ProductKey) {
+        if let Some((_, request)) = self.live_rooted_wait_frame(reader) {
+            let seed = self.rooted[reader].seed.clone();
+            self.expose_waiting_branch(reader, request, seed, false);
+        }
+    }
+
+    fn live_rooted_wait_frame(&self, reader: &ProductKey) -> Option<(usize, ProductRequestId)> {
+        let pending = self.pending_dependencies.get(reader)?;
+        let read = pending.dependencies.rooted_read?;
+        (!read.delivered && read.controls_delivered).then_some((pending.waiting_frame?, pending.request))
+    }
+
+    fn expose_waiting_branch(
+        &mut self,
+        reader: &ProductKey,
+        request: ProductRequestId,
+        branch: ProductKey,
+        reparented: bool,
+    ) {
+        let Some((position, current)) = self.live_rooted_wait_frame(reader) else {
+            return;
+        };
+        if current != request {
+            return;
+        }
+        let rooted = &self.rooted[reader];
+        if !rooted.dirty.contains(&branch) && rooted.dirty.children(&branch).next().is_none() {
+            return;
+        }
+        self.wait_frame_exposures.push(WaitFrameExposure {
+            reader: reader.clone(),
+            request,
+            position,
+            branch,
+            reparented,
+        });
+    }
+
+    pub(super) fn next_wait_frame_admission(
+        &mut self,
+        work: &mut ProductValidation,
+    ) -> Option<(usize, ProductRequestId, ProductKey)> {
+        while let Some(effect) = self.wait_frame_exposures.pop() {
+            let WaitFrameExposure {
+                reader,
+                request,
+                position,
+                branch,
+                reparented,
+            } = effect;
+            if self.live_rooted_wait_frame(&reader) != Some((position, request)) {
+                continue;
+            }
+            let rooted = &self.rooted[&reader];
+            if reparented {
+                let mut parent = rooted.parents.get(&branch).and_then(Option::as_ref);
+                let mut blocked = false;
+                while let Some(key) = parent {
+                    work.witness_visits += 1;
+                    if rooted.dirty.contains(key) {
+                        blocked = true;
+                        break;
+                    }
+                    if rooted.dirty.on_clear_active_prefix(key) {
+                        break;
+                    }
+                    parent = rooted.parents.get(key).and_then(Option::as_ref);
+                }
+                if blocked {
+                    continue;
+                }
+            }
+            work.witness_visits += 1;
+            let current = self.get(&branch).is_some()
+                && !self.has_unsettled_inputs(&branch)
+                && self.rooted.get(&branch).is_none_or(|root| root.dirty.is_empty());
+            let rooted = self.rooted.get_mut(&reader).expect("live waiting witness");
+            if rooted.dirty.contains(&branch) && !current {
+                let admitted = rooted.dirty.admit(&branch, request);
+                rooted.collect_maintenance(work);
+                if admitted {
+                    return Some((position, request, branch));
+                }
+                continue;
+            }
+            for child in rooted.dirty.children(&branch) {
+                self.wait_frame_exposures.push(WaitFrameExposure {
+                    reader: reader.clone(),
+                    request,
+                    position,
+                    branch: child.clone(),
+                    reparented: false,
+                });
+            }
+            rooted.dirty.remove(&branch, &rooted.parents);
+            rooted.collect_maintenance(work);
+        }
+        None
+    }
+
+    pub(super) fn admit_wait_frame_product(
+        &mut self,
+        reader: &ProductKey,
+        request: ProductRequestId,
+        product: &ProductKey,
+    ) {
+        if self
+            .live_rooted_wait_frame(reader)
+            .is_some_and(|(_, origin)| origin == request)
+        {
+            self.rooted
+                .get_mut(reader)
+                .expect("live waiting witness")
+                .dirty
+                .admit(product, request);
+        }
+    }
+
+    pub(super) fn release_wait_frame_product(
+        &mut self,
+        reader: &ProductKey,
+        request: ProductRequestId,
+        product: &ProductKey,
+    ) {
+        if let Some(rooted) = self.rooted.get_mut(reader) {
+            rooted.dirty.release(product, request);
+        }
+    }
+
+    pub(super) fn retire_rooted(&mut self, reader: &ProductKey) -> ProductValidation {
+        let mut work = ProductValidation::default();
+        let Some(mut rooted) = self.rooted.remove(reader) else {
+            return work;
+        };
+        rooted.dirty.clear();
+        rooted.collect_maintenance(&mut work);
+        for member in rooted.parents.keys() {
+            let readers = self.rooted_readers.get_mut(member).expect("registered member");
+            readers.remove(reader);
+            if readers.is_empty() {
+                self.rooted_readers.remove(member);
+            }
+        }
+        work
+    }
+
+    pub(super) fn rooted_member_dirty(&mut self, member: &ProductKey, work: &mut ProductValidation) -> Vec<ProductKey> {
         let readers = self.rooted_readers.get(member).cloned().unwrap_or_default();
         readers
             .into_iter()
             .filter(|reader| {
-                self.rooted
-                    .get_mut(reader)
-                    .expect("registered root")
-                    .dirty
-                    .insert(member.clone())
+                let rooted = self.rooted.get_mut(reader).expect("registered root");
+                let changed = rooted.mark_dirty(member);
+                rooted.collect_maintenance(work);
+                changed
             })
             .collect()
     }
 
-    pub(super) fn rooted_member_refresh(&mut self, member: &ProductKey) -> Vec<ProductKey> {
+    pub(super) fn rooted_member_refresh(
+        &mut self,
+        member: &ProductKey,
+        work: &mut ProductValidation,
+    ) -> Vec<ProductKey> {
         if self.has_unsettled_inputs(member) {
             return Vec::new();
         }
@@ -212,29 +400,65 @@ impl ProductMemo {
             .into_iter()
             .filter(|reader| {
                 let rooted = self.rooted.get_mut(reader).expect("registered root");
-                rooted.dirty.remove(member) && rooted.dirty.is_empty() && rooted.changes.is_empty()
+                let waiting = rooted.dirty.waiting(member);
+                let changed = rooted.dirty.remove(member, &rooted.parents)
+                    && rooted.dirty.is_empty()
+                    && rooted.changes.is_empty();
+                rooted.collect_maintenance(work);
+                if let Some(request) = waiting {
+                    self.expose_waiting_branch(reader, request, member.clone(), false);
+                }
+                changed
             })
             .collect()
     }
 
     pub(super) fn rooted_stale_dependency(
-        &self,
+        &mut self,
+        tel: &impl Telemetry,
         reader: &ProductKey,
-        visiting: &mut HashSet<ProductKey>,
+        visiting: &mut ProductValidationWalk,
         types: &super::super::types::Types,
+        complete: bool,
     ) -> Option<ProductKey> {
         let rooted = self.rooted.get(reader)?;
-        let mut dirty = rooted.dirty.iter().collect::<Vec<_>>();
-        dirty.sort_by(|left, right| left.semantic_cmp(right, types));
-        for member in dirty {
-            if self.get(member).is_none() {
-                return Some(member.clone());
+        let (mut cursor, visits) = rooted.dirty.first(&rooted.seed);
+        visiting.work.witness_visits += visits;
+        let mut outcome = None;
+        while let Some(member) = cursor {
+            if self.get(&member).is_none() {
+                outcome = Some(member);
+                break;
             }
-            if let Some(stale) = self.stale_dependency_inner(member, visiting, types) {
-                return Some(stale);
+            if complete {
+                if let Some(stale) = self.stale_dependency_inner(tel, &member, visiting, types, true) {
+                    outcome = Some(stale);
+                    break;
+                }
+                let rooted = &self.rooted[reader];
+                cursor = rooted.dirty.next(&member, true, &rooted.parents);
+                visiting.work.witness_visits += u64::from(cursor.is_some());
+            } else {
+                let mut member_walk = ProductValidationWalk::default();
+                let stale = self.stale_dependency_inner(tel, &member, &mut member_walk, types, true);
+                visiting
+                    .work
+                    .include(self.finish_validation(tel, member_walk, stale.is_none(), Some(reader), types));
+                if stale.is_some() {
+                    outcome = stale;
+                    break;
+                }
+                let rooted = self.rooted.get_mut(reader).expect("registered validation owner");
+                rooted.dirty.remove(&member, &rooted.parents);
+                let (next, visits) = rooted.dirty.first(&rooted.seed);
+                cursor = next;
+                visiting.work.witness_visits += visits;
             }
         }
-        None
+        let (updates, rewinds) = self.rooted[reader].dirty.take_maintenance();
+        visiting.work.witness_updates += updates;
+        visiting.work.cursor_rewinds += rewinds;
+        outcome
     }
 
     fn membership(&self, key: &ProductKey) -> Option<&HashSet<ProductKey>> {
@@ -244,13 +468,19 @@ impl ProductMemo {
             .map(|entry| &entry.membership)
     }
 
-    pub(super) fn register_rooted(&mut self, reader: ProductKey, seed: ProductKey, types: &super::super::types::Types) {
+    pub(super) fn register_rooted(
+        &mut self,
+        reader: ProductKey,
+        seed: ProductKey,
+        types: &super::super::types::Types,
+    ) -> ProductValidation {
+        let mut work = ProductValidation::default();
         if self.rooted.get(&reader).is_some_and(|rooted| rooted.seed == seed) {
-            return;
+            return work;
         }
         let mut rooted = RootedProducts::new(seed.clone());
         let _ = rooted.attach(self, seed, None, types);
-        if let Some(previous) = self.rooted.remove(&reader) {
+        if let Some(mut previous) = self.rooted.remove(&reader) {
             for member in previous.parents.keys() {
                 let readers = self.rooted_readers.get_mut(member).expect("registered member");
                 readers.remove(&reader);
@@ -262,12 +492,14 @@ impl ProductMemo {
                         rooted.changes.remove(member);
                     }
                     if !previous.dirty.contains(member) {
-                        rooted.dirty.remove(member);
+                        rooted.dirty.remove(member, &rooted.parents);
                     }
                 } else {
                     rooted.changes.insert(member.clone());
                 }
             }
+            previous.dirty.clear();
+            previous.collect_maintenance(&mut work);
             rooted.changes.extend(
                 previous
                     .changes
@@ -282,6 +514,7 @@ impl ProductMemo {
                 .insert(reader.clone());
         }
         self.rooted.insert(reader, rooted);
+        work
     }
 
     pub(super) fn replace_membership_readers(&mut self, owner: &ProductKey, previous: &HashSet<ProductKey>) {
@@ -305,6 +538,7 @@ impl ProductMemo {
 
     pub(super) fn committed_rooted_member(
         &mut self,
+        tel: &impl Telemetry,
         owner: &ProductKey,
         previous: &HashSet<ProductKey>,
         changed: bool,
@@ -314,8 +548,9 @@ impl ProductMemo {
         let mut invalidated = Vec::new();
         for reader in readers {
             let mut rooted = self.rooted.remove(&reader).expect("registered root reader");
-            let touched = rooted.replace_edges(self, owner, previous, types);
-            rooted.dirty.remove(owner);
+            let (touched, reparented) = rooted.replace_edges(self, owner, previous, types);
+            let waiting = rooted.dirty.waiting(owner);
+            rooted.dirty.remove(owner, &rooted.parents);
             if changed {
                 rooted.changes.insert(owner.clone());
             }
@@ -332,12 +567,28 @@ impl ProductMemo {
                     }
                 }
             }
-            if !rooted.changes.is_empty() {
+            if (changed || !touched.is_empty())
+                && !self
+                    .pending_dependencies
+                    .get(&reader)
+                    .is_some_and(|pending| pending.dependencies.rooted_read.is_some_and(|read| !read.delivered))
+            {
                 invalidated.push((ReaderMutation::Invalidate, reader.clone()));
             } else if rooted.dirty.is_empty() {
                 invalidated.push((ReaderMutation::Refresh, reader.clone()));
             }
-            self.rooted.insert(reader, rooted);
+            let mut work = ProductValidation::default();
+            rooted.collect_maintenance(&mut work);
+            work.report(tel, owner);
+            self.rooted.insert(reader.clone(), rooted);
+            if let Some(request) = waiting {
+                self.expose_waiting_branch(&reader, request, owner.clone(), false);
+            }
+            if let Some((_, request)) = self.live_rooted_wait_frame(&reader) {
+                for branch in reparented {
+                    self.expose_waiting_branch(&reader, request, branch, true);
+                }
+            }
         }
         invalidated
     }
@@ -350,28 +601,66 @@ impl ProductReadContext<'_> {
 
     pub(crate) fn read_rooted_products(
         &mut self,
+        tel: &impl super::Telemetry,
         reader: ProductKey,
         seed: ProductKey,
         types: &super::super::types::Types,
     ) -> Result<Vec<(ProductKey, Option<ProductValue>)>, Vec<PullWait>> {
-        self.session.memo.register_rooted(reader.clone(), seed, types);
-        let mut rooted = self.session.memo.rooted.remove(&reader).expect("registered root");
-        let mut waits = Vec::new();
-        rooted.dirty.retain(|member| {
-            let stale =
-                self.session.memo.get(member).is_none() || self.session.memo.stale_dependency(member, types).is_some();
-            if stale {
-                waits.push(PullWait::Product(member.clone()));
-            }
-            stale
+        assert!(
+            self.session.memo.contains_in_progress(&reader),
+            "a rooted observation belongs to its current formula"
+        );
+        assert!(
+            self.dependencies.rooted_read.is_none(),
+            "a formula observes one rooted membership witness"
+        );
+        self.dependencies.rooted_read = Some(RootedRead {
+            position: self.dependencies.products.len(),
+            delivered: false,
+            controls_delivered: self.product_reads_delivered,
         });
+        let mut waits = Vec::new();
+        let mut walk = ProductValidationWalk::default();
+        walk.work
+            .include(self.session.memo.register_rooted(reader.clone(), seed, types));
+        let work = self.session.memo.rooted[&reader].visit_dirty(|member| {
+            if self.session.memo.get(member).is_none() {
+                waits.push(PullWait::Product(member.clone()));
+                return true;
+            }
+            if self.session.memo.has_unsettled_inputs(member)
+                || self
+                    .session
+                    .memo
+                    .rooted
+                    .get(member)
+                    .is_some_and(|rooted| !rooted.dirty.is_empty())
+            {
+                waits.push(PullWait::Product(member.clone()));
+                true
+            } else {
+                false
+            }
+        });
+        walk.work.include(work);
         let result = if waits.is_empty() {
-            let mut changes = std::mem::take(&mut rooted.changes).into_iter().collect::<Vec<_>>();
+            self.session
+                .memo
+                .rooted
+                .get_mut(&reader)
+                .expect("registered root")
+                .dirty
+                .clear();
+            let mut changes = self.session.memo.rooted[&reader]
+                .changes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
             sort_product_keys(&mut changes, types);
             Ok(changes
                 .into_iter()
                 .map(|key| {
-                    let value = rooted
+                    let value = self.session.memo.rooted[&reader]
                         .parents
                         .contains_key(&key)
                         .then(|| self.session.memo.get(&key).expect("ready rooted member").clone());
@@ -381,7 +670,16 @@ impl ProductReadContext<'_> {
         } else {
             Err(waits)
         };
-        self.session.memo.rooted.insert(reader, rooted);
+        self.session.memo.rooted[&reader].collect_maintenance(&mut walk.work);
+        self.session
+            .memo
+            .finish_validation(tel, walk, result.is_ok(), None, types)
+            .report(tel, &reader);
+        self.dependencies
+            .rooted_read
+            .as_mut()
+            .expect("current rooted observation")
+            .delivered = result.is_ok();
         result
     }
 
@@ -412,14 +710,13 @@ mod tests {
             &tel,
             false,
             &current,
-            ProductCompletion::Batch(vec![(
-                current.clone(),
+            ProductCompletion::Single(
                 ProductValue::Unit,
                 ProductDependencies {
                     membership: children.iter().map(|n| key(*n)).collect(),
                     ..ProductDependencies::default()
                 },
-            )]),
+            ),
             &types,
         );
     }
@@ -540,7 +837,8 @@ mod tests {
         memo.register_rooted(key(99), key(0), &types);
         let rooted = memo.rooted.get_mut(&key(99)).unwrap();
         rooted.changes.clear();
-        rooted.dirty = HashSet::from([key(1)]);
+        rooted.dirty.clear();
+        rooted.mark_dirty(&key(1));
         memo.dirty_descendants.insert(key(99));
         memo.mutate_product_wave(
             &ConfiguredTelemetry::new(),
@@ -579,7 +877,7 @@ mod tests {
             &ConfiguredTelemetry::new(),
             false,
             &key(1),
-            ProductCompletion::Batch(completion),
+            ProductCompletion::RecursiveGroup(completion),
             &types,
         );
         assert_eq!(members(&memo), (0..5).map(key).collect());
