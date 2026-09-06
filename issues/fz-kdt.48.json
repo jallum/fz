@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.182",
     "fz-tfn.30"
@@ -20,8 +20,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make Ty identity denotational: mutually-subtype types intern to one ID",
   "type": "bug",
-  "updated_at": "2026-09-05T14:15:42Z"
+  "updated_at": "2026-09-06T19:03:23Z"
 }
