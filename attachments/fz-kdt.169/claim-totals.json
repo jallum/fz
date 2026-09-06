@@ -1,0 +1,40 @@
+{
+  "prototype": {
+    "Activation": [
+      6757,
+      6760,
+      11
+    ],
+    "CallSiteSummary": [
+      7263,
+      7426,
+      163
+    ],
+    "CallSiteTargets": [
+      7263,
+      7426,
+      163
+    ],
+    "applied": 143458,
+    "products": 172088
+  },
+  "retained": {
+    "Activation": [
+      6761,
+      6764,
+      5
+    ],
+    "CallSiteSummary": [
+      7263,
+      7430,
+      167
+    ],
+    "CallSiteTargets": [
+      7263,
+      7430,
+      167
+    ],
+    "applied": 140285,
+    "products": 172177
+  }
+}
