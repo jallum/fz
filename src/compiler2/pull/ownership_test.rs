@@ -2139,7 +2139,7 @@ fn a_failed_shared_control_validation_cannot_authorize_sibling_membership() {
 }
 
 #[test]
-fn equal_recursive_validation_visits_shared_inputs_once_without_internal_refresh_work() {
+fn equal_recursive_validation_visits_shared_inputs_once_and_only_mutates_its_external_reader() {
     for size in [8, 64, 256] {
         let tel = ConfiguredTelemetry::new();
         let work = Rc::new(RefCell::new(Vec::new()));
@@ -2179,18 +2179,26 @@ fn equal_recursive_validation_visits_shared_inputs_once_without_internal_refresh
         finish_test_product(&mut memo, &reader, ProductValue::Unit, [members[0].clone()]);
         memo.invalidate_products(&tel, [input.clone()], &types);
         finish_test_product(&mut memo, &input, ProductValue::Unit, []);
+        work.borrow_mut().clear();
         assert_eq!(memo.stale_dependency(&tel, &members[0], &types), None);
+        let mut validation = ProductValidation::default();
+        for work in work.borrow().iter() {
+            validation.include(*work);
+        }
         assert_eq!(
-            *work.borrow(),
-            vec![ProductValidation {
+            validation,
+            ProductValidation {
                 vertex_visits: u64::from(size),
                 edge_scans: u64::from(size) * 2,
                 witness_visits: 0,
                 witness_updates: 0,
                 cursor_rewinds: 0,
-                refresh_visits: 1,
-                ordering_comparisons: 0
-            }]
+                mutation_admissions: 1,
+                mutation_pops: 1,
+                mutation_edges: 1,
+                ordering_comparisons: 0,
+            },
+            "validation checks each internal edge once and refreshes only the one external reader"
         );
         assert!(memo.dirty_descendants.is_empty());
         for member in members.iter().chain([&reader]) {

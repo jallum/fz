@@ -80,9 +80,16 @@ rooted cursor and admission-branch positions inspected. `witness_updates` counts
 creation/disposal, dirty and request-routing marker changes, witness-child link changes, and pruning
 inspections; `cursor_rewinds` counts discarded active positions and successor
 ascents. These include marking, branch repair and clearing, not just reads.
-`refresh_visits` counts boundary Refresh propagation. `ordering_comparisons`
-counts its mutation-wave selection and the live wait inventory's heap
-comparisons. There is no dirty-subset sort. Each heap swap follows a counted
+`mutation_admissions` counts attempted product/strength admissions across every
+mutation wave. `mutation_pops` counts selected pairs. Wave-wide admission rejects
+duplicates before selection, so each pop applies one distinct product/strength
+mutation; admissions minus pops gives rejected attempts.
+`mutation_edges` counts ordinary reverse-reader traversal, rooted-reader checks
+before filtering, and Refresh's actual short-circuit dependency inspections.
+It does not count dependency unlinking; the witness counters describe rooted
+maintenance separately. `ordering_comparisons` counts initial mutation ordering,
+mutation-heap insertion/selection, and the live wait inventory's heap comparisons.
+Each heap swap follows a counted
 comparison; insertion/removal adds constant logical movement. Heap items move
 without a Clone bound. A drive frame indexes its immutable original wait batch;
 newly admitted product keys move into that same heap.
@@ -100,10 +107,18 @@ are pinned at the drive seam and frame teardown. These tests establish sharing
 and release, not a total allocator count: every wait still adds one shared
 allocation, including an empty batch.
 
+One mutation-wave report aggregates its scheduling and witness work using the
+last owned key for attribution. Single-product waves keep their admission key
+inline without a hash table; promotion moves that key into the one map. Distinct
+strengths reuse it. Initial seeds retain their vector, and admitted borrowed
+readers get one heap-owned key; rejected borrowed readers are not cloned. Keys
+already constructed by seed and rooted-reader discovery still have their own
+upstream copying costs. Clone/hash-counting admission tests and real positioned
+backing tests pin these boundaries without an allocator probe.
+
 Nested complete proofs contribute to one event at the actual validation/read
-boundary. Mutation, publication, reseeding and retirement drain maintenance
-for the witnesses they touch in that operation, using this same payload;
-Dirty/Invalidate mutations are not counted as Refresh visits. Whole-request
+boundary. Publication, reseeding and retirement drain maintenance
+for the witnesses they touch in that operation, using this same payload. Whole-request
 measurements include those operation events from before invalidation through
 completion. Drive-local admission/selection work emits at drive teardown,
 including failure, after selected and queued routing marks are released.

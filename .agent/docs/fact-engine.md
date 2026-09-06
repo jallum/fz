@@ -673,6 +673,18 @@ generation. Fact waits are satisfied at the Compiler2 front door by driving
 only the direct fact producer needed for that exact fact, while deferring
 forbidden root artifact jobs for the submitted root.
 
+Reader changes propagate through one transient `ProductMutationWave`. Its
+move-only `OrderedWorklist` orders typed product keys, then `Invalidate`, `Dirty`,
+and `Refresh`; newly discovered smaller keys compete immediately. Admission is
+wave-wide and exact for each product/strength pair. One product stays inline
+with a three-bit mutation mask; a second distinct product moves that first key
+into the single admission map. Further strengths reuse the existing map key.
+The heap retains the original seed vector. Borrowed reader edges get an owned
+heap key only after admission succeeds, while owned pending-reader escalation
+moves its key. A completed mutation retains no scheduling permission beyond
+that wave. One aggregate work report covers the whole wave, including duplicate
+attempts, rather than attributing only validation-triggered refreshes.
+
 `PullSession` owns one root's retained product memo and scheduling relations
 for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the

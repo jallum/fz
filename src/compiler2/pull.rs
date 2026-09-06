@@ -27,6 +27,7 @@ use super::drive::{DependencyKey, FactKey, ProductAddress};
 use super::executable_facts::ExecutableFacts;
 use super::facts::{FactChange, FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, ModuleId, RootId};
+use super::ordered_worklist::OrderedWorklist;
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
 #[cfg(test)]
@@ -313,6 +314,125 @@ impl ReaderMutation {
     }
 }
 
+enum MutationAdmissions<K> {
+    Empty,
+    One(K, u8),
+    Many(HashMap<K, u8>),
+}
+
+impl<K: Eq + std::hash::Hash + Clone> MutationAdmissions<K> {
+    fn admit(&mut self, mutation: ReaderMutation, key: &K) -> bool {
+        let bit = 1 << mutation.rank();
+        match self {
+            Self::Empty => *self = Self::One(key.clone(), bit),
+            Self::One(first, mask) if first == key => return Self::include(mask, bit),
+            Self::One(_, _) => {
+                let Self::One(first, mask) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                *self = Self::Many(HashMap::from([(first, mask), (key.clone(), bit)]));
+            }
+            Self::Many(keys) => {
+                if let Some(mask) = keys.get_mut(key) {
+                    return Self::include(mask, bit);
+                }
+                keys.insert(key.clone(), bit);
+            }
+        }
+        true
+    }
+
+    fn include(mask: &mut u8, bit: u8) -> bool {
+        if *mask & bit != 0 {
+            return false;
+        }
+        *mask |= bit;
+        true
+    }
+}
+
+struct ProductMutationWave {
+    pending: OrderedWorklist<(ReaderMutation, ProductKey)>,
+    admissions: MutationAdmissions<ProductKey>,
+    work: ProductValidation,
+}
+
+impl ProductMutationWave {
+    fn new(mut seeds: Vec<(ReaderMutation, ProductKey)>, types: &super::types::Types) -> Self {
+        let mut admissions = MutationAdmissions::Empty;
+        let mut work = ProductValidation::default();
+        seeds.retain(|(mutation, key)| {
+            work.mutation_admissions += 1;
+            admissions.admit(*mutation, key)
+        });
+        seeds.sort_unstable_by(|left, right| Self::compare(left, right, types, &mut work));
+        Self {
+            pending: OrderedWorklist::from_sorted(seeds),
+            admissions,
+            work,
+        }
+    }
+
+    fn compare(
+        left: &(ReaderMutation, ProductKey),
+        right: &(ReaderMutation, ProductKey),
+        types: &super::types::Types,
+        work: &mut ProductValidation,
+    ) -> std::cmp::Ordering {
+        work.ordering_comparisons += 1;
+        let order = left.1.semantic_cmp(&right.1, types);
+        debug_assert!(
+            order != std::cmp::Ordering::Equal || left.1 == right.1,
+            "distinct products must not share a semantic order identity"
+        );
+        order.then_with(|| left.0.rank().cmp(&right.0.rank()))
+    }
+
+    fn admit(&mut self, mutation: ReaderMutation, key: &ProductKey) -> bool {
+        self.work.mutation_admissions += 1;
+        self.admissions.admit(mutation, key)
+    }
+
+    fn push(&mut self, mutation: ReaderMutation, key: ProductKey, types: &super::types::Types) -> Option<ProductKey> {
+        if self.admit(mutation, &key) {
+            self.pending.push((mutation, key), |left, right| {
+                Self::compare(left, right, types, &mut self.work)
+            });
+            None
+        } else {
+            Some(key)
+        }
+    }
+
+    fn push_borrowed(&mut self, mutation: ReaderMutation, key: &ProductKey, types: &super::types::Types) {
+        if self.admit(mutation, key) {
+            self.pending.push((mutation, key.clone()), |left, right| {
+                Self::compare(left, right, types, &mut self.work)
+            });
+        }
+    }
+
+    fn readers(
+        &mut self,
+        mutation: ReaderMutation,
+        readers: Option<&HashSet<ProductKey>>,
+        types: &super::types::Types,
+    ) {
+        for reader in readers.into_iter().flatten() {
+            self.work.mutation_edges += 1;
+            self.push_borrowed(mutation, reader, types);
+        }
+    }
+
+    fn pop(&mut self, types: &super::types::Types) -> Option<(ReaderMutation, ProductKey)> {
+        let selected = self
+            .pending
+            .pop(|left, right| Self::compare(left, right, types, &mut self.work))?;
+        self.work.mutation_pops += 1;
+        Some(selected)
+    }
+}
+
 /// One settled product's causal identity, carried on the `pull.product.settled`
 /// event alongside the settled `ProductKey`/`ProductValue` pair. Stack-built
 /// at every emit site -- never stored in the memo itself.
@@ -462,7 +582,9 @@ pub struct ProductValidation {
     pub witness_visits: u64,
     pub witness_updates: u64,
     pub cursor_rewinds: u64,
-    pub refresh_visits: u64,
+    pub mutation_admissions: u64,
+    pub mutation_pops: u64,
+    pub mutation_edges: u64,
     pub ordering_comparisons: u64,
 }
 
@@ -479,7 +601,9 @@ impl ProductValidation {
         self.witness_visits += work.witness_visits;
         self.witness_updates += work.witness_updates;
         self.cursor_rewinds += work.cursor_rewinds;
-        self.refresh_visits += work.refresh_visits;
+        self.mutation_admissions += work.mutation_admissions;
+        self.mutation_pops += work.mutation_pops;
+        self.mutation_edges += work.mutation_edges;
         self.ordering_comparisons += work.ordering_comparisons;
     }
 
@@ -520,14 +644,13 @@ impl ProductMemo {
             || self.dirty_descendants.contains(key)
     }
 
-    fn dependencies_are_unsettled(&self, key: &ProductKey) -> bool {
+    fn dependencies_are_unsettled(&self, key: &ProductKey, work: &mut ProductValidation) -> bool {
         self.rooted.get(key).is_some_and(|rooted| !rooted.dirty.is_empty())
             || self.produced.get(key).is_some_and(|entry| {
-                entry
-                    .dependencies
-                    .products
-                    .keys()
-                    .any(|dependency| self.has_unsettled_inputs(dependency))
+                entry.dependencies.products.keys().any(|dependency| {
+                    work.mutation_edges += 1;
+                    self.has_unsettled_inputs(dependency)
+                })
             })
     }
 
@@ -1078,38 +1201,21 @@ impl ProductMemo {
     fn mutate_product_wave(
         &mut self,
         tel: &impl Telemetry,
-        mut pending: Vec<(ReaderMutation, ProductKey)>,
+        pending: Vec<(ReaderMutation, ProductKey)>,
         types: &super::types::Types,
-    ) -> (u64, u64) {
-        let mut seen = HashSet::new();
-        let mut comparisons = 0;
-        while !pending.is_empty() {
-            let next = pending
-                .iter()
-                .enumerate()
-                .min_by(|(_, (left_mutation, left)), (_, (right_mutation, right))| {
-                    comparisons += 1;
-                    left.semantic_cmp(right, types)
-                        .then_with(|| left_mutation.rank().cmp(&right_mutation.rank()))
-                })
-                .map(|(index, _)| index)
-                .expect("non-empty reader mutation worklist");
-            let (mutation, reader) = pending.swap_remove(next);
-            if !seen.insert((mutation, reader.clone())) {
-                continue;
-            }
+    ) {
+        let mut wave = ProductMutationWave::new(pending, types);
+        let mut last_reader = None;
+        while let Some((mutation, reader)) = wave.pop(types) {
             let external_before = self
                 .observed_products
                 .contains(&reader)
-                .then(|| (reader.clone(), self.external_state(&reader)));
-            let mut maintenance = ProductValidation::default();
+                .then(|| self.external_state(&reader));
             match mutation {
                 ReaderMutation::Invalidate => {
-                    pending.extend(
-                        self.rooted_member_dirty(&reader, &mut maintenance)
-                            .into_iter()
-                            .map(|root| (ReaderMutation::Dirty, root)),
-                    );
+                    for root in self.rooted_member_dirty(&reader, &mut wave.work) {
+                        let _ = wave.push(ReaderMutation::Dirty, root, types);
+                    }
                     let (was_pending, was_produced) = self.displace_for_reproduction_shallow(tel, &reader);
                     let next = if was_pending {
                         Some(ReaderMutation::Invalidate)
@@ -1119,65 +1225,43 @@ impl ProductMemo {
                         None
                     };
                     if let Some(next) = next {
-                        pending.extend(
-                            self.product_readers
-                                .get(&reader)
-                                .into_iter()
-                                .flatten()
-                                .cloned()
-                                .map(|reader| (next, reader)),
-                        );
+                        wave.readers(next, self.product_readers.get(&reader), types);
                     }
                 }
                 ReaderMutation::Dirty => {
-                    pending.extend(
-                        self.rooted_member_dirty(&reader, &mut maintenance)
-                            .into_iter()
-                            .map(|root| (ReaderMutation::Dirty, root)),
-                    );
+                    for root in self.rooted_member_dirty(&reader, &mut wave.work) {
+                        let _ = wave.push(ReaderMutation::Dirty, root, types);
+                    }
                     if self.pending_dependencies.contains_key(&reader) {
-                        maintenance.report(tel, &reader);
-                        pending.push((ReaderMutation::Invalidate, reader));
+                        if let Some(rejected) = wave.push(ReaderMutation::Invalidate, reader, types) {
+                            last_reader = Some(rejected);
+                        }
                         continue;
                     }
                     if self.dirty_descendants.insert(reader.clone()) {
-                        pending.extend(
-                            self.product_readers
-                                .get(&reader)
-                                .into_iter()
-                                .flatten()
-                                .cloned()
-                                .map(|reader| (ReaderMutation::Dirty, reader)),
-                        );
+                        wave.readers(ReaderMutation::Dirty, self.product_readers.get(&reader), types);
                     }
                 }
                 ReaderMutation::Refresh => {
-                    let dirty = self.dependencies_are_unsettled(&reader);
+                    let dirty = self.dependencies_are_unsettled(&reader, &mut wave.work);
                     if dirty {
                         self.dirty_descendants.insert(reader.clone());
                     } else if self.dirty_descendants.remove(&reader) {
-                        pending.extend(
-                            self.product_readers
-                                .get(&reader)
-                                .into_iter()
-                                .flatten()
-                                .cloned()
-                                .map(|reader| (ReaderMutation::Refresh, reader)),
-                        );
+                        wave.readers(ReaderMutation::Refresh, self.product_readers.get(&reader), types);
                     }
-                    pending.extend(
-                        self.rooted_member_refresh(&reader, &mut maintenance)
-                            .into_iter()
-                            .map(|root| (ReaderMutation::Refresh, root)),
-                    );
+                    for root in self.rooted_member_refresh(&reader, &mut wave.work) {
+                        let _ = wave.push(ReaderMutation::Refresh, root, types);
+                    }
                 }
             }
-            maintenance.report(tel, &reader);
-            if let Some((observed, before)) = external_before {
-                self.record_external_change(&observed, before);
+            if let Some(before) = external_before {
+                self.record_external_change(&reader, before);
             }
+            last_reader = Some(reader);
         }
-        (seen.len() as u64, comparisons)
+        if let Some(reader) = last_reader {
+            wave.work.report(tel, &reader);
+        }
     }
 
     fn reconcile_fact_movements(
@@ -1307,9 +1391,7 @@ impl ProductMemo {
                         .map(|root| (ReaderMutation::Refresh, root)),
                 );
             }
-            let (refresh_visits, comparisons) = self.mutate_product_wave(tel, mutations, types);
-            work.refresh_visits += refresh_visits;
-            work.ordering_comparisons += comparisons;
+            self.mutate_product_wave(tel, mutations, types);
             for (key, before) in external_before {
                 self.record_external_change(&key, before);
             }
@@ -2473,6 +2555,7 @@ impl<T: Telemetry> Drop for ProductDriver<'_, T> {
 #[cfg(test)]
 mod tests {
     include!("pull/ownership_test.rs");
+    include!("pull/mutation_test.rs");
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::panic::{AssertUnwindSafe, catch_unwind};

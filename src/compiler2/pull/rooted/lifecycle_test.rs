@@ -364,7 +364,7 @@ fn rooted_validation_visits_shared_ancestor_paths_once() {
             u64::from(size) * 2,
             "shared ancestry is walked once across all dirty leaves"
         );
-        assert_eq!(work.refresh_visits, 0);
+        assert_eq!(work.mutation_pops, 0);
         assert!(
             work.ordering_comparisons <= u64::from(size) * u64::from(size.ilog2()) * 4,
             "deterministic owner ordering is bounded by sorting the dirty subset"

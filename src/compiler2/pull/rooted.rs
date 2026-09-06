@@ -379,6 +379,7 @@ impl ProductMemo {
         readers
             .into_iter()
             .filter(|reader| {
+                work.mutation_edges += 1;
                 let rooted = self.rooted.get_mut(reader).expect("registered root");
                 let changed = rooted.mark_dirty(member);
                 rooted.collect_maintenance(work);
@@ -399,6 +400,7 @@ impl ProductMemo {
         readers
             .into_iter()
             .filter(|reader| {
+                work.mutation_edges += 1;
                 let rooted = self.rooted.get_mut(reader).expect("registered root");
                 let waiting = rooted.dirty.waiting(member);
                 let changed = rooted.dirty.remove(member, &rooted.parents)
