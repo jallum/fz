@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-tfn.39",
     "fz-tfn.49"
   ],
   "created": "2026-09-06T11:35:31Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Make SharedBin lifetime tests owner-scoped under parallel execution",
   "type": "bug",
-  "updated_at": "2026-09-06T11:36:52Z"
+  "updated_at": "2026-09-06T11:36:53Z"
 }
