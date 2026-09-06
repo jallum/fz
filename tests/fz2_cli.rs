@@ -15,20 +15,32 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 struct TargetFixture {
     source: &'static str,
     golden: &'static str,
+    runtime_demand_walks: u64,
+    mainline_runtime_demand_walks: u64,
+    mainline_runtime_demand_door: ObservationDoor,
 }
 
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
+        runtime_demand_walks: 1280,
+        mainline_runtime_demand_walks: 6252,
+        mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
+        runtime_demand_walks: 589,
+        mainline_runtime_demand_walks: 6378,
+        mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        runtime_demand_walks: 243,
+        mainline_runtime_demand_walks: 2971,
+        mainline_runtime_demand_door: ObservationDoor::Run,
     },
 ];
 
@@ -254,26 +266,22 @@ impl OwnedObservationFile {
             .expect("owned observation file was already consumed")
     }
 
-    fn read_and_remove(mut self, request: ProcessRequest, artifact: &str) -> Result<Vec<u8>, ObservationFailure> {
+    fn read_and_remove(self, request: ProcessRequest, artifact: &str) -> Result<Vec<u8>, ObservationFailure> {
+        self.read_and_remove_with(|action, path, error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                request.process.phase(),
+                "observation-production",
+                format!("{action} {artifact} {}: {error}", path.display()),
+            )
+        })
+    }
+
+    fn read_and_remove_with<E>(mut self, error: impl Fn(&str, &Path, std::io::Error) -> E) -> Result<Vec<u8>, E> {
         let path = self.path();
-        let bytes = std::fs::read(path).map_err(|error| {
-            observation_failure(
-                request.spec,
-                request.fixture,
-                request.process.phase(),
-                "observation-production",
-                format!("read {artifact} {}: {error}", path.display()),
-            )
-        })?;
-        remove_file(path).map_err(|error| {
-            observation_failure(
-                request.spec,
-                request.fixture,
-                request.process.phase(),
-                "observation-production",
-                format!("remove {artifact} {}: {error}", path.display()),
-            )
-        })?;
+        let bytes = std::fs::read(path).map_err(|cause| error("read", path, cause))?;
+        remove_file(path).map_err(|cause| error("remove", path, cause))?;
         self.path = None;
         Ok(bytes)
     }
@@ -1126,6 +1134,30 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
         public_construction_targets += public_trace_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
         causal_work_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
         backend_construction_targets += backend_identity_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        for process in &observation.processes {
+            let walks = process.report.formula_totals().runtime_demand_evaluations;
+            assert_eq!(
+                walks, observation.fixture.runtime_demand_walks,
+                "{}: actual RuntimeDemand body walks",
+                observation.fixture.source
+            );
+            if observation.spec.door == observation.fixture.mainline_runtime_demand_door {
+                assert!(
+                    walks < observation.fixture.mainline_runtime_demand_walks,
+                    "{}: actual body walks must beat mainline cone derivations at the same door",
+                    observation.fixture.source
+                );
+            }
+            for (formula, work) in &process.report.formulas {
+                if formula.contains("\"kind\":\"DeriveRuntimeDemand\"") {
+                    assert_eq!(
+                        (work.readiness_caused, work.uncaused),
+                        (0, 0),
+                        "{formula}: every non-initial demand job must name changed content"
+                    );
+                }
+            }
+        }
     }
     assert!(
         public_construction_targets > 0 && backend_construction_targets > 0,
@@ -1357,24 +1389,39 @@ fn main(), do: App.run()
 
 #[test]
 fn runtime_demand_order_fixtures_cross_every_cli_execution_boundary() {
-    for (fixture, golden) in [
-        (
-            "fixtures2/00420_enum_take_drop_split.fz",
-            "fixtures2/behavior/enum_take_drop_split.fz",
-        ),
-        (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            "fixtures2/behavior/enum_predicate_search.fz",
-        ),
-        (
-            "fixtures2/behavior/fz_f98_range_map_converges.fz",
-            "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        ),
-    ] {
-        let expected = fixture_expected_stdout(golden);
+    for target in TARGET_FIXTURES {
+        let fixture = target.source;
+        let expected = fixture_expected_stdout(target.golden);
         for mode in ["interp", "run"] {
-            let out = run_fz2(&[OsStr::new(mode), OsStr::new(fixture)]);
+            let telemetry = (mode == "run" && target.mainline_runtime_demand_door == ObservationDoor::Run)
+                .then(|| OwnedObservationFile::new("fz2_native_demand_work", ".jsonl"));
+            let mut args = Vec::new();
+            if let Some(telemetry) = &telemetry {
+                args.extend([OsStr::new("--log-telemetry"), telemetry.path().as_os_str()]);
+            }
+            args.extend([OsStr::new(mode), OsStr::new(fixture)]);
+            let out = run_fz2(&args);
             assert_successful_stdout(&out, &expected, &format!("fz2 {mode} {fixture}"));
+            if let Some(telemetry) = telemetry {
+                let bytes = telemetry
+                    .read_and_remove_with(|action, path, error| {
+                        format!(
+                            "fz2 run {fixture}: {action} native demand trace {}: {error}",
+                            path.display()
+                        )
+                    })
+                    .expect("the native trace must be complete");
+                let report = CausalReport::derive(&parse_public_trace(&bytes));
+                let walks = report.formula_totals().runtime_demand_evaluations;
+                assert_eq!(
+                    walks, target.runtime_demand_walks,
+                    "{fixture}: native demand body walks"
+                );
+                assert!(
+                    walks < target.mainline_runtime_demand_walks,
+                    "{fixture}: native work must beat the native mainline budget"
+                );
+            }
         }
         let out_bin = unique_temp_path("fz2_runtime_demand_order", ".bin");
         let build = run_fz2(&[
@@ -1910,6 +1957,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         FormulaWork {
             // Co-output finality removes redundant executable-fact readiness work.
             evaluations: 350,
+            runtime_demand_evaluations: 32,
             initial: 174,
             content_caused: 170,
             readiness_caused: 6,

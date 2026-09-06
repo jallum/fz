@@ -162,6 +162,34 @@ fn nested_product_session_restores_outer_exact_evaluation_history() {
 }
 
 #[test]
+fn runtime_demand_body_walks_are_work_not_formula_identity() {
+    let mut events = ReplayEvents::default();
+    for evaluations in [0, 1, 3] {
+        events.applied(serde_json::json!({
+            "kind": "DeriveRuntimeDemand", "root_id": 1,
+            "runtime_demand_evaluations": evaluations
+        }));
+    }
+    let report = CausalReport::derive(&events.0);
+    assert_eq!(
+        report.formulas.len(),
+        1,
+        "changing work counts must not create another formula"
+    );
+    let work = report.formula_totals();
+    assert_eq!(work.evaluations, 3, "the prerequisite wait is still a completed job");
+    assert_eq!(
+        work.runtime_demand_evaluations, 4,
+        "count actual walks, including local repeats"
+    );
+    assert_eq!(
+        (work.initial, work.uncaused),
+        (1, 2),
+        "a changed count is not new input evidence"
+    );
+}
+
+#[test]
 fn product_dependency_movement_attributes_only_its_exact_consumer() {
     let dependency = |owner, kind| {
         serde_json::json!({
@@ -1499,6 +1527,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let formula = report.formula_totals();
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
+                runtime_demand.runtime_demand_evaluations,
+                [[246, 0, 0, 9, 179], [592, 0, 0, 58, 394], [1283, 0, 0, 63, 758]][fixture_index][scenario],
+                "{fixture} {name}: count actual body walks, not scheduler completions"
+            );
+            assert_eq!(
                 runtime_demand.uncaused, 0,
                 "{fixture} {name}: every non-initial RuntimeDemand evaluation must name moved content; uncaused={:?}",
                 report.uncaused,
@@ -1577,6 +1610,7 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
         }
         formulas += 1;
         totals.evaluations += work.evaluations;
+        totals.runtime_demand_evaluations += work.runtime_demand_evaluations;
         totals.initial += work.initial;
         totals.content_caused += work.content_caused;
         totals.readiness_caused += work.readiness_caused;

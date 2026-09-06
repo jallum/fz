@@ -219,7 +219,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let starts = compiler
         .drive_root_backend_work_starts(root)
         .expect("the activation-edge fixture should settle its backend product");
-    let (demand_evaluations, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
+    let (demand_completions, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
     assert_eq!(macro_definition_consumers.borrow().len(), 3);
     assert_eq!(
         *macro_definition_consumers.borrow(),
@@ -244,8 +244,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "macro products require no separate macro-readiness producer expansion",
     );
     assert_eq!(
-        *demand_evaluations, 1285,
-        "the exact RuntimeDemand evaluation multiset must remain deterministic",
+        *demand_completions, 1285,
+        "the exact RuntimeDemand scheduler-completion multiset must remain deterministic",
     );
     assert_eq!(
         *demand_wake_starts, 1046,
@@ -260,10 +260,6 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         demanded_formula_keys.len(),
         311,
         "the exact RuntimeDemand and construction-target key frontier must remain deterministic",
-    );
-    assert!(
-        *demand_evaluations < 6_250,
-        "ordinary per-executable demand formulas must beat the 6,250 hidden member derivations measured in the removed cone",
     );
     assert_eq!(
         (

@@ -162,7 +162,9 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, &peers);
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
     let mut callable_target_reads = HashSet::new();
+    let mut runtime_demand_evaluations = 0;
     let (mut derived, plans, unresolved_construction_targets, missing_target_demands) = loop {
+        runtime_demand_evaluations += 1;
         let derived = derive_executable_runtime_demand(world.types(), &input);
         let (plans, requested, unresolved) =
             plan_callable_flows(world, &input, &derived.callable_flows, &derived.demand);
@@ -183,9 +185,6 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
                     ),
                 }
             }
-        }
-        if input_grew {
-            continue;
         }
         let mut missing_target_demands = HashSet::new();
         let mut exact_targets = plans
@@ -305,6 +304,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let demand = Rc::new(demand);
     let (changed, inputs_changed) = world.define_runtime_demand(executable.clone(), demand);
     Ok(JobEffects {
+        runtime_demand_evaluations,
         reads,
         outputs: vec![self_fact.clone(), self_inputs_fact.clone()],
         changed: changed

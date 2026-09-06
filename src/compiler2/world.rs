@@ -188,6 +188,7 @@ pub struct World {
 }
 
 pub(crate) struct JobCompletion {
+    pub(crate) runtime_demand_evaluations: u64,
     pub(crate) job: Job,
     pub(crate) step: super::AppliedStep<Job, DependencyKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
@@ -673,6 +674,7 @@ impl World {
             self.note_activation_frontier(key);
         }
         JobCompletion {
+            runtime_demand_evaluations: effects.runtime_demand_evaluations,
             job,
             step,
             activation_input_changed,

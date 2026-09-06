@@ -488,6 +488,8 @@ pub(crate) struct JobDerivation {
 /// before publisher identity was refined.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
+    /// Actual RuntimeDemand body walks; prerequisite-only returns perform none.
+    pub(crate) runtime_demand_evaluations: u64,
     pub(crate) reads: Vec<FactUse<FactKey>>,
     pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) product_reads: Vec<ProductAddress>,

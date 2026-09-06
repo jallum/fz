@@ -1866,6 +1866,10 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         write_str_lit(out, job_kind(&completion.job));
         write_job_identity(out, &completion.job);
+        if matches!(completion.job, crate::compiler2::Job::DeriveRuntimeDemand(_)) {
+            out.push_str(",\"runtime_demand_evaluations\":");
+            push_u64(out, completion.runtime_demand_evaluations);
+        }
         out.push(',');
         write_str_lit(out, "rebased");
         out.push(':');

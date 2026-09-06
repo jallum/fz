@@ -128,23 +128,26 @@ second root path.
 
 **Runtime-demand facts** — `work_graph.applied` names each
 `DeriveRuntimeDemand(E)` completion, its exact reads, content movements,
-readiness changes, and wakes. Group by the typed executable identity to measure
-formula evaluations, and distinguish content-changing runs from readiness-only
-finality. Because each formula is one ordinary scheduler job, these counts are
-the work itself; there is no hidden cone member/round multiplier. Compare the
-causal work multiset across legal arrival orders and retained requests, and
-pair it with the canonical backend and runtime output so less work cannot hide
-a changed result. `RuntimeDemandInputs(E)` is an independently revisioned view
-of the input vector in the one stored demand value. On
-`00420_enum_take_drop_split`, changed-revision starts split into 1,731
-non-demand starts and 1,039 demand starts. Its three macro consumers each
-resume on their function definition and their retained content product.
-The trace contains 4,489 total formula evaluations, including 11 scope,
-21 module, and 1,278 RuntimeDemand evaluations. Blocked expansion is 1,138
-non-demand work plus 311 exact demand/construction formula keys.
-`work_start_reason_test` pairs these counts with the exact macro consumer
-sets and the activation frontier; no wall-clock estimate substitutes for
-those dependency records.
+readiness changes, and wakes. Its `runtime_demand_evaluations` counts actual
+body walks: a prerequisite-only return counts zero, while locally discovering
+further callable captures can require multiple walks. A construction target
+and its available input demands enter the same snapshot update; the body runs
+again only after that input grows. Scheduler completions and body walks are
+different measures, carried by the same completion record and grouped by the
+same typed executable identity. The count is not part of that identity.
+
+`RuntimeDemandInputs(E)` is an independently revisioned view of the input
+vector in the one stored demand value. For `00420_enum_take_drop_split`,
+4,233 scheduler completions include 11 scope, 21 module and 1,285 RuntimeDemand
+jobs; the demand jobs perform 1,280 body walks. Changed-revision starts split
+into 1,468 non-demand and 1,046 demand starts. Its three macro consumers each
+resume on their function definition and retained content product. Blocked
+expansion is 1,138 non-demand jobs plus 311 demand/construction formula keys.
+The work-start regression verifies those exact edges. The shared two-process
+CLI observations compare actual body walks, causal work and byte-identical
+backend artifacts without compiling a second population just for counting.
+Unchanged and unrelated retained requests perform zero demand body walks;
+every non-initial demand job names changed content, not readiness alone.
 
 The pre-deletion full-matrix census at exact old HEAD `7f2bcc2de` drove all 515
 non-deferred fixture paths through run/interp/build serially. Its 1,708

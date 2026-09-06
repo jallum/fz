@@ -200,6 +200,7 @@ const STATE_FIELDS: &[&str] = &[
     "new_settled",
     "opaque_type",
     "rebased",
+    "runtime_demand_evaluations",
     "changed",
     "wakes",
     "movements",
@@ -226,6 +227,8 @@ pub enum Cause {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FormulaWork {
     pub evaluations: u64,
+    /// Body walks inside RuntimeDemand jobs, excluding prerequisite-only returns.
+    pub runtime_demand_evaluations: u64,
     pub initial: u64,
     pub content_caused: u64,
     pub readiness_caused: u64,
@@ -239,6 +242,7 @@ pub struct FormulaWork {
 impl FormulaWork {
     fn add(&mut self, work: &Self) {
         self.evaluations += work.evaluations;
+        self.runtime_demand_evaluations += work.runtime_demand_evaluations;
         self.initial += work.initial;
         self.content_caused += work.content_caused;
         self.readiness_caused += work.readiness_caused;
@@ -559,6 +563,7 @@ impl CausalReport {
                 put_count(&mut multiset, format!("formula\u{1}{formula}\u{1}{dimension}"), count);
             };
             put("evaluations", work.evaluations);
+            put("runtime_demand_evaluations", work.runtime_demand_evaluations);
             put("initial", work.initial);
             put("content_caused", work.content_caused);
             put("readiness_caused", work.readiness_caused);
@@ -1133,6 +1138,10 @@ impl Replay {
 
         let work = self.formula_work.entry(raw_formula.clone()).or_default();
         work.evaluations += 1;
+        work.runtime_demand_evaluations += completion
+            .get("runtime_demand_evaluations")
+            .and_then(Json::as_u64)
+            .unwrap_or(0);
         if array(completion.get("changed")).is_empty() {
             work.unchanged_outputs += 1;
         } else {
