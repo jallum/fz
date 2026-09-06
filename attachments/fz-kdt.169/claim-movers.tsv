@@ -1,0 +1,13 @@
+fixture	retained	prototype
+fixtures2/00279_enum_find_find_value.fz	{"Activation": [28, 28, 0], "CallSiteSummary": [26, 28, 2], "CallSiteTargets": [26, 28, 2]}	{"Activation": [29, 29, 1], "CallSiteSummary": [27, 29, 2], "CallSiteTargets": [27, 29, 2]}
+fixtures2/00280_enum_find_index.fz	{"Activation": [28, 28, 0], "CallSiteSummary": [27, 27, 0], "CallSiteTargets": [27, 27, 0]}	{"Activation": [29, 29, 1], "CallSiteSummary": [28, 28, 0], "CallSiteTargets": [28, 28, 0]}
+fixtures2/00284_enum_find_early_halt.fz	{"Activation": [17, 17, 0], "CallSiteSummary": [15, 15, 0], "CallSiteTargets": [15, 15, 0]}	{"Activation": [18, 18, 1], "CallSiteSummary": [16, 16, 0], "CallSiteTargets": [16, 16, 0]}
+fixtures2/00418_enum_count_range.fz	{"Activation": [52, 52, 0], "CallSiteSummary": [59, 62, 3], "CallSiteTargets": [59, 62, 3]}	{"Activation": [52, 52, 1], "CallSiteSummary": [59, 61, 2], "CallSiteTargets": [59, 61, 2]}
+fixtures2/behavior/actor_ring.fz	{"Activation": [25, 25, 0], "CallSiteSummary": [24, 24, 0], "CallSiteTargets": [24, 24, 0]}	{"Activation": [23, 23, 0], "CallSiteSummary": [23, 23, 0], "CallSiteTargets": [23, 23, 0]}
+fixtures2/behavior/dead_closure_capture_empty_list.fz	{"Activation": [39, 39, 0], "CallSiteSummary": [41, 41, 0], "CallSiteTargets": [41, 41, 0]}	{"Activation": [40, 40, 1], "CallSiteSummary": [42, 42, 0], "CallSiteTargets": [42, 42, 0]}
+fixtures2/behavior/enum_hof_three_distinct_closures.fz	{"Activation": [43, 43, 0], "CallSiteSummary": [51, 51, 0], "CallSiteTargets": [51, 51, 0]}	{"Activation": [44, 44, 1], "CallSiteSummary": [52, 52, 0], "CallSiteTargets": [52, 52, 0]}
+fixtures2/behavior/enum_reduce_halt_arm_order.fz	{"Activation": [26, 26, 0], "CallSiteSummary": [28, 28, 0], "CallSiteTargets": [28, 28, 0]}	{"Activation": [24, 24, 0], "CallSiteSummary": [27, 27, 0], "CallSiteTargets": [27, 27, 0]}
+fixtures2/behavior/mailbox_closure_each.fz	{"Activation": [33, 33, 0], "CallSiteSummary": [35, 35, 0], "CallSiteTargets": [35, 35, 0]}	{"Activation": [31, 31, 0], "CallSiteSummary": [34, 34, 0], "CallSiteTargets": [34, 34, 0]}
+fixtures2/behavior/mailbox_closure_reduce.fz	{"Activation": [43, 43, 0], "CallSiteSummary": [54, 54, 0], "CallSiteTargets": [54, 54, 0]}	{"Activation": [41, 41, 0], "CallSiteSummary": [53, 53, 0], "CallSiteTargets": [53, 53, 0]}
+fixtures2/behavior/mutual_recursion.fz	{"Activation": [10, 10, 0], "CallSiteSummary": [16, 18, 2], "CallSiteTargets": [16, 18, 2]}	{"Activation": [9, 9, 0], "CallSiteSummary": [15, 15, 0], "CallSiteTargets": [15, 15, 0]}
+fixtures2/behavior/with_index_users_keep_nested_list_elements.fz	{"Activation": [52, 52, 0], "CallSiteSummary": [56, 57, 1], "CallSiteTargets": [56, 57, 1]}	{"Activation": [52, 52, 0], "CallSiteSummary": [56, 56, 0], "CallSiteTargets": [56, 56, 0]}
