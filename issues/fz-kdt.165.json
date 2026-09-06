@@ -5,6 +5,7 @@
     "fz-tfn.30"
   ],
   "blocks": [
+    "fz-kdt.48",
     "fz-tfn.13",
     "fz-tfn.39"
   ],
@@ -31,5 +32,5 @@
   "status": "open",
   "title": "Add callable-identity as the fourth InputDemand dimension",
   "type": "task",
-  "updated_at": "2026-09-05T14:15:36Z"
+  "updated_at": "2026-09-06T23:27:33Z"
 }
