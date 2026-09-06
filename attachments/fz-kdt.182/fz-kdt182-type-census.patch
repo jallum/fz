@@ -1,0 +1,52 @@
+diff --git a/src/compiler2/canon_test.rs b/src/compiler2/canon_test.rs
+index df45154bf..d870d0139 100644
+--- a/src/compiler2/canon_test.rs
++++ b/src/compiler2/canon_test.rs
+@@ -686,3 +686,47 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
+         );
+     }
+ }
++
++/// Temporary fz-kdt.182 full-corpus interner measurement. Removed before landing.
++#[test]
++#[ignore]
++fn kdt182_measure_full_corpus_type_identity_excess() {
++    let output = std::env::var("KDT182_TYPE_OUTPUT").expect("measurement output path");
++    let mut paths = Vec::new();
++    let mut pending = vec![std::path::PathBuf::from("fixtures2")];
++    while let Some(path) = pending.pop() {
++        for entry in std::fs::read_dir(path).expect("fixture directory") {
++            let path = entry.expect("fixture entry").path();
++            if path.is_dir() {
++                pending.push(path);
++            } else if path.extension().is_some_and(|extension| extension == "fz") {
++                paths.push(path);
++            }
++        }
++    }
++    paths.sort();
++
++    let mut rows = String::from("fixture\tarena\tcanonical_classes\tidentity_excess\n");
++    for path in paths {
++        let text = std::fs::read_to_string(&path).expect("fixture source");
++        let name = path.to_string_lossy();
++        let compiler = drive_fixture(&name, &text);
++        let world = compiler.world();
++        let types = world.types();
++        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
++        let mut canon = TyCanon::new(&labels);
++        let arena = types.interned_tys();
++        let classes = arena
++            .iter()
++            .map(|ty| canon.render(types, *ty))
++            .collect::<std::collections::HashSet<_>>();
++        rows.push_str(&format!(
++            "{}\t{}\t{}\t{}\n",
++            name,
++            arena.len(),
++            classes.len(),
++            arena.len() - classes.len()
++        ));
++    }
++    std::fs::write(output, rows).expect("measurement output");
++}
