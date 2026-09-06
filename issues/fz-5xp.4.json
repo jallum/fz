@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.12"
+  ],
   "created": "2026-09-06T23:42:52Z",
   "description": "Blocks Map.get/2,3 and Keyword.get/2,3 -- both are in fz-5xp scope.\n\nsrc/compiler2/quoted_function.rs:1656\n  fn is_access_get(base, field) -\u003e bool {\n      is_alias(base) \u0026\u0026 field.atom_name().ok().as_deref() == Some(\"get\")\n  }\n\nIt matches ANY alias whose called field is 'get', not just Access. frontdoor.rs:866\nbuilds Access.get for lhs[key], and this predicate then routes every \u003cAlias\u003e.get/2 to\nMapIndex.\n\nVERIFIED at 67e09d373:\n  defmodule Foo do\n    @spec get(any, any) :: integer\n    fn get(_a, _b), do: 99\n  end\n  fn main(), do: dbg(Foo.get(%{a: 1}, :a))    # prints 1, not 99\n\nThe user's function is never called and there is no diagnostic. Any module defining\nget/2 is silently unreachable.",
   "id": "fz-5xp.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Alias.get/2 is silently hijacked into a map index",
   "type": "bug",
-  "updated_at": "2026-09-06T23:42:52Z"
+  "updated_at": "2026-09-06T23:44:48Z"
 }
