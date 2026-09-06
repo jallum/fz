@@ -518,8 +518,8 @@ List-family convergence is coarse at the key exactly where the slot is
 FREIGHT. On a slot both `InputDemand::forwarded_dispatch` and
 `InputDemand::returned` leave at `Ignore`,
 `Types::convergence_class_at` maps every list family reaching it to one
-addressed class, so `[]`, `[t]` and the joined `[] | [t]` shape share one
-recursive identity there. On a slot demand REACHES,
+addressed class, so `[]` and `list(t)` share one recursive identity there (and
+their union already reuses the `list(t)` identity). On a slot demand REACHES,
 `convergence_collapse_list_shape` keeps the element instead, at every depth, so
 `empty_list()` does not converge with `list(t)` and two callers whose lists
 differ in their element key two activations apart -- which is what stops one

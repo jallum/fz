@@ -1322,7 +1322,7 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
-const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (168, 32), (239, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (168, 32), (232, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1517,7 +1517,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[246, 0, 0, 9, 179], [592, 0, 0, 58, 394], [1283, 0, 0, 63, 758]][fixture_index][scenario],
+                [[246, 0, 0, 9, 179], [592, 0, 0, 58, 394], [1239, 0, 0, 63, 730]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions"
             );
             assert_eq!(
@@ -1988,14 +1988,19 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation RETURNS, so its seed and its ascended state stop sharing
         // a key: four more keys, and one more key that is minted before its
         // demand has finished climbing and withdrawn when it does.
-        activations: lifecycle(76, 79, 5),
+        // fz-kdt.182: 76 -> 70 identities, 79 -> 71 first appearances,
+        // 5 -> 1 retractions. Six redundant list-union identities disappear,
+        // along with four retract/remint cycles; normalized behavior is flat.
+        activations: lifecycle(70, 71, 1),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
         // fz-kdt.199: 74 -> 85 distinct, 76 -> 87 first appearances,
         // retractions flat -- each activation the returned axis splits brings
         // its own call edges with it.
-        callsites: lifecycle(85, 87, 2),
+        // fz-kdt.182: 85 -> 79 identities, 87 -> 79 first appearances,
+        // 2 -> 0 retractions with their six absorbed activation identities.
+        callsites: lifecycle(79, 79, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2012,7 +2017,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: rebased completions 128 -> 129. Typed completion order
         // exposes the same standing activation to one additional demand shift;
         // activations and shift wakes stay flat.
-        shifts: shifts(31, 129),
+        // fz-kdt.182: 31 -> 22 shift wakes and 129 -> 121 rebased
+        // completions: absorbed activation identities have no private demand
+        // edge to wake or completion to rebase.
+        shifts: shifts(22, 121),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2023,10 +2031,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: 234 -> 235, with unchanged-output 16 -> 17. The extra
         // rebase above reruns one blocked activation and reproduces its answer;
         // final facts, artifacts, and runtime stay flat.
-        analyze_evaluations: 235,
-        analyze_zero_change: 17,
+        // fz-kdt.182: 235 -> 212 evaluations and 17 -> 13 equal
+        // reproductions. Absorbed identities require no analysis and cannot
+        // regenerate answers already retained by their denotation.
+        analyze_evaluations: 212,
+        analyze_zero_change: 13,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 1013,
+        // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
+        // the semantic total; every retained evaluation remains caused.
+        total_evaluations: 990,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2156,7 +2169,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // wrapper seating means the transient `Enum.drop_positive_finish/1`
         // specialization at `({empty_list, int})` is never minted. This is a
         // strict work deletion; no standing key is withdrawn.
-        activations: lifecycle(270, 270, 0),
+        // fz-kdt.182: 270 -> 261 identities. Nine redundant list-union
+        // identities are absorbed before activation keying; retractions stay
+        // at zero.
+        activations: lifecycle(261, 261, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2191,7 +2207,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: distinct stays 459 while 470/11 -> 469/10. Typed
         // activation order removes one transient retract/remint of an already
         // final identity; the final inventory does not move.
-        callsites: lifecycle(459, 469, 10),
+        // fz-kdt.182: 459 -> 449 identities and 469 -> 459 first
+        // appearances. The ten absorbed callsites were never separate
+        // denotations; retractions stay flat.
+        callsites: lifecycle(449, 459, 10),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2258,13 +2277,17 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // ascents now coalesce before their analyses run. The unchanged-output
         // count stays 15, every other formula family stays flat, and the final
         // artifact/runtime gates below remain the authority on coverage.
-        analyze_evaluations: 918,
+        // fz-kdt.182 removes thirteen analyses of absorbed identities; equal
+        // reproductions remain flat.
+        analyze_evaluations: 905,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
         // Macro readiness is a retained content dependency.
-        total_evaluations: 2440,
+        // fz-kdt.182 removes the same thirteen absorbed-identity analyses
+        // from the semantic total.
+        total_evaluations: 2427,
     },
 ];
 

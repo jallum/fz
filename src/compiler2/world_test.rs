@@ -589,7 +589,7 @@ fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
 }
 
 #[test]
-fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
+fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
@@ -604,21 +604,23 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let int = world.types_mut().int();
+    let empty = world.types_mut().empty_list();
     let list_int = world.types_mut().list(int);
     let non_empty_int = world.types_mut().non_empty_list(int);
-    let equivalent_list = world.types_mut().union(list_int, non_empty_int);
-    assert!(
-        world.types().is_equivalent(&list_int, &equivalent_list),
-        "test setup should model telemetry's equivalent list evidence, got {} vs {}",
-        world.types_mut().display(&list_int),
-        world.types_mut().display(&equivalent_list),
-    );
+    let empty_then_list = world.types_mut().union(empty, list_int);
+    let list_then_empty = world.types_mut().union(list_int, empty);
+    let non_empty_then_list = world.types_mut().union(non_empty_int, list_int);
+    assert_eq!(empty_then_list, list_int);
+    assert_eq!(list_then_empty, list_int);
+    assert_eq!(non_empty_then_list, list_int);
 
     let key = world.activation_key(root, function, &[list_int]);
+    assert_eq!(world.activation_key(root, function, &[empty_then_list]), key);
+    assert_eq!(world.activation_key(root, function, &[list_then_empty]), key);
     world.complete_job(
         Job::SeedRoot(root),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![list_int]), (key.clone(), vec![equivalent_list])],
+            activation_input_contributions: vec![(key.clone(), vec![list_int])],
             ..JobEffects::default()
         },
     );
@@ -626,29 +628,51 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
     assert_eq!(
         world.activation_inputs_joined(&key),
         Some(vec![list_int]),
-        "one publisher should keep the first representative instead of manufacturing list | list evidence",
+        "absorbed list evidence must retain the existing interned allocation",
     );
     let revision = world
         .fact_revision(&FactKey::ActivationInputs(key.clone()))
         .expect("activation-input fact should exist after the first contribution");
+    let fact = FactKey::ActivationInputs(key.clone());
+    let dependency = DependencyKey::Fact(fact.clone());
+    let reader = Job::DeriveExecutableFacts(super::ExecutableKey {
+        activation: key.clone(),
+        need: super::ExecutableNeed::Value,
+    });
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(fact)],
+            ..JobEffects::default()
+        },
+    );
+    let pending_before = world.work_graph.pending_jobs();
 
     let step = world.complete_job(
         Job::AnalyzeActivation(key.clone()),
         JobEffects {
-            activation_input_contributions: vec![(key.clone(), vec![equivalent_list])],
+            activation_input_contributions: vec![(key.clone(), vec![empty_then_list])],
             ..JobEffects::default()
         },
     );
     assert_eq!(
-        world.fact_revision(&FactKey::ActivationInputs(key.clone())),
+        world.fact_revision(&FactKey::ActivationInputs(key)),
         Some(revision),
-        "an equivalent contribution from another publisher should not advance the activation-input revision",
+        "the same interned contribution must not advance the activation-input revision",
     );
     assert!(
-        step.changed
-            .iter()
-            .all(|change| change.key != DependencyKey::Fact(FactKey::ActivationInputs(key.clone()))),
-        "equivalent activation-input evidence should not requeue semantic work",
+        step.changed.iter().all(|change| change.key != dependency),
+        "the same interned contribution must not requeue semantic work",
+    );
+    assert!(
+        !step.wakes.iter().any(|wake| wake.job == reader),
+        "equal reproduction must not wake the subscribed reader: {:?}",
+        step.wakes,
+    );
+    assert_eq!(
+        world.work_graph.pending_jobs(),
+        pending_before,
+        "equal reproduction must add no agenda work",
     );
 }
 

@@ -128,13 +128,18 @@ deliberate: a tie broken by two FREE type vars falls back to mint order, and
 intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
 order) is a second dimension this pass does not touch.
 
-Then ABSORPTION, on the tuples axis: provably-empty clauses are dropped
-(`A ∨ ∅ = A`) and subsumed clauses absorbed (`A ⊆ B ⇒ A ∨ B = B`, via
-`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache). It has to
-run AFTER the sort: it keeps the FIRST of a mutually-subsuming pair, so without
-a canonical order the schedule would still be choosing which clause lives.
+Then ABSORPTION, on the tuple and list axes: provably-empty tuple clauses are
+dropped (`A ∨ ∅ = A`) and subsumed clauses absorbed
+(`A ⊆ B ⇒ A ∨ B = B`) through the memoized comparison cache. Tuple
+products compare coordinatewise where that is decidable. Plain positive list
+clauses compare their two exact dimensions: whether they admit `[]`, and
+whether their non-empty element type is contained. Thus
+`empty_list() | list(int)` and `list(int)` persist as one `Ty`; the rule does
+not claim to normalize arbitrary DNF carvings. Absorption has to run AFTER the
+sort: it keeps the FIRST of a mutually-subsuming pair, so without a canonical
+order the schedule would still choose which clause lives.
 
-Then IDEMPOTENCE, on the lists, resources, funcs and maps axes: exact-duplicate
+Then IDEMPOTENCE, on the resources, funcs and maps axes: exact-duplicate
 clauses are dropped (`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence
 kept). Both later passes are order-preserving filters, so what reaches the
 interner index is still sorted — which is also why one pass suffices:
@@ -151,8 +156,10 @@ turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
 otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
-`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) sweeps every intern
-for both invariants. The tuple-emptiness recursion
+`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks structural
+idempotence and tuple hygiene in debug builds; the typed list-absorption tests
+exercise the memoized semantic relation without adding a second uncached
+comparison sweep. The tuple-emptiness recursion
 (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.

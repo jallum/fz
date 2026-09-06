@@ -238,7 +238,6 @@ of the executables the axis adds on functions whose key count grew, 36 land on
 a function that gains a distinct published return and 91 do not — the 91
 dominated by `List.reduce_cont/3` (21), `List.reduce_while_cont/3` (18),
 `Range.reduce_while_cont/6` (9) and `List.reduce_while_step/3` (6) minting
-fz-kdt.182
 `empty_list()`/`list(τ)` ascent rungs across a mutual cycle the self-only
 subtraction cannot see (fz-kdt.213). And the axis rides fz-kdt.183's dispatch
 edge set, so a reconstructed or projected forwarding argument still re-joins

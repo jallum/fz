@@ -201,11 +201,12 @@ same typed executable identity. The count is not part of that identity.
 
 `RuntimeDemandInputs(E)` is an independently revisioned view of the input
 vector in the one stored demand value. For `00420_enum_take_drop_split`,
-4,233 scheduler completions include 11 scope, 21 module and 1,285 RuntimeDemand
-jobs; the demand jobs perform 1,280 body walks. Changed-revision starts split
-into 1,468 non-demand and 1,046 demand starts. Its three macro consumers each
-resume on their function definition and retained content product. Blocked
-expansion is 1,138 non-demand jobs plus 311 demand/construction formula keys.
+4,153 scheduler completions include 11 scope, 21 module and 1,241 RuntimeDemand
+jobs; the demand jobs perform 1,239 body walks in the retained-request harness
+and 1,236 through each fresh-process CLI observation. Changed-revision starts
+split into 1,448 non-demand and 1,009 demand starts. Its three macro consumers
+each resume on their function definition and retained content product. Blocked
+expansion is 1,131 non-demand jobs plus 304 demand/construction formula keys.
 The work-start regression verifies those exact edges. The shared two-process
 CLI observations compare actual body walks, causal work and byte-identical
 backend artifacts without compiling a second population just for counting.

@@ -633,8 +633,9 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
 ///
 /// Keying a genuinely supplied position is a cost with no separation to buy,
 /// and both halves are measured. The cost: an accumulator visits `[]` and then
-/// `list(tau)` within ONE caller (fz-kdt.182 interns those apart), so keying
-/// it mints one activation per state and k accumulators mint their product --
+/// `list(tau)` within ONE caller; those different denotations correctly intern
+/// apart, so keying it mints one activation per state and k accumulators mint
+/// their product --
 /// `split3/5` 1 -> 8 and `split4/6` 1 -> 16, every body identical. The absent
 /// payoff: the SEED activation is the one every caller passes through and its
 /// inputs are the same `[]` for all of them, so it stays shared and its
@@ -657,7 +658,7 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
 /// they key): 36 land on a function that gains a distinct published return and
 /// 91 do not, the 91 dominated by `List.reduce_cont/3` (21),
 /// `List.reduce_while_cont/3` (18), `Range.reduce_while_cont/6` (9) and
-/// `List.reduce_while_step/3` (6) minting fz-kdt.182 `empty_list()`/`list(tau)`
+/// `List.reduce_while_step/3` (6) minting `empty_list()`/`list(tau)`
 /// ascent rungs across the cont<->step cycle. Closing it wants the strong
 /// component (`FactKey::CallGraphComponent`, which `DeriveInputDemand` does
 /// not read today) and the reverse call edge, because the rebuild belongs to

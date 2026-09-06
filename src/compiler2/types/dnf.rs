@@ -1,5 +1,5 @@
-//! DNF operations: union, intersection, negation, the tuple-clause
-//! subsumption predicate, and the list-axis empty/nonempty normalization pass.
+//! DNF operations: union, intersection, negation, tuple/list-clause
+//! subsumption predicates, and list-axis empty/nonempty normalization.
 
 use super::Ty;
 use super::conj::Conj;
@@ -21,7 +21,7 @@ pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> V
     // (`[1, 2.0]` lives in `list(int∨float)` but not `list(int) ∨
     // list(float)`). Subsumption-based absorption (`A ⊆ B ⇒ A ∨ B = B`)
     // is semantic, so it lives above the descriptor kernel: `Types::intern`
-    // canonicalizes the tuples axis at the persistence boundary.
+    // canonicalizes the tuple and list axes at the persistence boundary.
     let mut out: Vec<Conj<T>> = Vec::with_capacity(a.len() + b.len());
     for c in a {
         if !out.contains(c) {
@@ -140,6 +140,38 @@ pub(crate) fn tuple_clause_subsumed(
     }
 }
 
+/// `A ⊆ B` for two list clauses, by sufficient conditions only (`false`
+/// means "not proven"). The structural-conjunction rule is axis-independent;
+/// plain single-positive list clauses additionally have an exact containment
+/// decision:
+///
+/// - if `A` admits `[]`, `B` must admit it too;
+/// - if `A` admits non-empty lists, `B` must admit them at an element supertype.
+///
+/// In particular, `empty_list() ⊆ list(T)` for every inhabited `T`. The
+/// element comparison is injected so the persistence boundary reuses the
+/// World-owned comparison cache.
+pub(crate) fn list_clause_subsumed(
+    a: &Conj<ListSig>,
+    b: &Conj<ListSig>,
+    mut is_subtype: impl FnMut(&Ty, &Ty) -> bool,
+) -> bool {
+    if b.pos.iter().all(|p| a.pos.contains(p)) && b.neg.iter().all(|n| a.neg.contains(n)) {
+        return true;
+    }
+    match (a.pos.as_slice(), a.neg.as_slice(), b.pos.as_slice(), b.neg.as_slice()) {
+        ([a], [], [b], []) => {
+            (!a.empty || b.empty)
+                && match (a.elem, b.elem) {
+                    (None, _) => true,
+                    (Some(_), None) => false,
+                    (Some(a), Some(b)) => is_subtype(&a, &b),
+                }
+        }
+        _ => false,
+    }
+}
+
 /// ¬(⋁ Cᵢ) = ⋀ ¬Cᵢ. Each ¬Cᵢ is a DNF (disjunction of single-literal
 /// clauses); we intersect them all together. Duplicate clauses contribute
 /// duplicate factors (`¬A ∧ ¬A = ¬A`) and are skipped — the product is
@@ -195,4 +227,122 @@ pub(crate) fn neg_clause<T: Clone>(c: &Conj<T>) -> Vec<Conj<T>> {
 
 pub(crate) fn is_dnf_top<T>(d: &[Conj<T>]) -> bool {
     d.len() == 1 && d[0].pos.is_empty() && d[0].neg.is_empty()
+}
+
+#[cfg(test)]
+mod list_clause_subsumed_tests {
+    use super::*;
+
+    fn sig(empty: bool, elem: Option<u32>) -> ListSig {
+        ListSig {
+            empty,
+            elem: elem.map(Ty),
+        }
+    }
+
+    fn clause(pos: &[(bool, Option<u32>)], neg: &[(bool, Option<u32>)]) -> Conj<ListSig> {
+        Conj {
+            pos: pos.iter().map(|(empty, elem)| sig(*empty, *elem)).collect(),
+            neg: neg.iter().map(|(empty, elem)| sig(*empty, *elem)).collect(),
+        }
+    }
+
+    #[test]
+    fn containment_uses_exact_plain_list_dimensions_and_conservative_complex_rules() {
+        let empty = clause(&[(true, None)], &[]);
+        let narrow_nonempty = clause(&[(false, Some(1))], &[]);
+        let wide_nonempty = clause(&[(false, Some(2))], &[]);
+        let narrow_list = clause(&[(true, Some(1))], &[]);
+        let wide_list = clause(&[(true, Some(2))], &[]);
+        let complex = clause(&[(false, Some(1)), (true, Some(2))], &[(true, None)]);
+        let structural_super = clause(&[(false, Some(1))], &[]);
+        let negated = clause(&[(false, Some(1))], &[(true, None)]);
+
+        let cases = [
+            ("empty contains itself", &empty, &empty, true),
+            (
+                "a nonempty list contains itself",
+                &narrow_nonempty,
+                &narrow_nonempty,
+                true,
+            ),
+            (
+                "a possibly-empty list contains itself",
+                &narrow_list,
+                &narrow_list,
+                true,
+            ),
+            (
+                "narrower elements are covariant",
+                &narrow_nonempty,
+                &wide_nonempty,
+                true,
+            ),
+            (
+                "element covariance is not reversible",
+                &wide_nonempty,
+                &narrow_nonempty,
+                false,
+            ),
+            ("empty is not nonempty", &empty, &wide_nonempty, false),
+            ("nonempty is not empty", &wide_nonempty, &empty, false),
+            ("empty is contained by a possibly-empty list", &empty, &wide_list, true),
+            (
+                "possibly-empty is not contained by exact empty",
+                &wide_list,
+                &empty,
+                false,
+            ),
+            (
+                "nonempty is contained by a possibly-empty list",
+                &narrow_nonempty,
+                &wide_list,
+                true,
+            ),
+            (
+                "possibly-empty is not contained by nonempty",
+                &wide_list,
+                &wide_nonempty,
+                false,
+            ),
+            ("possibly-empty elements are covariant", &narrow_list, &wide_list, true),
+            (
+                "possibly-empty element covariance is not reversible",
+                &wide_list,
+                &narrow_list,
+                false,
+            ),
+            (
+                "a structural superset of literals is contained",
+                &complex,
+                &structural_super,
+                true,
+            ),
+            (
+                "structural containment is not reversible",
+                &structural_super,
+                &complex,
+                false,
+            ),
+            (
+                "equal negated structure is retained as a sound control",
+                &negated,
+                &negated,
+                true,
+            ),
+            (
+                "non-structural negated clauses stay conservative",
+                &negated,
+                &wide_nonempty,
+                false,
+            ),
+        ];
+
+        for (name, narrower, wider, expected) in cases {
+            let actual = list_clause_subsumed(narrower, wider, |left, right| {
+                left == right || (*left == Ty(1) && *right == Ty(2))
+            });
+            assert_eq!(actual, expected, "{name}");
+        }
+    }
 }

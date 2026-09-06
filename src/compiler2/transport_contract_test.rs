@@ -4674,10 +4674,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 125),
+                    (("metadata", false), 115),
                     (("metadata", true), 302)
                 ]),
-                "the pruned owner population preserves every nonempty baseline obligation"
+                "fz-kdt.182 removes ten metadata-only positions whose list-union executable identities were redundant; every retained owner preserves its obligation"
             );
         }
     }
