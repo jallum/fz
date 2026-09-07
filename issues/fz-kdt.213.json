@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.183",
     "fz-kdt.199",
     "fz-kdt.200"
   ],
@@ -21,5 +20,5 @@
   "status": "open",
   "title": "Ground recursive publications through the ordinary scheduler",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:32Z"
+  "updated_at": "2026-09-07T18:56:02Z"
 }
