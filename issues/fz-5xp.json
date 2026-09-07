@@ -10,11 +10,15 @@
     {
       "text": "Draft PR for the arc: https://github.com/jallum/fz/pull/122 (branch fz-lib). Commits land there one ticket at a time as they are cold-reviewed.",
       "timestamp": "2026-09-07T00:26:24Z"
+    },
+    {
+      "text": "CI on PR #122 has been silently dead, and the cause is now verified.\n\nThe arc branch is stacked on fz-tfn/denotational-identity. That base moved while this work was in flight -- it absorbed PR #110 (fz-kdt arc) and PR #118 (fz-tfn recalculator) -- so PR #122 went mergeable: CONFLICTING / mergeStateStatus: DIRTY, and GitHub Actions creates NO check suites for a conflicting PR. No error, no skipped status, nothing:\n\n  commits/5c2a0483e/check-suites -\u003e total_count 0\n  commits/6b9c521e9/check-suites -\u003e total_count 1   (the one run; FAILED on fz2_cli census pins)\n  commits/c29520325/check-suites -\u003e total_count 0\n  commits/ffd13dcb6/check-suites -\u003e total_count 0\n\nSo the red X the PR displays is from 6b9c521e9, whose failure was fixed in\nc29520325 -- a commit CI never ran. Three of four pushes have no independent\nverification at all; 'verified green' currently rests entirely on the six local\ntargets.\n\nREMEDY: merge the updated base branch into fz-lib (not main -- the base is the\nstack's branch), which clears the conflict and lets Actions fire again. Re-check\nmergeable after every base advance rather than trusting an earlier CLEAN.\n\nWorth knowing for the rest of the epic: this base is ACTIVE and will keep\nmoving, so this will recur. If the stack lands into main, retargeting #122 to\nmain becomes the simpler arrangement.",
+      "timestamp": "2026-09-07T05:38:35Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "fz stdlib: run a real program -- JSON round-trip on an Elixir-parity runtime library",
   "type": "epic",
-  "updated_at": "2026-09-07T00:26:24Z"
+  "updated_at": "2026-09-07T05:38:35Z"
 }
