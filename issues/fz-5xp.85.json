@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T20:04:57Z",
+  "description": "## The shape\n\nAbout thirty of `Enum`'s public functions begin `to_list(enumerable)` and then walk the list. For a list that is free -- `to_list/1` returns it unchanged. For anything else it is a full materialisation before the work starts.\n\n`to_list/1` for a non-list is `reverse(reverse(enumerable))`: two complete passes, each building a list, to get back to the original order.\n\nSo `Enum.map(1..10, f)` reduces the range onto a reversed list, reverses that into a second list, then maps it into a third. A range that never needed to exist as a list exists twice before the map begins.\n\n## Why this is separate\n\nThis is where the allocation goldens live -- `enum_builder_allocations`, `enum_list_allocations`, `enum_sort`, `enum_reduce_suspend` -- and it is a question about shape rather than tidiness: which functions can consume `Enumerable.reduce/3` directly, and which genuinely need the whole list in hand before they can answer. Folding it into a cleanup would make the cleanup unreviewable.\n\n`reverse/1` is already a single reducing pass, so `to_list/1` could be one pass plus one reverse rather than two reverses. That much is cheap and provable on its own.\n\n## Worth measuring first\n\nThe epic's founding premise was that every builder sits at or below its measured floor -- `to_list` 60 allocations to 0, `map` 80 to 20, `filter` 60 to 20. Those numbers were taken over lists. The same measurements over a range would say how much this actually costs.",
+  "id": "fz-5xp.85",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Enum materialises every enumerable before it walks it",
+  "type": "task",
+  "updated_at": "2026-09-07T20:04:57Z"
+}
