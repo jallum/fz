@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.44"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-07T18:56:19Z"
+  "updated_at": "2026-09-07T18:56:20Z"
 }

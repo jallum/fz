@@ -2,7 +2,6 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
-    "fz-tfn.13",
     "fz-tfn.18"
   ],
   "closed_at": "2026-09-05T21:43:28Z",
@@ -16,5 +15,5 @@
   "status": "closed",
   "title": "Make backend members immutable and references independent of root enumeration",
   "type": "task",
-  "updated_at": "2026-09-05T22:12:52Z"
+  "updated_at": "2026-09-07T18:56:20Z"
 }
