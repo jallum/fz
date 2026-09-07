@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.46",
     "fz-tfn.30"
   ],
   "blocks": [
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Audit residual blocked-wait ordering after edge-triggered cutover",
   "type": "task",
-  "updated_at": "2026-09-05T14:15:35Z"
+  "updated_at": "2026-09-07T18:56:22Z"
 }
