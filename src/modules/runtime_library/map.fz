@@ -24,6 +24,33 @@ defmodule Map do
   extern "C" fn fz_map_entry_key(any, integer) :: any
   extern "C" fn fz_map_entry_value(any, integer) :: any
   extern "fz" fn fz_map_delete(any, any) :: any
+  extern "fz" fn fz_map_put_ref(any, any, any) :: any
+  extern "fz" fn fz_map_put_int(any, any, integer) :: any
+  extern "fz" fn fz_map_put_float(any, any, float) :: any
+  extern "fz" fn fz_map_put_atom(any, any, atom) :: any
+
+  @doc "The map with `key` set. Copies the whole array; do not use in a loop."
+  #
+  # A typed clause family, like the arithmetic operators in `Kernel`. A scalar
+  # value has to reach the heap through its own writer -- handing an unboxed
+  # integer to the ref writer aborts with "requires a heap/sentinel ref" -- and
+  # letting the clause heads pick means the caller never has to know that.
+  @spec put(any, any, any) :: any
+  fn put(map, key, value :: integer), do: fz_map_put_int(map, key, value)
+  fn put(map, key, value :: float), do: fz_map_put_float(map, key, value)
+  fn put(map, key, value :: atom), do: fz_map_put_atom(map, key, value)
+  fn put(map, key, value), do: fz_map_put_ref(map, key, value)
+
+  @doc "The value for `key`, or nil."
+  @spec get(any, any) :: any
+  fn get(map, key), do: map[key]
+
+  @doc "The value for `key`, or `default`."
+  @spec get(any, any, any) :: any
+  fn get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
+
+  fnp get_or(map, key, _default, true), do: map[key]
+  fnp get_or(_map, _key, default, false), do: default
 
   @doc "The map without `key`. Copies the whole array; prefer drop/2 for several."
   @spec delete(any, any) :: any
