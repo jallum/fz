@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.46",
     "fz-kdt.48",
     "fz-kdt.57",
     "fz-kdt.58",
@@ -41,5 +40,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:50Z"
+  "updated_at": "2026-09-07T18:56:51Z"
 }
