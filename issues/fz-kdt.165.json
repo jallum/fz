@@ -9,6 +9,8 @@
     "fz-tfn.13",
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:53:52Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-kdt.200; all valid acceptance criteria moved into that description.",
   "created": "2026-09-02T18:16:08Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-kdt.200, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nCallable identity is a typed semantic question in the final activation observation class. Delete the body-wide consumes_callable_identity flag and preserve direct-call, capture, reconstructed, projected and protocol-forwarded callable controls.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-kdt.200 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-kdt.165",
@@ -29,8 +31,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-kdt.200",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:51Z"
+  "updated_at": "2026-09-07T18:53:52Z"
 }
