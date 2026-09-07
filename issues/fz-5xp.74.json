@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T19:05:29Z",
   "created": "2026-09-07T18:54:16Z",
   "description": "## What breaks\n\nA guard helper whose arity exceeds the calling clause's arity aborts the interpreter and works on the other two doors.\n\n```\nfn ordered?(a, b, c), do: a \u003c= b and b \u003c= c\nfn kind(x, y) when ordered?(0, x, y), do: :rising\nfn kind(_x, _y), do: :other\n```\n\n- `fz2 interp` -\u003e `fz2 interp: backend clause dispatch required omitted semantic input 2` (a bare string, no diagnostic, no span)\n- `fz2 run` -\u003e correct\n- `fz2 build` -\u003e correct\n\nArity is the whole trigger; literal arguments are irrelevant. A helper called with only variables still breaks when it is wider (`fn three?(a,b,c)` called from `fn kind(x, y) when three?(x, y, x)`), and a helper called with a literal is fine when it is not (`fn gt?(lo, x)` called from `fn kind(a, _b) when gt?(0, a)`).\n\n## Why\n\nA reified helper is a `PatternGuardExpr::Dispatch` holding a nested plan whose subjects, pins and clause bodies are numbered `0..helper arity`. Both evaluators feed that plan exclusively from the `inputs` vector -- `ir_interp/dispatch_exec.rs` executes it against `\u0026values`, `jobs/native.rs` against `input_vars` -- so the argument list is the only bridge between the two index spaces.\n\n`collect_guard_expr_inputs` (src/compiler2/artifact.rs) crossed them anyway: after collecting `inputs` against the caller's plan it also walked `dispatch.bodies` and `dispatch.plan.graph` and wrote *those* ordinals into the same set. `band/1` calling a 3-input helper therefore reported required inputs `{0, 1, 2}` for a plan with `input_count == 1`.\n\nThe doors then diverge on the impossible demand rather than on the guard:\n\n- src/compiler2/jobs/native.rs:857 iterates its own semantic inputs and asks `required_inputs.contains(\u0026i)`, so an out-of-range ordinal is simply never visited.\n- src/ir_interp/backend.rs:605 iterates `required_inputs` and indexes into the call's arguments, so the ordinal is `None` and the call aborts.\n\n## Fix\n\n`collect_guard_expr_inputs` collects the argument expressions only. That is complete: every caller input a guard can reach flows through one of them.\n\n`required_dispatch_input_ordinals` now asserts every ordinal it returns is below `plan.input_count`. An ordinal outside a plan's own input space is not a conservative over-approximation -- a backend may pass any non-required input as nil -- so it is a demand no caller can meet, and the assertion keeps that failure at the plan that produced it instead of at whichever door reads it first.\n\n## Tests\n\n- `fixtures2/behavior/guard_helper_wider_than_caller.fz` -- in-language assertions, all four paths.\n- `compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider` -- pins `required_dispatch_input_ordinals` at `{0}` for `band/1`. Proven fail-at-HEAD: `{2, 0, 1}` vs `{0}`.",
   "id": "fz-5xp.74",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] A guard helper wider than its caller leaks its own input ordinals into the caller's dispatch demands",
   "type": "task",
-  "updated_at": "2026-09-07T19:05:28Z"
+  "updated_at": "2026-09-07T19:05:29Z"
 }
