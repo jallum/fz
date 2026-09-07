@@ -8,13 +8,13 @@
     "fz-tfn.39"
   ],
   "created": "2026-09-03T08:00:25Z",
-  "description": "## Goal\n\nStore scheduler work-start counts in the existing fixed-field `WorkStartTally` representation and delete per-enqueue hash-map accounting.\n\n## Evidence\n\nThe scheduler has a closed `WorkStartReason` enum but stores six counters in `HashMap\u003cWorkStartReason, u64\u003e`. Every successful enqueue hashes a fixed enum, and every snapshot performs one lookup per reason. `WorkStartTally` already exactly represents the public fixed fields. The 00420 session records roughly 2,400 starts.\n\n## Strategy and proof\n\n1. Finish removal of obsolete work-start reasons so the fixed schema is stable.\n2. Store and increment `WorkStartTally` directly, with exhaustive matching over live reasons.\n3. Preserve snapshot/delta semantics across persistent product sessions.\n4. Delete the hash map and lookup closure.\n5. Prove byte-identical public traces and identical per-reason/session totals on representative fixtures.\n6. Run scheduler, telemetry, library, fixture, formatting, and strict clippy checks.\n\nNo fidelity is traded for the representation change.",
+  "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-tfn.15, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nAfter scan-era causes are deleted, remaining work-start counts live directly in the fixed WorkStartTally without per-enqueue hashing.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-tfn.15 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-tfn.16",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 3,
   "status": "open",
-  "title": "Replace fixed work-start HashMap accounting with fixed fields",
+  "title": "Absorbed into fz-tfn.15",
   "type": "task",
-  "updated_at": "2026-09-05T14:15:50Z"
+  "updated_at": "2026-09-07T18:53:58Z"
 }
