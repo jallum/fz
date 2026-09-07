@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T15:29:55Z",
-  "description": "Found while writing fz-5xp.14's String module.\n\n    fn to_atom(s), do: Atom.from_binary(s)\n\n`Atom.from_binary/1` does not exist. Instead of an unresolved-callee\ndiagnostic naming it, every program compiled with that module in the runtime\nlibrary failed with:\n\n    error[internal/post-resolution-leftover]: quoted function decode failed:\n      invalid any value ref: ExpectedTag { expected: ValueKind(15), found: ValueKind(3) }\n      --\u003e \u003cgenerated\u003e\n\nAn atom expected, a struct found, at `\u003cgenerated\u003e` -- no file, no line, no\nname. Finding the cause took a bisection of the module.\n\nfz DOES diagnose this properly for ordinary user code:\n\n    error[lower/unbound]: compiler2 lowering found unresolved direct runtime\n      callee `Keyword.get/2`   --\u003e /tmp/kw.fz:3:7\n\nso the resolution path knows how to say it. Something on the RUNTIME-LIBRARY\npath reaches quoted-function decode with an unresolved callee still in hand,\nwhere user code is refused earlier.\n\nWHY IT MATTERS BEYOND THE TYPO: the runtime library is the code most likely to\nname a function that does not exist yet, because it is written alongside the\nprimitives it needs. This is the diagnostic that should catch a half-finished\nmodule, and instead it is the one that hides it.",
+  "description": "WRONG, AND WITHDRAWN. Both claims in the original description were artifacts of\ntesting a STALE BINARY.\n\nThe runtime library is `include_str!`'d into the compiler, so editing a\n`.fz` module and re-running `./target/debug/fz2` without `cargo build`\nexercises the PREVIOUS library. Every 'obscure internal error' I attributed to\nthe two causes below came from that.\n\nRe-tested with a real rebuild:\n\n  * a call to a function that does not exist gives a proper diagnostic, with\n    the file and the line:\n\n        error[resolve/unknown-import]: module `Atom` does not export `from_binary/1`\n          --\u003e runtime:String.fz:298:22\n\n  * an extern declared `:: atom` works and returns an atom (`:hi`).\n\nfz-5xp.66 is a REAL instance of the contentless\n`internal/post-resolution-leftover` error and was re-verified on a fresh build\nwith user code, where staleness cannot apply. It stands on its own.\n\nKept rather than deleted as the record of a false finding: the lesson is that a\nruntime-library change needs a rebuild before it is tested, and that this error\nmessage is contentless enough to absorb any explanation offered for it.",
   "id": "fz-5xp.65",
   "labels": [],
   "parent": "fz-5xp",
@@ -15,7 +15,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "A call to a non-existent function in a runtime-library module is an internal decode error, not a diagnostic",
+  "title": "RETRACTED: was a stale binary, not a missing diagnostic",
   "type": "bug",
-  "updated_at": "2026-09-07T15:31:08Z"
+  "updated_at": "2026-09-07T15:35:46Z"
 }
