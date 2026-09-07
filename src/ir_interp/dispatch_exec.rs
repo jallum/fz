@@ -707,11 +707,27 @@ pub(super) fn dispatch_bit_size_value(
             .get(subject)
             .and_then(|v| v.as_i64())
             .map(|n| (1, n as u32)),
-        Some(BitstringFieldSize::BindingName(name)) => state
-            .direct_bindings
-            .get(name)
-            .and_then(|v| v.as_i64())
-            .map(|n| (1, n as u32)),
+        // A size named by a binding the PATTERN makes -- `<<n, s :: binary-size(n)>>`.
+        //
+        // A name from the ENCLOSING scope does not reach here: the plan resolves
+        // sizes against the pattern's own bindings only, so a function
+        // parameter or an outer variable is never found (fz-5xp.54). The native
+        // doors already refuse that at lowering, naming the binding. This one
+        // used to return `None`, which the caller reads as "the clause did not
+        // match" -- so `interp` silently took a different branch than `run` and
+        // `build` refused to compile at all.
+        //
+        // Refusing here keeps the three doors agreeing. It is not the fix: the
+        // fix is to resolve an outer name through the pin mechanism, which is
+        // what `Pattern::Pinned` already uses.
+        Some(BitstringFieldSize::BindingName(name)) => match state.direct_bindings.get(name) {
+            Some(value) => value.as_i64().map(|n| (1, n as u32)),
+            None => panic!(
+                "bitstring dispatch size names `{name}`, which the pattern does not bind; \
+                 a size from an enclosing scope is not supported in a clause head or `case` \
+                 (fz-5xp.54) -- destructure instead"
+            ),
+        },
     }
 }
 
