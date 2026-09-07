@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-foq.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-foq",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Extract fixture_metadata to a dev-dependency crate",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:26Z"
+  "updated_at": "2026-09-07T02:21:35Z"
 }
