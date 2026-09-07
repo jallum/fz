@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T22:07:13Z",
+  "close_reason": "Acceptance law transferred to fz-tfn.53 unified publication boundary",
   "created": "2026-08-30T19:26:24Z",
   "description": "## Status\n\nAbsorbed into `fz-tfn.53`, the typed atomic source-publication cutover.\n\n## Preserved law\n\n`CallSiteMap` and `CallSiteTargetsMap` have exactly the lifetime of their authoritative `CallSiteSummary`/`CallSiteTargets` fact claims. When the last publisher retracts, the typed value disappears; a later `Unresolved` publication begins a fresh epoch and cannot inherit stale `Resolved` content. Multi-publisher withdrawal prunes only after the final claim leaves.\n\n`fz-tfn.53` must prove resolved → absent → unresolved at the unified publication boundary and remove store-without-ledger helpers. It must not implement the old proposed after-the-fact scan of `FactChange`, add per-reader `has_fact` gates, or retain a second cleanup authority.\n\nNo standalone implementation remains; the law and its production-boundary test are acceptance criteria of `fz-tfn.53`.",
   "id": "fz-kdt.79",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed: callsite values follow typed publication lifetime",
   "type": "task",
-  "updated_at": "2026-09-07T22:07:12Z"
+  "updated_at": "2026-09-07T22:07:13Z"
 }
