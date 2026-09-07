@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T02:21:23Z",
+  "description": "fixture_facts.rs is 458 lines with no production consumer; its only callers are lib unit tests (fixture_contract_harness_test, fixture_facts_test). No integration test uses it.\n\nGate it #[cfg(test)] in place. Do NOT extract it to a crate: it imports World, LoweredBody, ActivationKey, SemanticOrd and CallSiteSummary, so a separate crate would force those public and create a larger surface than the one being removed.\n\nConsequence to handle: transport_test.rs includes fixture_facts.rs in its production_order_owners source-discipline scan. Once it is not production, that entry goes.\n\nDone when: fixture_facts is absent from a non-test build, transport_test no longer audits it as production, and the full gate is green.",
+  "id": "fz-foq.2",
+  "labels": [],
+  "parent": "fz-foq",
+  "priority": 3,
+  "status": "open",
+  "title": "Gate fixture_facts behind cfg(test)",
+  "type": "task",
+  "updated_at": "2026-09-07T02:21:23Z"
+}
