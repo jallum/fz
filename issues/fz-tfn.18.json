@@ -6,9 +6,7 @@
     "fz-tfn.44",
     "fz-tfn.9"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-05T23:04:59Z",
   "close_reason": "Completed in 537280e35; full gates green, byte-identical backend/CLIF and deterministic reduced work, fresh ticket-scoped cold review approved exact diff41b51d3e6dede38cfd10bc6a23c0193f01d5f8e46d54c3828d32e0de431bceff.",
   "created": "2026-09-03T08:00:26Z",
@@ -20,5 +18,5 @@
   "status": "closed",
   "title": "Make root backend packaging react to exact keyed contributions",
   "type": "task",
-  "updated_at": "2026-09-05T23:28:51Z"
+  "updated_at": "2026-09-07T18:56:57Z"
 }
