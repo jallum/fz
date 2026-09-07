@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T01:04:30Z",
+  "description": "There is no inliner anywhere in the tree (verified: no inline pass in compiler2, ir_codegen, ir_dce or fz_ir; Cranelift has no cross-function inliner; the two port_planner_test.rs 'inlined' TODOs are unimplemented). So every runtime-library wrapper over an intrinsic is a real call.\n\nThis is already the case at HEAD, independent of any operator work:\n\n  fn left \u003e= right, do: fz_op_gte(left, right)\n\ncompiles to its own executable -- 'fn fz_op_gte__e9' appears as a standalone\nCranelift function in the single-clause build, reached by a call. Same for every\ncomparison and arithmetic operator, and for the thin Enum/List wrappers.\n\nThese are the easiest possible inline case: a body that is exactly one call to a\nprimitive the backend already special-cases by name (prim.rs carries 31 such\narms). Inlining them would remove a call per operator use across every program,\nand it is the mechanism that pays back the dispatch cost fz-5xp.18 accepts by\ngiving the comparison operators typed clause families.\n\nDoing it generically also replaces bespoke lowering: the reason codegen\nhand-wrote a both_int/promote coercion for ordering was to avoid exactly this\ncall. A general 'inline a single-expression body whose tail is an intrinsic'\nrule serves the whole runtime library rather than six operators.\n\nNot a blocker for anything in fz-5xp -- correctness does not depend on it. Filed\nso the cost fz-5xp.18 accepts is tracked rather than assumed away.",
+  "id": "fz-5xp.20",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Inline single-expression runtime-library wrappers over intrinsics",
+  "type": "task",
+  "updated_at": "2026-09-07T01:04:30Z"
+}
