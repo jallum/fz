@@ -1734,13 +1734,19 @@ pub mod debug {
     /// Inverse of the lexer's canonical escapes (`\n \t \r \\ \"`).
     fn escape_for_display(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
             match c {
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
+                // `#{` is escaped so the rendering round-trips as source:
+                // an unescaped one would read back as interpolation
+                // (fz-5xp.5). Elixir's inspect does the same, and only for
+                // `#` immediately before `{`.
+                '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
                 other => out.push(other),
             }
         }

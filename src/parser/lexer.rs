@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
@@ -175,6 +176,9 @@ pub struct Lexer<'a> {
     pos: usize,
     code_id: CodeId,
     source_name: Option<Rc<str>>,
+    /// fz-5xp.5 — one interpolated string literal lexes to SEVERAL tokens.
+    /// `next_token` drains this before reading more source.
+    pending: VecDeque<Token>,
 }
 
 #[derive(Debug)]
@@ -205,6 +209,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             code_id,
             source_name: Some(Rc::from(source_name.as_ref())),
+            pending: VecDeque::new(),
         }
     }
 
@@ -346,19 +351,183 @@ impl<'a> Lexer<'a> {
                 .map_err(|e| self.err(e.to_string()))
         }
     }
+}
 
-    /// fz-axu.9 (L1) — byte-oriented quoted binary literal reader. Returns the
-    /// raw bytes of the literal between the surrounding `"…"`. Escapes
-    /// recognised: `\n \t \r \\ \"`. Any other backslash sequence is a
-    /// hard error (formerly a silent passthrough that mis-encoded UTF-8
-    /// for non-ASCII inputs). Caller has positioned at the opening `"`.
+/// One piece of a string literal: literal bytes, or the SOURCE TEXT of an
+/// `#{...}` expression, which is lexed on its own.
+#[derive(Debug)]
+enum StringPart {
+    Bytes(Vec<u8>),
+    /// Byte range into the enclosing source, naming the text between the
+    /// braces.
+    Interpolation(std::ops::Range<usize>),
+}
+
+impl<'a> Lexer<'a> {
+    /// fz-5xp.5 — read a quoted literal as alternating literal bytes and
+    /// `#{...}` expressions.
     ///
-    /// fz-axu.25 (M4) UTF-8 invariant: every byte sequence this function
-    /// returns is valid UTF-8. Source input is `&str` (already UTF-8),
-    /// and all recognised escapes (`\n \t \r \\ \"`) produce ASCII bytes
-    /// that preserve UTF-8 validity. Downstream lowering (L3) relies on
-    /// this — when `\x`-style byte escapes are added, this invariant
-    /// moves to the escape parser and L3 may need to re-check.
+    /// An unescaped `#{` used to be copied through verbatim, so `"a#{1}b"`
+    /// evaluated to the six characters `a#{1}b` -- a silent wrong answer, and
+    /// the reason every error message a String library produced would have
+    /// been wrong.
+    fn read_quoted_binary_parts(&mut self) -> Result<Vec<StringPart>, LexError> {
+        self.bump(); // consume opening "
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match self.bump() {
+                None => return Err(self.err("unterminated string".into())),
+                Some(b'"') => {
+                    parts.push(StringPart::Bytes(bytes));
+                    return Ok(parts);
+                }
+                Some(b'\\') => bytes.push(self.read_escape_byte()?),
+                Some(b'#') if self.peek(0) == Some(b'{') => {
+                    self.bump(); // consume {
+                    let range = self.read_interpolation_range()?;
+                    parts.push(StringPart::Bytes(std::mem::take(&mut bytes)));
+                    parts.push(StringPart::Interpolation(range));
+                }
+                Some(c) => bytes.push(c),
+            }
+        }
+    }
+
+    /// The text between `#{` and its matching `}`, with braces nested and
+    /// string literals inside skipped so `"#{f(%{a: 1})}"` and
+    /// `"#{g("}")}"` both find the right closer.
+    fn read_interpolation_range(&mut self) -> Result<std::ops::Range<usize>, LexError> {
+        let start = self.pos;
+        let mut depth = 1usize;
+        loop {
+            match self.bump() {
+                None => return Err(self.err("unterminated interpolation `#{`".into())),
+                Some(b'{') => depth += 1,
+                Some(b'}') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(start..self.pos - 1);
+                    }
+                }
+                Some(b'"') => {
+                    // Skip a nested literal whole; its braces are not ours.
+                    loop {
+                        match self.bump() {
+                            None => return Err(self.err("unterminated string in interpolation".into())),
+                            Some(b'\\') => {
+                                self.bump();
+                            }
+                            Some(b'"') => break,
+                            Some(_) => {}
+                        }
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    fn read_escape_byte(&mut self) -> Result<u8, LexError> {
+        match self.bump() {
+            Some(b'n') => Ok(b'\n'),
+            Some(b't') => Ok(b'\t'),
+            Some(b'r') => Ok(b'\r'),
+            Some(b'\\') => Ok(b'\\'),
+            Some(b'"') => Ok(b'"'),
+            Some(b'#') => Ok(b'#'),
+            Some(c) => Err(self.err(format!("unknown escape `\\{}` in string literal", c as char))),
+            None => Err(self.err("unterminated escape".into())),
+        }
+    }
+
+    /// Desugar an interpolated literal into the tokens it means, which is
+    /// exactly Elixir's own lowering:
+    ///
+    /// ```text
+    /// "a#{x}b"   ->   "a" <> Kernel.to_string(x) <> "b"
+    /// ```
+    ///
+    /// Doing it HERE rather than in the parser means the rest of the compiler
+    /// never learns a new node: an interpolated string is ordinary concat and
+    /// an ordinary call by the time anything else sees it. Empty literal
+    /// pieces are dropped, so `"#{x}"` is one call rather than a concat with
+    /// two empty binaries.
+    fn interpolation_tokens(
+        &mut self,
+        parts: Vec<StringPart>,
+        start: usize,
+        space_before: bool,
+    ) -> Result<Token, LexError> {
+        let span = self.span_from(start);
+        let mut pieces: Vec<Vec<Tok>> = Vec::new();
+        for part in parts {
+            match part {
+                StringPart::Bytes(bytes) if bytes.is_empty() => {}
+                StringPart::Bytes(bytes) => pieces.push(vec![Tok::Binary(bytes)]),
+                StringPart::Interpolation(range) => {
+                    let source = from_utf8(&self.src[range.clone()])
+                        .map_err(|e| self.err(format!("invalid UTF-8 in interpolation: {}", e)))?;
+                    let inner = Lexer::with_code_id_and_source_name(
+                        source,
+                        self.code_id,
+                        self.source_name.as_deref().unwrap_or(""),
+                    )
+                    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+                    .map_err(|e| self.err(format!("in interpolation: {}", e.msg)))?;
+                    let mut toks: Vec<Tok> = inner
+                        .into_iter()
+                        .map(|token| token.tok)
+                        .filter(|tok| !matches!(tok, Tok::Eof | Tok::Newline))
+                        .collect();
+                    if toks.is_empty() {
+                        return Err(self.err("empty interpolation `#{}`".into()));
+                    }
+                    let mut call = vec![
+                        Tok::Ident("Kernel".into()),
+                        Tok::Dot,
+                        Tok::Ident("to_string".into()),
+                        Tok::LParen,
+                    ];
+                    call.append(&mut toks);
+                    call.push(Tok::RParen);
+                    pieces.push(call);
+                }
+            }
+        }
+        if pieces.is_empty() {
+            pieces.push(vec![Tok::Binary(Vec::new())]);
+        }
+        let mut flat: Vec<Tok> = Vec::new();
+        for (index, piece) in pieces.into_iter().enumerate() {
+            if index > 0 {
+                flat.push(Tok::Concat);
+            }
+            flat.extend(piece);
+        }
+        let mut iter = flat.into_iter();
+        let first = iter.next().expect("at least one token");
+        for tok in iter {
+            self.pending.push_back(Token {
+                tok,
+                span,
+                space_before: false,
+            });
+        }
+        Ok(Token {
+            tok: first,
+            span,
+            space_before,
+        })
+    }
+}
+
+impl<'a> Lexer<'a> {
+    /// fz-axu.9 (L1) — byte-oriented quoted binary literal reader, for the
+    /// sites that name a value rather than build one: atom names, `@doc`
+    /// text, extern ABI strings. Interpolation is not meaningful there, so
+    /// this reader keeps rejecting nothing and copying bytes; expression
+    /// literals go through `read_quoted_binary_parts`.
     fn read_quoted_binary_bytes(&mut self) -> Result<Vec<u8>, LexError> {
         self.bump(); // consume opening "
         let mut bytes: Vec<u8> = Vec::new();
@@ -465,6 +634,9 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
+        if let Some(token) = self.pending.pop_front() {
+            return Ok(token);
+        }
         let before_trivia = self.pos;
         self.skip_trivia();
         let space_before = self.pos != before_trivia;
@@ -716,7 +888,14 @@ impl<'a> Lexer<'a> {
             },
 
             b'"' => {
-                let bytes = self.read_quoted_binary_bytes()?;
+                let parts = self.read_quoted_binary_parts()?;
+                if parts.iter().any(|part| matches!(part, StringPart::Interpolation(_))) {
+                    return self.interpolation_tokens(parts, start, space_before);
+                }
+                let bytes = match parts.into_iter().next() {
+                    Some(StringPart::Bytes(bytes)) => bytes,
+                    _ => Vec::new(),
+                };
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
                     if self.keyword_value_starts_after_colon() {

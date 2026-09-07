@@ -1,0 +1,50 @@
+#---
+# purpose: "`#{...}` in a string literal evaluates and is rendered, instead of being copied through verbatim"
+# oracle: oracle.exs
+#---
+#
+# # string_interpolation
+#
+#     dbg("a#{1}b")
+#
+#     fz:      "a#{1}b"
+#     Elixir:  "a1b"
+#
+# The lexer copied the bytes of a literal through verbatim and had no `#{`
+# handling anywhere, so interpolation silently did nothing. That is the worst
+# shape a bug can take -- a plausible-looking answer -- and it is why a String
+# module could not ship before this: every error message the library built
+# would have been wrong in the same silent way.
+#
+# THE DESUGARING IS ELIXIR'S OWN, and it happens in the LEXER:
+#
+#     "a#{x}b"   ->   "a" <> Kernel.to_string(x) <> "b"
+#
+# Doing it at the token level means nothing downstream learns a new node: by
+# the time the parser sees it, an interpolated string is ordinary concat and an
+# ordinary call. It is also why interpolation composes with everything without
+# further work -- any expression, because the segment is lexed as source.
+#
+# Empty literal pieces are dropped, so `"#{x}"` is one call and not a concat
+# with two empty binaries either side.
+#
+# `\#{` is an escape, so a literal `#{` can still be written, and `inspect`
+# escapes it back on the way out so the rendering round-trips as source.
+fn main() do
+  x = 1
+  name = "ada"
+
+  dbg("a#{x}b")
+  dbg("#{x}")
+  dbg("no interp")
+  dbg("sum #{1 + 2} done")
+  dbg("atom #{:hi}")
+  dbg("float #{2.5}")
+  dbg("bool #{true}")
+  dbg("nil #{nil}")
+  dbg("binary #{name}")
+  dbg("two #{x} and #{name}")
+  dbg("nested call #{Kernel.to_string(x)} ok")
+  dbg("list #{Kernel.to_string(x)}#{name}")
+  dbg("escaped \#{x}")
+end
