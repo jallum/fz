@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T20:04:07Z",
+  "description": "## What is missing\n\n`@doc \"one line\"` works. `@doc \"\"\" ... \"\"\"` does not:\n\n```\nerror[parse/expected-token]: compiler2 quoted front door does not yet parse Binary([...]) at item position\n  --\u003e heredoc.fz:1:8\n   |\n 1 | @doc \"\"\"\n```\n\nThe attribute parser at `src/compiler2/frontdoor.rs:168` matches `Tok::Ident(name)` for `doc` and `moduledoc`, and takes a single-line string. A heredoc is not consumed there, so the string reaches the item parser on its own and is refused as an item.\n\nThe bytes in that diagnostic are the heredoc's real content, so the lexer already produces the right token. What is missing is the attribute accepting it.\n\n## Why it matters\n\nEvery doc string in the runtime library is one line, because one line is all the attribute takes. Elixir's docs are heredocs with a summary paragraph and an `## Examples` section, and matching that is the difference between a library that documents itself and one that labels itself.\n\n## Acceptance\n\n- `@doc \"\"\" ... \"\"\"` and `@moduledoc \"\"\" ... \"\"\"` parse and carry the full text.\n- The text is the heredoc's, with indentation stripped relative to the closing delimiter.\n- A fixture proves a multi-line doc round-trips.",
+  "id": "fz-5xp.79",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "Attach a heredoc to @doc and @moduledoc",
+  "type": "task",
+  "updated_at": "2026-09-07T20:04:07Z"
+}
