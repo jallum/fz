@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::canon::{canon_backend_program, function_label};
-use super::identity::{ActivationKey, ExecutableKey, RootId};
+use super::identity::{ActivationKey, RootId};
 use super::world::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,15 +201,6 @@ fn render_activations_dump(world: &World, activations: &[ActivationKey]) -> Stri
         out.push_str(&format!("  return: {}\n", return_ty));
 
         if let Some(analysis) = world.activation_analysis(&activation) {
-            let mut executables = analysis.latent_executables.clone();
-            executables.sort_by_cached_key(|key| executable_sort_key(world, key));
-            if !executables.is_empty() {
-                out.push_str("  latent executables:\n");
-                for executable in executables {
-                    out.push_str(&format!("    {}\n", executable_label(world, &executable)));
-                }
-            }
-
             let mut callsites = analysis.callsites.clone();
             callsites.sort_by_key(|callsite| (callsite.span().start, callsite.span().end, callsite.as_u32()));
             if !callsites.is_empty() {
@@ -296,19 +287,6 @@ fn activation_sort_key(world: &World, activation: &ActivationKey) -> (String, Ve
     )
 }
 
-fn executable_sort_key(world: &World, executable: &ExecutableKey) -> (String, Vec<String>, String) {
-    (
-        function_label(world, executable.activation.function),
-        executable
-            .activation
-            .inputs(world.types())
-            .iter()
-            .map(|ty| world.types().display(ty))
-            .collect(),
-        format!("{:?}", executable.need),
-    )
-}
-
 fn activation_label(world: &World, activation: &ActivationKey) -> String {
     let inputs = activation
         .inputs(world.types())
@@ -317,14 +295,6 @@ fn activation_label(world: &World, activation: &ActivationKey) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("{}[{}]", function_label(world, activation.function), inputs)
-}
-
-fn executable_label(world: &World, executable: &ExecutableKey) -> String {
-    format!(
-        "{} need={:?}",
-        activation_label(world, &executable.activation),
-        executable.need
-    )
 }
 
 fn span_label(span: crate::source::Span) -> String {
