@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T02:21:25Z",
-  "description": "compile_root_jit has 0 production callers. Its three sibling front doors all ship: run_root_interp 4 call sites, run_root_jit 2, compile_root_aot 1. Only tests call it.\n\nSo it is one of: dead public API that should be deleted, or a real three-path parity gap where a JIT compile-without-run entry point ought to be reachable from the CLI. Establish which from the code, then act. Do not cfg(test) a front door to make a lint quiet.",
+  "description": "## The filed question was wrong\n\nThis was filed as 'compile_root_jit: dead API or parity gap'. It is neither. Reading the two:\n\n  compile_root_jit: native_program_for_root(root) -\u003e compile_native_backend(JitBackend) -\u003e return (compiled, entry)\n  run_root_jit:     native_program_for_root(root) -\u003e compile_native_backend(JitBackend) -\u003e run it\n\nrun_root_jit does not call compile_root_jit. It repeats the same two steps inline, down to an identical error-format string. So this is not an unshipped capability -- it is one idea written twice, where the shipped copy is the longer one.\n\n## The fix\n\nMake run_root_jit call compile_root_jit and then run the result. That gives compile_root_jit a production caller and deletes the duplication in one motion, instead of choosing between deleting a front door and gating one.\n\n## Check while there\n\nConfirm the error text stays identical from a caller's view, and confirm no third site repeats the same prefix (compile_root_aot has the same shape and may or may not share it honestly).",
   "id": "fz-foq.5",
   "labels": [],
   "parent": "fz-foq",
   "priority": 3,
   "status": "open",
-  "title": "Decide compile_root_jit: dead API or parity gap",
+  "title": "Fold run_root_jit onto compile_root_jit",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:25Z"
+  "updated_at": "2026-09-07T09:16:32Z"
 }
