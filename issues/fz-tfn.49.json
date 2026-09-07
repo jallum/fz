@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-tfn.55"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-06T13:36:07Z",
   "close_reason": "Accepted in 9a6684963: exact-pair admission and the shared ordered worklist eliminate repeated minimum selection; combined gates, deterministic work proof, artifacts and ticket-cold review pass.",
   "created": "2026-09-06T04:23:42Z",
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Eliminate quadratic product mutation-wave selection",
   "type": "bug",
-  "updated_at": "2026-09-06T14:00:29Z"
+  "updated_at": "2026-09-07T18:57:05Z"
 }
