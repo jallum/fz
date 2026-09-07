@@ -2665,8 +2665,12 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler.complete_ordered_with_external(
             &super::super::Job::SeedRoot(root),
-            HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
-            Vec::new(),
+            crate::compiler2::scheduler::CompletionEffects {
+                reads: HashSet::new(),
+                waits: HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+                outputs: Vec::new(),
+                changed: Vec::new(),
+            },
             &sessions,
             &types,
         );

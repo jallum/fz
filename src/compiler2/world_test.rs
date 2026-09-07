@@ -2,12 +2,41 @@ use super::facts::FactUse;
 use super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
-use crate::compiler2::drive::{DependencyKey, JobDerivation, JobEffects};
-use crate::compiler2::facts::DerivationId;
+use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+#[test]
+fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
+    let mut world = World::new();
+    let job = Job::IndexCode(super::CodeId::ZERO);
+    let fact = FactKey::CodeIndexed(super::CodeId::ZERO);
+    let read = FactUse::current(FactKey::ModuleDefined(ModuleId::GLOBAL));
+    let completion = world.complete_job(
+        job.clone(),
+        JobEffects {
+            reads: vec![read.clone()],
+            outputs: vec![fact.clone()],
+            changed: vec![fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(completion.job, job);
+    assert_eq!(world.job_reads(&job), std::collections::HashSet::from([read]));
+    assert_eq!(world.job_outputs(&job), vec![fact.clone()]);
+    assert_eq!(
+        world
+            .work_graph
+            .facts()
+            .publishers(&DependencyKey::Fact(fact))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![job],
+        "the production completion has one owning job, shared by its reads and claims"
+    );
+}
 
 /// The demand fact a body that forwards NOTHING and returns none of its own
 /// inputs publishes: what its own clauses ask about its inputs is the whole of
@@ -1167,7 +1196,7 @@ fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories(
 }
 
 #[test]
-fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() {
+fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
     let completion_order = |non_empty_first: bool| {
         let mut world = World::new();
         let root = super::RootId::for_test(0);
@@ -1199,29 +1228,15 @@ fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() 
                 ..JobEffects::default()
             },
         );
-        let mut derivations = vec![
-            JobDerivation {
-                derivation: DerivationId(1),
-                reads: Vec::new(),
-                outputs: vec![list_fact.clone()],
-                changed: vec![list_fact.clone()],
-                concluded: true,
-            },
-            JobDerivation {
-                derivation: DerivationId(2),
-                reads: Vec::new(),
-                outputs: vec![non_empty_fact.clone()],
-                changed: vec![non_empty_fact.clone()],
-                concluded: true,
-            },
-        ];
+        let mut outputs = vec![list_fact.clone(), non_empty_fact.clone()];
         if non_empty_first {
-            derivations.reverse();
+            outputs.reverse();
         }
         let completion = world.complete_job(
             Job::DeriveCallGraphComponent(function),
             JobEffects {
-                derivations,
+                changed: outputs.clone(),
+                outputs,
                 ..JobEffects::default()
             },
         );
@@ -1258,7 +1273,7 @@ fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() 
     assert_eq!(
         (&list_first.1, &list_first.2, &list_first.3),
         (&non_empty_first.1, &non_empty_first.2, &non_empty_first.3),
-        "one typed order must own derivation application, movements, and wake publication"
+        "one typed order must own output application, movements, and wake publication"
     );
 }
 

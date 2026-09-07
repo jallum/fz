@@ -54,7 +54,7 @@ use super::protocol::{
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::ExternalDependencyStates;
-use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStartTally};
+use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
@@ -637,34 +637,17 @@ impl World {
                 _ => None,
             })
             .collect();
-        // The flat fields are the job's whole-body answer; `derivations` names
-        // any further answers the same run reached independently. Every job
-        // today reports none, so this is exactly one `DerivationId::SOLE`
-        // completion — the ledger sees what it always saw.
-        let mut derivations = vec![DerivationEffects::sole(
-            reads,
-            outputs.into_iter().map(DependencyKey::Fact).collect(),
-            changed.into_iter().map(DependencyKey::Fact).collect(),
-            waits.is_empty(),
-        )];
-        derivations.extend(effects.derivations.into_iter().map(|derivation| {
-            DerivationEffects {
-                derivation: derivation.derivation,
-                reads: derivation.reads.into_iter().map(fact_dependency).collect(),
-                outputs: dedupe_job_facts(derivation.outputs)
-                    .into_iter()
-                    .map(DependencyKey::Fact)
-                    .collect(),
-                changed: dedupe_job_facts(derivation.changed)
-                    .into_iter()
-                    .map(DependencyKey::Fact)
-                    .collect(),
-                concluded: derivation.concluded,
-            }
-        }));
-        let step = self
-            .work_graph
-            .complete_ordered_with_external(&job, waits, derivations, external, &self.types);
+        let step = self.work_graph.complete_ordered_with_external(
+            &job,
+            CompletionEffects {
+                reads,
+                waits,
+                outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
+                changed: changed.into_iter().map(DependencyKey::Fact).collect(),
+            },
+            external,
+            &self.types,
+        );
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);

@@ -8,41 +8,6 @@ pub enum FactReadiness {
     Settled,
 }
 
-/// Which of a job's answers a claim belongs to. A job that reaches one
-/// conclusion has one derivation (`DerivationId::SOLE`); a job whose body
-/// answers several independent questions names one id per question, and each
-/// carries its own reads, its own claims and its own finality.
-///
-/// The id is opaque to the engine and minted by the job: the engine never
-/// interprets it, it only keeps claims that came from different reads apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DerivationId(pub u32);
-
-impl DerivationId {
-    /// The derivation of a job whose whole body is one answer. Every job that
-    /// does not name derivations publishes under this one.
-    pub const SOLE: Self = Self(0);
-}
-
-/// The ledger's publisher identity: one job's one derivation. This is what
-/// claims a fact, what carries reads, and what finality is a property of.
-///
-/// It is deliberately NOT the agenda's identity — a job runs whole, so the
-/// agenda, the `rebased` set and waits stay keyed by `J`. Splitting the two
-/// identities is the point: `enqueue_dependents` wakes the JOB while dirtying
-/// only the DERIVATION whose read moved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Publisher<J> {
-    pub job: J,
-    pub derivation: DerivationId,
-}
-
-impl<J> Publisher<J> {
-    pub fn new(job: J, derivation: DerivationId) -> Self {
-        Self { job, derivation }
-    }
-}
-
 /// The content algebra of a fact key. A **cumulative** fact's content is a
 /// monotone join maintained by its store — between ground shifts it only
 /// grows, so a content change is an ascent. A **replacing** fact's content
@@ -148,9 +113,7 @@ pub struct FactReplace<F> {
 }
 
 /// One fact: the set of PUBLISHERS that currently claim it, plus a monotonic
-/// counter. A publisher is one job's one derivation (`Publisher`), never the
-/// job: a job that answers several independent questions holds one claim per
-/// answer, and a claim carries the reads of the answer it came from. State
+/// counter. Each publisher is the job owning the claim and its reads. State
 /// facts (ModuleDefined, FunctionDefined, …) have one authority publisher;
 /// demand facts (Activation, Executable) are held by every demander and stay
 /// present until the last one drops. The counter is set by
@@ -169,13 +132,8 @@ pub struct FactReplace<F> {
 ///   not quiet, so finality is a property of the whole upstream cone rather
 ///   than of one hop.
 ///
-/// All three sets are keyed by the SAME publisher identity (fz-kdt.13.1).
-/// That is what makes them composable: `is_settled` is one statement about one
-/// derivation's claim, so a sibling derivation of the same job being dirty
-/// says nothing about this fact. Per-output dirty bits sitting beside
-/// per-JOB unfinality would not compose — the dirty half would be scoped to
-/// the answer while the unfinal half stayed scoped to the body, and the two
-/// halves of `is_settled` would then be about different things.
+/// All three sets use the same job identity. A job's co-outputs share its
+/// reads, cleanliness, and finality.
 ///
 /// A fact is **quiet** when nothing can move it: no dirty publisher and no
 /// unfinal one. An absent fact is quiet — nobody is deriving it, so reading it
@@ -262,13 +220,9 @@ where
     }
 
     /// Present with no publisher queued to re-run — the one-hop question,
-    /// asked of the derivations that claim this fact and of nothing else.
+    /// asked of the jobs that claim this fact and of nothing else.
     /// Separate from `is_settled` on purpose: local cleanliness is what the
-    /// drain arbiter tests a cone's members for, and what tests assert to show
-    /// the two are different questions. A dirty sibling derivation of the same
-    /// job enters this answer exactly when it also claims this key -- which,
-    /// by the contract that each derivation owns its own keys, it does not;
-    /// the engine does not enforce key-disjointness, the derivation authors do.
+    /// drain arbiter tests before certifying a requested fact's publishers.
     pub fn is_locally_settled(&self, key: &F) -> bool {
         self.slots.get(key).is_some_and(FactSlot::is_locally_settled)
     }
@@ -395,11 +349,11 @@ where
     }
 
     /// Extend one publisher's published facts without retracting anything.
-    /// The arm for a derivation that did not reach its own conclusion: listed
+    /// The arm for a job that did not reach its own conclusion: listed
     /// keys gain the publisher (revision rules identical to `replace_outputs`),
     /// unlisted keys it previously claimed are left standing untouched.
-    /// Dirtiness is NOT cleared for the listed keys — an unreached derivation
-    /// is not vouching yet; the caller marks that derivation's full claim set
+    /// Dirtiness is NOT cleared for the listed keys — an unreached job
+    /// is not vouching yet; the caller marks that job's full claim set
     /// dirty after extending.
     pub fn extend_outputs(
         &mut self,
@@ -457,7 +411,7 @@ where
     /// Records whether `publisher` — a claimant of `key` — is itself reading a
     /// fact that can still move. Returns the settled-bit change if the
     /// projection moved. Edge-triggered: the scheduler calls this exactly when
-    /// that derivation's own finality flips, never on every movement.
+    /// that job's own finality flips, never on every movement.
     pub fn set_publisher_unfinal(&mut self, key: &F, publisher: &P, unfinal: bool) -> Option<FactChange<F>> {
         let slot = self.slots.get_mut(key)?;
         if !slot.publishers.contains(publisher) {

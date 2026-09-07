@@ -18773,8 +18773,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
 
 #[test]
 fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
-    use crate::compiler2::facts::DerivationId;
-    use crate::compiler2::scheduler::{DerivationEffects, Scheduler};
+    use crate::compiler2::scheduler::{CompletionEffects, Scheduler};
     use crate::compiler2::semantic::SemanticOrd;
 
     let mut types = Types::new();
@@ -18799,14 +18798,12 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
                     changed: Vec<FactKey>| {
         scheduler.complete_ordered(
             job,
-            waits.clone(),
-            vec![DerivationEffects {
-                derivation: DerivationId::SOLE,
+            CompletionEffects {
                 reads,
+                waits,
                 outputs,
                 changed,
-                concluded: waits.is_empty(),
-            }],
+            },
             &types,
         )
     };
