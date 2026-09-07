@@ -11,11 +11,15 @@
     {
       "text": "fz-5xp.31 is the same lane defect seen from the PARAMETER side (`(float) :: float` echoes its input on interp, fails Cranelift verification on run). Almost certainly one fix -- work them together.",
       "timestamp": "2026-09-07T07:03:41Z"
+    },
+    {
+      "text": "Fixed together with fz-5xp.31 -- same defect, two sides.\n\nNOTE for the record: this ticket's stated mechanism was wrong in an instructive\nway. It read the CLIF as 'the wrapper promotes the ARGUMENT as though the\ndeclared FLOAT RETURN made the parameter a float lane'. The promote-looking call\nwas really the UNBOX of the mislabelled return: `lower_extern_generic` put an\n`ExternTy::F64` return into the `LowerOut::ValueRef` arm. The argument lane was\ncorrect all along, which the mixed `(float, integer) :: float` case in\nbehavior/extern_float_lanes now proves.\n\nThe repro used `fz_promote_f64`, since deleted; `libc::sqrt(float) :: float`\nreaches the same defect.\n\nScope asked for a fixture declaring `(integer) :: float`. No common libc\nfunction has that shape, so the same lane pair -- integer bank in, float bank\nout -- is covered by `(cstring) :: float` via `atof`.",
+      "timestamp": "2026-09-07T08:37:38Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "An extern declared (integer) :: float fails to lower on both native and interp",
   "type": "bug",
-  "updated_at": "2026-09-07T07:03:41Z"
+  "updated_at": "2026-09-07T08:37:38Z"
 }
