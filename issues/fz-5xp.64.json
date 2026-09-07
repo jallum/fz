@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T14:53:10Z",
+  "description": "Found by the blind-escape census while doing fz-5xp.8.\n\nGiving `\u003c`, `\u003c=`, `\u003e`, `\u003e=` an `any`/`any` clause -- so the operators\nthemselves carry Erlang's total term order the way Elixir's do -- makes the\nseat unable to separate the typed clauses from the fallback wherever an operand\nis unresolved:\n\n    compiler2_dispatch_blind_escape_census_is_the_known_population FAILED\n    mailbox_closure_enum_hofs.fz callsite 5 (executable 4) subject 0:\n      binary is seated before atom | opaque | var | any | any | any | any | any\n\nThe callsite is `fn (x) -\u003e x \u003e 1 end` sent through a mailbox, so `x` is\ngenuinely unresolved. With only typed clauses the callsite resolves; adding a\ncatch-all widens what the seat admits and it goes blind. Four more pins moved\nwith it (drive_test permuted-arm invariance, the public-trace claims, the\nwork-start frontier).\n\nThe census is explicit that this is not a re-bless: 'a new entry under ANY\nsetting is a new latent miscompile and wants a ticket, not a re-blessed\nconstant.'\n\nWHAT SHIPPED INSTEAD (fz-5xp.8): the total order is real and reachable through\n`Kernel.compare/2`, and `Enum.sort/1` uses it. The operators keep their typed\nclauses, so `1 \u003c :atom` is refused at COMPILE time rather than answered wrongly\nat run time. fz-5xp.8's description names this as the decision it wanted made,\nso it is the ticket's own alternative rather than a cut.\n\nWHAT IS LEFT, and it is a dispatch problem rather than a library one: for the\noperators to carry the order the way Elixir's do, the seat has to separate a\n`binary` clause from an `any` clause on an unresolved subject. That is the\naxis work fz-kdt.119 and fz-kdt.107 did for tuples and lists, not something the\nruntime library can arrange.\n\nBlocks nothing today -- sorting has its order. Reopen when the seat can read it.",
+  "id": "fz-5xp.64",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A comparison operator with an any/any clause makes every unresolved callsite dispatch-blind",
+  "type": "task",
+  "updated_at": "2026-09-07T14:53:10Z"
+}
