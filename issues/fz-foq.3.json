@@ -5,7 +5,7 @@
     "fz-foq.4"
   ],
   "created": "2026-09-07T02:21:24Z",
-  "description": "formula_totals, product_totals and functions on causal.rs have no production caller; tests/fz2_cli.rs is the only consumer. They are plain aggregations over already-public event data, so they need no lib privileges.\n\nMove them into tests/fz2_cli.rs as local helpers. causal.rs itself stays production -- public_trace.rs and pull.rs consume it.\n\nDone when: the three methods are gone from causal.rs, fz2_cli.rs computes its own totals, and the full gate is green.",
+  "description": "src/telemetry/causal.rs parses and analyses the public telemetry trace. It has no production consumer: every causal:: reference outside the module is either in a #[cfg(test)] mod (pull.rs) or in an already-gated module (public_trace.rs), and no binary uses it. Its consumers are lib unit tests and tests/fz2_cli.rs.\n\nBecause tests/fz2_cli.rs compiles against fz as an external crate, cfg(test) gating is not available. So there are two honest answers and they are not interchangeable:\n\nA. It is test support. Extract to a dev-dependency crate the way fz-foq.1 moved fixture metadata. Coupling is one enum (handler::EventKind, 6 uses), so the crate depends on fz and cargo permits the cycle through the dev-dependency edge. 1960 lines leave the production lib and no test-only pub surface remains.\n\nB. It is unshipped production. Trace analysis is how this project sees excess work; if a user-facing report (an fz2 subcommand, say) should exist, causal belongs in the lib and the gap is that nothing calls it -- the same question as fz-foq.5's compile_root_jit.\n\nDo not pick A by default just because it makes the lint quiet. Decide what trace analysis is for, then act.\n\nBlocks fz-foq.4: the answer determines whether causal's methods are in scope for the cfg(test) sweep at all.",
   "id": "fz-foq.3",
   "labels": [],
   "parent": "fz-foq",
@@ -17,7 +17,7 @@
   ],
   "priority": 3,
   "status": "open",
-  "title": "Move causal totals helpers into the CLI test",
+  "title": "Decide the home of causal trace analysis (1960 lines, no production consumer)",
   "type": "task",
-  "updated_at": "2026-09-07T02:36:22Z"
+  "updated_at": "2026-09-07T02:36:23Z"
 }
