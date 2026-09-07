@@ -20,6 +20,8 @@ defmodule String do
   # than pretending to be complete.
 
   extern "fz" fn fz_binary_to_atom(any) :: any
+  extern "fz" fn fz_binary_upcase(any) :: binary
+  extern "fz" fn fz_binary_downcase(any) :: binary
 
   @doc "The number of bytes."
   @spec length(binary) :: integer
@@ -189,17 +191,21 @@ defmodule String do
   fnp whitespace?(<<227, 128, 128>>), do: true
   fnp whitespace?(_cp), do: false
 
-  @doc "ASCII upper-casing."
+  # UNICODE case mapping, not ASCII. The table is 2,723 codepoint pairs;
+  # as fz clauses it would go through the dispatch matrix and make compile work
+  # proportional to the TABLE rather than to the program, so it lives in the
+  # runtime (fz-5xp.68 tracks moving it back when a table can be data rather
+  # than clauses).
+  #
+  # FULL casing, which is Elixir's default mode: the 103 special casings expand
+  # one codepoint to several, so "straße" upcases to "STRASSE".
+  @doc "Unicode upper-casing."
   @spec upcase(binary) :: binary
-  fn upcase(<<c, rest :: binary>>) when c >= 97 and c <= 122, do: <<c - 32>> <> upcase(rest)
-  fn upcase(<<c, rest :: binary>>), do: <<c>> <> upcase(rest)
-  fn upcase(_s), do: ""
+  fn upcase(s), do: fz_binary_upcase(s)
 
-  @doc "ASCII lower-casing."
+  @doc "Unicode lower-casing."
   @spec downcase(binary) :: binary
-  fn downcase(<<c, rest :: binary>>) when c >= 65 and c <= 90, do: <<c + 32>> <> downcase(rest)
-  fn downcase(<<c, rest :: binary>>), do: <<c>> <> downcase(rest)
-  fn downcase(_s), do: ""
+  fn downcase(s), do: fz_binary_downcase(s)
 
   @doc "Repeats s n times."
   @spec duplicate(binary, integer) :: binary

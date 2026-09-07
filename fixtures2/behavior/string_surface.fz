@@ -18,12 +18,12 @@
 # must reach the node's atom table. Everything else is ordinary fz recursion
 # over a binary.
 #
-# CASE MAPPING IS ASCII ONLY, and the fixture says so by comparing against
-# Elixir's `String.upcase(s, :ascii)` rather than its default. Elixir generates
-# 2,989 codepoints of case mapping plus 103 special casings from Unicode data;
-# that table belongs in its own module so demand-driven loading pays for it,
-# and it is not here yet. `"héllo"` upcases to `"HéLLO"` -- the `é` is left
-# alone, which is exactly what `:ascii` means.
+# CASE MAPPING IS FULL UNICODE, matching Elixir's default mode -- `"straße"`
+# upcases to `"STRASSE"`, which is one of the 103 special casings where one
+# codepoint becomes several. The table lives in the runtime rather than in fz
+# source: 2,723 codepoint pairs written as fz clauses would go through the
+# dispatch matrix and make compile work proportional to the TABLE rather than to
+# the program, which is the opposite of what fz is for (fz-5xp.68).
 #
 # `to_byte_list/1` is NOT Elixir's `to_charlist/1`. Elixir's returns a charlist,
 # which `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so
@@ -44,7 +44,9 @@ fn main() do
   dbg(String.trim_leading("  hi"))
   dbg(String.trim_trailing("hi  "))
   dbg(String.upcase("héllo"))
+  dbg(String.upcase("straße"))
   dbg(String.downcase("HÉLLO"))
+  dbg(String.downcase("İ"))
   dbg(String.duplicate("ab", 3))
   dbg(String.contains?("hello", "ell"))
   dbg(String.count("banana", "an"))

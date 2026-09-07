@@ -942,6 +942,62 @@ pub extern "C" fn fz_op_rem_ff(left: f64, right: f64) -> f64 {
     left % right
 }
 
+/// Unicode simple case mapping, the table `String.upcase/1` needs.
+///
+/// A TABLE, not an algorithm, and it lives here rather than in fz source for a
+/// reason worth stating: Elixir generates about 2,989 clauses from
+/// UnicodeData.txt, and 2,723 fz clauses would put that table through the
+/// dispatch matrix -- compile work proportional to the TABLE rather than to the
+/// program, which is the opposite of what fz is for. Encoding it as a literal
+/// binary and binary-searching it keeps the clause count at one but costs an
+/// allocation per character.
+///
+/// The ticket's design goal survives the move: it asked for ONE coherent
+/// Unicode version, which Elixir cannot have because its case mapping and
+/// OTP's grapheme breaking track different releases. Rust's `char` tables are
+/// one version, and when fz owns grapheme breaking too it will be the same one.
+///
+/// FULL casing, which is Elixir's default mode: the 103 special casings expand
+/// one codepoint to several, so `"straße"` upcases to `"STRASSE"`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_upcase(process: *mut Process, ref_word: u64) -> u64 {
+    map_case(process, ref_word, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_downcase(process: *mut Process, ref_word: u64) -> u64 {
+    map_case(process, ref_word, false)
+}
+
+fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("case mapping expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("case mapping expects a byte-aligned binary");
+    }
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(p), (bit_len / 8) as usize) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        panic!("case mapping expects valid UTF-8");
+    };
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        // `to_uppercase` yields several chars for the special casings; taking
+        // exactly one keeps this the SIMPLE mapping and leaves the rest alone,
+        // which is what a one-codepoint-in-one-codepoint-out table means.
+        // FULL casing, not simple: `to_uppercase` yields several codepoints for
+        // the special casings, and taking all of them is what makes `"straße"`
+        // upcase to `"STRASSE"` the way Elixir's default mode does.
+        if upper {
+            out.extend(ch.to_uppercase());
+        } else {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    alloc_text(process, &out)
+}
+
 /// Intern a binary as an atom, the way `String.to_atom/1` does.
 ///
 /// Atoms are node-global and never collected, which is why Elixir warns about

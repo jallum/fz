@@ -10,8 +10,10 @@ true
 "hi"
 "hi"
 "hi"
-"HéLLO"
-"hÉllo"
+"HÉLLO"
+"STRASSE"
+"héllo"
+"i̇"
 "ababab"
 true
 2

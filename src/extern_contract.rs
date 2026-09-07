@@ -43,7 +43,9 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     // fz-5xp.8 — the total term order. Takes the process because atoms order
     // by NAME, and the name table lives on the node.
     ("fz_value_cmp_ref", ExternAbi::Fz),
+    ("fz_binary_downcase", ExternAbi::Fz),
     ("fz_binary_to_atom", ExternAbi::Fz),
+    ("fz_binary_upcase", ExternAbi::Fz),
     ("fz_bitstring_byte_size", ExternAbi::C),
     ("fz_bitstring_is_binary", ExternAbi::C),
     ("fz_bitstring_valid_utf8", ExternAbi::C),
