@@ -15,11 +15,15 @@
     {
       "text": "Investigated: the filed plan does not work, and the real finding is larger.\n\nWhy 'move the 3 helpers into tests/fz2_cli.rs' fails:\n- functions() is on CanonTables and reads the PRIVATE field self.functions (causal.rs:122). Moving it out would require making that field pub -- a wider surface than the one being removed.\n- formula_totals/product_totals are not fz2_cli-only. src/telemetry/public_trace_test.rs calls them at 10+ sites. Moving them into fz2_cli.rs would duplicate them, not relocate them.\n\nThe real finding: src/telemetry/causal.rs (1960 lines) has ZERO production consumers.\n- pull.rs's three causal:: references are all inside its #[cfg(test)] mod tests (opens at 2559).\n- public_trace.rs is itself a #[cfg(test)]-gated module.\n- No CLI or binary use.\n\nIt cannot simply be gated, because tests/fz2_cli.rs consumes it as an external crate and cannot see cfg(test) -- the same constraint that drove fz-foq.1.\n\nIts only coupling to the lib is `use super::handler::EventKind` (6 occurrences of a plain enum), so a fz-foq.1-style extraction to a dev-dependency crate is feasible; the crate would depend on fz for EventKind, which cargo permits because the fz -\u003e crate edge is a dev-dependency.\n\nNeeds a decision before proceeding -- see the rewritten description.",
       "timestamp": "2026-09-07T02:36:22Z"
+    },
+    {
+      "text": "Blocked by fz-0am. Before deciding where causal analysis should live, decide how much of it should exist: ~669 lines of Replay reconstruct a link the scheduler holds at enqueue time. Answering fz-0am changes what is left to house.",
+      "timestamp": "2026-09-07T08:48:24Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Decide the home of causal trace analysis (1960 lines, no production consumer)",
   "type": "task",
-  "updated_at": "2026-09-07T08:48:23Z"
+  "updated_at": "2026-09-07T08:48:24Z"
 }
