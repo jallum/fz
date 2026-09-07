@@ -6,14 +6,16 @@
   "blocks": [
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:54:10Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-tfn.13; all valid acceptance criteria moved into that description.",
   "created": "2026-09-05T19:14:24Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-tfn.13, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nDelivered and tail return payloads use one exact positioned type/demand authority in native and transport products.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-tfn.13 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-tfn.42",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-tfn.13",
   "type": "bug",
-  "updated_at": "2026-09-07T18:54:09Z"
+  "updated_at": "2026-09-07T18:54:10Z"
 }
