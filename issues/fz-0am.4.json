@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:09:09Z",
+  "description": "Once the emitted answer provably equals the replayed answer, delete the inference: the interval rule (reads UNION previous blocked-set, movement in [previous conclusion, t)) and the shadow types that exist only to track it -- Movement, WaitIdentity, WaitLookup, FormulaHistory and the per-formula position bookkeeping in Replay.\n\nSCOPE HONESTLY. impl Replay is 669 lines but they are not all causality. Product settlement/generation/cache-hit tallies, FactLifecycle (first_appearances \u003e distinct = retract-and-remint), ShiftWork and session tallies are straight folds over already-emitted events; they stay, restructured as tallies. Split the 669 before estimating; do not quote it as the deletion.\n\nAlso delete the permanent reads-only red test. It exists to stop someone simplifying an inference rule that will no longer exist.\n\nKEEP a small backing assertion in its place: every emitted cause must appear in that same stream's own changed/movements. That preserves the one rationale that survives -- the engine should not be the only witness to its own good behaviour -- at a size where a failure is unambiguous. Today instrument and audit are the same code, so a non-zero uncaused count cannot distinguish 'the compiler did extra work' from 'the replayer's model is stale'.",
+  "id": "fz-0am.4",
+  "labels": [],
+  "parent": "fz-0am",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete the causality inference and its interval shadow state",
+  "type": "task",
+  "updated_at": "2026-09-07T09:09:09Z"
+}
