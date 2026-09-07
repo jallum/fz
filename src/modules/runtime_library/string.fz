@@ -321,6 +321,126 @@ defmodule String do
   fnp first_step(nil), do: nil
   fnp first_step({cp, _rest}), do: cp
 
+  @doc "True when every codepoint is printable."
+  @spec printable?(binary) :: bool
+  fn printable?(s), do: valid?(s) and printable_bytes?(s)
+
+  @spec printable_bytes?(binary) :: bool
+  fnp printable_bytes?(<<c, rest :: binary>>) do
+    if printable_byte?(c), do: printable_bytes?(rest), else: false
+  end
+  fnp printable_bytes?(_s), do: true
+
+  # Elixir's printable set is the ASCII graphic range plus the usual escapes,
+  # and everything at or above 128 -- a multi-byte codepoint's bytes are all
+  # >= 128, so a valid string's non-ASCII content passes by construction and
+  # only the C0 controls are rejected.
+  @spec printable_byte?(integer) :: bool
+  fnp printable_byte?(c) when c >= 32 and c < 127, do: true
+  fnp printable_byte?(c) when c >= 128, do: true
+  fnp printable_byte?(7), do: true
+  fnp printable_byte?(8), do: true
+  fnp printable_byte?(9), do: true
+  fnp printable_byte?(10), do: true
+  fnp printable_byte?(11), do: true
+  fnp printable_byte?(12), do: true
+  fnp printable_byte?(13), do: true
+  fnp printable_byte?(27), do: true
+  fnp printable_byte?(_c), do: false
+
+  @doc "The integer this string names, or halts."
+  @spec to_integer(binary) :: integer
+  fn to_integer(<<45, rest :: binary>>), do: 0 - digits_value(rest, 0, byte_size(rest))
+  fn to_integer(s), do: digits_value(s, 0, byte_size(s))
+
+  @spec digits_value(binary, integer, integer) :: integer
+  fnp digits_value(_s, _acc, 0), do: Kernel.panic("String.to_integer: not an integer")
+  fnp digits_value(s, acc, _n), do: digits_fold(s, acc)
+
+  @spec digits_fold(binary, integer) :: integer
+  fnp digits_fold(<<>>, acc), do: acc
+  fnp digits_fold(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
+    digits_fold(rest, acc * 10 + (c - 48))
+  end
+  fnp digits_fold(_s, _acc), do: Kernel.panic("String.to_integer: not an integer")
+
+  @doc "The float this string names, or halts."
+  @spec to_float(binary) :: float
+  fn to_float(s), do: float_parts(split(s, "."))
+
+  # Elixir's `String.to_float/1` REQUIRES a decimal point -- `to_float("1")`
+  # raises where `to_float("1.0")` is 1.0 -- so the split has to find exactly
+  # two parts and both have to be digits.
+  @spec float_parts([binary]) :: float
+  fnp float_parts([whole, fraction]), do: float_of(whole, fraction)
+  fnp float_parts(_parts), do: Kernel.panic("String.to_float: not a float")
+
+  @spec float_of(binary, binary) :: float
+  fnp float_of(<<45, whole :: binary>>, fraction), do: 0.0 - float_magnitude(whole, fraction)
+  fnp float_of(whole, fraction), do: float_magnitude(whole, fraction)
+
+  @spec float_magnitude(binary, binary) :: float
+  fnp float_magnitude(whole, fraction) do
+    scale = pow10(byte_size(fraction))
+    whole_value = digits_value(whole, 0, byte_size(whole))
+    fraction_value = digits_value(fraction, 0, byte_size(fraction))
+    whole_value + fraction_value / scale
+  end
+
+  @spec pow10(integer) :: float
+  fnp pow10(0), do: 1.0
+  fnp pow10(n), do: 10.0 * pow10(n - 1)
+
+  @doc "Replaces every invalid UTF-8 sequence with replacement."
+  @spec replace_invalid(binary, binary) :: binary
+  fn replace_invalid(s, replacement), do: replace_invalid_step(s, replacement)
+
+  # A codepoint's length is in its first byte, so the candidate slice is known
+  # before it is validated. If the slice is valid UTF-8 it is kept whole;
+  # otherwise ONE byte is dropped and replaced, which is what resynchronises a
+  # truncated sequence rather than swallowing the bytes after it.
+  @spec replace_invalid_step(binary, binary) :: binary
+  fnp replace_invalid_step(<<>>, _replacement), do: ""
+  fnp replace_invalid_step(s, replacement) do
+    size = codepoint_size(first_byte(s))
+    candidate = take_bytes(s, size)
+    if byte_size(candidate) == size and valid?(candidate) do
+      candidate <> replace_invalid_step(drop_bytes(s, size), replacement)
+    else
+      replacement <> replace_invalid_step(drop_bytes(s, 1), replacement)
+    end
+  end
+
+  @doc "Splits into runs that are all valid or all invalid UTF-8."
+  @spec chunk(binary) :: [binary]
+  fn chunk(""), do: []
+  fn chunk(s), do: chunk_run(s, valid_here?(s))
+
+  @spec valid_here?(binary) :: bool
+  fnp valid_here?(s) do
+    size = codepoint_size(first_byte(s))
+    candidate = take_bytes(s, size)
+    byte_size(candidate) == size and valid?(candidate)
+  end
+
+  @spec chunk_run(binary, bool) :: [binary]
+  fnp chunk_run(s, wanted), do: chunk_split(s, wanted, "")
+
+  @spec chunk_split(binary, bool, binary) :: [binary]
+  fnp chunk_split(<<>>, _wanted, acc), do: [acc]
+  fnp chunk_split(s, wanted, acc) do
+    if valid_here?(s) == wanted do
+      size = chunk_step(s, wanted)
+      chunk_split(drop_bytes(s, size), wanted, acc <> take_bytes(s, size))
+    else
+      [acc | chunk(s)]
+    end
+  end
+
+  @spec chunk_step(binary, bool) :: integer
+  fnp chunk_step(_s, false), do: 1
+  fnp chunk_step(s, true), do: codepoint_size(first_byte(s))
+
   @doc "The last codepoint, or nil."
   @spec last(binary) :: binary | nil
   fn last(s), do: first(reverse(s))

@@ -49,7 +49,7 @@ defmodule Keyword do
 
   @spec fetch_result({:ok, any} | :error, atom) :: any
   fnp fetch_result({:ok, value}, _key), do: value
-  fnp fetch_result(:error, key), do: Kernel.raise("key not found in keyword list: #{key}")
+  fnp fetch_result(:error, key), do: Kernel.panic("key not found in keyword list: #{key}")
 
   @doc "Every value stored under key, in list order."
   @spec get_values(keyword(), atom) :: [any]

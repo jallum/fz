@@ -57,4 +57,19 @@ fn main() do
   dbg(String.reverse("héllo"))
   dbg(String.first("héllo"))
   dbg(String.last("héllo"))
+
+  # numbers, which Elixir's String parses strictly: `to_float/1` REQUIRES a
+  # decimal point, so `"1"` raises where `"1.0"` is 1.0
+  dbg(String.to_integer("42"))
+  dbg(String.to_integer("-7"))
+  dbg(String.to_float("2.5"))
+  dbg(String.to_float("-0.25"))
+
+  # printability, and the two functions that have to reason about INVALID
+  # UTF-8 rather than assume it away
+  dbg(String.printable?("héllo"))
+  dbg(String.printable?(<<0>>))
+  dbg(String.replace_invalid(<<104, 255, 105>>, "?"))
+  dbg(String.chunk("hi"))
+  dbg(String.chunk(<<104, 255, 105>>))
 end
