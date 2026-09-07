@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.40"
+  ],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Retire superseded source snapshots after exact ownership lands",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:20Z"
+  "updated_at": "2026-09-07T18:56:40Z"
 }

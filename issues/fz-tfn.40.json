@@ -5,6 +5,7 @@
   ],
   "blocks": [
     "fz-tfn.13",
+    "fz-tfn.20",
     "fz-tfn.39"
   ],
   "created": "2026-09-05T17:03:31Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Separate diagnostic provenance from retained executable content identity",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:39Z"
+  "updated_at": "2026-09-07T18:56:40Z"
 }
