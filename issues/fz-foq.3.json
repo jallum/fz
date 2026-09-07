@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T02:21:24Z",
+  "description": "formula_totals, product_totals and functions on causal.rs have no production caller; tests/fz2_cli.rs is the only consumer. They are plain aggregations over already-public event data, so they need no lib privileges.\n\nMove them into tests/fz2_cli.rs as local helpers. causal.rs itself stays production -- public_trace.rs and pull.rs consume it.\n\nDone when: the three methods are gone from causal.rs, fz2_cli.rs computes its own totals, and the full gate is green.",
+  "id": "fz-foq.3",
+  "labels": [],
+  "parent": "fz-foq",
+  "priority": 3,
+  "status": "open",
+  "title": "Move causal totals helpers into the CLI test",
+  "type": "task",
+  "updated_at": "2026-09-07T02:21:24Z"
+}
