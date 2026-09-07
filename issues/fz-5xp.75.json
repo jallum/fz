@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T19:03:19Z",
+  "description": "## What is wrong\n\n`c94f6b672` (fz-5xp.14) gave `String.upcase/1` and `downcase/1` FULL Unicode casing through Rust's `char::to_uppercase`/`to_lowercase`, so `\"straße\"` upcases to `\"STRASSE\"`. Three pieces of prose still describe the ASCII-only stub it replaced, and one of them sits directly above the code that contradicts it.\n\n**1. `runtime/src/ir_runtime.rs`, `map_case`** carries two comments stacked, in this order:\n\n```\n// `to_uppercase` yields several chars for the special casings; taking\n// exactly one keeps this the SIMPLE mapping and leaves the rest alone,\n// which is what a one-codepoint-in-one-codepoint-out table means.\n// FULL casing, not simple: `to_uppercase` yields several codepoints for\n// the special casings, and taking all of them is what makes `\"straße\"`\n// upcase to `\"STRASSE\"` the way Elixir's default mode does.\n```\n\nThe first paragraph describes code that no longer exists; `out.extend(ch.to_uppercase())` takes all of them. A reader hits the false statement first.\n\n**2. `src/modules/runtime_library/string.fz`**, module header: \"CASE MAPPING is `:ascii` only for now ... that table belongs in its own module ... and it is not here yet. `upcase/1` and `downcase/1` therefore say `:ascii` in their name rather than pretending to be complete.\" None of that holds: the mapping is complete, the table is in the runtime, and the functions are named `upcase`/`downcase` with no `:ascii` in sight.\n\n**3. `.agent/docs/semantic-authorities.md`**, the **Text** entry repeats it: \"Case mapping is ASCII only; the Unicode tables belong in their own module and are not written yet, so `upcase`/`downcase` are checked against Elixir's `:ascii` mode rather than its default.\" The oracle twins are checked against Elixir's DEFAULT mode.\n\nThat entry also says `String` \"declares only two primitives of its own: `byte_size/1` ... and `to_atom/1`\" while the module declares four -- `fz_binary_upcase` and `fz_binary_downcase` are the other two, which is the fact fz-5xp.68 is about.\n\n## Fix\n\nDelete the superseded paragraph in `map_case`, rewrite the `string.fz` header note to state where the table actually lives and why (pointing at fz-5xp.68 for moving it back into fz), and correct the **Text** entry to say full casing, four primitives, and default-mode oracles.",
+  "id": "fz-5xp.75",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] The case-mapping docs still describe the ASCII-only behaviour that fz-5xp.14 replaced",
+  "type": "task",
+  "updated_at": "2026-09-07T19:03:19Z"
+}
