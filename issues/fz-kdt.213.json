@@ -5,9 +5,7 @@
     "fz-kdt.199",
     "fz-kdt.200"
   ],
-  "blocks": [
-    "fz-kdt.165"
-  ],
+  "blocks": [],
   "created": "2026-09-03T18:54:13Z",
   "description": "## Goal\n\nMake support for recursive World publications explicit at the ordinary scheduler boundary. If a conclusion is justified only by a cycle, removing its last external ground retracts it. Independently grounded contributions survive.\n\n## Source model\n\nA completed publication already owns exact reads and exact outputs. Retain the support relationship at that ownership boundary so dependency removal propagates loss of ground even when an aggregate value momentarily reproduces equal.\n\nRequired law:\n\nA = seed union B\nB = A\n\nAfter removing seed, A and B retract to bottom. With a second independent seed, its supported answer remains.\n\nThis is scheduler metadata derived from existing publisher/read ownership, not another fact-value authority. Do not introduce a private SCC solver, root/cone inventory, World rebuild, rollback image, or InputDemand-specific scheduler. ProductMemo rooted membership is an analogy, not an implementation to copy into World.\n\n## TDD\n\nProve self and mutual cycles under FIFO, LIFO, and permuted admission; removal and replacement of ground; independent support; shared publishers; equal reproduction; blocked and failed publishers; readiness-only movements; and exact changed-reader causality. Unaffected values retain allocations and generations.\n\n## Deletion and acceptance\n\nDelete compensating rebase/cone behavior made obsolete by grounded support. Every support transition is edge-triggered through the existing dependency index. No unsupported cycle self-sustains, no unrelated reader runs, and no semantic answer depends on scheduling order.\n\nThis ticket owns only the generic scheduler law. fz-kdt.200 owns the direct reactive InputDemand formula and deletes the private InputDemand cone.",
   "id": "fz-kdt.213",
@@ -23,5 +21,5 @@
   "status": "open",
   "title": "Ground recursive publications through the ordinary scheduler",
   "type": "task",
-  "updated_at": "2026-09-07T18:49:13Z"
+  "updated_at": "2026-09-07T18:55:32Z"
 }
