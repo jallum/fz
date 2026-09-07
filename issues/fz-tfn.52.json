@@ -4,7 +4,8 @@
     "fz-kdt.46"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-06T08:59:33Z",
   "description": "## Goal\n\nOn the final exact-edge scheduler, eliminate repeated whole-wave minimum scans and Vec removal shifts while preserving typed fact movement, finality and wake semantics.\n\nReuse the existing transient OrderedWorklist or a smaller equivalent. It is routing, not retained semantic authority. Preserve required equal-key chronology only where final confluence tests prove it observable; do not invent rank caches or another work queue.\n\nIncreasing independent and dynamically admitted waves must prove subquadratic total insertion/selection/movement work. Cover retraction, reappearance, content/readiness movements, coalesced wakes and final authoritative state. Delete take_next_fact_change scanning and all probes. Run only after fz-kdt.46 so the ticket optimizes the final wave shape.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Eliminate quadratic scheduler fact-wave selection",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:29Z"
+  "updated_at": "2026-09-07T18:56:44Z"
 }
