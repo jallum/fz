@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.81"
+  ],
   "blocks": [],
   "created": "2026-09-07T20:04:56Z",
   "description": "## The current shape\n\n`lib/enum.fz` has three regions, in this order: a public block, a wall of that block's private helpers, and a second public block with its helpers interleaved. `map/2`'s helper sits 240 lines from `map/2`; `frequencies/1`'s sits directly beneath it. Two conventions in one file, from two rounds of work.\n\n## Elixir's shape\n\n`lib/elixir/lib/enum.ex` uses two placements, and the choice between them is by role:\n\n- A helper used by exactly one function and meaningless outside it sits immediately after that function. `flat_reverse/2` is at line 1282, right below `flat_map/2`, under a one-line comment saying why the first clause exists.\n- The list fast paths live in one region near the end, alphabetical, each under a banner naming the function it serves -- `## any?/1`, `## concat`, `## count_until`, `## dedup`, `## drop`, `## filter`, `## find`.\n\nThe public API between the callback preamble and that region is alphabetical.\n\n## What to do\n\nOne public run, alphabetical. One helper region at the end, banner-sectioned by the function served. Single-use detail helpers stay adjacent to their function. Add the `@moduledoc` the file has never had.\n\nThis is a move, not a rewrite: every clause keeps its body. Prove it by diffing the sorted inventory of function names and arities before and after -- they must be identical.\n\n## Acceptance\n\n- The inventory before and after is identical.\n- No public function is separated from its helpers by another public function's helpers.\n- Gate green; diagnostics goldens re-blessed for line drift only, confirmed by digits-stripped equality.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Enum: lay the module out the way Elixir lays out its own",
   "type": "task",
-  "updated_at": "2026-09-07T20:04:56Z"
+  "updated_at": "2026-09-07T20:05:00Z"
 }
