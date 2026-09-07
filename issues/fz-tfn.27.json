@@ -6,8 +6,7 @@
     "fz-tfn.30"
   ],
   "blocks": [
-    "fz-tfn.24",
-    "fz-tfn.39"
+    "fz-tfn.24"
   ],
   "closed_at": "2026-09-05T23:29:58Z",
   "close_reason": "Completed in 534570e5a;53 fewer bodies/6360 fewer native bytes, zero dead corpus, repeated deterministic counts, all gates green after .28fix, fresh coldreview exact885ea9352919ef7865808edfdb9f77e382c77f957205c75f0d4d6c633a5d71b8. Push waits .28CIgreen.",
@@ -20,5 +19,5 @@
   "status": "closed",
   "title": "Delete unreachable native branch and resume helpers at their emitter",
   "type": "bug",
-  "updated_at": "2026-09-06T00:06:50Z"
+  "updated_at": "2026-09-07T18:57:00Z"
 }
