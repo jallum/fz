@@ -7,7 +7,7 @@
     "fz-tfn.60"
   ],
   "created": "2026-09-01T17:23:28Z",
-  "description": "## Goal\n\nAfter fz-kdt.46 removes scan-based blocked-wait discovery, prove no normal execution path orders FactKey values through Debug or display text and no obsolete unresolved inventory remains.\n\n## Expected outcome\n\nRepository and production-path inspection should close this ticket without implementation. Terminal diagnostic presentation may use a deterministic typed/rendered order because presentation is not execution. If a live scheduling consumer remains, update this description from the then-current code before implementing; do not add a general comparator or restore a scan.\n\n## Acceptance\n\nNo Debug/display-derived execution order, global unresolved producer discovery or dead ordering helper remains. Opposite type-mint orders preserve semantic answers, causal work and artifacts. Exact diagnostics, tests, docs, formatting and strict lint pass.",
+  "description": "## Goal\n\nAfter fz-kdt.46 removes scan-based blocked-wait discovery, audit the then-current production path for residual Debug/display ordering and obsolete unresolved-wait inventory.\n\n## Scope\n\nThis is an inspection-and-deletion ticket for the blocked-wait cutover only. Terminal diagnostic presentation may use a deterministic typed/rendered order because presentation is not execution. Global type-mint, row-confluence and keep-first order sensitivity belong to fz-kdt.48 and are not duplicated here.\n\n## Expected outcome\n\nRepository and production-path inspection should close this ticket without implementation. If a live scheduling consumer still orders FactKey values through Debug/display text, update this description from the then-current code before implementing; do not add a general comparator or restore a scan.\n\n## Acceptance\n\nNo normal execution path uses Debug/display text to select a blocked wait, discover a producer or arbitrate ready work. No global unresolved producer inventory or dead ordering helper remains. Typed fact identity and the exact dependency index remain authoritative. Exact diagnostics, focused absence tests, docs, formatting and strict lint pass.",
   "id": "fz-kdt.114",
   "labels": [],
   "parent": "fz-tfn",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Audit residual blocked-wait ordering after edge-triggered cutover",
   "type": "task",
-  "updated_at": "2026-09-07T18:57:11Z"
+  "updated_at": "2026-09-07T19:05:39Z"
 }
