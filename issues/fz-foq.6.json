@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T03:46:17Z",
+  "description": "causal.rs defines five aggregate types that are each nothing but u64 counters summed field-wise: FormulaWork (10 fields), ProductWork (16), RecursiveSearchWork, ShiftWork, SessionWork.\n\nThe duplication is already visible as a bug-shaped asymmetry: FormulaWork has a private add() that sums its fields, so formula_totals() reads 'totals.add(work)'. ProductWork has no impl at all, so product_totals() hand-sums all 16 fields inline. Same idea, two shapes, and the hand-sum silently drops any field a future author forgets to add there.\n\nFold them into one summable mechanism so adding a counter cannot desync a totals function from its struct. Types rank highest in the fold rule.\n\nGuard against conflating lookalikes: confirm all five really are pure field-wise-summable counter bags before merging, and keep any that carries a non-additive field distinct.",
+  "id": "fz-foq.6",
+  "labels": [],
+  "parent": "fz-foq",
+  "priority": 3,
+  "status": "open",
+  "title": "Fold the five causal *Work counter bags into one summable shape",
+  "type": "task",
+  "updated_at": "2026-09-07T03:46:17Z"
+}
