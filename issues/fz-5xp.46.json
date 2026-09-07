@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T10:15:10Z",
   "created": "2026-09-07T10:10:19Z",
   "description": "Found while doing fz-5xp.38, and fixed with it.\n\n    fnp classify(x) when -x \u003e 0.0, do: :negative\n    fnp classify(_), do: :other\n\n    classify(-5.5)   interp :other      run :negative   build :negative\n\n`-(-5.5)` is `5.5`, which is `\u003e 0.0`, so run and build were right and interp\nwas wrong -- and wrong SILENTLY, by falling through to the next clause rather\nthan failing.\n\nCAUSE: `dispatch_exec.rs` evaluated guard negation as\n`AnyValue::Int(-guard_int(v)?)`, and `guard_int` is `as_i64`, which is `None`\nfor a float. The `?` then abandoned the guard, which reads as \"this clause did\nnot match\".\n\nThat made negation's THIRD implementation: the expression evaluator\n(`binop::eval_unop`) handled both lanes correctly all along, native codegen\nhandled one until fz-5xp.33 gave it the other, and the guard evaluator handled\none. Guards now call `eval_unop`, so there is one answer.\n\nIt was invisible until fz-5xp.33: before that, a float guard negation aborted\non run and build, so there was nothing for interp to disagree WITH.\n\nPinned by behavior/negate_guard on all three doors.",
   "id": "fz-5xp.46",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Guard negation was integer-only in the interpreter",
   "type": "bug",
-  "updated_at": "2026-09-07T10:10:19Z"
+  "updated_at": "2026-09-07T10:15:10Z"
 }
