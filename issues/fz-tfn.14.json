@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-0za",
     "fz-kdt.72",
     "fz-tfn.30"
   ],
@@ -18,5 +17,5 @@
   "status": "open",
   "title": "Make ActivationInputs one change-aware contribution authority",
   "type": "task",
-  "updated_at": "2026-09-07T18:51:41Z"
+  "updated_at": "2026-09-07T18:55:37Z"
 }
