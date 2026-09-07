@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.5"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.15",
     "fz-tfn.39"
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "Ignite activation analysis from exact activation-appearance edges",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:07Z"
+  "updated_at": "2026-09-07T18:56:08Z"
 }
