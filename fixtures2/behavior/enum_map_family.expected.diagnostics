@@ -1,53 +1,53 @@
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:295:3
+  --> runtime:Enum.fz:292:3
     |
-273 |   fnp map_list([head | tail], fun), do: [fun.(head) | map_list(tail, fun)]
+270 |   fnp map_list([head | tail], fun), do: [fun.(head) | map_list(tail, fun)]
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:298:3
+  --> runtime:Enum.fz:295:3
     |
-276 |   fnp filter_list([head | tail], fun) do
+273 |   fnp filter_list([head | tail], fun) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:307:3
+  --> runtime:Enum.fz:304:3
     |
-285 |   fnp flat_map_list([head | tail], fun) do
+282 |   fnp flat_map_list([head | tail], fun) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:312:3
+  --> runtime:Enum.fz:309:3
     |
-290 |   fnp concat_list([head | tail], right), do: [head | concat_list(tail, right)]
-    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-    |
-    = note: an input matched by no clause halts with `:function_clause` at runtime
-    = help: add a wildcard clause `_ -> ...` to cover any remaining input
-
-warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:315:3
-    |
-293 |   fnp map_reduce_list([head | tail], acc, fun) do
+287 |   fnp map_reduce_list([head | tail], acc, fun) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:322:3
+  --> runtime:Enum.fz:316:3
     |
-300 |   fnp scan_first([head | tail], fun), do: [head | scan_list(tail, head, fun)]
+294 |   fnp scan_first([head | tail], fun), do: [head | scan_list(tail, head, fun)]
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+    |
+    = note: an input matched by no clause halts with `:function_clause` at runtime
+    = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> runtime:Enum.fz:319:3
+    |
+297 |   fnp scan_list([head | tail], acc, fun) do
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
@@ -55,61 +55,52 @@ warning[type/no-matching-clause]: `fn` clauses don't cover every input
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
   --> runtime:Enum.fz:325:3
     |
-303 |   fnp scan_list([head | tail], acc, fun) do
-    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-    |
-    = note: an input matched by no clause halts with `:function_clause` at runtime
-    = help: add a wildcard clause `_ -> ...` to cover any remaining input
-
-warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:331:3
-    |
-309 |   fnp intersperse_list([head | tail], separator), do: [head | intersperse_tail(tail, separator)]
+303 |   fnp intersperse_list([head | tail], separator), do: [head | intersperse_tail(tail, separator)]
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:334:3
+  --> runtime:Enum.fz:328:3
     |
-312 |   fnp intersperse_tail([head | tail], separator), do: [separator, head | intersperse_tail(tail, separator)]
+306 |   fnp intersperse_tail([head | tail], separator), do: [separator, head | intersperse_tail(tail, separator)]
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:350:3
+  --> runtime:Enum.fz:344:3
     |
-328 |   fnp map_join_list([head | tail], joiner, mapper) do
+322 |   fnp map_join_list([head | tail], joiner, mapper) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:355:3
+  --> runtime:Enum.fz:349:3
     |
-333 |   fnp map_join_tail([head | tail], joiner, mapper, acc) do
+327 |   fnp map_join_tail([head | tail], joiner, mapper, acc) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:360:3
+  --> runtime:Enum.fz:354:3
     |
-338 |   fnp map_intersperse_list([head | tail], separator, mapper) do
+332 |   fnp map_intersperse_list([head | tail], separator, mapper) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:365:3
+  --> runtime:Enum.fz:359:3
     |
-343 |   fnp map_intersperse_tail([head | tail], separator, mapper) do
+337 |   fnp map_intersperse_tail([head | tail], separator, mapper) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime

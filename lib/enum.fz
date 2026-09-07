@@ -248,9 +248,6 @@ defmodule Enum do
   @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
   fn sort(enumerable, sorter), do: sort_list(enumerable, sorter)
 
-  @spec slice(Enumerable.t(a)) :: {:ok, integer, any} | {:error, any}
-  fn slice(_enumerable), do: {:error, :unsupported}
-
   @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
   fnp reduce_finish({:done, acc}), do: acc
   fnp reduce_finish({:halted, acc}), do: acc
@@ -305,11 +302,8 @@ defmodule Enum do
 
   fnp flat_map_list([], _fun), do: []
   fnp flat_map_list([head | tail], fun) do
-    concat_list(to_list(fun.(head)), flat_map_list(tail, fun))
+    List.concat(to_list(fun.(head)), flat_map_list(tail, fun))
   end
-
-  fnp concat_list([], right), do: right
-  fnp concat_list([head | tail], right), do: [head | concat_list(tail, right)]
 
   fnp map_reduce_list([], acc, _fun), do: {[], acc}
   fnp map_reduce_list([head | tail], acc, fun) do
@@ -399,9 +393,6 @@ defmodule Enum do
     )
   end
 
-  @spec take_positive_step(a, {[a], integer}) :: {:cont, {[a], integer}} | {:halt, {[a], integer}}
-  fnp take_positive_step(entry, {acc, 1}), do: {:halt, {[entry | acc], 0}}
-  fnp take_positive_step(entry, {acc, amount}), do: {:cont, {[entry | acc], amount - 1}}
   @spec take_positive_finish({[a], integer}) :: [a]
   fnp take_positive_finish({acc, _amount}), do: reverse_list(acc)
 
