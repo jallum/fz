@@ -19,11 +19,15 @@
     {
       "text": "Body landed at 5190d7f00: three allocating primitives (fz_atom_to_binary,\nfz_integer_to_binary, fz_float_to_binary), Atom/Integer/Float modules,\nStringChars with four impls, Kernel.to_string/1. Float rendering parity landed\nseparately at 3683647d1.\n\nNOT CLOSED. Two of this ticket's own requirements are unmet, both blocked:\n\n  * the no-fallback safety property -- 'interpolating a map raises' -- is a\n    compiler ICE rather than a raise (fz-5xp.40). Half of it does hold: a\n    receiver whose family HAS an impl but whose value is wrong (a partial\n    bitstring) panics correctly.\n  * String.Chars.List, the fifth of Elixir's five impls, is absent because\n    charlists are deferred project-wide (fz-5xp.41).\n\nEverything else is verified against real Elixir on all three doors.",
       "timestamp": "2026-09-07T09:47:59Z"
+    },
+    {
+      "text": "fz-5xp.40 is closed, so the no-fallback safety property now holds in both\nhalves and this ticket's last compiler blocker is gone.\n\nRemaining: String.Chars.List only (fz-5xp.41, blocked on charlists). Everything\nelse this ticket asked for is landed and oracle-verified on three doors.",
+      "timestamp": "2026-09-07T09:57:02Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Atom/Integer/Float to-string, String.Chars, and Kernel.to_string",
   "type": "task",
-  "updated_at": "2026-09-07T09:47:59Z"
+  "updated_at": "2026-09-07T09:57:02Z"
 }
