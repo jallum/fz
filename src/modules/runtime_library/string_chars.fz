@@ -1,0 +1,56 @@
+# `String.Chars`, the protocol behind `to_string/1`. In Elixir it is also what
+# interpolation calls; fz has no interpolation yet (fz-5xp.5), and this is the
+# piece that was missing for it.
+#
+# Elixir deliberately gives this protocol NO `@fallback_to_any`: interpolating
+# a map or a tuple raises rather than printing something structural. That is
+# the design's main safety property.
+#
+# Only half of it holds today. A receiver whose family HAS an impl but whose
+# value is wrong -- a non-byte-aligned bitstring -- panics, below. A receiver
+# with no impl at all, such as a map, is a compiler ICE rather than a raise
+# (fz-5xp.40), so the property cannot yet be stated as a whole.
+#
+# fz names the binary value family `Binary` where Elixir names it `BitString`.
+# The impl has to use fz's name: `for: BitString` would classify as a bare
+# nominal target and silently never match a binary receiver.
+
+defprotocol StringChars do
+  @spec to_string(t) :: binary
+  fn to_string(term)
+end
+
+defimpl StringChars, for: Atom do
+  # Elixir's one special case (string/chars.ex:30). `Atom.to_string(nil)` is
+  # "nil"; interpolating nil gives "".
+  fn to_string(nil), do: ""
+  fn to_string(a), do: Atom.to_string(a)
+end
+
+defimpl StringChars, for: Binary do
+  extern "C" fn fz_bitstring_is_binary(any) :: integer
+
+  # Elixir guards this impl with `is_binary(term)` and raises for a bitstring
+  # that is not byte-aligned (string/chars.ex:39). fz's `binary` type does not
+  # draw that line -- `<<1::4>>` satisfies a `s :: binary` clause head
+  # (fz-5xp.42) -- so the question is asked at runtime.
+  #
+  # It is not pedantry: the protocol's result is declared `binary`, and letting
+  # a partial bitstring through means the next `<>` aborts the process with a
+  # byte-alignment assertion far from here.
+  fn to_string(s) do
+    if fz_bitstring_is_binary(s) == 1 do
+      s
+    else
+      Kernel.panic({:string_chars, :cannot_convert_a_bitstring_to_a_string, s})
+    end
+  end
+end
+
+defimpl StringChars, for: Integer do
+  fn to_string(i), do: Integer.to_string(i)
+end
+
+defimpl StringChars, for: Float do
+  fn to_string(f), do: Float.to_string(f)
+end

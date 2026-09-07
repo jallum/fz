@@ -57,6 +57,12 @@ defmodule Kernel do
   @spec panic(any) :: never
   fn panic(msg), do: fz_panic(msg)
 
+  # Elixir's `Kernel.to_string/1` is a macro expanding to
+  # `String.Chars.to_string/1` (kernel.ex:3499). Here it is an ordinary
+  # function, because the expansion has nothing to do at compile time.
+  @spec to_string(any) :: binary
+  fn to_string(term), do: StringChars.to_string(term)
+
   @doc "Prints a value to standard output and returns it unchanged."
   @spec dbg(t) :: t when t: any
   fn dbg(x), do: fz_dbg_value(x)

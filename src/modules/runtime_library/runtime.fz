@@ -1,13 +1,17 @@
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
 
+alias Atom
 alias Enum
 alias Enumerable
+alias Float
+alias Integer
 alias Kernel
 alias List
 alias Map
 alias Process
 alias Range
+alias StringChars
 alias Utf8
 
 import Kernel, only: [
@@ -36,7 +40,8 @@ import Kernel, only: [
   self: 0,
   send: 2,
   spawn: 1,
-  spawn: 2
+  spawn: 2,
+  to_string: 1
 ]
 
 defmacro fn(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))

@@ -33,10 +33,14 @@ use crate::types::Types;
 pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     // Allocating helpers reach the process heap, so they take the process.
     // These are the `extern "fz"` declarations in the runtime library.
+    ("fz_atom_to_binary", ExternAbi::Fz),
     ("fz_binary_concat", ExternAbi::Fz),
     ("fz_dbg_value", ExternAbi::Fz),
+    ("fz_float_to_binary", ExternAbi::Fz),
+    ("fz_integer_to_binary", ExternAbi::Fz),
     ("fz_process_heap_alloc_stats", ExternAbi::Fz),
     // Plain C symbols the runtime exports for the interpreter to call.
+    ("fz_bitstring_is_binary", ExternAbi::C),
     ("fz_bitstring_valid_utf8", ExternAbi::C),
     ("fz_brand_bitstring_as_utf8", ExternAbi::C),
     ("fz_map_count", ExternAbi::C),

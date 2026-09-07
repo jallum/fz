@@ -1,0 +1,6 @@
+defmodule Integer do
+  extern "fz" fn fz_integer_to_binary(integer) :: binary
+
+  @spec to_string(integer) :: binary
+  fn to_string(i), do: fz_integer_to_binary(i)
+end

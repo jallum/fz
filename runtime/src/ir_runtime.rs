@@ -901,6 +901,24 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     }
 }
 
+/// Is this bitstring byte-aligned -- a `binary` rather than a partial
+/// `bitstring`?
+///
+/// fz's type system does not draw this line: `<<1::4>>` has type `binary` and a
+/// `s :: binary` clause head accepts it (fz-5xp.42). Elixir's does, and
+/// `String.Chars` turns on it -- identity for a binary, raise for anything
+/// else. So the distinction has to be asked at runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+        return 0;
+    };
+    if !unsafe { is_bitstring_like(p) } {
+        return 0;
+    }
+    i64::from((unsafe { bitstring_bit_len(p) } as usize).is_multiple_of(8))
+}
+
 fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
     let p = bitstring_like_ptr_from_ref(word)
         .or_else(|| bitstring_like_ptr(word))
@@ -910,6 +928,53 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
     assert!(bit_len.is_multiple_of(8), "{context}: expected byte-aligned binary");
     let ptr = unsafe { bitstring_byte_ptr(p) };
     (ptr, bit_len / 8)
+}
+
+/// Allocate `text` on the process heap as an fz binary.
+///
+/// The three to-string primitives all end here, so the choice between an inline
+/// bitstring and a shared procbin is made once rather than per primitive.
+fn alloc_text(process: *mut Process, text: &str) -> u64 {
+    let bytes = text.as_bytes();
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(bytes, (bytes.len() * 8) as u64);
+    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
+        heap_ref_word(ValueKind::PROCBIN, p)
+    } else {
+        heap_ref_word(ValueKind::BITSTRING, p)
+    }
+}
+
+/// `Atom.to_string/1`: the atom's name, so `:foo` is `"foo"` and `nil` is
+/// `"nil"`.
+///
+/// The `nil -> ""` that Elixir shows belongs to `String.Chars.Atom`, not here
+/// (elixir/lib/elixir/lib/string/chars.ex:30) -- `Atom.to_string(nil)` really
+/// is `"nil"`. Keeping the special case in the protocol impl means the
+/// primitive stays the plain question "what is this atom called".
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_atom_to_binary(process: *mut Process, atom_ref: u64) -> u64 {
+    let value = any_value_ref_from_word(atom_ref, "fz_atom_to_binary");
+    let atom_id = value.load_atom().expect("fz_atom_to_binary expects an atom");
+    let name = (unsafe { &*process })
+        .node
+        .atom_name(atom_id as u32)
+        .unwrap_or_else(|| panic!("unknown atom id {atom_id}"));
+    alloc_text(process, &name)
+}
+
+/// `Integer.to_string/1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_integer_to_binary(process: *mut Process, value: i64) -> u64 {
+    alloc_text(process, &value.to_string())
+}
+
+/// `Float.to_string/1`, which is not how `inspect/1` renders a float -- see
+/// `any_value::debug::float_to_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
+    alloc_text(process, &crate::any_value::debug::float_to_string(value))
 }
 
 #[unsafe(no_mangle)]

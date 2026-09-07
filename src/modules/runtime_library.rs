@@ -41,6 +41,22 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("runtime_library/enum.fz"),
     },
     RuntimeModuleSource {
+        name: "Atom",
+        source: include_str!("runtime_library/atom.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Integer",
+        source: include_str!("runtime_library/integer.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Float",
+        source: include_str!("runtime_library/float.fz"),
+    },
+    RuntimeModuleSource {
+        name: "StringChars",
+        source: include_str!("runtime_library/string_chars.fz"),
+    },
+    RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
     },

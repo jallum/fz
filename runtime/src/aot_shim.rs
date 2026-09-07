@@ -122,36 +122,32 @@ unsafe fn sched_of(proc: *mut Process) -> *mut AotScheduler {
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
-/// Format: NUL-terminated UTF-8 names, double-NUL terminator. Null
-/// pointer / empty blob yields an empty Vec.
-fn parse_atom_blob(blob: *const u8) -> Vec<String> {
+///
+/// Format: NUL-terminated UTF-8 names filling `len - 1` bytes, then one more
+/// NUL. Null pointer or empty blob yields an empty Vec.
+///
+/// The LENGTH is what bounds the scan, not the trailing NUL. Terminating on a
+/// zero-length name instead makes an EMPTY ATOM NAME indistinguishable from
+/// the end of the blob, so `:""` truncated the table and every atom interned
+/// after it vanished -- `dbg(:hello)` printed `:atom_4` on the AOT door alone,
+/// and `Atom.to_string` of any of them aborted the process. The renderer has
+/// always known empty names exist (`any_value::debug::render_atom`); the
+/// encoding was the one place that assumed they do not.
+fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
     let mut out = Vec::new();
-    if blob.is_null() {
+    if blob.is_null() || len == 0 {
         return out;
     }
-    let mut cur = blob;
-    loop {
-        let mut len = 0usize;
-        loop {
-            let b = unsafe { *cur.add(len) };
-            if b == 0 {
-                break;
-            }
-            len += 1;
-            if len > 1_000_000 {
-                eprintln!("parse_atom_blob: name length exceeded sanity limit");
-                abort();
-            }
-        }
-        if len == 0 {
+    // The final byte is the extra terminator; the names occupy everything
+    // before it, each one NUL-terminated.
+    let names = unsafe { from_raw_parts(blob, len as usize - 1) };
+    for name in names.split(|byte| *byte == 0) {
+        // `split` yields a trailing empty slice for the last separator, which
+        // is the terminator of the last NAME rather than a name of its own.
+        if name.as_ptr_range().end == names.as_ptr_range().end && name.is_empty() && !names.is_empty() {
             break;
         }
-        let bytes = unsafe { from_raw_parts(cur, len) };
-        match from_utf8(bytes) {
-            Ok(s) => out.push(s.to_string()),
-            Err(_) => out.push(String::new()),
-        }
-        cur = unsafe { cur.add(len + 1) };
+        out.push(from_utf8(name).map(str::to_string).unwrap_or_default());
     }
     out
 }
@@ -212,12 +208,12 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String
 /// initialize the halt-cont singleton, register the spawn-entry address,
 /// install scheduler hooks, parse the atom blob. Returns the process pointer
 /// for subsequent register/run calls. `atom_blob` may be null (program has no
-/// atom literals); `atom_blob_len` is currently advisory — parsing terminates
+/// atom literals); `atom_blob_len` bounds the scan — parsing used to terminate
 /// on the double-NUL sentinel.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
-    _atom_blob_len: u32,
+    atom_blob_len: u32,
     halt_cont_body_tagged: *const u8,
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
@@ -228,7 +224,7 @@ pub extern "C" fn fz_aot_setup(
 
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
-    let node = Rc::new(Node::new(parse_atom_blob(atom_blob), Vec::new()));
+    let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len), Vec::new()));
     let proc_box = Box::new(Process::from_consts(
         node,
         schemas,

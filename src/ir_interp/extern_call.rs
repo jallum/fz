@@ -8,8 +8,9 @@ use fz_runtime::extern_variadic::{
     fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
 };
 use fz_runtime::ir_runtime::{
-    fz_binary_concat, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8, fz_dbg_value, fz_make_ref_raw, fz_map_count,
-    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref, fz_value_eq_widening_ref,
+    fz_atom_to_binary, fz_binary_concat, fz_bitstring_is_binary, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8,
+    fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_entry_key,
+    fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -560,9 +561,13 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         // interp leg of the matrix can resolve them without relying on
         // dlsym; statically-linked rlibs don't expose these via
         // RTLD_DEFAULT on Linux.
+        "fz_bitstring_is_binary" => Some(fz_bitstring_is_binary as *const ()),
         "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
         "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),
         "fz_binary_concat" => Some(fz_binary_concat as *const ()),
+        "fz_atom_to_binary" => Some(fz_atom_to_binary as *const ()),
+        "fz_integer_to_binary" => Some(fz_integer_to_binary as *const ()),
+        "fz_float_to_binary" => Some(fz_float_to_binary as *const ()),
         "fz_op_add_ii" => Some(fz_op_add_ii as *const ()),
         "fz_op_add_if" => Some(fz_op_add_if as *const ()),
         "fz_op_add_ff" => Some(fz_op_add_ff as *const ()),

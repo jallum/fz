@@ -59,3 +59,6 @@ pub extern "C" fn fz_panic(process: *mut Process, msg_ref: u64) -> ! {
     eprintln!("fz panic: {}", render_value(process, value));
     abort();
 }
+
+#[cfg(test)]
+mod export_test;

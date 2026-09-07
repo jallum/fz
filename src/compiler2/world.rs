@@ -2248,8 +2248,8 @@ impl World {
     /// struct wins whenever `StructDefined(module)` has published one,
     /// otherwise the name is checked against the compiler's built-in ground
     /// value families (`List`/`Integer`/`Float`/`Atom`/`Binary`/`Map` — these
-    /// have no backing module facts at all, the name literally *is* their
-    /// identity), and anything left over is a bare nominal target (e.g.
+    /// publish no `StructDefined`, so the name literally *is* their identity),
+    /// and anything left over is a bare nominal target (e.g.
     /// `defimpl P, for: String`, where `String` names no struct and no ground
     /// family).
     ///
@@ -2657,8 +2657,15 @@ enum ImplTargetKind {
 }
 
 /// The compiler's built-in ground value families: primitive value shapes a
-/// protocol can dispatch on by name alone, with no `defstruct` and (for
-/// `Integer`/`Float`/`Atom`/`Binary`) no backing module source at all.
+/// protocol can dispatch on by name alone, because they publish no
+/// `StructDefined`.
+///
+/// Several of these names now ALSO name a runtime-library module -- `Atom`,
+/// `Integer`, `Float` and `List` all carry `to_string`, `reduce` and friends.
+/// That is fine, because classification turns on `StructDefined` rather than
+/// on whether a module of the name exists. It does mean a user `defstruct`
+/// with one of these names wins the classification and takes the family's
+/// dispatch with it (fz-5xp.43).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuiltinValueFamily {
     List,
