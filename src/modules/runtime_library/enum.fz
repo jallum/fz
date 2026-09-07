@@ -470,4 +470,287 @@ defmodule Enum do
       [right_head | merge_sort_lists([left_head | left_tail], right_tail, sorter)]
     end
   end
+
+  # fz-5xp.16 — the tranches fz-5xp.8 (term order), fz-5xp.12 (Map) and
+  # fz-5xp.15 (String.Chars) unblocked.
+  #
+  # The min/max family is written against `Kernel.compare/2` rather than `<=`,
+  # for the same reason `sort/1` is: `<=` is declared only for the operand
+  # pairs fz can prove, so `Enum.max(["a", :b])` could not be written in terms
+  # of it. Term order is total, so these are too.
+
+  @doc "The largest element by term order."
+  @spec max([a]) :: a
+  fn max(enumerable), do: extreme(to_list(enumerable), 1, "Enum.max: empty")
+
+  @doc "The smallest element by term order."
+  @spec min([a]) :: a
+  fn min(enumerable), do: extreme(to_list(enumerable), -1, "Enum.min: empty")
+
+  @doc "{min, max} by term order."
+  @spec min_max([a]) :: {a, a}
+  fn min_max(enumerable), do: {min(enumerable), max(enumerable)}
+
+  @spec extreme([a], integer, binary) :: a
+  fnp extreme([], _want, message), do: Kernel.panic(message)
+  fnp extreme([head | tail], want, _message), do: extreme_fold(tail, head, want)
+
+  @spec extreme_fold([a], a, integer) :: a
+  fnp extreme_fold([], best, _want), do: best
+  fnp extreme_fold([head | tail], best, want) do
+    if Kernel.compare(head, best) == want do
+      extreme_fold(tail, head, want)
+    else
+      extreme_fold(tail, best, want)
+    end
+  end
+
+  @doc "The element whose fun value is largest."
+  @spec max_by([a], (a) -> any) :: a
+  fn max_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, 1, "Enum.max_by: empty")
+
+  @doc "The element whose fun value is smallest."
+  @spec min_by([a], (a) -> any) :: a
+  fn min_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, -1, "Enum.min_by: empty")
+
+  @doc "{min_by, max_by} for one fun."
+  @spec min_max_by([a], (a) -> any) :: {a, a}
+  fn min_max_by(enumerable, fun), do: {min_by(enumerable, fun), max_by(enumerable, fun)}
+
+  @spec extreme_by([a], (a) -> any, integer, binary) :: a
+  fnp extreme_by([], _fun, _want, message), do: Kernel.panic(message)
+  fnp extreme_by([head | tail], fun, want, _message), do: extreme_by_fold(tail, head, fun.(head), fun, want)
+
+  @spec extreme_by_fold([a], a, any, (a) -> any, integer) :: a
+  fnp extreme_by_fold([], best, _best_key, _fun, _want), do: best
+  fnp extreme_by_fold([head | tail], best, best_key, fun, want) do
+    key = fun.(head)
+    if Kernel.compare(key, best_key) == want do
+      extreme_by_fold(tail, head, key, fun, want)
+    else
+      extreme_by_fold(tail, best, best_key, fun, want)
+    end
+  end
+
+  @doc "Sorts by the value fun returns."
+  @spec sort_by([a], (a) -> any) :: [a]
+  fn sort_by(enumerable, fun) do
+    sort(to_list(enumerable), fn (left, right) -> Kernel.compare(fun.(left), fun.(right)) <= 0 end)
+  end
+
+  @doc "Concatenates the string representations."
+  @spec join([a]) :: binary
+  fn join(enumerable), do: join(enumerable, "")
+
+  @doc "Concatenates the string representations with a separator."
+  @spec join([a], binary) :: binary
+  fn join(enumerable, separator), do: join_list(to_list(enumerable), separator)
+
+  @spec join_list([a], binary) :: binary
+  fnp join_list([], _separator), do: ""
+  fnp join_list([only], _separator), do: Kernel.to_string(only)
+  fnp join_list([head | tail], separator) do
+    Kernel.to_string(head) <> separator <> join_list(tail, separator)
+  end
+
+  @doc "The sum of the elements."
+  @spec sum([a]) :: any
+  fn sum(enumerable), do: reduce(to_list(enumerable), 0, fn (entry, acc) -> acc + entry end)
+
+  @doc "The sum of fun over the elements."
+  @spec sum_by([a], (a) -> any) :: any
+  fn sum_by(enumerable, fun), do: reduce(to_list(enumerable), 0, fn (entry, acc) -> acc + fun.(entry) end)
+
+  @doc "The product of the elements."
+  @spec product([a]) :: any
+  fn product(enumerable), do: reduce(to_list(enumerable), 1, fn (entry, acc) -> acc * entry end)
+
+  @doc "The product of fun over the elements."
+  @spec product_by([a], (a) -> any) :: any
+  fn product_by(enumerable, fun), do: reduce(to_list(enumerable), 1, fn (entry, acc) -> acc * fun.(entry) end)
+
+  @doc "{:ok, element} at index, or :error."
+  @spec fetch([a], integer) :: {:ok, a} | :error
+  fn fetch(enumerable, index), do: fetch_list(to_list(enumerable), index)
+
+  @spec fetch_list([a], integer) :: {:ok, a} | :error
+  fnp fetch_list([], _index), do: :error
+  fnp fetch_list([head | _tail], 0), do: {:ok, head}
+  fnp fetch_list([_head | tail], index), do: fetch_list(tail, index - 1)
+
+  @doc "The element at index, or halts."
+  @spec fetch!([a], integer) :: a
+  fn fetch!(enumerable, index), do: fetch_result(fetch(enumerable, index))
+
+  @spec fetch_result({:ok, a} | :error) :: a
+  fnp fetch_result({:ok, value}), do: value
+  fnp fetch_result(:error), do: Kernel.panic("Enum.fetch!: out of range")
+
+  @doc "The element at index, or default."
+  @spec at([a], integer) :: a | nil
+  fn at(enumerable, index), do: at(enumerable, index, nil)
+
+  @doc "The element at index, or default."
+  @spec at([a], integer, any) :: any
+  fn at(enumerable, index, default), do: at_result(fetch(enumerable, index), default)
+
+  @spec at_result({:ok, a} | :error, any) :: any
+  fnp at_result({:ok, value}, _default), do: value
+  fnp at_result(:error, default), do: default
+
+  @doc "Flattens one level."
+  @spec concat([[a]]) :: [a]
+  fn concat(enumerables), do: concat_list(to_list(enumerables))
+
+  @spec concat_list([[a]]) :: [a]
+  fnp concat_list([]), do: []
+  fnp concat_list([head | tail]), do: List.concat(to_list(head), concat_list(tail))
+
+  @doc "Concatenates two enumerables."
+  @spec concat([a], [b]) :: [a | b]
+  fn concat(left, right), do: List.concat(to_list(left), to_list(right))
+
+  @doc "Removes consecutive duplicates."
+  @spec dedup([a]) :: [a]
+  fn dedup(enumerable), do: dedup_list(to_list(enumerable))
+
+  @spec dedup_list([a]) :: [a]
+  fnp dedup_list([]), do: []
+  fnp dedup_list([head | tail]), do: [head | dedup_after(tail, head)]
+
+  @spec dedup_after([a], a) :: [a]
+  fnp dedup_after([], _last), do: []
+  fnp dedup_after([head | tail], last) do
+    if head === last, do: dedup_after(tail, last), else: [head | dedup_after(tail, head)]
+  end
+
+  @doc "Removes consecutive duplicates by fun."
+  @spec dedup_by([a], (a) -> any) :: [a]
+  fn dedup_by(enumerable, fun), do: dedup_by_list(to_list(enumerable), fun)
+
+  @spec dedup_by_list([a], (a) -> any) :: [a]
+  fnp dedup_by_list([], _fun), do: []
+  fnp dedup_by_list([head | tail], fun), do: [head | dedup_by_after(tail, fun.(head), fun)]
+
+  @spec dedup_by_after([a], any, (a) -> any) :: [a]
+  fnp dedup_by_after([], _last, _fun), do: []
+  fnp dedup_by_after([head | tail], last, fun) do
+    key = fun.(head)
+    if key === last, do: dedup_by_after(tail, last, fun), else: [head | dedup_by_after(tail, key, fun)]
+  end
+
+  @doc "Counts, stopping once limit is reached."
+  @spec count_until([a], integer) :: integer
+  fn count_until(enumerable, limit), do: count_until_list(to_list(enumerable), limit, 0)
+
+  @spec count_until_list([a], integer, integer) :: integer
+  fnp count_until_list([], _limit, seen), do: seen
+  fnp count_until_list(_list, limit, seen) when seen >= limit, do: seen
+  fnp count_until_list([_head | tail], limit, seen), do: count_until_list(tail, limit, seen + 1)
+
+  @doc "Pairs elements from two enumerables."
+  @spec zip([a], [b]) :: [{a, b}]
+  fn zip(left, right), do: zip_lists(to_list(left), to_list(right))
+
+  @spec zip_lists([a], [b]) :: [{a, b}]
+  fnp zip_lists([], _right), do: []
+  fnp zip_lists(_left, []), do: []
+  fnp zip_lists([left_head | left_tail], [right_head | right_tail]) do
+    [{left_head, right_head} | zip_lists(left_tail, right_tail)]
+  end
+
+  @doc "Splits a list of pairs into two lists."
+  @spec unzip([{a, b}]) :: {[a], [b]}
+  fn unzip(enumerable), do: unzip_list(to_list(enumerable))
+
+  @spec unzip_list([{a, b}]) :: {[a], [b]}
+  fnp unzip_list([]), do: {[], []}
+  fnp unzip_list([{left, right} | tail]), do: unzip_cons(left, right, unzip_list(tail))
+
+  @spec unzip_cons(a, b, {[a], [b]}) :: {[a], [b]}
+  fnp unzip_cons(left, right, {lefts, rights}), do: {[left | lefts], [right | rights]}
+
+  @doc "Groups consecutive elements into lists of at most n."
+  @spec chunk_every([a], integer) :: [[a]]
+  fn chunk_every(enumerable, n), do: chunk_every_list(to_list(enumerable), n)
+
+  @spec chunk_every_list([a], integer) :: [[a]]
+  fnp chunk_every_list([], _n), do: []
+  fnp chunk_every_list(list, n), do: [take(list, n) | chunk_every_list(drop(list, n), n)]
+
+  @doc "Groups consecutive elements by what fun returns."
+  @spec chunk_by([a], (a) -> any) :: [[a]]
+  fn chunk_by(enumerable, fun), do: chunk_by_list(to_list(enumerable), fun)
+
+  @spec chunk_by_list([a], (a) -> any) :: [[a]]
+  fnp chunk_by_list([], _fun), do: []
+  fnp chunk_by_list([head | tail], fun), do: chunk_by_run(tail, fun, fun.(head), [head])
+
+  @spec chunk_by_run([a], (a) -> any, any, [a]) :: [[a]]
+  fnp chunk_by_run([], _fun, _key, acc), do: [reverse_list(acc)]
+  fnp chunk_by_run([head | tail], fun, key, acc) do
+    if fun.(head) === key do
+      chunk_by_run(tail, fun, key, [head | acc])
+    else
+      [reverse_list(acc) | chunk_by_run(tail, fun, fun.(head), [head])]
+    end
+  end
+
+  @doc "How many times each element appears."
+  @spec frequencies([a]) :: any
+  fn frequencies(enumerable), do: frequencies_by(enumerable, fn (entry) -> entry end)
+
+  @doc "How many times each fun value appears."
+  @spec frequencies_by([a], (a) -> any) :: any
+  fn frequencies_by(enumerable, fun) do
+    reduce(to_list(enumerable), %{}, fn (entry, acc) -> bump(acc, fun.(entry)) end)
+  end
+
+  @spec bump(any, any) :: any
+  fnp bump(counts, key), do: Map.put(counts, key, Map.get(counts, key, 0) + 1)
+
+  @doc "Removes duplicates, keeping the first of each."
+  @spec uniq([a]) :: [a]
+  fn uniq(enumerable), do: uniq_by(enumerable, fn (entry) -> entry end)
+
+  @doc "Removes duplicates by fun, keeping the first of each."
+  @spec uniq_by([a], (a) -> any) :: [a]
+  fn uniq_by(enumerable, fun), do: uniq_walk(to_list(enumerable), fun, [])
+
+  @spec uniq_walk([a], (a) -> any, [any]) :: [a]
+  fnp uniq_walk([], _fun, _seen), do: []
+  fnp uniq_walk([head | tail], fun, seen) do
+    key = fun.(head)
+    if List.member?(seen, key) do
+      uniq_walk(tail, fun, seen)
+    else
+      [head | uniq_walk(tail, fun, [key | seen])]
+    end
+  end
+
+  @doc "Groups elements by what fun returns."
+  @spec group_by([a], (a) -> any) :: any
+  fn group_by(enumerable, fun), do: group_by(enumerable, fun, fn (entry) -> entry end)
+
+  @doc "Groups the value fun by the key fun."
+  @spec group_by([a], (a) -> any, (a) -> any) :: any
+  fn group_by(enumerable, key_fun, value_fun) do
+    grouped = reduce(to_list(enumerable), %{}, fn (entry, acc) -> group_step(acc, key_fun, value_fun, entry) end)
+    reduce(Map.keys(grouped), grouped, fn (key, acc) -> group_reverse(acc, key) end)
+  end
+
+  @spec group_step(any, (a) -> any, (a) -> any, a) :: any
+  fnp group_step(acc, key_fun, value_fun, entry) do
+    group_put(acc, key_fun.(entry), value_fun.(entry))
+  end
+
+  @spec group_put(any, any, any) :: any
+  fnp group_put(acc, key, value), do: Map.put(acc, key, [value | Map.get(acc, key, [])])
+
+  # A group is built by prepending, so each list comes out reversed; one pass
+  # over the keys puts them back in encounter order, which is what Elixir's
+  # group_by promises.
+  @spec group_reverse(any, any) :: any
+  fnp group_reverse(acc, key), do: Map.put(acc, key, reverse_list(Map.get(acc, key)))
+
 end
