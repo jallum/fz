@@ -53,12 +53,25 @@ Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
 allocating primitive is a Rust function, a declaration, a row in
 `extern_contract.rs::RUNTIME_SYMBOLS`, and an address for each door that needs
-one: `ir_codegen/backend.rs::register_runtime_symbols` for the JIT, and
+one: `ir_codegen/backend.rs::runtime_symbol_addrs` for the JIT, and
 `ir_interp/extern_call.rs::resolve_symbol` for the interpreter, which cannot
 rely on dlsym reaching a statically-linked rlib. AOT needs no address row for a
 runtime-crate export, which is `#[unsafe(no_mangle)]` and reachable through the
 staticlib link. There is no lowering function to write and no interpreter match
 arm to add.
+
+The JIT's addresses are a TABLE, not a run of calls, so the set can be read
+back. `every_declared_runtime_symbol_is_reachable_from_compiled_code` reads it
+and requires each declared symbol to be reachable one of the only two ways
+there are: registered with the JIT, or lowered in place by native codegen and
+never resolved at all — the arithmetic shims, whose full set is
+`native_codegen::ARITH_SHIMS`. The table exists because it had already drifted:
+`fz_bitstring_is_binary` was declared and never registered, and on macOS the
+JIT falls back to dlsym over the process image and finds the `no_mangle` export
+anyway. The whole six-target local gate was green while the same program died
+on Linux with `can't resolve symbol` (fz-5xp.58). A symbol missing from that
+table is a landmine that only goes off on one platform, so a test has to hold
+it rather than a convention.
 
 There is no variadic form of the `fz` ABI: every variadic call goes through a
 fixed-arity C dispatcher, which has nowhere to put the implicit process

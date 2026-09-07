@@ -187,3 +187,52 @@ fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
     }
     normalized
 }
+
+#[cfg(test)]
+mod runtime_symbol_reachability_test {
+    use super::RUNTIME_SYMBOLS;
+    use crate::compiler2::native_codegen::ARITH_SHIMS;
+    use crate::ir_codegen::runtime_symbol_addrs;
+
+    /// fz-5xp.58 — a symbol fz DECLARES must be reachable when compiled code
+    /// calls it. There are exactly two ways for that to be true on the native
+    /// path: the JIT is handed its address, or native codegen lowers the call
+    /// in place and never asks for an address at all.
+    ///
+    /// Nothing checked it, and the JIT's symbol list had drifted:
+    /// `fz_bitstring_is_binary` was declared and never registered. On macOS the
+    /// JIT falls back to `dlsym` over the process image and finds the
+    /// `no_mangle` export anyway, so the whole six-target local gate was green
+    /// while `to_string` died on Linux with `can't resolve symbol`. Every
+    /// symbol missing from that list is a landmine that only goes off on one
+    /// platform, which is precisely the kind of thing a test has to hold.
+    #[test]
+    fn every_declared_runtime_symbol_is_reachable_from_compiled_code() {
+        let registered: Vec<&str> = runtime_symbol_addrs().into_iter().map(|(name, _)| name).collect();
+        let unreachable: Vec<&str> = RUNTIME_SYMBOLS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !registered.contains(name) && !ARITH_SHIMS.iter().any(|(shim, _)| shim == name))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "declared in RUNTIME_SYMBOLS but neither registered with the JIT nor lowered in place \
+             by native codegen -- these resolve on macOS only by dlsym accident and fail on Linux: {:?}",
+            unreachable
+        );
+    }
+
+    /// The escape hatch cannot become a dumping ground: a name is only allowed
+    /// to skip registration because codegen really does lower it, so every
+    /// entry in that table has to be a symbol fz declares.
+    #[test]
+    fn every_natively_lowered_shim_is_a_declared_symbol() {
+        let declared: Vec<&str> = RUNTIME_SYMBOLS.iter().map(|(name, _)| *name).collect();
+        let strays: Vec<&str> = ARITH_SHIMS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !declared.contains(name))
+            .collect();
+        assert!(strays.is_empty(), "lowered in place but never declared: {:?}", strays);
+    }
+}

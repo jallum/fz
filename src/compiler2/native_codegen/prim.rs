@@ -940,32 +940,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
-            if matches!(decl.symbol.as_str(), "fz_op_add_ii" | "fz_op_add_if" | "fz_op_add_ff") && args.len() == 2 {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Add, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_sub_ii" | "fz_op_sub_if" | "fz_op_sub_fi" | "fz_op_sub_ff"
-            ) && args.len() == 2
+            if let Some(op) = arith_shim_op(&decl.symbol)
+                && args.len() == 2
             {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Sub, &arg_vars);
-            }
-            if matches!(decl.symbol.as_str(), "fz_op_mul_ii" | "fz_op_mul_if" | "fz_op_mul_ff") && args.len() == 2 {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mul, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_div_ii" | "fz_op_div_if" | "fz_op_div_fi" | "fz_op_div_ff"
-            ) && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Div, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_rem_ii" | "fz_op_rem_if" | "fz_op_rem_fi" | "fz_op_rem_ff"
-            ) && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mod, &arg_vars);
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, op, &arg_vars);
             }
             if decl.symbol == "fz_op_eq" && args.len() == 2 {
                 return lower_eq_binop(
@@ -2078,6 +2056,39 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+/// The arithmetic shims native codegen LOWERS IN PLACE rather than calls.
+///
+/// They are declared in `kernel.fz` and listed in `RUNTIME_SYMBOLS`, but no
+/// door ever resolves their address on the native path: this table is where
+/// the call becomes a machine instruction instead. It is a table rather than
+/// five `matches!` arms so that the set is nameable — `extern_contract`'s
+/// coverage test reads it to tell a symbol that needs no JIT registration
+/// from one that is simply missing (fz-5xp.58).
+pub(crate) const ARITH_SHIMS: &[(&str, BinOp)] = &[
+    ("fz_op_add_ii", BinOp::Add),
+    ("fz_op_add_if", BinOp::Add),
+    ("fz_op_add_ff", BinOp::Add),
+    ("fz_op_sub_ii", BinOp::Sub),
+    ("fz_op_sub_if", BinOp::Sub),
+    ("fz_op_sub_fi", BinOp::Sub),
+    ("fz_op_sub_ff", BinOp::Sub),
+    ("fz_op_mul_ii", BinOp::Mul),
+    ("fz_op_mul_if", BinOp::Mul),
+    ("fz_op_mul_ff", BinOp::Mul),
+    ("fz_op_div_ii", BinOp::Div),
+    ("fz_op_div_if", BinOp::Div),
+    ("fz_op_div_fi", BinOp::Div),
+    ("fz_op_div_ff", BinOp::Div),
+    ("fz_op_rem_ii", BinOp::Mod),
+    ("fz_op_rem_if", BinOp::Mod),
+    ("fz_op_rem_fi", BinOp::Mod),
+    ("fz_op_rem_ff", BinOp::Mod),
+];
+
+pub(crate) fn arith_shim_op(symbol: &str) -> Option<BinOp> {
+    ARITH_SHIMS.iter().find(|(name, _)| *name == symbol).map(|(_, op)| *op)
 }
 
 fn lower_extern_fz_op_arith<M, T>(
