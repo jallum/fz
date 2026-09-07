@@ -18,11 +18,15 @@
     {
       "text": "Closed by fz-5xp.18. Equality now widens numerics inside fz_value_eq_ref -- the one place both doors already shared -- rather than through per-kind clauses in Kernel, which measurably regressed  settling. 1 == 1.0 is true and 1 != 1.0 is false on run, interp and build, pinned by behavior/mixed_numeric_comparison.fz against a real Elixir twin. Matching stays strict: 1.0 does not match a literal 1 pattern, scoped by lower_eq_binop's widen_numerics flag.",
       "timestamp": "2026-09-07T01:48:26Z"
+    },
+    {
+      "text": "Closed by fz-5xp.18. Equality now widens numerics inside fz_value_eq_ref -- the one place both doors already shared -- rather than through per-kind clauses in Kernel, which measurably regressed membership settling. 1 == 1.0 is true and 1 != 1.0 is false on run, interp and build, pinned by behavior/mixed_numeric_comparison.fz against a real Elixir twin. Matching stays strict: 1.0 does not match a literal 1 pattern, scoped by lower_eq_binop's widen_numerics flag.",
+      "timestamp": "2026-09-07T01:48:37Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "== behaves as ===: 1 == 1.0 is false",
   "type": "bug",
-  "updated_at": "2026-09-07T01:48:26Z"
+  "updated_at": "2026-09-07T01:48:37Z"
 }
