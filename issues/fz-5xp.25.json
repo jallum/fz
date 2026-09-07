@@ -15,7 +15,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Bracket access on a keyword list aborts the process",
+  "title": "Bracket access decides by key kind, not receiver, and aborts on nil/list",
   "type": "bug",
   "updated_at": "2026-09-07T05:56:05Z"
 }
