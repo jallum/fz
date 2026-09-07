@@ -11,9 +11,15 @@
   "id": "fz-0am.4",
   "labels": [],
   "parent": "fz-0am",
+  "comments": [
+    {
+      "text": "Also delete CausalReport::distinct_demanded_products (causal.rs:758) in this commit: zero callers anywhere, including inside the module. It is pub, so dead_code never fired on it.",
+      "timestamp": "2026-09-07T09:47:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Delete the causality inference and its interval shadow state",
   "type": "task",
-  "updated_at": "2026-09-07T09:15:50Z"
+  "updated_at": "2026-09-07T09:47:08Z"
 }
