@@ -19,7 +19,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "merge_summary_input_vec synthesizes a Cartesian activation-input row from coalesced call targets, the row type ActivationInputRow exists to forbid",
+  "title": "Stop publishing Cartesian activation-input rows",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:36Z"
+  "updated_at": "2026-09-07T18:57:50Z"
 }
