@@ -1,8 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-tfn.48",
-    "fz-tfn.53"
+    "fz-tfn.48"
   ],
   "blocks": [
     "fz-kdt.46",
@@ -19,5 +18,5 @@
   "status": "closed",
   "title": "Absorbed into fz-tfn.57",
   "type": "bug",
-  "updated_at": "2026-09-07T18:54:08Z"
+  "updated_at": "2026-09-07T18:55:44Z"
 }
