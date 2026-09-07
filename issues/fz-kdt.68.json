@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T18:54:13Z",
   "close_reason": "Measured regression with no production consumer; deletion is owned by fz-tfn.21.",
   "created": "2026-08-30T15:23:21Z",
@@ -15,5 +13,5 @@
   "status": "closed",
   "title": "Refuted: per-answer derivations do not repay their cost",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:58Z"
+  "updated_at": "2026-09-07T18:55:59Z"
 }
