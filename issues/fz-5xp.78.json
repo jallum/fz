@@ -11,9 +11,15 @@
   "id": "fz-5xp.78",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in 5d7fa2ebb. Heredoc lexing with Elixir's rules: opening line refuses content, closing line's indentation stripped from each content line, content lines keep their newlines, escapes and interpolation work. De-indenting happens in place so interpolation ranges still point into the original source. Five lexer tests plus a behaviour fixture whose Elixir twin agrees byte for byte. An outdented line strips what it has (Elixir's value) without Elixir's warning; the lexer has no telemetry to warn through.",
+      "timestamp": "2026-09-07T20:15:00Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "[BUG] fz has no heredoc syntax, and `\"\"\"` silently lexes as adjacent string literals",
   "type": "task",
-  "updated_at": "2026-09-07T20:06:36Z"
+  "updated_at": "2026-09-07T20:15:00Z"
 }
