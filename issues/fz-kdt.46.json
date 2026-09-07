@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.57"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.114",
     "fz-tfn.52",
@@ -29,5 +27,5 @@
   "status": "open",
   "title": "Make fact demand and subscriptions exact-edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-07T19:12:05Z"
+  "updated_at": "2026-09-07T22:06:27Z"
 }
