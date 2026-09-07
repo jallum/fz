@@ -7,14 +7,16 @@
   "blocks": [
     "fz-tfn.14"
   ],
+  "closed_at": "2026-09-07T18:53:53Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-kdt.48; all valid acceptance criteria moved into that description.",
   "created": "2026-09-01T13:12:23Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-kdt.48, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nExact complete paired-row equality and typed strict dominance must land with the paired evidence representation so arrival order cannot cross-pair or discard evidence.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-kdt.48 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-0za",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-kdt.48",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:52Z"
+  "updated_at": "2026-09-07T18:53:53Z"
 }
