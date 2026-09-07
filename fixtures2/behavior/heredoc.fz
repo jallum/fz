@@ -1,0 +1,51 @@
+#---
+# purpose: "heredoc strings, checked against Elixir"
+# oracle: oracle.exs
+#---
+#
+# # heredoc
+#
+# `"""` used to be three quote characters rather than a delimiter: an empty
+# string followed by an opening quote. A heredoc lexed as several tokens, the
+# parser took the first and discarded the rest, and the content vanished with
+# nothing said about it.
+#
+# The rules here are Elixir's. The opening delimiter takes the rest of its
+# line, the closing delimiter owns its own line, and that closing line's
+# indentation is stripped from every content line -- so text indented further
+# than the delimiter keeps the difference. Each content line keeps its
+# newline and the closing line contributes nothing, which is why a heredoc
+# with no lines is the empty binary rather than a newline.
+fn main() do
+  plain = """
+hello
+"""
+  dbg(plain)
+  dbg(Kernel.byte_size(plain))
+
+  nested = """
+  indented
+    deeper
+  """
+  dbg(nested)
+
+  count = 5
+  interpolated = """
+val #{count}
+"""
+  dbg(interpolated)
+
+  empty = """
+"""
+  dbg(empty)
+
+  escaped = """
+a\tb
+"""
+  dbg(escaped)
+
+  assert(plain == "hello\n", "a heredoc is its lines, each keeping its newline")
+  assert(nested == "indented\n  deeper\n", "indentation is measured from the closing delimiter")
+  assert(empty == "", "a heredoc with no lines is the empty binary")
+  assert(escaped == "a\tb\n", "escapes decode inside a heredoc")
+end

@@ -1,0 +1,6 @@
+"hello\n"
+6
+"indented\n  deeper\n"
+"val 5\n"
+""
+"a\tb\n"

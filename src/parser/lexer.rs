@@ -394,6 +394,111 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// A `"""` heredoc, read with Elixir's rules.
+    ///
+    /// The opening delimiter takes the rest of its line, the closing
+    /// delimiter owns its own line, and that closing line's indentation is
+    /// stripped from every content line. The content is the lines between
+    /// them, each keeping its newline, so `"""\nhello\n"""` is `"hello\n"`
+    /// and a heredoc with no lines is the empty binary.
+    ///
+    /// De-indenting happens as the bytes are read rather than in a second
+    /// pass over a copy, because an interpolation carries a RANGE into the
+    /// original source for the sub-lexer to re-read. A copy would renumber
+    /// every such range.
+    ///
+    /// A line indented less than the closing delimiter gives up whatever
+    /// leading whitespace it has, which is the value Elixir produces; Elixir
+    /// also warns there, and fz does not yet.
+    fn read_heredoc_parts(&mut self) -> Result<Vec<StringPart>, LexError> {
+        self.pos += 3; // consume the opening """
+        self.consume_heredoc_opening_line()?;
+        let (body_end, indent) = self.find_heredoc_close(self.pos)?;
+
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut at_line_start = true;
+        while self.pos < body_end {
+            if at_line_start {
+                self.skip_heredoc_indent(indent, body_end);
+                at_line_start = false;
+                continue;
+            }
+            match self.bump() {
+                None => return Err(self.err("unterminated heredoc".into())),
+                Some(b'\n') => {
+                    bytes.push(b'\n');
+                    at_line_start = true;
+                }
+                Some(b'\\') => bytes.push(self.read_escape_byte()?),
+                Some(b'#') if self.peek(0) == Some(b'{') => {
+                    self.bump(); // consume {
+                    let range = self.read_interpolation_range()?;
+                    parts.push(StringPart::Bytes(std::mem::take(&mut bytes)));
+                    parts.push(StringPart::Interpolation(range));
+                }
+                Some(c) => bytes.push(c),
+            }
+        }
+        parts.push(StringPart::Bytes(bytes));
+        self.pos = body_end + indent + 3; // past the closing line's indent and """
+        Ok(parts)
+    }
+
+    /// Consume the rest of a heredoc's opening line, which Elixir allows to
+    /// hold only whitespace: text there would have no indentation to measure
+    /// against the closing delimiter.
+    fn consume_heredoc_opening_line(&mut self) -> Result<(), LexError> {
+        loop {
+            match self.peek(0) {
+                Some(b' ') | Some(b'\t') | Some(b'\r') => self.pos += 1,
+                Some(b'\n') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                Some(_) => {
+                    self.pos += 1;
+                    return Err(
+                        self.err("a heredoc opening `\"\"\"` allows only whitespace before the end of its line".into())
+                    );
+                }
+                None => return Err(self.err("unterminated heredoc".into())),
+            }
+        }
+    }
+
+    /// Find the line that closes a heredoc, answering where that line starts
+    /// and how far it is indented. The start doubles as the end of the body,
+    /// so the closing line contributes nothing to the content.
+    fn find_heredoc_close(&self, from: usize) -> Result<(usize, usize), LexError> {
+        let mut line_start = from;
+        loop {
+            if line_start > self.src.len() {
+                return Err(self.err("unterminated heredoc".into()));
+            }
+            let mut cursor = line_start;
+            while matches!(self.src.get(cursor), Some(b' ') | Some(b'\t')) {
+                cursor += 1;
+            }
+            if self.src[cursor..].starts_with(b"\"\"\"") {
+                return Ok((line_start, cursor - line_start));
+            }
+            match self.src[line_start..].iter().position(|c| *c == b'\n') {
+                Some(offset) => line_start += offset + 1,
+                None => return Err(self.err("unterminated heredoc".into())),
+            }
+        }
+    }
+
+    /// Drop up to the closing delimiter's indentation from a content line.
+    fn skip_heredoc_indent(&mut self, indent: usize, body_end: usize) {
+        let mut dropped = 0;
+        while dropped < indent && self.pos < body_end && matches!(self.peek(0), Some(b' ') | Some(b'\t')) {
+            self.pos += 1;
+            dropped += 1;
+        }
+    }
+
     /// The text between `#{` and its matching `}`, with braces nested and
     /// string literals inside skipped so `"#{f(%{a: 1})}"` and
     /// `"#{g("}")}"` both find the right closer.
@@ -886,6 +991,17 @@ impl<'a> Lexer<'a> {
                     Tok::Colon
                 }
             },
+
+            b'"' if self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') => {
+                let parts = self.read_heredoc_parts()?;
+                if parts.iter().any(|part| matches!(part, StringPart::Interpolation(_))) {
+                    return self.interpolation_tokens(parts, start, space_before);
+                }
+                match parts.into_iter().next() {
+                    Some(StringPart::Bytes(bytes)) => Tok::Binary(bytes),
+                    _ => Tok::Binary(Vec::new()),
+                }
+            }
 
             b'"' => {
                 let parts = self.read_quoted_binary_parts()?;
