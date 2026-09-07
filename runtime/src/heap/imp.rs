@@ -804,8 +804,19 @@ impl Heap {
         addr: *mut u8,
         key: AnyValueRef,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
+        // A LINEAR SCAN, deliberately, using the structural relation.
+        //
+        // fz-5xp.12 wants a binary search here and the array is sorted -- but
+        // only on the paths that sort it. `Heap::alloc_map_slots` writes
+        // entries in the order given, and `fz_process_heap_alloc_stats` hands
+        // it insertion order, whose atom ids do not ascend because most of
+        // those atoms were interned earlier by the compiler. A search over that
+        // map misses keys the scan finds: `stats[:map_bytes]` went nil and its
+        // fixtures lost a line of output.
+        //
+        // So the search waits on the invariant being true of every construction
+        // path, not just most of them (fz-5xp.49).
         let count = unsafe { map_count(addr) };
-
         for i in 0..count {
             let (entry_key, entry_value) = unsafe { map_entry_refs(addr, i) };
             if !same_value_ref(entry_key, key) {
@@ -821,6 +832,7 @@ impl Heap {
         map: AnyValueRef,
         key: AnyValue,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
+        // Linear, for the same reason as `read_map_addr_value_ref` above.
         let addr = map.map_addr()?;
         let count = unsafe { map_count(addr) };
         for i in 0..count {

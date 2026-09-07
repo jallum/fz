@@ -2187,7 +2187,10 @@ fn is_bitstring_kind(kind: ValueKind) -> bool {
 /// Bit-level ordering between bitstrings whose lengths are not byte multiples
 /// is decided by length once the common bytes agree; a full bit-granular
 /// comparison belongs with term ordering (fz-5xp.8).
-fn cmp_bitstring(ap: *mut u8, bp: *mut u8) -> i64 {
+/// Content ordering for two bitstring-like values: bytes first, then bit
+/// length. Shared with map-key ordering, which must agree with the structural
+/// equality map lookup uses (`heap::key_cmp`).
+pub(crate) fn cmp_bitstring(ap: *mut u8, bp: *mut u8) -> i64 {
     let a_bits = unsafe { bitstring_bit_len(ap) } as usize;
     let b_bits = unsafe { bitstring_bit_len(bp) } as usize;
     let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(ap), a_bits.div_ceil(8)) };
