@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-foq.3"
+  ],
   "created": "2026-09-07T08:48:18Z",
   "description": "## The smell\n\ncausal.rs spends ~669 lines (impl Replay) plus ~85 lines of shadow types reconstructing, from an ordered stream replay, a decision the scheduler already made at a specific instant.\n\n## What is and is not already emitted\n\nThe causal ATOMS are all on the stream. work_graph.applied serializes the whole AppliedStep: changed, movements, blocked, and wakes -- each wake as {cause, job, disposition} (jsonl.rs write_wake). No field is dropped.\n\nWhat is missing is the LINK. A wake says 'job J is woken by cause C'. J's own later applied event says 'J completed, here is what it read and changed'. Nothing ties J's evaluation back to C. So a consumer must re-pair them by scanning positions, which is what Replay generalizes -- and what work_graph_applied_carries_a_readable_cause_wake_evaluation_chain does by hand for a single pair.\n\nThat is why the reconstruction rule needs an interval: 'for evaluation e of F at position t, the moved inputs are (F's reads UNION F's blocked-set from its previous completion) for which a movement appears in [F's previous conclusion, t)'.\n\n## Why that is worth fixing\n\n- The engine does not need the interval. At enqueue_step it holds (job, cause, disposition) as a first-class Wake value: it re-ran F BECAUSE of C. 'Was this evaluation caused by new evidence?' is answerable at the moment, per evaluation, with no temporal reasoning.\n- The two 'load-bearing boundaries' the module doc names -- reads alone is insufficient because waits are a separate map; the window must include the previous conclusion's own movements -- are inference rules about scheduler semantics living OUTSIDE the scheduler. Wait semantics have changed before (AND-semantics fz-go4.18.41, edge-triggered waits fz-kdt.46). A measuring instrument that silently rots when the thing it measures changes is worse than none.\n- uncaused_evaluations, the exact quantity fz-kdt.34 exists to detect, becomes a direct read rather than a derived one.\n\n## Shape\n\nCarry the scheduling cause(s) into the evaluation record -- a correlation id on the wake that the woken job's completion echoes, or the cause identities inline. O(1) at a site that already constructs the value, behind --log-telemetry like the rest.\n\n## Proof strategy\n\nThe existing Replay is its own oracle. Emit the link, compute the answer both ways, assert agreement across the target fixtures, then delete the replay. Correct by construction with a proof step rather than a swap on faith.\n\n## Scope honesty\n\nRoughly 700 lines are in play, not 2000. JSONL parsing (~71), CanonTables and canonical packaging (~213, raw ids do not survive across processes so translation at report time is real work), and the record/report surface (~550, less whatever fz-foq.6 folds) stay regardless.\n\n## Relation to fz-foq.3\n\nReframes it. Before deciding where causal analysis should LIVE, decide how much of it should EXIST.",
   "id": "fz-0am",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "An evaluation should name the wake that scheduled it",
   "type": "task",
-  "updated_at": "2026-09-07T08:48:18Z"
+  "updated_at": "2026-09-07T08:48:23Z"
 }
