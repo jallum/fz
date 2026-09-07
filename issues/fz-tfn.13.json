@@ -6,7 +6,8 @@
     "fz-tfn.40"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-03T08:00:23Z",
   "description": "## Goal\n\nMake native compilation incremental below the root: publish one immutable native-body product per exact semantic codegen identity, compile only new or changed bodies, and relink only affected membership/symbol/relocation readers.\n\n## Authorities\n\nUse fz-tfn.44 stable backend references, fz-kdt.48 denotational types, fz-kdt.200 final activation identity, and fz-tfn.40 content/provenance separation. ProductMemo owns retained native bodies, compiled generations and link products. No root-relative dense id, rendered type, raw interner order or second backend cache is identity.\n\nOne return-payload position has one exact analyzed type/demand. Delivered results use the actual call-result position; tail results use the enclosing return. Callable arity comes from typed semantic callable identity. If the interpreter fallback deriving arity from pruned layouts is unreachable, delete it; otherwise consume the same identity. Never reconstruct omitted layouts.\n\n## Required deletion\n\nDelete the post-lowering whole-root sibling-graph dedup/index/compare/remap pass from fz-kdt.163 after transferring its positive and negative equivalence laws. Delete whole-program body walks, unconditional backend recreation, duplicated return-payload type/demand branches, layout-derived arity authority, obsolete counters and transition fixtures.\n\n## TDD and acceptance\n\nSame root twice and an unrelated edit perform zero native-body lowering, codegen and relink. A reached leaf edit compiles only the exact body and required link dependents. Preserve callable construction, captures, direct targets, ABI/layout, effects, externs, symbols, debug/provenance behavior, runtime output and canonical artifacts. Deterministic body/product generations and compile counts are authoritative.\n\nThis ticket absorbs fz-tfn.42 and fz-tfn.43.",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-07T18:56:39Z"
+  "updated_at": "2026-09-07T18:56:42Z"
 }

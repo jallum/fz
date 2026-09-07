@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-tfn.13",
     "fz-tfn.14",
     "fz-tfn.15"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Prove exact reuse and remove all construction debris",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:41Z"
+  "updated_at": "2026-09-07T18:56:42Z"
 }
