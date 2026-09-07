@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T19:05:49Z",
+  "close_reason": "Absorbed into fz-tfn.59 so stack creation and the first real deletion commit form one reviewable atomic boundary.",
   "created": "2026-09-03T08:04:44Z",
   "description": "## Status\n\nAbsorbed into fz-tfn.59 because stack creation and the first real implementation commit are one atomic boundary. A clean branch equal to PR #122 cannot create a meaningful new stacked PR, and a padding commit would violate the epic's no-debris rule.\n\n## Preserved requirement\n\nDelete the unused engine-wide DerivationId and JobDerivation scheduler substrate after proving production jobs have one job-owned answer. Preserve exact reads, waits, claims, retraction, rebasing, finality, wake attribution and failed-attempt ownership. Prove lower allocations, hashing and completion work; leave no experiment switch, counter or stale documentation.\n\nConsult fz-tfn.59 for the current stack, TDD, deletion, review, commit, PR and acceptance boundary. This description replaces the former standalone plan; comments and parked experiments are historical evidence only.",
   "id": "fz-tfn.21",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-tfn.59",
   "type": "task",
-  "updated_at": "2026-09-07T19:05:48Z"
+  "updated_at": "2026-09-07T19:05:49Z"
 }
