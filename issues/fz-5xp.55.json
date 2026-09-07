@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.60"
+  ],
   "blocks": [],
   "created": "2026-09-07T11:34:44Z",
   "description": "Found by measuring the goal program, which is what the epic's SIGNAL exists for.\n\n    fnp walk(\u003c\u003c_c, r :: binary\u003e\u003e, n), do: walk(r, n + 1)\n    fnp walk(_b, n), do: n\n\n    walk(\u003ca 40-byte binary\u003e, 0)\n      81 bitstring allocations, 22,176 bytes\n\nTwo allocations per byte, and 22 KB to look at 40. Every `\u003c\u003cc, r :: binary\u003e\u003e`\nstep allocates a fresh copy of the REMAINDER, so a scan over n bytes copies\nn + (n-1) + ... bytes. Quadratic, in the one operation every parser performs.\n\nIn Erlang a sub-binary is a few words -- an offset and a length into the\noriginal -- and matching a tail is O(1) with no copy. That is what makes\nbyte-oriented scanners idiomatic there, and it is the shape fz's surface invites\nby supporting the same patterns.\n\nMEASURED ON THE GOAL PROGRAM: decoding a 68-byte JSON document costs 435\nbitstring allocations and 71,600 bytes. The document contains about ten bytes of\nstring content. Almost all of that is tail copies from the scan, not the strings\nbeing built.\n\nI tried the obvious library-level fix first -- count a run, then take one slice\ninstead of appending per byte -- and it came out slightly WORSE (437\nallocations), because counting the run is itself a traversal and the traversal\nis the cost. That is the evidence that this is a runtime data-model issue and\nnot something a library can work around.\n\nWHY IT MATTERS BEYOND JSON: fz-5xp.14 (String) is entirely byte scanning, and\nevery function in it will be quadratic until this changes. So will any user\nprogram that parses anything.\n\nDONE = matching a binary tail produces a reference into the original rather than\na copy, with the goal program's allocation golden re-measured -- the drop is the\npoint. Needs: a sub-binary representation the GC understands (it must keep the\noriginal alive), and a decision about when to flatten one back into a copy,\nwhich is the usual space-leak trade in that design.\n\nWATCH OUT: `procbin` already exists for shared large binaries, so some of the\nmachinery for \"a binary that points at bytes it does not own\" is in place.",
@@ -25,5 +27,5 @@
   "status": "open",
   "title": "Matching a binary tail COPIES it, so every byte scanner is quadratic",
   "type": "task",
-  "updated_at": "2026-09-07T12:50:39Z"
+  "updated_at": "2026-09-07T12:50:44Z"
 }
