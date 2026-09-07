@@ -4,8 +4,7 @@
     "fz-tfn.59"
   ],
   "blocks": [
-    "fz-kdt.213",
-    "fz-tfn.39"
+    "fz-kdt.213"
   ],
   "created": "2026-09-03T08:04:44Z",
   "description": "## Goal\n\nDelete the unused engine-wide per-derivation scheduler substrate. Production jobs publish one answer owned by the job; no production JobEffects reports multiple derivations, while every read, claim, roster, hash and finality operation still pays for DerivationId machinery.\n\n## Decision\n\nfz-kdt.68's parked multi-answer experiment measured a 6–10 percent regression and has no production consumer. Current blocked-analysis observations show almost every blocked completion changes its partial answer, leaving little reusable answer work. The epic chooses deletion rather than another A/B implementation.\n\n## Work\n\nPin current single-answer scheduling semantics, then delete DerivationId, JobDerivation rosters, per-derivation dependency/claim maps, sole-vector construction, publisher wrappers where job identity suffices, withdrawal plumbing, telemetry and tests that exist only for the dormant abstraction. Preserve exact reads, waits, claims, retraction, rebasing, finality, wake attribution and failed-attempt ownership.\n\n## Acceptance\n\nProduction semantic facts, products, artifacts and runtime output remain exact. Scheduler allocations, hashing and completion work decrease. No experiment switch, counter, parked implementation or stale documentation remains. This lands before generic grounded support, source/failure ownership and exact-edge wait work so those features are built on the final publisher identity.",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Delete the unused per-derivation scheduler substrate",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:24Z"
+  "updated_at": "2026-09-07T18:56:59Z"
 }
