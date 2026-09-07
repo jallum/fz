@@ -7,9 +7,15 @@
   "id": "fz-5xp.75",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in ea934ac77 (map_case stacked comments, semantic-authorities Text entry) and 4e6f9dfcd (string.fz header, as part of the library sweep). Verified the oracle twin calls plain String.upcase/1 and expects STRASSE, so default mode not :ascii; and that string.fz declares three externs with byte_size/1 coming from Kernel.",
+      "timestamp": "2026-09-07T19:39:12Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "[BUG] The case-mapping docs still describe the ASCII-only behaviour that fz-5xp.14 replaced",
   "type": "task",
-  "updated_at": "2026-09-07T19:03:19Z"
+  "updated_at": "2026-09-07T19:39:12Z"
 }
