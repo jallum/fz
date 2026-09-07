@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.59"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.46",
     "fz-tfn.40",
@@ -17,5 +15,5 @@
   "status": "open",
   "title": "Expose atomic live source replacement",
   "type": "bug",
-  "updated_at": "2026-09-07T22:05:51Z"
+  "updated_at": "2026-09-07T22:06:27Z"
 }
