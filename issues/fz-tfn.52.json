@@ -4,7 +4,6 @@
     "fz-kdt.46"
   ],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.60"
   ],
   "created": "2026-09-06T08:59:33Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Eliminate quadratic scheduler fact-wave selection",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:44Z"
+  "updated_at": "2026-09-07T18:57:07Z"
 }
