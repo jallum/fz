@@ -1,0 +1,166 @@
+defmodule Keyword do
+  @moduledoc "A list of {atom, value} 2-tuples, ordered and allowing duplicates."
+
+  # A keyword list is an ORDERED list of 2-tuples whose keys are atoms, and
+  # duplicates are allowed. That is what separates it from Map, and every
+  # function here is shaped by it:
+  #
+  #   * `get/2` and `fetch/2` answer with the FIRST match, so a later duplicate
+  #     is shadowed rather than merged;
+  #   * `put/3` deletes every entry for the key and prepends, so putting makes
+  #     the key unique and moves it to the front;
+  #   * `delete/2` removes ALL entries for a key where `delete_first/2` removes
+  #     one;
+  #   * `keys/1` and `values/1` keep list order and keep duplicates.
+  #
+  # In Elixir this module is `:lists.keyfind` and friends. fz has no such BIFs,
+  # so every function is a plain recursion over the list, which is also what
+  # makes this module need no allocating primitives at all.
+
+  @doc "An empty keyword list."
+  @spec new() :: keyword()
+  fn new(), do: []
+
+  @doc "Builds a keyword list from an enumerable of 2-tuples."
+  @spec new(any) :: keyword()
+  fn new(pairs), do: Enum.to_list(pairs)
+
+  @doc "The value for key, or nil."
+  @spec get(keyword(), atom) :: any
+  fn get(keywords, key), do: get(keywords, key, nil)
+
+  @doc "The value for key, or default."
+  @spec get(keyword(), atom, any) :: any
+  fn get([], _key, default), do: default
+  fn get([{entry_key, value} | tail], key, default) do
+    if entry_key === key, do: value, else: get(tail, key, default)
+  end
+
+  @doc "{:ok, value} for the first match, or :error."
+  @spec fetch(keyword(), atom) :: {:ok, any} | :error
+  fn fetch([], _key), do: :error
+  fn fetch([{entry_key, value} | tail], key) do
+    if entry_key === key, do: {:ok, value}, else: fetch(tail, key)
+  end
+
+  @doc "The value for key, or halts when absent."
+  @spec fetch!(keyword(), atom) :: any
+  fn fetch!(keywords, key), do: fetch_result(fetch(keywords, key), key)
+
+  @spec fetch_result({:ok, any} | :error, atom) :: any
+  fnp fetch_result({:ok, value}, _key), do: value
+  fnp fetch_result(:error, key), do: Kernel.raise("key not found in keyword list: #{key}")
+
+  @doc "Every value stored under key, in list order."
+  @spec get_values(keyword(), atom) :: [any]
+  fn get_values([], _key), do: []
+  fn get_values([{entry_key, value} | tail], key) do
+    if entry_key === key do
+      [value | get_values(tail, key)]
+    else
+      get_values(tail, key)
+    end
+  end
+
+  @doc "Replaces every entry for key with one at the front."
+  @spec put(keyword(), atom, any) :: keyword()
+  fn put(keywords, key, value), do: [{key, value} | delete(keywords, key)]
+
+  @doc "Stores key only when it is absent."
+  @spec put_new(keyword(), atom, any) :: keyword()
+  fn put_new(keywords, key, value) do
+    if has_key?(keywords, key), do: keywords, else: [{key, value} | keywords]
+  end
+
+  @doc "Removes every entry for key."
+  @spec delete(keyword(), atom) :: keyword()
+  fn delete([], _key), do: []
+  fn delete([{entry_key, value} | tail], key) do
+    if entry_key === key, do: delete(tail, key), else: [{entry_key, value} | delete(tail, key)]
+  end
+
+  @doc "Removes the first entry for key."
+  @spec delete_first(keyword(), atom) :: keyword()
+  fn delete_first([], _key), do: []
+  fn delete_first([{entry_key, value} | tail], key) do
+    if entry_key === key, do: tail, else: [{entry_key, value} | delete_first(tail, key)]
+  end
+
+  @doc "True when key has at least one entry."
+  @spec has_key?(keyword(), atom) :: bool
+  fn has_key?([], _key), do: false
+  fn has_key?([{entry_key, _value} | tail], key) do
+    if entry_key === key, do: true, else: has_key?(tail, key)
+  end
+
+  @doc "Every key, in list order, with duplicates kept."
+  @spec keys(keyword()) :: [atom]
+  fn keys([]), do: []
+  fn keys([{key, _value} | tail]), do: [key | keys(tail)]
+
+  @doc "Every value, in list order, with duplicates kept."
+  @spec values(keyword()) :: [any]
+  fn values([]), do: []
+  fn values([{_key, value} | tail]), do: [value | values(tail)]
+
+  @doc "Keeps only the entries whose keys are listed."
+  @spec take(keyword(), [atom]) :: keyword()
+  fn take([], _wanted), do: []
+  fn take([{key, value} | tail], wanted) do
+    if List.member?(wanted, key) do
+      [{key, value} | take(tail, wanted)]
+    else
+      take(tail, wanted)
+    end
+  end
+
+  @doc "Drops the entries whose keys are listed."
+  @spec drop(keyword(), [atom]) :: keyword()
+  fn drop([], _unwanted), do: []
+  fn drop([{key, value} | tail], unwanted) do
+    if List.member?(unwanted, key) do
+      drop(tail, unwanted)
+    else
+      [{key, value} | drop(tail, unwanted)]
+    end
+  end
+
+  @doc "Right-hand entries win, and their keys become unique."
+  @spec merge(keyword(), keyword()) :: keyword()
+  fn merge(left, []), do: left
+  fn merge(left, [{key, value} | tail]), do: merge(put(left, key, value), tail)
+
+  @doc "Applies fun to the value for key, or stores default when absent."
+  @spec update(keyword(), atom, any, (any) -> any) :: keyword()
+  fn update(keywords, key, default, fun), do: update_result(fetch(keywords, key), keywords, key, default, fun)
+
+  @spec update_result({:ok, any} | :error, keyword(), atom, any, (any) -> any) :: keyword()
+  fnp update_result({:ok, value}, keywords, key, _default, fun), do: put(keywords, key, fun.(value))
+  fnp update_result(:error, keywords, key, default, _fun), do: put(keywords, key, default)
+
+  @doc "Applies fun to the value for key, or halts when absent."
+  @spec update!(keyword(), atom, (any) -> any) :: keyword()
+  fn update!(keywords, key, fun), do: put(keywords, key, fun.(fetch!(keywords, key)))
+
+  @doc "{value, rest} for the first entry, or {default, keywords}."
+  @spec pop(keyword(), atom) :: {any, keyword()}
+  fn pop(keywords, key), do: pop(keywords, key, nil)
+
+  @doc "{value, rest} for the first entry, or {default, keywords}."
+  @spec pop(keyword(), atom, any) :: {any, keyword()}
+  fn pop(keywords, key, default), do: pop_result(fetch(keywords, key), keywords, key, default)
+
+  @spec pop_result({:ok, any} | :error, keyword(), atom, any) :: {any, keyword()}
+  fnp pop_result({:ok, value}, keywords, key, _default), do: {value, delete(keywords, key)}
+  fnp pop_result(:error, keywords, _key, default), do: {default, keywords}
+
+  @doc "True when every element is a 2-tuple with an atom key."
+  @spec keyword?(any) :: bool
+  fn keyword?([]), do: true
+  fn keyword?([{key, _value} | tail]), do: atom_key?(key) and keyword?(tail)
+  fn keyword?(_other), do: false
+
+  @spec atom_key?(any) :: bool
+  fnp atom_key?(_key :: atom), do: true
+  fnp atom_key?(_other), do: false
+end

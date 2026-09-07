@@ -1520,6 +1520,44 @@ pub mod debug {
         format!("{{{}}}", parts.join(", "))
     }
 
+    /// A keyword ENTRY: a two-tuple whose first field is an atom, rendered the
+    /// way Elixir renders one inside a keyword list — `a: 1`, not `{:a, 1}`.
+    /// Answers `None` for anything else, which is what decides whether a list
+    /// is a keyword list at all.
+    fn render_keyword_entry(proc: *mut Process, value: AnyValue) -> Option<String> {
+        let p = struct_addr_from_tagged(value.heap_object_word()?)?;
+        let heap = &unsafe { &*proc }.heap;
+        let schema_id = unsafe { struct_schema_id(p) };
+        let offsets: Vec<u32> = {
+            let reg = heap.schemas_registry();
+            let registry = reg.borrow();
+            let schema = registry.get(schema_id);
+            if schema.name != Schema::tuple_of_arity(2).name {
+                return None;
+            }
+            schema
+                .fields
+                .iter()
+                .filter(|f| matches!(f.kind, FieldKind::AnyValue))
+                .map(|f| f.offset)
+                .collect()
+        };
+        let [key_offset, value_offset] = offsets.as_slice() else {
+            return None;
+        };
+        let key = heap.read_field_slot(p, *key_offset);
+        if key.kind() != ValueKind::ATOM {
+            return None;
+        }
+        let name = render_value(proc, key);
+        let name = name.strip_prefix(':').unwrap_or(&name).to_string();
+        Some(format!(
+            "{}: {}",
+            name,
+            render_value(proc, heap.read_field_slot(p, *value_offset))
+        ))
+    }
+
     fn render_range(proc: *mut Process, bits: u64) -> String {
         let range_ref = AnyValueRef::from_heap_object(
             ValueKind::STRUCT,
@@ -1766,6 +1804,7 @@ pub mod debug {
 
     fn render_list(proc: *mut Process, bits: u64) -> String {
         let mut parts: Vec<String> = Vec::new();
+        let mut keyword_entries: Option<Vec<String>> = Some(Vec::new());
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
@@ -1781,11 +1820,24 @@ pub mod debug {
             };
             let cons = unsafe { &*(cp as *const ListCons) };
             parts.push(render_typed_list_head(proc, cons));
+            keyword_entries = keyword_entries.and_then(|mut entries| {
+                let entry = render_keyword_entry(proc, cons.head_value())?;
+                entries.push(entry);
+                Some(entries)
+            });
             cur_bits = cons.tail_bits();
         }
         match tail_render {
             Some(t) => format!("[{} | {}]", parts.join(", "), t),
-            None => format!("[{}]", parts.join(", ")),
+            // A KEYWORD LIST prints as `[a: 1]`, not `[{:a, 1}]`. Elixir
+            // inspects a PROPER list whose every element is a two-tuple with an
+            // atom key that way, and only then (fz-5xp.13). The decision is
+            // made from the values; the rendered strings are output, never
+            // input.
+            None => match keyword_entries {
+                Some(entries) if !entries.is_empty() => format!("[{}]", entries.join(", ")),
+                _ => format!("[{}]", parts.join(", ")),
+            },
         }
     }
 

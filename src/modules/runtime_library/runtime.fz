@@ -8,6 +8,7 @@ alias Float
 alias Integer
 alias Json
 alias Kernel
+alias Keyword
 alias List
 alias Map
 alias Process
