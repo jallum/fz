@@ -5,12 +5,12 @@
 #
 # Regression target for fz-f98.16. `List.reverse/2` is spec'd
 # `([a], [a]) :: [a]`, so `List.reverse(xs, [])` observes `[int]` at the first
-# parameter and the empty list at the second. `[]` is a member of every list
-# type, so it pins nothing about `a` -- but it must not veto what the first
-# parameter proved. When it did, `[a]` collapsed to `[]`, the caller's good
+# parameter and the empty list at the second. Both bound `a` from below and the
+# bounds are joined: `[]`'s element is `none`, the bottom bound, so the second
+# adds nothing and `a` is `int`. When it VETOED `a` instead (the fz-f98.16
+# cleaner, deleted in fz-kdt.120), `[a]` collapsed to `[]`, the caller's good
 # `[int]` argument was narrowed to the empty list, and a second call consuming
-# the first call's result specialized to the base clause and returned its
-# initial accumulator.
+# the first's result specialized to the base clause and returned its seed.
 #
 # The user-defined `My.rev/2` is the same shape written out, so the fixture
 # fails whether or not the runtime library happens to spell reverse this way.

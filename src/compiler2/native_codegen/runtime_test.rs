@@ -227,9 +227,12 @@ fn atom_id_membership<'f, E: RuntimeTestEmitter<'f>>(e: &E, atoms: &FiniteSet<St
 ///
 /// The head costs one load and one nested test, and a head-blind or `[]`-only
 /// axis emits exactly the code it emitted before fz-kdt.107 step 3. The
-/// disjunction over `heads` mirrors the interpreter's `matches_list_head`: one
-/// head question per cons-admitting clause, and a cons cell is admitted when
-/// any of them says so.
+/// disjunction over `heads` mirrors the interpreter's `matches_list_elements`
+/// under `PositionScope::Lowered`: one head question per cons-admitting clause,
+/// and a cons cell is admitted when any of them says so. The interpreter can
+/// also ask that axis under `PositionScope::Full`, which walks every element --
+/// what this emitter deliberately cannot afford, and what the
+/// surface-membership tripwire measures the difference of.
 fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,

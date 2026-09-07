@@ -144,7 +144,7 @@ pub(crate) fn produce_root_backend_product(
     let root_entry = world.root_entry(root);
     let keying_facts = [
         FactKey::RootEntry(root),
-        FactKey::DispatchMask(root_entry.function),
+        FactKey::InputDemand(root_entry.function),
         FactKey::Recursive(root_entry.function),
     ];
     let keying_waits = keying_facts

@@ -290,7 +290,7 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 
 /// `no_ready_producer`: a root submitted for a function name that is never
 /// defined by any submitted code. `produce_root_backend_product`'s keying
-/// waits (`RootEntry`, `DispatchMask`, `Recursive`) are all still unsettled
+/// waits (`RootEntry`, `InputDemand`, `Recursive`) are all still unsettled
 /// -- `SeedRoot` claims `RootEntry` as an output on its very first
 /// (still-blocked) run, but a blocked publisher's claims stay dirty
 /// (`Scheduler::complete`: "pausing is not recanting"), so `RootEntry`
@@ -461,7 +461,7 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 /// `is_macro` before it publishes anything, returning `Err(FatalError)`
 /// straight from `jobs::run`. `SeedRoot` is the sole producer named by every
 /// one of `produce_root_backend_product`'s keying waits
-/// (`RootEntry`/`DispatchMask`/`Recursive`) and is already agenda-queued
+/// (`RootEntry`/`InputDemand`/`Recursive`) and is already agenda-queued
 /// from the root's own ignition, so it runs -- and fails -- inside
 /// `drive_product_fact_wait`'s own job loop while satisfying the first of
 /// those waits, not somewhere else in the pipeline: a genuine, minimal
@@ -486,7 +486,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         .expect_err("a runtime root targeting a macro entry must fail, not silently succeed");
 
     // `produce_root_backend_product`'s keying waits are all still unsettled
-    // (`RootEntry`, `DispatchMask`, `Recursive`), and `SeedRoot` -- the only
+    // (`RootEntry`, `InputDemand`, `Recursive`), and `SeedRoot` -- the only
     // producer any of the three names -- is already agenda-queued from the
     // root's own ignition, so it runs while satisfying the *first* wait the
     // pull-drive tries. That order is pinned deterministically (a

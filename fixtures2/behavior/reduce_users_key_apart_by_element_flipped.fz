@@ -1,0 +1,14 @@
+#---
+# purpose: "swapping the two Enum.reduce/3 statements does not move either published return"
+# oracle: oracle.exs
+#---
+#
+# The statement-order twin of `reduce_users_key_apart_by_element.fz`. Its
+# header carries the mechanism; this file exists because at HEAD the joined
+# return `List.reduce_step/3` published depended on which user the fixpoint
+# analysed first (fz-kdt.190), so the same program written the other way round
+# is a different measurement, not a duplicate.
+fn main() do
+  dbg(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
+  dbg(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
+end

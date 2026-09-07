@@ -191,9 +191,14 @@ impl FunctionContract {
     /// tuple type and each enforceable ground clause domain is a tuple type,
     /// so coverage is exactly tuple subsumption against the domain union —
     /// the Types calculator decides it set-theoretically, decomposing unions
-    /// across positions. Clause domains that still carry variables after
-    /// closing their bounds are skipped (conservative: skipping never widens
-    /// coverage), and non-ground arguments never reach a violation anyway.
+    /// across positions. Non-ground arguments never reach a violation anyway.
+    ///
+    /// A clause variable still free after its bounds are closed accepts
+    /// anything, so the DOMAIN of a var-carrying clause is that row read at
+    /// `any`. Skipping such a row instead would report no coverage where
+    /// coverage holds: `pick({integer, a})` and `pick({binary, a})` together
+    /// accept every value of `{binary, int} | {int, int}`, member by member,
+    /// and a legal program would be diagnosed as a spec violation (fz-kdt.192).
     fn arrow_set_covers(&self, types: &mut Types, arg_tys: &[Ty]) -> bool {
         if arg_tys.iter().any(|ty| types.has_vars(ty)) {
             return false;
@@ -204,9 +209,10 @@ impl FunctionContract {
                 continue;
             }
             let row = clause.input_domain_row(types);
-            if row.len() != arg_tys.len() || row.iter().any(|param| types.has_vars(param)) {
+            if row.len() != arg_tys.len() {
                 continue;
             }
+            let row = domain_row_at_any(types, row);
             let row_tuple = types.tuple(&row);
             domain = Some(match domain {
                 Some(current) => types.union(current, row_tuple),
@@ -251,6 +257,19 @@ impl ContractArrow {
             .map(|param| instantiate_domain(types, param, &self.bounds))
             .collect()
     }
+}
+
+/// One clause domain row read at `any`: a clause variable still free after its
+/// bounds are closed accepts anything, so that is what the position admits.
+fn domain_row_at_any(types: &mut Types, row: Vec<Ty>) -> Vec<Ty> {
+    let any = types.any();
+    row.into_iter()
+        .map(|param| {
+            let free_at_any: HashMap<TypeVarId, Ty> =
+                types.free_var_ids(&param).into_iter().map(|var| (var, any)).collect();
+            types.instantiate(&param, &free_at_any)
+        })
+        .collect()
 }
 
 fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {

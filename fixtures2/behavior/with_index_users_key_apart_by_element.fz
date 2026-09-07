@@ -1,0 +1,42 @@
+#---
+# purpose: "an Enum.with_index/2 user whose lambda declares a @spec is not made to answer for a neighbour's element type"
+#---
+#
+# fz-kdt.183's live reproducer, and the shortest statement of the defect: the
+# two `dbg` lines below share no value, no lambda and no type, and at HEAD the
+# first one failed to compile BECAUSE OF THE SECOND.
+#
+# The chain is `Enum.with_index/2` -> `Enum.to_list/1` -> `Enum.reverse/1` ->
+# `Enum.reduce/3` -> `Enumerable.reduce/3` -> `Enumerable.List.reduce/3` ->
+# `List.reduce/3` -> `List.reduce_step/3`. Every link forwards its list
+# unchanged, and `List.reduce_step/3`'s own dispatch asks only about the
+# accumulator tag, so the recursive collapse erased the element and ONE
+# activation stood for both users. The one return it published was the join,
+# `[[binary] | [int]]`, and `M.strings/1` was handed a list of those.
+#
+# Deleting the second line made the first compile. That is the whole finding:
+# an activation's published return may depend only on what its key names, and
+# the key did not name the element the callee's key is ground in.
+#
+# The two `type/no-matching-clause` warnings in the golden are
+# `Enum.with_index/2`'s own, on every program that calls it, and they are
+# fz-kdt.185's -- pinned here so that ticket's cure is visible as a golden
+# change rather than a silent one.
+#
+# The golden also records a SECOND, separate defect nobody owns yet. The caret
+# line reads `runtime:Enum.fz:320` while the excerpt gutter beside it reads a
+# different number, and that number MOVES WITH THIS FILE'S LENGTH: adding four
+# comment lines here moved it 296 -> 293. So the excerpt renderer indexes
+# runtime source by an offset derived from the user program, and any fixture
+# whose golden carries a runtime-library diagnostic is brittle against edits to
+# its own header. Re-bless (`BLESS=1 cargo test --test fixture_matrix`) if you
+# change the prose above; the numbers are the renderer's, not this program's.
+defmodule M do
+  @spec strings([binary]) :: integer
+  fn strings(_xs), do: 1
+end
+
+fn main() do
+  dbg(Enum.with_index([["a"], ["b"]], fn (x, _index) -> M.strings(x) end))
+  dbg(Enum.with_index([[1], [2]], fn (_x, index) -> index end))
+end

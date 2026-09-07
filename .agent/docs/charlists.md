@@ -16,7 +16,7 @@ and `render` dispatch on a value's `ValueKind`/heap tag and produce the printed
 form. Every print path shares it: the `fz_dbg_value_ref` extern that backs
 `dbg`, the IR interpreter, and the REPL all call the same `render_value`. The
 decision is purely payload-driven, reading only the tagged bits and heap layout,
-never the type system's brand axis, so the interpreter, JIT, and AOT paths agree
+never the type system's brand slot, so the interpreter, JIT, and AOT paths agree
 on output without sharing type information at runtime.
 
 `render_list` walks the cons cells and renders each head with

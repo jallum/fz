@@ -46,7 +46,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::BuildMacroExecutable(function_id) => macro_runtime::build_macro_executable(world, tel, *function_id),
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
-        Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, tel, *function_id),
+        Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),

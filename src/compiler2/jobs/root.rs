@@ -74,11 +74,11 @@ pub(super) fn seed_root(
     outputs.push(FactKey::Executable(entry_executable));
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
     // point means `require_activation_key_facts` above already observed both
-    // `Recursive(function)` and `DispatchMask(function)` settled, and their
-    // producers (`derive_call_graph_component`, `derive_dispatch_mask`) only
+    // `Recursive(function)` and `InputDemand(function)` settled, and their
+    // producers (`derive_call_graph_component`, `derive_input_demand`) only
     // conclude after `LoweredBody`/`EntryDispatch` exist -- so those jobs have
     // already run. First-run demand for them lives in
-    // DeriveCallGraphComponent/DeriveDispatchMask; later change waves reach
+    // DeriveCallGraphComponent/DeriveInputDemand; later change waves reach
     // them via the normal wake mechanism.
     //
     // `AnalyzeActivation` is not pushed either: the root itself is the

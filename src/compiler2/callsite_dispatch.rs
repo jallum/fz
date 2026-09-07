@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use crate::ast::{Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
@@ -33,14 +34,16 @@ pub(crate) enum CallDestinations {
 /// The destinations a callsite can actually route to.
 ///
 /// A callsite names one target per specialization the analysis settled, but a
-/// call can only offer as many destinations as the runtime can tell apart:
-/// `unroutable_alternatives` names the ones no runtime test could ever choose,
-/// and dropping them here is what keeps arm order out of the language's
-/// semantics.
+/// call can only offer as many destinations as the seat can put to use:
+/// [`unroutable_alternatives`] names the arms the seat would never place ahead
+/// of the arm that stands in for them, and dropping them here is what keeps
+/// arm order out of the language's semantics.
 ///
 /// What survives is then SEATED by [`specificity_order`], which corrects
 /// arrival order wherever the arms themselves say it routes a value into a
-/// body that never named it.
+/// body that never named it. The drop and the seat consult ONE relation --
+/// [`seats_before`] -- read in two directions: the seat asks it of the pair it
+/// is about to reorder, the drop asks it of an arm and its stand-in.
 pub(crate) fn call_destinations(
     types: &mut Types,
     summary: &CallSiteSummary,
@@ -50,7 +53,9 @@ pub(crate) fn call_destinations(
     }
     let arity = summary.arity();
     let arrived = arrival_order(types, &summary.targets);
-    let (targets, observable_inputs) = routable_alternatives(types, &arrived);
+    let surfaces = target_surfaces(&arrived);
+    let (order, observable_inputs) = routable_alternatives(types, &surfaces, &same_callee(&arrived));
+    let targets = order.iter().map(|index| arrived[*index].clone()).collect::<Vec<_>>();
     if targets.len() <= 1 {
         return Ok(sole_destination(targets.into_iter().next()));
     }
@@ -80,25 +85,42 @@ fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
     }
 }
 
-/// The routable targets among two or more, each paired with the widened
-/// surface its runtime questions are asked about, in the order the plan tests
-/// them.
-fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (Vec<CallTargetSummary>, Vec<Vec<Ty>>) {
-    let observable_inputs = targets
-        .iter()
-        .map(|target| runtime_dispatch_inputs(types, &target.surface_inputs))
-        .collect::<Vec<_>>();
-    let groups = question_groups(types, targets);
-    let unroutable = unroutable_alternatives(types, targets, &observable_inputs, &groups);
-    let (routable, observable): (Vec<_>, Vec<_>) = targets
-        .iter()
-        .cloned()
-        .zip(observable_inputs)
+/// The routable alternatives among two or more: which of them are destinations
+/// at all, named by their arrival index and listed in the order the plan tests
+/// them, each paired with the widened surface its runtime questions are asked
+/// about.
+///
+/// AN ALTERNATIVE IS A SURFACE AND A CALLEE, and nothing else. The drop and
+/// the seat read a semantic surface per input and ask whether two alternatives
+/// name one callee; whatever the caller hangs off that -- a
+/// [`CallTargetSummary`] at a callsite, a [`CallableFlowEdge`] in a
+/// construction wrapper's member list -- is the caller's business and it
+/// re-associates by the index this returns. That is why there is ONE routing
+/// rule and not one per plan kind (fz-kdt.179): member selection is a dispatch
+/// like any other, and before this it was the one plan that ran neither the
+/// drop nor the seat.
+///
+/// The projection runs ONCE here. Every alternative's observable surface and
+/// the question that surface projects to are computed before the drop, the
+/// survivors' are carried into the seat, and nothing downstream re-derives
+/// either: the drop and the seat read one and the same reading of what the
+/// runtime can ask.
+fn routable_alternatives(
+    types: &mut Types,
+    surfaces: &[Vec<Ty>],
+    same_callee: &dyn Fn(usize, usize) -> bool,
+) -> (Vec<usize>, Vec<Vec<Ty>>) {
+    let observable_inputs = observable_inputs(types, surfaces);
+    let questions = runtime_questions(types, &observable_inputs);
+    let unroutable = unroutable_alternatives(types, same_callee, &observable_inputs, &questions);
+    let (routable, surviving): (Vec<_>, Vec<_>) = observable_inputs
+        .into_iter()
+        .zip(questions)
         .enumerate()
         .filter(|(index, _)| !unroutable.contains(index))
-        .map(|(_, alternative)| alternative)
         .unzip();
-    let order = specificity_order(types, &routable, &observable);
+    let (observable, questions): (Vec<_>, Vec<_>) = surviving.into_iter().unzip();
+    let order = specificity_order(types, &questions, &observable);
     (permuted(routable, &order), permuted(observable, &order))
 }
 
@@ -140,17 +162,23 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 ///   particular pair no longer meets on an erasing axis; the law the pair
 ///   taught stands unchanged.
 ///
-/// Neither containment is the criterion on its own. SURFACE COVERAGE is:
-/// [`covers`] holds of `(early, late)` when, at every position where their
-/// tests could both admit a value on an ERASING axis
-/// (`overlaps_on_an_erasing_axis` -- list tails, tuple payloads, struct/
-/// map/binary/resource contents), `early`'s surface already contains
+/// Neither containment is the criterion on its own. SURFACE COVERAGE is, and
+/// only for a pair that is a routing question at all: [`seating`] answers
+/// `Covering` for `(early, late)` when some value satisfies BOTH groups' tests
+/// and, at every position where their tests could both admit a value on an
+/// ERASING axis (`overlaps_on_an_erasing_axis` -- list tails, tuple payloads,
+/// struct/map/binary/resource contents), `early`'s surface already contains
 /// `late`'s. "The tests differ" is NOT separation on those axes -- arities
 /// {2} and {2,3} both admit a 2-tuple -- so difference alone never excuses
 /// the surface check; only exact axes (ints, floats, atoms, callables) can,
 /// because a value passes an exact test only by being in the tested set,
 /// which the arm's surface names. Under that definition, seating a covering
 /// arm first cannot escape anything, by construction.
+///
+/// A pair the plan's own tests keep apart OUTRIGHT -- no value satisfies both,
+/// because at some position their questions are disjoint -- is neither
+/// covering nor blind. It is `Seating::Separated`, no seat between them routes
+/// anything either way, and the pair keeps arrival order (fz-kdt.186).
 ///
 /// # The rule
 ///
@@ -161,25 +189,21 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 /// canonically ordering them and got `{:done, 3}` where `{:halted, 3}` was due.
 ///
 /// Groups start in arrival order. Group `x` is moved ahead of group `y` when
+/// [`seats_before`] says so, which is the whole of this rule's opinion and is
+/// also what [`unroutable_alternatives`] consults before it drops an arm.
 ///
-/// ```text
-///     covers(x, y)  and  ( not covers(y, x)  or  test(x) strictly inside test(y) )
-/// ```
+/// THREE RESIDUES THE SEAT DOES NOT DECIDE, and each is a different fact. The
+/// members of one question GROUP are inseparable -- a value reaches both, and
+/// which of them receives it is what their order MEANS (fz-kdt.107). A pair
+/// where neither group covers the other overlaps WITHOUT CONTAINMENT -- a
+/// value reaches both, and their order decides which representation reads it
+/// (fz-kdt.131). Both of those KEEP ARRIVAL ORDER, and must.
 ///
-/// -- the first disjunct is the OBLIGATION (only one direction is escape-free,
-/// so take it), the second is the PRECISION preference fz-kdt.129 asked for
-/// (both directions are escape-free, so hand a value both tests admit to the
-/// arm that named it most precisely). The relation is antisymmetric: if both
-/// directions held, both would need `covers` both ways, so both would rest on
-/// strict mutual containment of the tests -- which makes the tests equal and
-/// the two groups one.
-///
-/// Where NEITHER group covers the other, no seat is escape-free and this rule
-/// declines to have an opinion: the pair keeps arrival order. That is the
-/// fz-kdt.107 inseparable class one rung wider, it is a standing hazard of
-/// arrival order that predates this rule, and fz-kdt.131 owns it -- the cure
-/// is a runtime test that can see what the body relies on (fz-kdt.119's tuple
-/// tags, fz-kdt.107's list elements), not a cleverer sort.
+/// The third is a SEPARATED pair, and it is not like the other two: no value
+/// reaches both arms, so neither order routes anything anywhere and the order
+/// they arrived in was never a fact about the program. That one residue is
+/// given a canonical order, by [`canonically_order_separated_neighbours`]
+/// below.
 ///
 /// # Why the result is a seat, and a safe one
 ///
@@ -193,46 +217,306 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 ///
 /// The safety argument is the point of building it this way. Every pair whose
 /// seat differs from arrival order was individually checked and moved only
-/// under `covers`, which admits no blind escape; every other pair sits exactly
-/// as arrival left it. So the seat's blind escapes are a SUBSET of arrival
-/// order's -- this rule can only ever remove them, never add one. The
-/// `debug_assert` below holds every callsite of every debug compile to it, and
-/// `compiler2_dispatch_seats_the_covering_arm_where_one_covers` reads the same
-/// property back off the landed artifact.
+/// under `Covering`, which admits no blind escape; every other pair sits
+/// exactly as arrival left it. So the seat's blind escapes are a SUBSET of
+/// arrival order's -- this rule can only ever remove them, never add one. The
+/// `debug_assert` below holds every callsite of every debug compile to it,
+/// which the fixture matrix drives across the corpus. Construction-wrapper
+/// member selection runs this same seat now (fz-kdt.179), so the static census
+/// that once read the property back off the landed artifact is retired.
 ///
-/// `covers` is not transitive (two groups can be blind at different positions),
-/// so no rank or comparator linearizes it; that is why the pass is an explicit
-/// insertion rather than a sort, and why a blocked move leaves arrival order
-/// standing instead of forcing an order the arms do not justify.
-fn specificity_order(types: &mut Types, targets: &[CallTargetSummary], observable: &[Vec<Ty>]) -> Vec<usize> {
-    let groups = question_groups(types, targets);
+/// `Covering` is not transitive (two groups can be blind at different
+/// positions), so no rank or comparator linearizes it; that is why the pass is
+/// an explicit insertion rather than a sort, and why a blocked move leaves
+/// arrival order standing instead of forcing an order the arms do not
+/// justify.
+///
+/// # The separated residue, and the one order it may be given
+///
+/// Of the three residues above, the SEPARATED pair is the only one whose order
+/// carries no routing at all, and [`canonically_order_separated_neighbours`]
+/// runs after the insertion pass to take that free axis away where it can: a
+/// pair of ADJACENT groups no value can reach both of is put in
+/// [`Types::cmp_tys`] order of what the two say, so the artifact stops
+/// recording which of them the fixpoint happened to settle first. Adjacency is
+/// the whole safety argument and it is also the limit -- a run settles only
+/// where it is pairwise separated end to end, and a non-separated pair of any
+/// kind stops the repair there. fz-kdt.107's and fz-kdt.131's residues keep
+/// arrival order, and must.
+fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], observable: &[Vec<Ty>]) -> Vec<usize> {
+    let groups = grouped_by_question(questions);
     if groups.len() < 2 {
-        return (0..targets.len()).collect();
+        return (0..questions.len()).collect();
     }
-    let questions = runtime_questions(types, targets);
-    let types = &*types;
-    let seats_before = |x: &Vec<usize>, y: &Vec<usize>| {
-        covers(types, &questions, observable, x, y)
-            && (!covers(types, &questions, observable, y, x) || strictly_inside(&questions, x, y))
-    };
     let mut seated: Vec<usize> = Vec::with_capacity(groups.len());
     for group in 0..groups.len() {
         let mut at = seated.len();
-        while at > 0 && seats_before(&groups[group], &groups[seated[at - 1]]) {
+        while at > 0 && seats_before(types, questions, observable, &groups[group], &groups[seated[at - 1]]) {
             at -= 1;
         }
         seated.insert(at, group);
     }
+    // What the seat alone decided, kept for the assert below and for nothing
+    // else -- a release build pays neither the copy nor the walk.
+    let insertion_pass = cfg!(debug_assertions).then(|| seated.clone()).unwrap_or_default();
+    canonically_order_separated_neighbours(types, questions, observable, &groups, &mut seated);
     debug_assert!(
-        every_inversion_covers(types, &questions, observable, &groups, &seated),
+        only_separated_pairs_moved(types, questions, observable, &groups, &insertion_pass, &seated),
+        "the canonical repair reordered a pair a value can reach both of, so it decided a routing \
+         the seat itself declined to decide",
+    );
+    debug_assert!(
+        every_inversion_covers(types, questions, observable, &groups, &seated),
         "a seat moved a group ahead of one whose surface it does not cover, so a value the plan admits \
          now reaches a body arrival order would have kept it out of",
     );
     seated.into_iter().flat_map(|group| groups[group].clone()).collect()
 }
 
-/// Whether the seat added no blind escape: every group it moved ahead of a
-/// group that ARRIVED before it covers that group's surface.
+/// Put every ADJACENT separated pair the seat left behind into one canonical
+/// order, and touch nothing else.
+///
+/// # Why exactly this pair, and no other
+///
+/// Reordering two arms changes where a value lands only if that value
+/// satisfies BOTH arms' tests: a plan is a first-match walk, so a value only
+/// one arm admits reaches that arm wherever the other sits, and a value
+/// neither admits reaches neither. [`Seating::Separated`] is the statement
+/// that no such value exists -- some subject's two questions admit nothing in
+/// common, and a row is a conjunction over its subjects. So swapping a
+/// separated pair is a routing no-op, by construction, and the order they were
+/// in was never a fact about the program: it was the order the semantic
+/// fixpoint's agenda delivered them in.
+///
+/// The other two residues are NOT this: a question group's members and an
+/// overlap-without-containment pair are both reached by a common value, so
+/// their order decides which body that value runs (fz-kdt.107) and which
+/// representation reads it (fz-kdt.131). Neither may be reordered here, and
+/// the adjacency discipline below is what guarantees they are not.
+///
+/// # Adjacent transpositions only, and why that is the whole safety argument
+///
+/// This is a repair, not a sort. One swap of two ADJACENT entries changes the
+/// relative order of exactly one pair -- the pair it swapped -- and leaves
+/// every other pair's relative order alone. So by induction over the swaps,
+/// the only pairs whose order this can change are separated ones, and the
+/// seat's guarantee survives untouched: every inversion against arrival order
+/// is still either `Covering` or `Separated`, never `Escaping`, which is what
+/// the caller's `debug_assert` re-checks against the permutation that comes
+/// out.
+///
+/// A comparison SORT would not have that property. Sorting a run by a
+/// comparator moves entries past neighbours the comparator never examined, so
+/// a group could cross a pair the relation refuses -- and `Separated` is not
+/// transitive (`A|B` and `B|C` separated says nothing about `A|C`), so there
+/// is no run to sort in the first place. Refusing to look past the immediate
+/// neighbour is what keeps a non-transitive relation from being read as a
+/// total one.
+///
+/// # What it removes, and what it leaves
+///
+/// ```text
+///     A B C   pairwise separated end to end   ->  cmp_tys order, from any arrival
+///     A B C   A|B, B|C separated, A|C not     ->  blocked at B; both A|C orders survive
+/// ```
+///
+/// THE LIMIT, STATED EXACTLY: the repair settles a run only where the run is
+/// pairwise separated END TO END. A single non-separated pair anywhere in the
+/// run stops it there, and everything the block sits between stays a function
+/// of the arrival. That blocking pair is not necessarily one of the two
+/// meaning-bearing residues: a `Covering` pair -- one the seat ITSELF decided,
+/// on a fact about the arms -- blocks the repair the same way, and
+/// `a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing` builds a
+/// callsite with no fz-kdt.107 group and no fz-kdt.131 pair in it where two
+/// arrivals still render two orders. So the honest claim is the narrow one:
+/// this removes the free axis exactly where the axis was free, and it does not
+/// make the artifact a function of the arm SET.
+///
+/// # The key, and the other key it is not
+///
+/// A group is compared by the `cmp_tys`-LEAST OBSERVABLE surface among its
+/// members, never by whichever member arrived first -- the members' own order
+/// is fz-kdt.107's residue and a key read off it would put the schedule back.
+/// The key is a strict total order across groups: `cmp_tys` is `Equal` only on
+/// identical `Ty` slices, identical surfaces project to identical questions,
+/// and one question is one group -- so two distinct groups can never tie.
+///
+/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders by
+/// `cmp_tys` over the OBSERVABLE ENVELOPE ([`observable_inputs`], which is
+/// what the plan's rows are built from); fz-kdt.108's gate
+/// `compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
+/// `cmp_tys` over the members' `surface_inputs`, which is what the envelope
+/// was projected FROM. On any surface holding a callable the two disagree, so
+/// "concordant with 108" is not free and is not assumed here. It is MEASURED,
+/// at the seam 108 owns: with construction-wrapper member selection running
+/// this repair (fz-kdt.179), 108's own invariant is violated on 20 / 202 / 212
+/// member lists under `wrappers:1` / `:6` / `:reverse` across the 604-fixture
+/// corpus with the repair suppressed, and on 6 / 192 / 198 with it in place.
+/// The repair strictly REDUCES 108's violations and introduces none. At the
+/// settled arrival, where 108's gate actually runs, it takes 0 wrapper swaps
+/// and 234 / 234 member lists are non-decreasing either way.
+///
+/// # The one separation this may be reading off a fiction (fz-kdt.202)
+///
+/// [`seating`] separates a pair where some position answers
+/// `!(early == late || early.overlaps(late))`. That guard covers a position
+/// where BOTH arms carry the same unrealizable surface. It does not cover two
+/// arms carrying DIFFERENT surfaces at a position where one projects to a
+/// predicate admitting nothing -- `runtime_type_predicate_tuple_arities` drops
+/// a negated signature's whole arity, so `{any, any} & not({int, int})`
+/// projects to a test that admits nothing and does not overlap ITSELF
+/// (fz-kdt.202). Such a pair reads `Separated` on a fiction, and under
+/// fz-kdt.186 that only meant "leave alone" while here it means "MAY REORDER".
+///
+/// It is still a routing no-op, one step further along: [`dispatch_row`]'s
+/// preconditions are these very same [`observable_inputs`] `Ty`s, so an arm
+/// whose projected test admits nothing emits a row NO VALUE CAN TAKE, and
+/// moving an unreachable row past its neighbour changes no destination.
+/// Adjacency does the rest -- the dead row's own motion is the whole of the
+/// effect, because every other pair's order is preserved.
+///
+/// So no realizability conjunct is owed here, and the population is measured
+/// rather than assumed: over all 604 corpus fixtures, classifying every
+/// `Separated` verdict as a FICTION when every separating position is
+/// self-blind on one side, the fictional population is **0** -- at the settled
+/// arrival and under `arms:1`/`:3`/`:6` and `wrappers:1`/`:6` alike -- against
+/// 172 to 214 real separation readings per setting. Curing the projection is
+/// fz-kdt.202's, and tightening [`seating`] is fz-kdt.186's; neither is on
+/// this rule's critical path while that count is zero.
+fn canonically_order_separated_neighbours(
+    types: &Types,
+    questions: &[Vec<RuntimeTypePredicate>],
+    observable: &[Vec<Ty>],
+    groups: &[Vec<usize>],
+    seated: &mut [usize],
+) {
+    let keys = groups
+        .iter()
+        .map(|group| canonical_key(types, observable, group))
+        .collect::<Vec<_>>();
+    let mut settling = true;
+    while settling {
+        settling = false;
+        for at in 1..seated.len() {
+            let (early, late) = (seated[at - 1], seated[at]);
+            let separated = matches!(
+                seating(types, questions, observable, &groups[early], &groups[late]),
+                Seating::Separated,
+            );
+            if separated && types.cmp_tys(&observable[keys[early]], &observable[keys[late]]) == Ordering::Greater {
+                seated.swap(at - 1, at);
+                settling = true;
+            }
+        }
+    }
+}
+
+/// The member whose observable surface speaks for a whole group: the
+/// `cmp_tys`-least of them.
+///
+/// A group is a set of arms one question cannot separate, and their order
+/// within it is fz-kdt.107's residue -- so a group's canonical name may not be
+/// read off which member came first. The least surface is a function of the
+/// group's contents alone. Ties among members are surfaces that are EQUAL, so
+/// which of them the minimum picks cannot change a comparison.
+fn canonical_key(types: &Types, observable: &[Vec<Ty>], group: &[usize]) -> usize {
+    *group
+        .iter()
+        .min_by(|left, right| types.cmp_tys(&observable[**left], &observable[**right]))
+        .expect("a question group holds at least one arm")
+}
+
+/// Whether the canonical repair kept its promise: every pair whose relative
+/// order it changed is a pair no value can reach both of.
+///
+/// This is the SAFETY CLAIM ITSELF, checked against the two permutations
+/// rather than against the reasoning that produced them. A first-match walk
+/// sends a value to the first arm that admits it, so reordering two arms can
+/// only move a value that satisfies BOTH -- and `Separated` says there is no
+/// such value. So a repair that moves nothing else changes no destination
+/// anywhere, and this is what says it moved nothing else.
+///
+/// It is written as a quantification over pairs and not as a replay of the
+/// swaps, because the claim is about the RESULT: had the repair been a sort,
+/// or had a swap been taken on a stale reading, this is the assertion that
+/// would fire. Held on every seated plan of every debug compile, which the
+/// fixture matrix drives across the corpus.
+fn only_separated_pairs_moved(
+    types: &Types,
+    questions: &[Vec<RuntimeTypePredicate>],
+    observable: &[Vec<Ty>],
+    groups: &[Vec<usize>],
+    before: &[usize],
+    after: &[usize],
+) -> bool {
+    let rank = |order: &[usize]| {
+        let mut ranks = vec![0usize; groups.len()];
+        for (at, group) in order.iter().enumerate() {
+            ranks[*group] = at;
+        }
+        ranks
+    };
+    let (was, now) = (rank(before), rank(after));
+    (0..groups.len()).all(|x| {
+        (x + 1..groups.len()).all(|y| {
+            (was[x] < was[y]) == (now[x] < now[y])
+                || matches!(
+                    seating(types, questions, observable, &groups[x], &groups[y]),
+                    Seating::Separated,
+                )
+        })
+    })
+}
+
+/// Whether the seat would put `x` ahead of `y`: the OBLIGATION first (only one
+/// direction is escape-free, so take it), the PRECISION preference second
+/// (both directions are escape-free, so hand a value both tests admit to the
+/// arm that named it most precisely -- fz-kdt.129).
+///
+/// ```text
+///     covering(x, y)  and  ( not covering(y, x)  or  test(x) strictly inside test(y) )
+/// ```
+///
+/// The relation is antisymmetric: if both directions held, both would need
+/// `Covering` both ways, so both would rest on strict mutual containment of
+/// the tests -- which makes the tests equal, and equal tests are one group.
+///
+/// A SEPARATED pair is false both ways for free, because `Covering` is exactly
+/// what [`seating`] refuses such a pair: no value satisfies both tests, so
+/// there is no routing to prefer (fz-kdt.186). The seat leaves it where it
+/// found it, and [`canonically_order_separated_neighbours`] then puts it in
+/// the one order that says something about the arms rather than about the
+/// schedule (fz-kdt.194).
+///
+/// Where NEITHER side covers the other the relation is false both ways: no
+/// seat is escape-free and it declines to have an opinion. That is the
+/// fz-kdt.107 inseparable class one rung wider, a standing hazard of arrival
+/// order that predates any seating rule, and fz-kdt.131 owns it -- the cure is
+/// a runtime test that can see what the body relies on (fz-kdt.119's tuple
+/// tags, fz-kdt.107's list elements), not a cleverer sort.
+///
+/// ONE RELATION, TWO READERS. [`specificity_order`] applies it as an insertion
+/// pass over question groups; [`unroutable_alternatives`] asks it of a single
+/// pair, because an arm the seat would never put ahead of the arm that stands
+/// in for it is not a destination at all (fz-kdt.143). The two callers pass
+/// different slices -- groups and singletons -- and that difference is safe in
+/// one direction only, which [`unroutable_alternatives`] states.
+fn seats_before(
+    types: &Types,
+    questions: &[Vec<RuntimeTypePredicate>],
+    observable: &[Vec<Ty>],
+    x: &[usize],
+    y: &[usize],
+) -> bool {
+    let covering = |early: &[usize], late: &[usize]| {
+        matches!(seating(types, questions, observable, early, late), Seating::Covering)
+    };
+    covering(x, y) && (!covering(y, x) || strictly_inside(questions, x, y))
+}
+
+/// Whether the seat added no blind escape: no group it moved ahead of a group
+/// that ARRIVED before it is ESCAPING against it -- either its surface covers
+/// that group's, or the two are separated and the move routes nothing.
 ///
 /// This is the whole safety claim, checked against the permutation itself
 /// rather than against the reasoning that produced it. Pairs the seat left in
@@ -246,46 +530,125 @@ fn every_inversion_covers(
     seated: &[usize],
 ) -> bool {
     seated.iter().enumerate().all(|(rank, early)| {
-        seated[rank + 1..]
-            .iter()
-            .all(|late| early < late || covers(types, questions, observable, &groups[*early], &groups[*late]))
+        seated[rank + 1..].iter().all(|late| {
+            early < late
+                || !matches!(
+                    seating(types, questions, observable, &groups[*early], &groups[*late]),
+                    Seating::Escaping,
+                )
+        })
     })
 }
 
-/// Whether seating `early` before `late` can route a value into a body that
-/// never named it.
+/// What one ordered pair of question groups asks of a seat.
 ///
-/// Position by position: either the two groups ask DIFFERENT questions there,
-/// and the plan's own test is what keeps `late`'s values out of `early`; or
-/// they ask the same question, the test is blind, and `early`'s surface must
-/// already contain every value `late`'s holds. A group is a set of arms one
-/// question cannot separate, so the surface half is checked across the whole
-/// product: whichever member arrival puts first receives the values, and every
-/// member of `late` may arrive at it.
+/// THREE answers and not two, because "does not cover" and "is not a routing
+/// question at all" are different facts and only one of them is an objection.
+/// A `bool` collapsed them: the coverage check runs position by position under
+/// an `all`, so a pair whose tests are DISJOINT at one position -- a pair no
+/// value satisfies both halves of -- passed that position on the separation
+/// arm and was then judged blind at another, and the seat was told it owed
+/// coverage for a routing that routes nothing (fz-kdt.186).
 ///
-/// This is the one containment a seat may be reasoned from. Containment of the
-/// TESTS is not it -- a test is a projection and it drops what the body reads.
-/// Containment of the SURFACES is not it either -- a surface says nothing
-/// about which values the emitted test will actually hand over.
-fn covers(
+/// ONE RELATION, EVERY READER. [`seats_before`] reads it in both directions
+/// for the seat and for the drop, [`every_inversion_covers`] reads it to check
+/// the permutation that came out, and `drive_test`'s census mirrors it off the
+/// landed artifact. A pair is a seat question only where this says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seating {
+    /// No value satisfies both groups' tests, so no order between them routes
+    /// anything: the plan's own tests already keep them apart, whichever way
+    /// round they sit. The seat has nothing to decide, and because there is
+    /// nothing to decide the pair may be put in a canonical order instead of
+    /// the one the fixpoint happened to deliver -- the ONE pair class of which
+    /// that is true (fz-kdt.194,
+    /// [`canonically_order_separated_neighbours`]).
+    Separated,
+    /// Some value satisfies both, and wherever the tests cannot separate it
+    /// `early`'s surface already names everything `late` holds. Seating
+    /// `early` first cannot hand a value to a body that never named it.
+    Covering,
+    /// Some value satisfies both, and at some position the tests are blind
+    /// while `late` holds values `early` does not name. Seating `early` first
+    /// routes such a value into a body its representation does not fit.
+    Escaping,
+}
+
+/// How the seat may treat `(early, late)`.
+///
+/// REACHABILITY FIRST. A plan row is a CONJUNCTION over its subjects -- one
+/// refused subject refuses the row -- and the subjects are independent
+/// arguments, so a pair of arms admits a common call exactly when EVERY
+/// position admits a common value. [`RuntimeTypePredicate::overlaps`] is that
+/// question at one position; where any position answers no, the plan's own
+/// test separates the two arms outright and no seat between them can route
+/// anything anywhere.
+///
+/// COVERAGE SECOND, and only then. Position by position: either the two groups
+/// ask questions that SEPARATE them there, and the plan's own test is what
+/// keeps `late`'s values out of `early`; or the test is blind, and `early`'s
+/// surface must already contain every value `late`'s holds. A group is a set
+/// of arms one question cannot separate, so the surface half is checked across
+/// the whole product: whichever member arrival puts first receives the values,
+/// and every member of `late` may arrive at it.
+///
+/// Surface containment is the one containment a seat may be reasoned from.
+/// Containment of the TESTS is not it -- a test is a projection and it drops
+/// what the body reads. Containment of the SURFACES alone is not it either --
+/// a surface says nothing about which values the emitted test will actually
+/// hand over.
+///
+/// ONE AND THE SAME QUESTION SEPARATES NOTHING, and the separation check says
+/// so outright rather than leaving `overlaps` to agree with itself. Two arms
+/// asking the identical question at a position admit the identical set of
+/// values there, whatever that set is, so the position cannot tell them apart
+/// -- and where every arm asks it, `discriminating_inputs` drops the position
+/// and the plan never emits the test at all. Asking `overlaps` there would
+/// make the answer turn on a test being REALIZABLE, which not every one is: a
+/// tuple clause with a subtracted signature loses its whole arity in
+/// projection (`runtime_type_predicate_tuple_arities` removes the negated
+/// signature's arity outright), so a surface holding every non-int pair
+/// projects to a test that admits nothing and does not overlap ITSELF. That is
+/// a defect in the projection and the projection's to cure; what it may not do
+/// is decide a seat or a drop, and stated this way it cannot --
+/// `an_untested_position_is_not_a_separation` is the pair that proves it.
+///
+/// So a Separated pair always differs at the separating position, which makes
+/// that position DISCRIMINATING and the plan's own test the thing that keeps
+/// the two arms apart.
+/// `a_separated_pair_of_tests_is_a_disjoint_pair_of_surfaces` holds the other
+/// direction over a battery covering every axis: two surfaces that share a
+/// value project to tests that overlap.
+///
+/// Two arities cannot describe one call, so a length mismatch is separation.
+fn seating(
     types: &Types,
     questions: &[Vec<RuntimeTypePredicate>],
     observable: &[Vec<Ty>],
     early: &[usize],
     late: &[usize],
-) -> bool {
+) -> Seating {
     let (early_asks, late_asks) = (&questions[early[0]], &questions[late[0]]);
-    if early_asks.len() != late_asks.len() {
-        return false;
+    if early_asks.len() != late_asks.len()
+        || !early_asks
+            .iter()
+            .zip(late_asks)
+            .all(|(early, late)| early == late || early.overlaps(late))
+    {
+        return Seating::Separated;
     }
-    (0..early_asks.len()).all(|position| {
+    let covering = (0..early_asks.len()).all(|position| {
         !early_asks[position].overlaps_on_an_erasing_axis(&late_asks[position])
             || late.iter().all(|late| {
                 early
                     .iter()
                     .all(|early| types.is_subtype(&observable[*late][position], &observable[*early][position]))
             })
-    })
+    });
+    match covering {
+        true => Seating::Covering,
+        false => Seating::Escaping,
+    }
 }
 
 /// Whether every value `narrow`'s group's test admits, `wide`'s admits too,
@@ -293,11 +656,21 @@ fn covers(
 ///
 /// One group is one question, so a group's test is any member's.
 fn strictly_inside(questions: &[Vec<RuntimeTypePredicate>], narrow: &[usize], wide: &[usize]) -> bool {
-    let inside = |narrow: &[RuntimeTypePredicate], wide: &[RuntimeTypePredicate]| {
-        narrow.len() == wide.len() && narrow.iter().zip(wide).all(|(narrow, wide)| narrow.contained_in(wide))
-    };
-    let (narrow, wide) = (&questions[narrow[0]], &questions[wide[0]]);
-    inside(narrow, wide) && !inside(wide, narrow)
+    test_inside(questions, narrow[0], wide[0]) && !test_inside(questions, wide[0], narrow[0])
+}
+
+/// Whether every value `narrow`'s test admits, `wide`'s admits too: input by
+/// input, on the question the runtime is actually put.
+///
+/// This is the one spelling of test containment in this file. The seat asks it
+/// of two groups through [`strictly_inside`]; the drop asks it of one pair, as
+/// the conjunct of [`stands_in_for`] that surface containment does NOT imply.
+fn test_inside(questions: &[Vec<RuntimeTypePredicate>], narrow: usize, wide: usize) -> bool {
+    questions[narrow].len() == questions[wide].len()
+        && questions[narrow]
+            .iter()
+            .zip(&questions[wide])
+            .all(|(narrow, wide)| narrow.contained_in(wide))
 }
 
 /// The items an order names, in the order it names them.
@@ -310,28 +683,52 @@ fn permuted<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
 }
 
 /// Whether `wide`'s alternative can supply `narrow`'s: the same callee, on an
-/// observable domain that contains it.
+/// observable domain that STRICTLY contains it, asking a question that admits
+/// everything `narrow`'s question admits.
 ///
 /// The same-callee conjunct is load-bearing: a multi-target callsite normally
 /// names one target per SELECTED CALLEE -- that is what protocol dispatch is
 /// (`jobs/semantic.rs` settles one `CallTargetSummary` per viable impl) -- and
 /// a wider domain sitting on ANOTHER function's body is no stand-in at all.
 ///
-/// Strictness is what makes the relation antisymmetric, and both halves are
-/// transitive.
+/// Strictness is what makes the relation a strict partial order: it is
+/// irreflexive and antisymmetric, both halves are transitive, and a maximal
+/// element therefore has no stand-in and can never be dropped. Arms of equal
+/// observable surface -- alike everywhere the runtime CAN look and different
+/// only where it cannot -- are excluded by it and stay arrival-decided.
+///
+/// THE TEST CONJUNCT IS NOT IMPLIED BY THE SURFACE ONE, and the pair that
+/// proves it is `[int | :ok] & not([:ok])` beside `[int | :ok]`. The narrow
+/// type is the wide one with a clause carved out, so its SURFACE is strictly
+/// inside -- but a negated list clause cannot be projected to a head question,
+/// so its list axis degrades to `ListShapes::shape_only` and its TEST admits
+/// `[:zzz]`, which its sibling's refuses. Drop it and `[:zzz]` stops escaping
+/// into the narrow arm and starts reaching the wide arm's body or the plan's
+/// fail node -- an outcome no arrival of those two arms ever produced, which
+/// is precisely what the relative-soundness theorem forbids.
+/// `a_narrow_surface_carrying_the_wider_test_is_not_dropped_for_it` pins it.
 fn stands_in_for(
     types: &Types,
-    targets: &[CallTargetSummary],
+    same_callee: &dyn Fn(usize, usize) -> bool,
     observable: &[Vec<Ty>],
+    questions: &[Vec<RuntimeTypePredicate>],
     wide: usize,
     narrow: usize,
 ) -> bool {
-    targets[wide].callee == targets[narrow].callee
-        && observable[wide].len() == observable[narrow].len()
-        && observable[wide]
+    same_callee(wide, narrow)
+        && surface_inside(types, observable, narrow, wide)
+        && !surface_inside(types, observable, wide, narrow)
+        && test_inside(questions, narrow, wide)
+}
+
+/// Whether every value `narrow`'s observable surface holds, `wide`'s holds
+/// too: input by input, on the surface the plan's rows are built from.
+fn surface_inside(types: &Types, observable: &[Vec<Ty>], narrow: usize, wide: usize) -> bool {
+    observable[narrow].len() == observable[wide].len()
+        && observable[narrow]
             .iter()
-            .zip(&observable[narrow])
-            .all(|(wide, narrow)| types.is_subtype(narrow, wide))
+            .zip(&observable[wide])
+            .all(|(narrow, wide)| types.is_subtype(narrow, wide))
 }
 
 /// The partition of a callsite's targets by the question their observable
@@ -339,9 +736,14 @@ fn stands_in_for(
 ///
 /// One group is one question: every member asks the runtime the same thing of
 /// every input, so no emitted test separates them and whichever member the
-/// graph reaches first receives every value the group can see. A group of size
-/// one is a real choice; a group of size two or more is a choice the plan
-/// cannot make.
+/// graph reaches first receives every value the group can see.
+///
+/// It is a SEATING and STRESS concept, not the drop's. [`specificity_order`]
+/// moves whole groups, because moving one member of a group past another would
+/// re-decide a routing nothing the plan emits decides (fz-kdt.107), and
+/// `dispatch_stress::reverse_indistinguishable_groups` mirrors each group to
+/// reach exactly that arrival-kept residue. The drop quantifies over every
+/// arm, one pair at a time, and never consults a group (fz-kdt.143).
 ///
 /// Neither the observable surface nor the question is the settled semantic
 /// surface. `runtime_type_test_envelope` erases what no runtime test can look
@@ -351,14 +753,47 @@ fn stands_in_for(
 /// layout -- and `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
 /// `{:cont | :halt, pair}` both project to "a 2-tuple".
 pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<usize>> {
-    let questions = runtime_questions(types, targets);
+    grouped_by_question(&target_questions(types, targets))
+}
+
+/// The question each target puts to the runtime, projected the way the plan
+/// projects it: the observable surface first, that surface's predicate second.
+///
+/// [`routable_alternatives`] does not call this -- it holds the observable
+/// surfaces already and passes them straight to [`runtime_questions`]. This is
+/// the door for a caller that has only targets.
+fn target_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<RuntimeTypePredicate>> {
+    let observable = observable_inputs(types, &target_surfaces(targets));
+    runtime_questions(types, &observable)
+}
+
+/// The semantic surface each target offers, which is all
+/// [`routable_alternatives`] reads of a target.
+fn target_surfaces(targets: &[CallTargetSummary]) -> Vec<Vec<Ty>> {
+    targets.iter().map(|target| target.surface_inputs.clone()).collect()
+}
+
+/// Whether two of a callsite's targets sit on one callee -- the conjunct
+/// [`stands_in_for`] asks of every alternative set, answered here off the
+/// selected callee a callsite settled per viable impl.
+fn same_callee(targets: &[CallTargetSummary]) -> impl Fn(usize, usize) -> bool + '_ {
+    move |left, right| targets[left].callee == targets[right].callee
+}
+
+/// The grouping itself: one group per distinct question, in arrival order.
+///
+/// The ONE spelling of "one question = one group". [`question_groups`] projects
+/// targets and calls it; [`specificity_order`] is handed questions already
+/// projected by [`routable_alternatives`] and calls it directly, so no caller
+/// re-derives a projection another caller already has.
+fn grouped_by_question(questions: &[Vec<RuntimeTypePredicate>]) -> Vec<Vec<usize>> {
     let mut groups = Vec::new();
-    let mut grouped = vec![false; targets.len()];
-    for index in 0..targets.len() {
+    let mut grouped = vec![false; questions.len()];
+    for index in 0..questions.len() {
         if grouped[index] {
             continue;
         }
-        let group = (index..targets.len())
+        let group = (index..questions.len())
             .filter(|other| questions[*other] == questions[index])
             .collect::<Vec<_>>();
         for slot in &group {
@@ -377,11 +812,11 @@ pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) 
 /// one and the same question to a cons cell's first element, and disagree only
 /// about a tail no test reads -- which is why it, and not the surface, is what
 /// a routing may be reasoned from.
-fn runtime_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<RuntimeTypePredicate>> {
-    targets
+fn runtime_questions(types: &mut Types, observable: &[Vec<Ty>]) -> Vec<Vec<RuntimeTypePredicate>> {
+    observable
         .iter()
-        .map(|target| {
-            runtime_dispatch_inputs(types, &target.surface_inputs)
+        .map(|inputs| {
+            inputs
                 .iter()
                 .map(|ty| types.runtime_type_predicate(ty))
                 .collect::<Vec<_>>()
@@ -389,78 +824,254 @@ fn runtime_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Ve
         .collect()
 }
 
-pub(crate) fn dispatch_from_callable_flow_edges(
-    types: &mut Types,
-    edges: &[CallableFlowEdge],
-) -> Result<Option<PatternDispatchPlan<Ty>>, PatternDispatchError> {
-    if edges.len() <= 1 {
-        return Ok(None);
-    }
-    let arity = edges[0].surface.inputs.len();
-    let observable_inputs = edges
+/// Each alternative's inputs widened to the surface a runtime test can read
+/// back off a value -- the same projection the plan's rows are built from.
+fn observable_inputs(types: &mut Types, surfaces: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
+    surfaces
         .iter()
-        .map(|edge| runtime_dispatch_inputs(types, &edge.surface.inputs))
-        .collect::<Vec<_>>();
-    let discriminating_inputs = discriminating_inputs(arity, observable_inputs.iter().map(Vec::as_slice));
-    let rows = observable_inputs
-        .into_iter()
-        .enumerate()
-        .map(|(index, inputs)| PatternRow {
-            patterns: (0..arity)
-                .map(|_| Spanned::new(Pattern::Wildcard, Span::DUMMY))
-                .collect(),
-            preconditions: discriminating_inputs
-                .iter()
-                .map(|input| (PatternSubjectRef::Input(*input as u32), inputs[*input]))
-                .collect(),
-            guard: None,
-            body_id: index as PatternBodyId,
-        })
-        .collect::<Vec<_>>();
-    pattern_dispatch_from_source(SourcePatternRows {
-        input_count: arity,
-        rows,
-    })
-    .map(Some)
+        .map(|inputs| runtime_dispatch_inputs(types, inputs))
+        .collect()
 }
 
-/// The alternatives no runtime test could ever route to: each accepts strictly
-/// less than a sibling the runtime cannot tell it apart from.
+/// Which of a construction wrapper's members are destinations at all, in the
+/// order the wrapper tests them, and the plan that tests them.
 ///
-/// Such an alternative is never a real choice. Placed after its wider twin it
-/// is dead; placed before it, it swallows the twin's values and runs the wrong
-/// body -- so arm order, which is the scheduler's and not the language's,
-/// would decide the program's meaning. Dropping it sends those values to the
-/// wider twin, which `stands_in_for` proves is complete for them.
+/// THE WELD, RE-DERIVED. fz-kdt.108 established that a selection row's
+/// `body_id` indexes the parallel member list and must increase
+/// monotonically, so the two are welded. This carries the weld as DATA:
+/// `members` names the surviving edges in seated order, transport builds the
+/// member list by walking exactly that, and row `i`'s `body_id` is `i`
+/// because member `i` was PUT there by the same walk. Nothing assumes the
+/// edge list's own order survives, and nothing may reorder either list
+/// afterwards.
+pub(crate) struct ConstructionSelection {
+    /// The surviving members, in the order the plan tests them, each named by
+    /// its index in the edge list the selection was computed from.
+    pub(crate) members: Vec<usize>,
+    /// `None` where one member is left: a wrapper with one destination calls
+    /// it, exactly as a callsite with one target is a `Direct` call.
+    pub(crate) plan: Option<PatternDispatchPlan<Ty>>,
+}
+
+/// A construction wrapper's member selection, seated and dropped by the ONE
+/// routing rule.
 ///
-/// [`stands_in_for`] is judged on OBSERVABLE surfaces, not settled semantic
-/// ones (fz-kdt.118). Alternatives of equal denotation are never each other's
-/// excuse for disappearing, and the relation is transitive, so an alternative
-/// dropped only because of another dropped one is dropped by that one's own
-/// twin too, and no cascade is needed.
+/// A wrapper's members are a runtime choice like any other: the value carries
+/// its call arguments, the plan asks its questions, and whichever member the
+/// graph reaches first receives it. So the same two obligations apply --
+/// [`unroutable_alternatives`] removes a member the seat would never put ahead
+/// of the member that stands in for it, and [`specificity_order`] corrects the
+/// order wherever a member would otherwise take values its own surface never
+/// named. Before fz-kdt.179 this plan ran neither: its rows were built
+/// straight from the edge list, which is the fz-kdt.108 `cmp_tys` order, and
+/// that is a CONTENT order, not a safety one.
 ///
-/// Twins with no stand-in between them -- neither's domain contains the
-/// other's, or they are different functions entirely -- are left alone:
-/// dropping either would lose a body nothing else can supply. Those callsites
-/// stay order-decided, and the cure is a runtime predicate that can tell them
-/// apart rather than a smaller plan (fz-kdt.107). The callable axis is one such
-/// cure: two arms that differ only in which lambda they were keyed on are no
-/// longer one question at all (fz-kdt.125), so they never reach this rule.
+/// EVERY MEMBER OF ONE WRAPPER IS ONE CALLEE, which is why the stand-in test's
+/// same-callee conjunct is satisfied outright here. A construction wrapper is
+/// one function at one capture layout -- `jobs/runtime_demand.rs`'s
+/// `callable_flow_resolution_edges_product` mints every edge's resolution from
+/// `producer.function` and the producer's capture types, varying only the call
+/// surface -- so two members are two specializations of one body, never two
+/// bodies. That also settles the drop's one open residue in this caller's
+/// favour: fz-kdt.143's group-dissolution reroute is meaning-bearing only
+/// between DIFFERENT callees, and there are none to be had.
+pub(crate) fn construction_member_selection(
+    types: &mut Types,
+    edges: &[CallableFlowEdge],
+) -> Result<ConstructionSelection, PatternDispatchError> {
+    if edges.len() <= 1 {
+        return Ok(ConstructionSelection {
+            members: (0..edges.len()).collect(),
+            plan: None,
+        });
+    }
+    let arity = edges[0].surface.inputs.len();
+    let surfaces = edges.iter().map(|edge| edge.surface.inputs.clone()).collect::<Vec<_>>();
+    let (members, observable_inputs) = routable_alternatives(types, &surfaces, &|_, _| true);
+    if members.len() <= 1 {
+        return Ok(ConstructionSelection { members, plan: None });
+    }
+    let discriminating_inputs = discriminating_inputs(arity, observable_inputs.iter().map(Vec::as_slice));
+    let rows = observable_inputs
+        .iter()
+        .enumerate()
+        .map(|(index, inputs)| dispatch_row(inputs, arity, &discriminating_inputs, index as PatternBodyId))
+        .collect::<Vec<_>>();
+    let plan = pattern_dispatch_from_source(SourcePatternRows {
+        input_count: arity,
+        rows,
+    })?;
+    Ok(ConstructionSelection {
+        members,
+        plan: Some(plan),
+    })
+}
+
+/// The alternatives no runtime test could ever route to: each is an arm the
+/// seat itself would never put ahead of the arm that stands in for it.
+///
+/// # The law
+///
+/// ```text
+///     unroutable(N)  <=>  exists W != N :  stands_in_for(W, N)
+///                                     and  not seats_before(N, W)
+/// ```
+///
+/// [`stands_in_for`] proves W is the same callee on a strictly wider surface
+/// whose test admits everything N's admits, so W's body is complete for every
+/// value N could receive. What is left to decide is whether N is worth
+/// offering anyway, and the seat already answers that: [`seats_before`] is the
+/// one relation that says which of two arms belongs first. An arm the seat
+/// would put ahead of its stand-in is a live specialization -- a value both
+/// tests admit reaches the body that named it most precisely. An arm the seat
+/// would NOT put first is one of two things, and neither is a destination: it
+/// is DEAD, because W precedes it and admits everything it admits; or it is a
+/// HAZARD, kept ahead of W by a refusal elsewhere in the insertion pass, which
+/// is a blind escape a legal arrival can produce and the settled order cannot.
+///
+/// For a stand-in pair that is a routing question at all, `seating(W, N)` is
+/// `Covering` unconditionally -- W's surface contains N's at every position --
+/// so the condition reduces to
+///
+/// ```text
+///     keep N  <=>  covering(N, W)  and  test(N) strictly inside test(W)
+/// ```
+///
+/// A stand-in pair that is SEPARATED is dropped, and that is not a loss:
+/// [`stands_in_for`] already demands `test_inside(N, W)`, so at the position
+/// their questions do not meet N's own question admits NOTHING, which makes
+/// N's row unreachable by construction. Dropping a row no value can take
+/// changes no routing (fz-kdt.186). The position is one the plan actually
+/// TESTS, because [`seating`] separates only where the two questions DIFFER
+/// and two arms whose surfaces differ at a position make it discriminating --
+/// so "N's row is unreachable" is a fact about the emitted graph and not only
+/// about the projection.
+///
+/// # Why this is fz-kdt.118's theorem, generalized rather than replaced
+///
+/// Where the two arms ask ONE question -- 118's whole population -- their
+/// tests are equal, `strictly_inside` is false, and N is dropped. That is
+/// 118's rule, decided identically, and
+/// `a_map_content_no_test_can_read_leaves_only_the_wider_arm` pins it on a map
+/// pair the axis cannot see inside.
+///
+/// What the quantifier adds is everything 118 lost when the axes learned to
+/// separate. 118 iterated inside one question group, and fz-kdt.119's tuple
+/// positions, fz-kdt.125/127's callables and fz-kdt.107 step 3's list heads
+/// each turned a same-callee contained pair into TWO questions -- so the
+/// group-local drop reached zero corpus pairs. This existential ranges over
+/// ALL arms, and the population it adds beyond 118's is exactly
+/// `{N : some W stands in for N and not covering(N, W)}` -- and "not covering"
+/// is by definition "seating N ahead of W is a blind escape", which is the
+/// predicate the corpus census counts.
+///
+/// # Relative soundness, and the one shape it does not cover
+///
+/// Take the arrival [survivors in post-drop seated order, then the dropped
+/// arms widest-first]. It is a permutation of the settled targets, so it is an
+/// order the fixpoint could have delivered, and the seat reproduces its own
+/// output: for any two arms adjacent in a seated order the later one refuses
+/// to pass the earlier -- either it stopped there when it was inserted, or the
+/// earlier one passed it and antisymmetry forbids the reverse -- so re-seating
+/// the survivors in the order they were seated in is the identity, and the
+/// dropped arms arriving afterwards cannot reach back into it. Each dropped N
+/// is then inserted and cannot pass its stand-in W: passing it needs
+/// `seats_before(N, W)`, which the drop condition says is false. So W precedes
+/// N in that arrival and admits everything N admits, N receives nothing, and
+/// the routing the plan performs after the drop is one that legal arrival
+/// already produced. The claim is never that N was unreachable in the
+/// abstract, only that its values already had a legal home in W.
+///
+/// # Where that argument stops: the drop can DISSOLVE A GROUP
+///
+/// Every step above assumes the survivors group the same way with the dropped
+/// arm present and without it, and one shape breaks that assumption. The seat
+/// moves whole question groups and coverage quantifies over the product, so a
+/// GROUP is harder to cover than any one member -- which means an arm that
+/// shares its question with a SURVIVOR is part of what pins that survivor
+/// behind a wider arm. Drop it and the group dissolves: the survivor is judged
+/// alone, coverage may now run its way, and the seat promotes it past the arm
+/// that used to swallow its values. Every arrival of the un-dropped arms sends
+/// those values to the wider arm; after the drop they reach the survivor's
+/// body instead, and no arrival produced that.
+///
+/// It is not a blind escape -- `seats_before` demands `Covering` before it moves
+/// anything, so the promoted arm's surface names everything it now receives,
+/// and `every_inversion_covers` and the corpus escape census both stay put. It
+/// is a routing this rule decides that arm order used to.
+/// `a_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned`
+/// builds the smallest case, three arms wide, and pins it.
+///
+/// The precondition is exactly "a dropped arm shares its question with a
+/// surviving one", and NO callsite on the corpus has one: swept over all 597
+/// fixtures at this landing, the count is zero, which is why the corpus reads
+/// 0 behaviour movers on both doors. The residue is fz-kdt.118's as much as
+/// this rule's -- 118 dropped a member of a group, which dissolves one just
+/// the same.
+///
+/// What it can and cannot mean: the re-routed values lie in BOTH surfaces,
+/// the promoted survivor's and the wider arm's. When those two arms are
+/// specializations of ONE callee the move is meaning-neutral by construction
+/// -- either body is a valid specialization for a value its surface names --
+/// and the post-drop seat is simply the more precise one. It is meaning-
+/// bearing only when they are DIFFERENT callees, which means the semantic
+/// layer offered two callees for one value at one callsite: an ambiguity no
+/// seat can resolve honestly, and the dispatch layer is the wrong place to
+/// try. fz-kdt.176 owns that invariant -- targets of different callees at one
+/// callsite have disjoint observable surfaces, or the overlap is a diagnostic
+/// -- and with it this residue reduces to a statement about precision.
+///
+/// # Two facts about the shape of the check
+///
+/// SINGLETONS AGAINST GROUPS. The drop asks `seats_before` of two single arms
+/// while the seat asks it of two question groups. Coverage quantifies over the
+/// product of the two groups, so covering a whole group implies covering any
+/// one member: a group reading can only be FALSER than the singleton one. The
+/// mismatch cannot drop an arm the seat would have put ahead of its stand-in.
+/// Reading it group-wise could only turn `covering(W, N)` false, which turns
+/// `seats_before(N, W)` into plain `covering(N, W)` -- and for the singleton
+/// check to have refused while that holds, the two tests must be equal, which
+/// puts N and W in ONE group where no seat separates them at all. What the
+/// mismatch does NOT cover is the grouping the drop CHANGES, which is the
+/// section above.
+///
+/// NO CASCADE, AND NEVER EMPTY. `stands_in_for` is a strict partial order, so
+/// a maximal arm has no stand-in and survives; and because the existential
+/// ranges over every arm rather than the survivors, an arm dropped only on
+/// account of another dropped arm is dropped by that one's own stand-in too.
+///
+/// # The hazard this rule inherits
+///
+/// A drop to a SINGLE destination makes the callsite a `Direct` call, which
+/// also removes the plan's fail node: a value outside every arm's observable
+/// domain would have trapped and now routes to the survivor. That conversion
+/// is `sole_destination`'s, it predates this rule (fz-kdt.104), and it is
+/// fenced by the semantic analysis rather than by anything here -- but this
+/// rule reaches it across the whole arm set where 118 reached it only within
+/// one question group. Measured on the corpus at this landing: 51 call
+/// dispatch sites before and 51 after, so no callsite collapsed to `Direct`
+/// that was not one already.
+///
+/// # What is left alone
+///
+/// Arms with no stand-in between them -- neither surface contains the other,
+/// or the narrower carries the wider test, or they are different functions
+/// entirely -- are not touched: dropping either would lose a body nothing else
+/// can supply. Those callsites stay order-decided, and the cure is a runtime
+/// predicate that can tell them apart rather than a smaller plan (fz-kdt.107,
+/// fz-kdt.131 facet 3).
 fn unroutable_alternatives(
     types: &Types,
-    targets: &[CallTargetSummary],
+    same_callee: &dyn Fn(usize, usize) -> bool,
     observable: &[Vec<Ty>],
-    groups: &[Vec<usize>],
+    questions: &[Vec<RuntimeTypePredicate>],
 ) -> Vec<usize> {
-    let stands_in = |wide: usize, narrow: usize| stands_in_for(types, targets, observable, wide, narrow);
-    groups
-        .iter()
-        .flat_map(|group| {
-            group.iter().copied().filter(|narrow| {
-                group
-                    .iter()
-                    .copied()
-                    .any(|wide| wide != *narrow && stands_in(wide, *narrow) && !stands_in(*narrow, wide))
+    (0..observable.len())
+        .filter(|narrow| {
+            (0..observable.len()).any(|wide| {
+                wide != *narrow
+                    && stands_in_for(types, same_callee, observable, questions, wide, *narrow)
+                    && !seats_before(types, questions, observable, &[*narrow], &[wide])
             })
         })
         .collect()
@@ -476,13 +1087,17 @@ fn unroutable_alternatives(
 ///
 /// What arrives is not always what the plan tests: [`specificity_order`]
 /// corrects arrival wherever the arms justify a correction, and it does so
-/// deterministically -- a covers-proven inversion is a fact about the arms,
-/// not about when they turned up. So permuting arrival does not perturb the
-/// seat's own decisions at all; what it perturbs is exactly the RESIDUE the
-/// seat declines to decide: the members of one question group, where arrival
-/// is the one thing standing between the corpus and a wrong answer
-/// (fz-kdt.107), and every pair where neither group covers the other, where no
-/// seat is any safer than the one it came with (fz-kdt.131).
+/// deterministically -- a covering-proven inversion is a fact about the arms,
+/// not about when they turned up, and a pair no value reaches both of is put
+/// in `cmp_tys` order whichever way it arrived, wherever the run it sits in is
+/// separated end to end (fz-kdt.194). So permuting arrival does not perturb
+/// the seat's own decisions at all; what it perturbs is exactly the RESIDUE
+/// nothing decides: the members of one question group, where arrival is the
+/// one thing standing between the corpus and a wrong answer (fz-kdt.107);
+/// every pair where neither group covers the other, where no seat is any safer
+/// than the one it came with (fz-kdt.131); and the separated pairs the
+/// canonical repair could not reach past a non-separated neighbour, which is
+/// the limit of fz-kdt.194 rather than a class of its own.
 fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow<'a, [CallTargetSummary]> {
     match dispatch_stress::arms() {
         dispatch_stress::Perturbation::Settled => Cow::Borrowed(targets),
@@ -502,10 +1117,10 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// - a callsite's ARRIVAL order, which is the settled targets' order, which is
 ///   the semantic fixpoint's, which is the agenda's ([`arrival_order`]);
-/// - a callable value's CONSTRUCTION-WRAPPER member order, which is a
-///   `BTreeSet<CallableSurface>` walked in interned-id order, which is the type
-///   interner's mint order, which is the agenda's again
-///   ([`dispatch_from_callable_flow_edges`] and the members beside it).
+/// - a callable value's CONSTRUCTION-WRAPPER member order, whose surfaces arrive
+///   as a `BTreeSet<CallableSurface>` walked in interned-id order -- the type
+///   interner's mint order, which is the agenda's again -- before
+///   [`construction_member_selection`] drops and seats them into the member list.
 ///
 /// Any permutation of either is an order the fixpoint could have delivered, so
 /// an answer that moves under one is an answer a schedule decides.
@@ -522,10 +1137,20 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// A seeded permutation of the WHOLE order has neither limit: it varies every
 /// ordering the seat leaves free, on both surfaces, and it is a deterministic
-/// function of (seed, length) so a finding replays. Measured over the corpus at
-/// the fz-kdt.141 landing: the reversal moves 8 fixtures' artifacts, an arm
-/// seed moves 27, a wrapper seed moves 19, and of the four fixtures that abort
-/// natively under a legal arm order the reversal reaches ONE.
+/// function of (seed, length) so a finding replays.
+///
+/// WHAT EACH SURFACE STILL MOVES. Re-measured at `ca23b676f` + fz-kdt.194 over
+/// the 604-fixture corpus, by backend-dump comparand: an arm seed moves 0
+/// fixtures' artifacts (22 before fz-kdt.194's canonical order over separated
+/// pairs), `arms:reverse` moves 0 (a group mirror is the identity on singleton
+/// groups, and every group on this corpus is one), and a wrapper seed moves 19.
+/// The arm surface reads 0 ON THIS CORPUS, which is not the same as closed:
+/// [`canonically_order_separated_neighbours`] settles a run only where the run
+/// is pairwise separated end to end, and this corpus's movers all were. The
+/// wrapper surface still reads 19, and the repair is not declining it -- the
+/// repair fires on wrapper members (14 / 10 / 14 swaps under `wrappers:1` /
+/// `:6` / `:reverse`, 0 at the settled arrival). Those 19 carry fz-kdt.107's
+/// and fz-kdt.131's residue, which no canonical order may touch.
 ///
 /// # The setting
 ///
@@ -923,28 +1548,33 @@ mod tests {
         );
     }
 
-    /// fz-kdt.119 REVERSES fz-kdt.104's headline on this pair, and the reason
-    /// it may is that the premise changed under it.
+    /// A narrow twin the plan CAN separate is still no destination when the
+    /// seat would not put it first.
     ///
     /// `{:cont, pair}` and `{:cont | :halt, pair}` used to be one question --
-    /// both projected to "a 2-tuple" -- so offering both as arms would have let
-    /// arm order, which is the scheduler's, decide whether `:halt` ever halts,
-    /// and dropping the narrow twin was the only way to keep order out of the
-    /// language. The tuple test now carries a sub-predicate per position, and
-    /// position 0 is an ATOM: `{:cont}` and `{:cont, :halt}` are two questions,
-    /// the plan can ask them, and the drop would now be throwing away a
-    /// destination the runtime CAN route to.
+    /// both projected to "a 2-tuple" -- and fz-kdt.118 dropped the narrow twin
+    /// because nothing but arm order, which is the scheduler's, decided
+    /// whether `:halt` ever halted. fz-kdt.119 gave the tuple test a
+    /// sub-predicate per position, position 0 is an ATOM, and `{:cont}` and
+    /// `{:cont, :halt}` became two questions -- at which point 118's
+    /// group-local drop stopped reaching the pair and the callsite compiled to
+    /// a two-armed dispatch with the narrow arm seated second.
     ///
-    /// So the callsite compiles to an honest two-armed dispatch, and the seat
-    /// is the wide arm first: the two arms carry the SAME payload type, so
-    /// they erasing-overlap through the head test's unread tail (the
-    /// one-sided-filter law -- heads equal, tails erased), and only the wide
-    /// arm's surface names everything the narrow one's holds there. The old
-    /// assertion and
-    /// this one are the same law -- never let arm order decide meaning -- read
-    /// against two different runtimes.
+    /// Seated second is DEAD, and this is the ticket that says so. The two
+    /// arms carry the SAME payload type, so they erasing-overlap through the
+    /// list head's unread tail (the one-sided-filter law -- heads equal, tails
+    /// erased), and only the wide arm's surface names everything the narrow
+    /// one's holds there. So `covering(narrow, wide)` is false, `seats_before`
+    /// declines to put the narrow arm ahead of the arm that stands in for it,
+    /// and the drop takes it: `Direct(wide)`, one destination, no plan.
+    ///
+    /// Nothing is lost by that. `stands_in_for` proves the wide arm is the
+    /// same callee on a surface that contains the narrow one's, so it is
+    /// complete for every value the narrow arm could have received -- and the
+    /// arrival that seats the wide arm first is one the fixpoint could have
+    /// delivered, so this routing is one a legal arrival already produced.
     #[test]
-    fn a_narrower_twin_becomes_an_arm_once_the_test_can_tell_it_apart() {
+    fn a_narrower_twin_the_seat_would_not_put_first_is_no_destination() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -963,28 +1593,20 @@ mod tests {
             activation_inputs: None,
             return_ty: None,
         };
-        let summary = CallSiteSummary {
-            targets: vec![target(command), target(cont)],
-            return_ty: None,
-        };
 
-        let CallDestinations::Dispatch(dispatch) =
-            call_destinations(world.types_mut(), &summary).expect("destinations should compile")
-        else {
-            panic!("an atom position the plan can test makes the narrow twin a real destination");
-        };
-        assert_eq!(
-            dispatch.targets,
-            vec![target(command), target(cont)],
-            "both arms survive, and the arm whose surface covers its sibling's tail-erased payload \
-             position is tested first",
-        );
-        let questions = runtime_questions(world.types_mut(), &dispatch.targets);
-        assert_ne!(
-            questions[0][1], questions[1][1],
-            "the two arms put different questions to the state, which is what makes them two \
-             destinations rather than a coin toss",
-        );
+        for arrival in [vec![target(command), target(cont)], vec![target(cont), target(command)]] {
+            let summary = CallSiteSummary {
+                targets: arrival.clone(),
+                return_ty: None,
+            };
+            let destinations = call_destinations(world.types_mut(), &summary).expect("destinations should compile");
+            assert_eq!(
+                destinations,
+                CallDestinations::Direct(target(command)),
+                "the narrow twin is seated second wherever it arrives, which is nowhere at all, so \
+                 the callsite has one destination and makes no runtime choice",
+            );
+        }
     }
 
     /// fz-kdt.104 (refuter finding): the drop is only sound between
@@ -1028,6 +1650,295 @@ mod tests {
         assert_eq!(
             dispatch.targets, summary.targets,
             "a domain that contains another's is not a stand-in for another function's body",
+        );
+    }
+
+    /// fz-kdt.118's own population, stated in one question so the
+    /// generalization can be read as the identity on it.
+    ///
+    /// Two arms of ONE callee over maps with the same key at different value
+    /// types. A map test is a KIND check -- the axis is `Erasing`, because a
+    /// map value tells the runtime it is a map and nothing about what it holds
+    /// -- so `%{a: int}` and `%{a: int | float}` put one and the same question,
+    /// and the narrow surface is strictly inside the wide one.
+    ///
+    /// Equal tests make `strictly_inside` false, so `seats_before` cannot put
+    /// the narrow arm ahead of the arm that stands in for it, and the drop
+    /// takes it. That is fz-kdt.118's rule exactly: where the two arms are one
+    /// question, the narrower is dropped for the wider twin of the same
+    /// callee. The rule this file now applies reaches further -- it is
+    /// quantified over every arm, not the members of one question group -- but
+    /// on 118's population it decides what 118 decided.
+    #[test]
+    fn a_map_content_no_test_can_read_leaves_only_the_wider_arm() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let ints_floats = world.types_mut().union(int, float);
+        let key = crate::types::MapKey::Atom("a".to_string());
+        let narrow_map = world.types_mut().map(&[(key.clone(), int)]);
+        let wide_map = world.types_mut().map(&[(key, ints_floats)]);
+        let read = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "read_a", 1);
+        let target = |input| CallTargetSummary {
+            callee: SelectedCallee::Function(read),
+            surface_inputs: vec![input],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(narrow_map);
+        let wide = target(wide_map);
+
+        let questions = target_questions(world.types_mut(), &[narrow.clone(), wide.clone()]);
+        assert_eq!(
+            questions[0], questions[1],
+            "the map axis reads nothing inside the map, so the two arms put one and the same \
+             question -- which is the premise fz-kdt.118's drop was stated on",
+        );
+
+        for order in [[&narrow, &wide], [&wide, &narrow]] {
+            let arrival = order.into_iter().cloned().collect::<Vec<_>>();
+            let summary = CallSiteSummary {
+                targets: arrival.clone(),
+                return_ty: None,
+            };
+            let destinations = call_destinations(world.types_mut(), &summary).expect("destinations should compile");
+            assert_eq!(
+                destinations,
+                CallDestinations::Direct(wide.clone()),
+                "nothing the plan emits separates the two, so the narrow arm is no choice at all \
+                 and the callsite is a direct call on the arm that stands in for it -- arrived \
+                 {arrival:?}",
+            );
+        }
+    }
+
+    /// The precision boundary: the drop never takes an arm the seat would have
+    /// put first.
+    ///
+    /// `int` and `int | float` on one callee. The narrow surface is strictly
+    /// inside the wide one and its test is inside the wide one's, so the wide
+    /// arm stands in for it -- but the numeric axes are SEPARATING: a value
+    /// that passes the `int` test is an int, which the narrow arm's surface
+    /// names, so neither arm can misread what the other's test admits.
+    /// `Covering` therefore holds both ways, the precision preference settles
+    /// it, and `seats_before(narrow, wide)` is TRUE.
+    ///
+    /// So the narrow arm survives and is tested first: a value both tests
+    /// admit runs the body that named it most precisely (fz-kdt.129), and the
+    /// wide arm still receives everything the narrow test refuses. This is the
+    /// half of the rule that has no analogue in fz-kdt.118 -- 118 dropped on
+    /// stand-in alone, and stand-in alone would delete this specialization.
+    #[test]
+    fn a_narrower_arm_on_a_separating_axis_survives_and_is_seated_first() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let ints_floats = world.types_mut().union(int, float);
+        let bump = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "bump", 1);
+        let target = |input| CallTargetSummary {
+            callee: SelectedCallee::Function(bump),
+            surface_inputs: vec![input],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(int);
+        let wide = target(ints_floats);
+
+        for arrival in [vec![narrow.clone(), wide.clone()], vec![wide.clone(), narrow.clone()]] {
+            let summary = CallSiteSummary {
+                targets: arrival.clone(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("an int arm the runtime can recognize is a destination, arrived {arrival:?}");
+            };
+            assert_eq!(
+                dispatch.targets,
+                vec![narrow.clone(), wide.clone()],
+                "an int passes the int test only by being an int, so the narrow arm can misread \
+                 nothing and the seat puts it first -- which is exactly why the drop leaves it \
+                 alone, arrived {arrival:?}",
+            );
+        }
+    }
+
+    /// Test containment is a SEPARATE conjunct from surface containment, and
+    /// this is the pair that proves it: the narrower SURFACE carries the WIDER
+    /// TEST.
+    ///
+    /// `[int | :ok] & not([:ok])` is a strict subtype of `[int | :ok]` -- it
+    /// is that type with one clause carved out. But a negated list clause
+    /// cannot be projected to a head question, so the whole list axis degrades
+    /// to `ListShapes::shape_only`: the narrow arm asks "is it a list" where
+    /// its wide sibling asks "is it a list whose head is an int or `:ok`". The
+    /// narrow arm's test therefore admits `[:zzz]`, which the wide arm's
+    /// refuses.
+    ///
+    /// Drop it on surface containment alone and `[:zzz]` stops escaping into
+    /// the narrow arm and starts reaching the wide arm's body -- or the plan's
+    /// fail node -- which is an outcome no arrival of these two arms ever
+    /// produced. The relative-soundness theorem is only ever "every post-drop
+    /// routing is one a legal arrival produced", so an arm whose test admits
+    /// what its stand-in's refuses is not a redundant arm and is not dropped.
+    ///
+    /// Both survive, and the seat is the wide arm first: their tests overlap
+    /// on the list axis, only the wide arm's surface names what the narrow
+    /// one's holds there, so coverage runs one way only.
+    #[test]
+    fn a_narrow_surface_carrying_the_wider_test_is_not_dropped_for_it() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok_atom = world.types_mut().atom_lit("ok");
+        let ints_oks = world.types_mut().union(int, ok_atom);
+        let ok_list = world.types_mut().list(ok_atom);
+        let wide_list = world.types_mut().list(ints_oks);
+        let narrow_list = world.types_mut().difference(wide_list, ok_list);
+        let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 1);
+        let target = |list| CallTargetSummary {
+            callee: SelectedCallee::Function(step),
+            surface_inputs: vec![list],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(narrow_list);
+        let wide = target(wide_list);
+
+        assert!(
+            world.types_mut().is_subtype(&narrow_list, &wide_list) && narrow_list != wide_list,
+            "the carved type must be a STRICT subtype, or the pair says nothing about the \
+             conjunct under test",
+        );
+        let questions = target_questions(world.types_mut(), &[narrow.clone(), wide.clone()]);
+        assert!(
+            !questions[0][0].contained_in(&questions[1][0]) && questions[1][0].contained_in(&questions[0][0]),
+            "the negated clause degrades the list axis to shape-only, so the narrower surface asks \
+             the WIDER question -- which is what makes the test conjunct load-bearing rather than \
+             implied by the surface one",
+        );
+
+        for arrival in [vec![narrow.clone(), wide.clone()], vec![wide.clone(), narrow.clone()]] {
+            let summary = CallSiteSummary {
+                targets: arrival.clone(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("an arm admitting values its sibling refuses is a destination, arrived {arrival:?}");
+            };
+            assert_eq!(
+                dispatch.targets,
+                vec![wide.clone(), narrow.clone()],
+                "both arms survive because neither test is inside the other, and the covering arm \
+                 is seated first -- arrived {arrival:?}",
+            );
+        }
+    }
+
+    /// The drop's residue, three arms wide: removing an arm DISSOLVES the
+    /// question group it belonged to, and the survivor that group pinned is
+    /// promoted past the arm which used to swallow its values.
+    ///
+    /// The three arms, on one callsite:
+    ///
+    /// ```text
+    ///     N   impl_two   (%{a: int},         :a)
+    ///     S   impl_zero  (%{a: int | float}, :a)
+    ///     W   impl_two   (%{a: int | float}, :a | :c)
+    /// ```
+    ///
+    /// A map test is a KIND check, so all three ask "is it a map" of input 0
+    /// and their atom sets of input 1: N and S put ONE question and W puts
+    /// another. With all three present the seat moves the group `{N, S}` as a
+    /// unit, and coverage quantifies over the product -- W's `%{a: int|float}`
+    /// is not inside N's `%{a: int}`, so the group cannot cover W, W covers the
+    /// group, and W is seated first on every one of the six arrivals. Nothing
+    /// the group holds ever reaches S: W's test admits every map at `:a`.
+    ///
+    /// W stands in for N -- same callee, strictly wider surface, a test that
+    /// admits everything N's admits -- and `covering(N, W)` is false, so the drop
+    /// takes N. That is correct for N. What it also does is dissolve `{N, S}`:
+    /// S is judged alone, coverage runs both ways between S and W, S's test is
+    /// strictly inside W's, and the precision preference seats S FIRST. So
+    /// `(%{a: 1}, :a)` reaches `impl_zero` here and reached `impl_two` under
+    /// every arrival of the three arms.
+    ///
+    /// It is not a blind escape: the seat only moves what it covers, so S's
+    /// surface names everything it now receives. It is a routing the drop
+    /// decides, and this gate is here so it cannot widen unnoticed. The
+    /// precondition -- a dropped arm sharing its question with a surviving one
+    /// -- occurs on no callsite in the corpus (swept over 597 fixtures at the
+    /// fz-kdt.143 landing: zero), and `unroutable_alternatives` states what
+    /// closing it would take.
+    #[test]
+    fn a_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let ints_floats = world.types_mut().union(int, float);
+        let key = crate::ground_value::MapKey::Atom("a".to_string());
+        let narrow_map = world.types_mut().map(&[(key.clone(), int)]);
+        let wide_map = world.types_mut().map(&[(key, ints_floats)]);
+        let atom_a = world.types_mut().atom_lit("a");
+        let atom_c = world.types_mut().atom_lit("c");
+        let atoms_a_c = world.types_mut().union(atom_a, atom_c);
+        let two = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl_two", 2);
+        let zero = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl_zero", 2);
+        let target = |callee, map, atom| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![map, atom],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(two, narrow_map, atom_a);
+        let sibling = target(zero, wide_map, atom_a);
+        let wide = target(two, wide_map, atoms_a_c);
+        let arrival = vec![narrow, sibling.clone(), wide.clone()];
+
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrival));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        assert_eq!(
+            questions[0], questions[1],
+            "the dropped arm and the survivor must ask ONE question, or this is not the shape \
+             under test",
+        );
+        assert_ne!(
+            questions[1], questions[2],
+            "and the arm that stands in for the dropped one must ask another, or there is no \
+             group to dissolve",
+        );
+        assert_eq!(
+            specificity_order(world.types(), &questions, &observable),
+            vec![2, 0, 1],
+            "with all three arms the group {{N, S}} cannot cover W's surface and W covers it, so \
+             the seat puts W first and S receives nothing",
+        );
+
+        let summary = CallSiteSummary {
+            targets: arrival,
+            return_ty: None,
+        };
+        let CallDestinations::Dispatch(dispatch) =
+            call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+        else {
+            panic!("two arms of two callees the atom sets separate are two destinations");
+        };
+        assert_eq!(
+            dispatch.targets,
+            vec![sibling, wide],
+            "dropping N leaves S judged alone, coverage then runs both ways and precision seats S \
+             FIRST -- so a map at `:a` reaches impl_zero, which no arrival of the three arms ever \
+             did",
         );
     }
 
@@ -1128,7 +2039,7 @@ mod tests {
             return_ty: None,
         };
 
-        let questions = runtime_questions(world.types_mut(), &[target(boxed_one), target(boxed_other)]);
+        let questions = target_questions(world.types_mut(), &[target(boxed_one), target(boxed_other)]);
         assert_ne!(
             questions[0], questions[1],
             "a nested callable position must be a question, or the tuple hides the one thing \
@@ -1183,7 +2094,7 @@ mod tests {
         };
 
         assert_ne!(boxed_int, boxed_float, "the lattice keeps the two capture types apart");
-        let questions = runtime_questions(world.types_mut(), &[target(boxed_int), target(boxed_float)]);
+        let questions = target_questions(world.types_mut(), &[target(boxed_int), target(boxed_float)]);
         assert_ne!(
             questions[0], questions[1],
             "and so does the runtime: two capture layouts are two construction wrappers, one \
@@ -1322,7 +2233,7 @@ mod tests {
     /// The state test is now per position, and both positions are ATOMS. A
     /// `{:cont, :true}` fails the narrow arm's first question outright, so
     /// there is nothing left for coverage to protect: the pair overlaps
-    /// NOWHERE erasing, `covers` holds both ways, and the second conjunct --
+    /// NOWHERE erasing, `Covering` holds both ways, and the second conjunct --
     /// precision -- settles it for the arm that named its values most tightly.
     /// The wide arm still receives everything the narrow one's test refuses.
     ///
@@ -1487,7 +2398,7 @@ mod tests {
         let atoms_arm = target(atom_list, either);
         let ints_arm = target(int_list, all_one);
 
-        let questions = runtime_questions(world.types_mut(), &[atoms_arm.clone(), ints_arm.clone()]);
+        let questions = target_questions(world.types_mut(), &[atoms_arm.clone(), ints_arm.clone()]);
         assert!(
             !questions[0][0].overlaps_on_an_erasing_axis(&questions[1][0]),
             "a list of atoms and a list of ints ask disjoint heads, so the only value that passes \
@@ -1513,11 +2424,573 @@ mod tests {
         }
     }
 
-    /// fz-kdt.107 step 3's trio, every arrival order: the head question seats
-    /// the covering arm and leaves the rest exactly as they arrived.
+    /// THE PRECONDITION MAY NOT OVER-SEPARATE: wherever two surfaces share a
+    /// value, the tests they project to must admit one.
+    ///
+    /// This is the soundness half of fz-kdt.186. Calling a pair `Separated`
+    /// buys the seat the right to leave it alone AND buys the drop the right
+    /// to remove one of its arms, so a projection that reported "disjoint"
+    /// about two surfaces a value actually lies in both of would be a routing
+    /// decision made on a fiction -- the same shape of error, in the other
+    /// direction.
+    ///
+    /// The implication holds by construction: a test ADMITS everything its
+    /// surface holds (it is a coarsening), so a value in both surfaces passes
+    /// both tests. This gate holds every axis to it over a battery whose pairs
+    /// exercise each way the projection can lose precision -- `any` against
+    /// every kind, an inexact tuple against an exact one, a cofinite atom set,
+    /// a list that admits `[]` beside one that cannot, callable captures wide
+    /// and narrow, and the same shapes one level down inside a tuple.
+    #[test]
+    fn a_separated_pair_of_tests_is_a_disjoint_pair_of_surfaces() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let t = world.types_mut();
+        let any = t.any();
+        let int = t.int();
+        let float = t.float();
+        let ok = t.atom_lit("ok");
+        let tail = t.atom_lit("tail");
+        let nil = t.atom_lit("nil");
+        let int_or_tail = t.union(int, tail);
+        let ok_or_tail = t.union(ok, tail);
+        let empty = t.empty_list();
+        let int_list = t.list(int);
+        let tail_list = t.list(tail);
+        let any_list = t.list(any);
+        let mixed_list = t.list(int_or_tail);
+        let ok_tail_list = t.list(ok_or_tail);
+        let int_list_or_empty = t.union(int_list, empty);
+        let any_pair = t.tuple(&[any, any]);
+        let int_pair = t.tuple(&[int, int]);
+        let cont_pair = t.tuple(&[ok, int_list]);
+        let halt_pair = t.tuple(&[tail, mixed_list]);
+        let listy_pair = t.tuple(&[int_list, ok]);
+        let listy_pair_wide = t.tuple(&[mixed_list, ok_or_tail]);
+        let triple = t.tuple(&[int, int, int]);
+        let lam_any = t.closure_lit(ClosureTarget(7), vec![any], 1);
+        let lam_int = t.closure_lit(ClosureTarget(7), vec![int], 1);
+        let lam_float = t.closure_lit(ClosureTarget(7), vec![float], 1);
+        let lam_list = t.closure_lit(ClosureTarget(7), vec![int_list], 1);
+        let lam_mixed = t.closure_lit(ClosureTarget(7), vec![mixed_list], 1);
+        let other_lam = t.closure_lit(ClosureTarget(8), vec![int], 1);
+        let lam_either = t.union(lam_int, other_lam);
+        let map_one = t.map(&[]);
+        let brand_x = t.mint_brand(int, "X");
+        let brand_y = t.mint_brand(int, "Y");
+        let not_ok = t.difference(any, ok);
+        let not_int = t.difference(any, int);
+        let not_lam_int = t.difference(any, lam_int);
+        let battery = [
+            any,
+            int,
+            float,
+            ok,
+            tail,
+            nil,
+            int_or_tail,
+            empty,
+            int_list,
+            tail_list,
+            any_list,
+            mixed_list,
+            ok_tail_list,
+            int_list_or_empty,
+            any_pair,
+            int_pair,
+            cont_pair,
+            halt_pair,
+            listy_pair,
+            listy_pair_wide,
+            triple,
+            lam_any,
+            lam_int,
+            lam_float,
+            lam_list,
+            lam_mixed,
+            other_lam,
+            lam_either,
+            map_one,
+            brand_x,
+            brand_y,
+            not_ok,
+            not_int,
+            not_lam_int,
+        ];
+
+        let mut over_separated = Vec::new();
+        let mut shared = 0;
+        for left in battery {
+            for right in battery {
+                let both = world.types_mut().intersect(left, right);
+                if world.types().is_empty(&both) {
+                    continue;
+                }
+                shared += 1;
+                let types = world.types();
+                if !types
+                    .runtime_type_predicate(&left)
+                    .overlaps(&types.runtime_type_predicate(&right))
+                {
+                    over_separated.push(format!(
+                        "{} and {} share {} and their tests claim to be disjoint",
+                        types.display(&left),
+                        types.display(&right),
+                        types.display(&both),
+                    ));
+                }
+            }
+        }
+        assert!(
+            over_separated.is_empty(),
+            "a test that admits everything its surface holds cannot refuse a value both surfaces hold, \
+             and a seat that believed otherwise would leave a reachable pair unseated and drop a live \
+             arm: {over_separated:#?}",
+        );
+        assert!(
+            shared > 100,
+            "the battery must actually meet: {shared} pairs shared a value",
+        );
+        let asymmetric = {
+            let types = world.types();
+            let mut asymmetric = Vec::new();
+            for left in battery {
+                for right in battery {
+                    let (a, b) = (
+                        types.runtime_type_predicate(&left),
+                        types.runtime_type_predicate(&right),
+                    );
+                    if a.overlaps(&b) != b.overlaps(&a) {
+                        asymmetric.push(format!("{} and {}", types.display(&left), types.display(&right)));
+                    }
+                }
+            }
+            asymmetric
+        };
+        assert!(
+            asymmetric.is_empty(),
+            "\"one value passes both tests\" names no direction, and `Seating::Separated` is read in \
+             one direction only -- by `canonically_order_separated_neighbours`, of the pair it is \
+             about to swap. An asymmetric reading would make that swap depend on which of the two \
+             the caller passed first: {asymmetric:#?}",
+        );
+        let types = world.types();
+        let self_blind = battery
+            .into_iter()
+            .filter(|ty| !types.is_empty(ty))
+            .filter(|ty| {
+                let test = types.runtime_type_predicate(ty);
+                !test.overlaps(&test)
+            })
+            .map(|ty| types.display(&ty))
+            .collect::<Vec<_>>();
+        assert!(
+            self_blind.is_empty(),
+            "every shape here must project to a test that admits SOMETHING -- a test blind to its own \
+             surface is the projection failing to coarsen it, and the implication above would hold of \
+             such a pair for no reason at all. `an_untested_position_is_not_a_separation` carries the \
+             one shape that does fail it, and keeps it out of the seat: {self_blind:#?}",
+        );
+    }
+
+    /// fz-kdt.186: a pair the plan's own tests keep apart OUTRIGHT is not a
+    /// seat question, however blind some other subject happens to be.
+    ///
+    /// These are a construction wrapper of `00277_enum_tier0_fixture`, arm 4
+    /// against arm 9, written down as a two-subject callsite. (It was `w13` in
+    /// the PUBLISHED numbering of the tree it was measured in; 00277 publishes
+    /// five wrappers at head, all single-member with no selection plan since
+    /// fz-kdt.199, so `w13` names nothing in either numbering now -- and a
+    /// wrapper's published number is not the number a dump prints either, which
+    /// is fz-kdt.193's.) The shape is what matters and it is written out here:
+    ///
+    /// ```text
+    ///     arm 4    s0 = :tail    s1 = [:tail]
+    ///     arm 9    s0 = int      s1 = [int] | [int | :tail]
+    /// ```
+    ///
+    /// Subject 0 asks an ATOM against an INT, which no value answers both
+    /// ways, so the plan's own first test routes every value to one arm or the
+    /// other and the order between them decides nothing. Subject 1 is the list
+    /// behind it, where the two heads overlap and neither surface contains the
+    /// other, so the coverage check judged the pair blind there -- and, reading
+    /// each subject under an `all`, took subject 0's disjointness for
+    /// "separation" and reported a routing that cannot happen.
+    ///
+    /// The reading it produced was "arm 9 covers arm 4, seated second", one of
+    /// the twenty-eight such readings the static census carried on this
+    /// fixture's seven eleven-member wrappers. There is no value to route, so
+    /// there is nothing to seat: the pair is `Seating::Separated`,
+    /// [`seats_before`] is false in both directions, and both arrivals come
+    /// out as they went in.
+    #[test]
+    fn arms_no_value_can_reach_both_of_are_not_a_seat_question() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tail_atom = world.types_mut().atom_lit("tail");
+        let tail_list = world.types_mut().list(tail_atom);
+        let int_list = world.types_mut().list(int);
+        let int_or_tail = world.types_mut().union(int, tail_atom);
+        let mixed_list = world.types_mut().list(int_or_tail);
+        let either_list = world.types_mut().union(int_list, mixed_list);
+        let member = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 2);
+        let target = |head, list| CallTargetSummary {
+            callee: SelectedCallee::Function(member),
+            surface_inputs: vec![head, list],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let tails_arm = target(tail_atom, tail_list);
+        let ints_arm = target(int, either_list);
+
+        let arms = [tails_arm.clone(), ints_arm.clone()];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        assert!(
+            !questions[0][0].overlaps(&questions[1][0]),
+            "subject 0 asks `:tail` against `int`, and no value answers both",
+        );
+        assert!(
+            questions[0][1].overlaps_on_an_erasing_axis(&questions[1][1]),
+            "subject 1 is the list behind it, where both heads admit `:tail` and neither test reads the \
+             tail -- the subject the old reading called blind",
+        );
+        let types = world.types();
+        assert_eq!(
+            seating(types, &questions, &observable, &[0], &[1]),
+            Seating::Separated,
+            "one disjoint subject separates the whole pair: a row is a conjunction over its subjects",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &[1], &[0]),
+            Seating::Separated,
+            "separation is symmetric, so neither direction is a covering one",
+        );
+        assert!(
+            !seats_before(types, &questions, &observable, &[0], &[1])
+                && !seats_before(types, &questions, &observable, &[1], &[0]),
+            "the seat has no opinion about a pair that routes nothing, in either direction",
+        );
+
+        // Read the expected order off the quantity PRODUCTION keys the repair
+        // on -- the observable envelope, not the surface it was projected
+        // from. The two agree on this pair, which carries no callable, and a
+        // gate that mirrored production with the other quantity would stop
+        // agreeing on one that did.
+        let canonical = match types.cmp_tys(&observable[0], &observable[1]) {
+            Ordering::Greater => vec![ints_arm.clone(), tails_arm.clone()],
+            _ => vec![tails_arm.clone(), ints_arm.clone()],
+        };
+        for arrival in [[&tails_arm, &ints_arm], [&ints_arm, &tails_arm]] {
+            let targets = arrival.into_iter().cloned().collect::<Vec<_>>();
+            let summary = CallSiteSummary {
+                targets: targets.clone(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("two arms subject 0 separates are two destinations");
+            };
+            assert_eq!(
+                dispatch.targets, canonical,
+                "no value reaches both arms, so which of them the fixpoint delivered first is not a \
+                 fact about the program: BOTH arrivals come out in one `cmp_tys` order, and neither \
+                 arm is dropped for the other (fz-kdt.194)",
+            );
+        }
+    }
+
+    /// THE TRANSITIVITY TRAP, and the honest limit it draws.
+    ///
+    /// `Separated` is symmetric but NOT transitive: `A|B` separated and `B|C`
+    /// separated says nothing at all about `A|C`. Three list arms are the
+    /// smallest witness --
+    ///
+    /// ```text
+    ///     A  {:p, [int | :ok]}    B  {:q, [int]}    C  {:p, [int | :tail]}
+    /// ```
+    ///
+    /// -- where `A|B` and `B|C` are separated at the TAG, which no value
+    /// answers both ways, while `A|C` carry the same tag and ask the list
+    /// behind it a question that shares `int` with neither surface containing
+    /// the other, so they are fz-kdt.131's class and no rule here may decide
+    /// them. (Two bare lists would not do it: every list type admits `[]`, so
+    /// even disjoint heads leave a list pair reachable.)
+    ///
+    /// So there is no run to sort, and the canonical repair does not pretend
+    /// there is: it swaps ADJACENT separated pairs and stops at `A|C`. What it
+    /// buys on such a triple is therefore partial, and this gate writes down
+    /// exactly which part:
+    ///
+    /// - the repair NEVER moves `A` past `C`. Whichever of them arrived first
+    ///   is still first, at both arrivals, which is the whole safety claim.
+    /// - the two arrivals below still come out DIFFERENT, because the pair
+    ///   that blocks is the one whose order means something. Where a run is
+    ///   pairwise separated all the way through, the repair does reach one
+    ///   order from every arrival -- `arms_no_value_can_reach_both_of_are_not_a_seat_question`
+    ///   is that case, and it is the one the corpus's 22 artifact movers were.
+    ///
+    /// A comparison sort would "fix" this by moving `A` past `C` on the
+    /// strength of a comparator that never asked whether it may. That is the
+    /// bug this shape exists to forbid.
+    #[test]
+    fn a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let p = world.types_mut().atom_lit("p");
+        let q = world.types_mut().atom_lit("q");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_tail = world.types_mut().union(int, tail);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let int_list = world.types_mut().list(int);
+        let tail_list = world.types_mut().list(int_or_tail);
+        let a = world.types_mut().tuple(&[p, ok_list]);
+        let b = world.types_mut().tuple(&[q, int_list]);
+        let c = world.types_mut().tuple(&[p, tail_list]);
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
+        let target = |tagged| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![tagged],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let (arm_a, arm_b, arm_c) = (target(a), target(b), target(c));
+        let arms = [arm_a.clone(), arm_b.clone(), arm_c.clone()];
+        {
+            let questions = target_questions(world.types_mut(), &arms);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+            let types = world.types();
+            for (x, y) in [(0, 1), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Separated,
+                    "arm {x} and arm {y} ask disjoint TAGS, so no value reaches both",
+                );
+            }
+            assert_eq!(
+                seating(types, &questions, &observable, &[0], &[2]),
+                Seating::Escaping,
+                "the two ends carry one tag and share `int` behind it, and neither surface names \
+                 everything the other holds -- separation is not transitive, and this is the pair \
+                 that proves it",
+            );
+        }
+
+        let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
+            let summary = CallSiteSummary {
+                targets: arrival.to_vec(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms the tag question tells apart are three destinations");
+            };
+            dispatch.targets
+        };
+        let forwards = seated(&mut world, &[arm_a.clone(), arm_b.clone(), arm_c.clone()]);
+        let backwards = seated(&mut world, &[arm_c.clone(), arm_b, arm_a.clone()]);
+
+        let position = |order: &[CallTargetSummary], arm: &CallTargetSummary| {
+            order
+                .iter()
+                .position(|target| target == arm)
+                .expect("every arm survives")
+        };
+        assert!(
+            position(&forwards, &arm_a) < position(&forwards, &arm_c),
+            "arriving A-before-C, A stays before C: the repair may not decide fz-kdt.131's pair",
+        );
+        assert!(
+            position(&backwards, &arm_c) < position(&backwards, &arm_a),
+            "arriving C-before-A, C stays before A -- the same refusal, read the other way",
+        );
+        assert_ne!(
+            forwards, backwards,
+            "and so the two arrivals do NOT converge: where a meaning-bearing pair blocks the run, \
+             the order is still a function of the arrival, and that residue belongs to fz-kdt.131 \
+             rather than to any canonical order",
+        );
+    }
+
+    /// The tie the canonical repair can never be handed: two DISTINCT question
+    /// groups whose keys compare `Equal`.
+    ///
+    /// `cmp_tys` is `Equal` only on identical `Ty` slices, and a group's key is
+    /// one of its members' observable surfaces. So a tie would mean one surface
+    /// sitting in two groups -- but the question is a function of the surface,
+    /// and one question is one group. The repair therefore never has to fall
+    /// through to a second key, and never has to break a tie by arrival.
+    ///
+    /// Held on the shape that would produce one if anything did: two arms on
+    /// two DIFFERENT callees carrying the very same surface.
+    #[test]
+    fn two_arms_that_say_the_same_thing_are_one_group_and_never_a_tie() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let shared = world.types_mut().list(int_or_ok);
+        let separate = world.types_mut().list(ok);
+        let left_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "left_impl", 1);
+        let right_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "right_impl", 1);
+        let target = |function, surface| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![surface],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arms = [
+            target(left_fn, shared),
+            target(right_fn, shared),
+            target(left_fn, separate),
+        ];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        let groups = grouped_by_question(&questions);
+        assert_eq!(
+            groups,
+            vec![vec![0, 1], vec![2]],
+            "two arms carrying one surface ask one question, so they are ONE group however many \
+             callees they name",
+        );
+        let types = world.types();
+        let keys = groups
+            .iter()
+            .map(|group| canonical_key(types, &observable, group))
+            .collect::<Vec<_>>();
+        for (x, group_x) in groups.iter().enumerate() {
+            for (y, group_y) in groups.iter().enumerate().skip(x + 1) {
+                assert_ne!(
+                    types.cmp_tys(&observable[keys[x]], &observable[keys[y]]),
+                    Ordering::Equal,
+                    "distinct groups may never tie under the repair's key -- an equal key is an equal \
+                     surface, an equal surface is an equal question, and one question is one group: \
+                     {group_x:?} against {group_y:?}",
+                );
+            }
+        }
+    }
+
+    /// A position the plan does NOT test may not separate a pair, and the
+    /// separation check has to say so itself rather than trust that every
+    /// realizable test overlaps itself.
+    ///
+    /// `discriminating_inputs` drops a position where every arm carries the
+    /// SAME observable surface -- the plan emits no test there at all -- so a
+    /// pair "separated" there is separated by nothing the runtime asks. The
+    /// projection makes that reachable: a tuple clause with a SUBTRACTED
+    /// signature loses its whole arity in
+    /// `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int,
+    /// int})` holds every pair that is not two ints and yet projects to a test
+    /// admitting nothing, which does not overlap itself.
+    ///
+    /// Both arms below carry that surface at subject 1 and differ only at
+    /// subject 0, where `:ok` sits inside `:ok | :tail` on the ATOM axis --
+    /// separating, so coverage runs both ways and the precision preference
+    /// seats the narrow arm first. Read subject 1 through `overlaps` alone and
+    /// the pair is `Separated`, `seats_before(N, W)` is false, and the drop
+    /// takes the narrow arm for its stand-in: the callsite collapses to
+    /// `Direct(W)` and `(:ok, pair)` runs a body no arrival of these two arms
+    /// ever sent it to. That is the relative-soundness theorem
+    /// [`unroutable_alternatives`] rests on, broken by a question the plan
+    /// never puts.
+    ///
+    /// One and the same question separates nothing, so [`seating`] skips a
+    /// position the two arms ask identically, and the narrow arm survives.
+    #[test]
+    fn an_untested_position_is_not_a_separation() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 2);
+        let (ok, ok_or_tail, carved) = {
+            let types = world.types_mut();
+            let any = types.any();
+            let int = types.int();
+            let ok = types.atom_lit("ok");
+            let tail = types.atom_lit("tail");
+            let ok_or_tail = types.union(ok, tail);
+            let any_pair = types.tuple(&[any, any]);
+            let int_pair = types.tuple(&[int, int]);
+            let carved = types.difference(any_pair, int_pair);
+            (ok, ok_or_tail, carved)
+        };
+        assert!(
+            !world.types().is_empty(&carved),
+            "the shared surface must be REALIZABLE, or the arms would be dead for an honest reason",
+        );
+        let target = |head, second| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![head, second],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(ok, carved);
+        let wide = target(ok_or_tail, carved);
+        let arms = [narrow.clone(), wide.clone()];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        assert_eq!(
+            discriminating_inputs(2, observable.iter().map(Vec::as_slice)),
+            vec![0],
+            "subject 1 is the same surface on both arms, so the plan tests subject 0 and nothing else",
+        );
+        assert!(
+            !questions[0][1].overlaps(&questions[1][1]),
+            "the shared surface's own test does not overlap ITSELF -- the projection defect this gate \
+             refuses to let decide a routing",
+        );
+        let types = world.types();
+        assert_eq!(
+            seating(types, &questions, &observable, &[0], &[1]),
+            Seating::Covering,
+            "a question both arms ask identically separates nothing, whatever that question admits",
+        );
+        assert!(
+            seats_before(types, &questions, &observable, &[0], &[1]),
+            "subject 0 is an ATOM pair, which separates, so coverage runs both ways and precision seats \
+             the arm that named its values most tightly",
+        );
+        assert!(
+            stands_in_for(types, &same_callee(&arms), &observable, &questions, 1, 0),
+            "the wide arm is the narrow one's stand-in, which is what puts the drop in reach at all",
+        );
+        assert!(
+            unroutable_alternatives(types, &same_callee(&arms), &observable, &questions).is_empty(),
+            "the seat puts the narrow arm FIRST, so the drop may not take it: dropping it would send \
+             `(:ok, pair)` to the wide body, which no arrival of these two arms does",
+        );
+        let summary = CallSiteSummary {
+            targets: arms.to_vec(),
+            return_ty: None,
+        };
+        let CallDestinations::Dispatch(dispatch) =
+            call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+        else {
+            panic!("both arms survive, so the callsite is a dispatch and not a direct call");
+        };
+        assert_eq!(
+            dispatch.targets,
+            vec![narrow, wide],
+            "both arms are destinations and the narrow one is tested first",
+        );
+    }
+
+    /// fz-kdt.107 step 3's trio, every arrival order: the covered arm is no
+    /// destination, and the pair no seat can decide arrives as it arrives.
     ///
     /// These are `enum_predicate_search`'s three `List.reduce_while_cont/3`
-    /// arms, and they are the population whose native abort named this ticket:
+    /// arms, and they are the population whose native abort named fz-kdt.107:
     ///
     /// ```text
     ///     A   [:false | :true]
@@ -1530,31 +3003,28 @@ mod tests {
     /// `[:false, :true]` to a body reading heads as ints
     /// (`fz_list_head_int_ref`, exit 134 on both compiled doors).
     ///
-    /// What the head buys is exactly one of the three pairs, and the law says
-    /// which. B AND C OVERLAP AT THE HEAD (both admit an int) and differ only
-    /// in a tail no test reads, so that pair is erasing and the seat must fall
-    /// back to surface coverage -- which B has and C does not, so the seat
-    /// moves B ahead of C. A against C is DISJOINT heads, a real separation,
-    /// so no coverage is owed either way and neither arm is moved. A against B
-    /// overlaps at `:true` and neither surface contains the other: no seat is
-    /// escape-free, and arrival stands.
+    /// B AND C OVERLAP AT THE HEAD (both admit an int) and differ only in a
+    /// tail no test reads, so that pair is erasing and no seat that puts C
+    /// first is escape-free. B is the same callee on a strictly wider surface
+    /// whose test admits every value C's admits, so B stands in for C and the
+    /// seat would never put C ahead of it: C is dropped, and the values it
+    /// would have taken reach B, whose surface names them. A against C is
+    /// DISJOINT heads, a real separation, so A is no stand-in for C and
+    /// dropping C loses A nothing. A against B overlaps at `:true` and neither
+    /// surface contains the other: no seat is escape-free, neither stands in
+    /// for the other, and arrival stands.
     ///
-    /// The A/B pair is PINNED, not fixed. It is one of the two survivors of
-    /// this ticket's escape census and it is fz-kdt.131's facet 3 -- overlap
-    /// without containment -- whose cure is a repr-level or minting-level
-    /// decision, not a seat.
+    /// So on all six arrivals the answer is the same two arms in the order
+    /// they arrived in. What the trio used to pin -- that on the ONE arrival
+    /// `[C, A, B]` the insertion pass could not carry B past the A/B pair it
+    /// may not decide, leaving C ahead of B and `[1, :ok]` reaching the
+    /// int-reading body -- is the seat this ticket removes by removing C.
     ///
-    /// AND IT COSTS ONE SEAT, which is why all six orders are pinned rather
-    /// than one law asserted. The correction is an insertion pass that stops
-    /// at the first group it may not pass, because passing a group means
-    /// passing everything between it and the destination. So on the ONE
-    /// arrival that puts A between C and B -- `[C, A, B]` -- moving B ahead of
-    /// C would also move it ahead of A, which is the pair the rule refuses to
-    /// decide, and B stays where it arrived. That is not a gap in the head
-    /// question: it is fz-kdt.131's residue standing in the way of this
-    /// ticket's cure, measured rather than argued.
+    /// The A/B pair is PINNED, not fixed. It is fz-kdt.131's facet 3 --
+    /// overlap without containment -- whose cure is a repr-level or
+    /// minting-level decision, not a seat and not a drop.
     #[test]
-    fn a_list_head_seats_the_covering_arm_and_leaves_the_inseparable_pair_as_it_arrived() {
+    fn a_list_head_drops_the_covered_arm_and_leaves_the_inseparable_pair_as_it_arrived() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -1587,22 +3057,20 @@ mod tests {
             }
         };
 
-        // Arrival, and the seat it earns. Five of the six put B ahead of C,
-        // which is the abort dying; the sixth is A standing between them.
-        let expected = [
-            (["A", "B", "C"], ["A", "B", "C"]),
-            (["A", "C", "B"], ["A", "B", "C"]),
-            (["B", "A", "C"], ["B", "A", "C"]),
-            (["B", "C", "A"], ["B", "C", "A"]),
-            (["C", "A", "B"], ["C", "A", "B"]),
-            (["C", "B", "A"], ["B", "C", "A"]),
+        let arrivals = [
+            ["A", "B", "C"],
+            ["A", "C", "B"],
+            ["B", "A", "C"],
+            ["B", "C", "A"],
+            ["C", "A", "B"],
+            ["C", "B", "A"],
         ];
         let slot = |which: &str| match which {
             "A" => 0,
             "B" => 1,
             _ => 2,
         };
-        for (arrived, wanted) in expected {
+        for arrived in arrivals {
             let summary = CallSiteSummary {
                 targets: arrived.iter().map(|which| arms[slot(which)].clone()).collect(),
                 return_ty: None,
@@ -1610,26 +3078,24 @@ mod tests {
             let CallDestinations::Dispatch(dispatch) =
                 call_destinations(world.types_mut(), &summary).expect("destinations should compile")
             else {
-                panic!("three arms over three element types are three destinations, arrived {arrived:?}");
+                panic!("A and B are two destinations no rule may collapse, arrived {arrived:?}");
             };
             let seated = dispatch.targets.iter().map(name).collect::<Vec<_>>();
+            let wanted = arrived
+                .iter()
+                .copied()
+                .filter(|which| *which != "C")
+                .collect::<Vec<_>>();
             assert_eq!(
                 seated, wanted,
-                "the trio's seat moved on arrival {arrived:?}: B ahead of C wherever the pass can \
-                 reach it, A and B exactly as they arrived, and no arm dropped",
-            );
-            let rank = |which: &str, order: &[&str]| order.iter().position(|arm| *arm == which);
-            assert_eq!(
-                rank("A", &seated) < rank("B", &seated),
-                rank("A", &arrived) < rank("B", &arrived),
-                "A and B overlap at `:true` and neither surface contains the other, so no seat is \
-                 escape-free and arrival must stand (fz-kdt.131 facet 3) -- arrived {arrived:?}, \
-                 seated {seated:?}",
+                "B stands in for C on every arrival, so C is no destination on any of them, and \
+                 the A/B pair no seat can decide keeps the order it arrived in -- arrived \
+                 {arrived:?}",
             );
         }
     }
 
-    /// The tail the head test cannot see, and the seat that answers for it.
+    /// The tail the head test cannot see, and the arm it leaves nothing for.
     ///
     /// Two arms of ONE function, `[int]` and `[int | :ok]`, identical
     /// everywhere else. Their head questions OVERLAP -- both admit an int --
@@ -1637,18 +3103,23 @@ mod tests {
     /// erasing however precisely the heads themselves are decided, and the
     /// only escape-free seat is the covering one: `[int | :ok]` first.
     ///
-    /// THIS IS THE GATE THAT WOULD HAVE CAUGHT THE REFUTED RULE. Reading "the
+    /// THIS IS THE GATE THAT WOULD HAVE CAUGHT THE REFUTED SEAT. Reading "the
     /// heads differ" as separation makes this pair separating, and the
     /// precision preference then seats the strictly-narrower `[int]` test
     /// first -- at which point `[1, :ok]` passes its head question and lands in
-    /// the body that reads every element as an int. That is the abort this
+    /// the body that reads every element as an int. That is the abort the list
     /// axis exists to kill, re-created by the axis meant to kill it.
     ///
-    /// Both arms survive: a head question is what puts them in two groups, and
-    /// `unroutable_alternatives` only drops within one. That is fz-kdt.118's
-    /// drop lost, deliberately, and the native code it costs is fz-kdt.143's.
+    /// And a seat the pass will never take is no destination. `[int | :ok]`
+    /// stands in for `[int]` -- one callee, a strictly wider surface, a test
+    /// that admits every value the narrow one's admits -- and `seats_before`
+    /// refuses to put `[int]` ahead of it, so the drop takes the narrow arm
+    /// and the callsite is a `Direct` call on the wide one. Every value the
+    /// narrow arm could have received passes the wide arm's test and lands in
+    /// a body whose surface names it, which is what the arrival that seats the
+    /// wide arm first already did.
     #[test]
-    fn an_arm_whose_head_overlaps_a_wider_one_is_seated_after_it() {
+    fn an_arm_whose_head_overlaps_a_wider_one_is_no_destination_beside_it() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -1675,16 +3146,13 @@ mod tests {
                 targets: arrival.clone(),
                 return_ty: None,
             };
-            let CallDestinations::Dispatch(dispatch) =
-                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
-            else {
-                panic!("two head questions are two destinations, and neither arm is dropped");
-            };
+            let destinations = call_destinations(world.types_mut(), &summary).expect("destinations should compile");
             assert_eq!(
-                dispatch.targets,
-                vec![wide.clone(), narrow.clone()],
+                destinations,
+                CallDestinations::Direct(wide.clone()),
                 "[int] and [int | :ok] agree at the head and disagree only in a tail no test \
-                 reads, so the covering arm is seated first whichever way they arrived",
+                 reads, so the narrow arm can never be seated first and is no destination at all \
+                 -- arrived {arrival:?}",
             );
         }
     }
@@ -1735,7 +3203,7 @@ mod tests {
 
         assert_ne!(over_int, over_float, "the lattice keeps the two value types apart");
 
-        let questions = runtime_questions(world.types_mut(), &[ints.clone(), atoms.clone()]);
+        let questions = target_questions(world.types_mut(), &[ints.clone(), atoms.clone()]);
         assert_eq!(
             questions[0], questions[1],
             "the two arms must put one and the same question, or this gate is not about the \
@@ -1831,8 +3299,9 @@ mod tests {
         };
 
         let edges = [edge(atom), edge(tuple)];
-        let dispatch = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
+        let dispatch = construction_member_selection(world.types_mut(), &edges)
             .expect("callable flow dispatch should compile")
+            .plan
             .expect("distinct callable members require dispatch");
 
         assert!(
@@ -1842,6 +3311,213 @@ mod tests {
                 .iter()
                 .any(|subject| subject.source == SubjectSource::Input { ordinal: 1 }),
             "the bridge must discriminate its state argument, not its shared entry argument"
+        );
+    }
+
+    /// A construction wrapper's own edge builder, so the fz-kdt.179 probes can
+    /// say what a member's surface is and nothing else.
+    fn wrapper_edge(world: &mut World, surface: Vec<Ty>) -> CallableFlowEdge {
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "wrapped", surface.len());
+        let activation = super::super::identity::ActivationKey::from_inputs(
+            crate::compiler2::RootId::for_test(0),
+            function,
+            &surface,
+            world.types_mut(),
+        );
+        CallableFlowEdge {
+            surface: super::super::semantic::CallableSurface {
+                inputs: surface.clone(),
+            },
+            resolution: super::super::identity::ExecutableKey {
+                activation,
+                need: crate::compiler2::ExecutableNeed::Value,
+            },
+            capture_semantic_inputs: Box::default(),
+            surface_semantic_inputs: (0..surface.len()).collect(),
+        }
+    }
+
+    /// fz-kdt.179 attack 1: a member whose sibling stands in for it completely
+    /// is not a destination, and what is left is the sibling ALONE -- so the
+    /// wrapper calls it directly instead of testing for it.
+    #[test]
+    fn a_wrapper_member_its_sibling_stands_in_for_is_not_a_destination() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tail = world.types_mut().atom_lit("tail");
+        let int_or_tail = world.types_mut().union(int, tail);
+        let narrow = world.types_mut().list(int);
+        let wide = world.types_mut().list(int_or_tail);
+        let edges = [
+            wrapper_edge(&mut world, vec![narrow]),
+            wrapper_edge(&mut world, vec![wide]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![1],
+            "`[int]` passes `[int | :tail]`'s head test and its body names less, so it is the arm the seat              would never put first and the drop takes it",
+        );
+        assert!(
+            selection.plan.is_none(),
+            "one member left is one destination, and a wrapper with one destination calls it",
+        );
+    }
+
+    /// fz-kdt.179 attack 2: two members that overlap without either surface
+    /// containing the other are fz-kdt.131's residue, and member selection
+    /// inherits it exactly as a callsite does -- no drop, no seat, arrival
+    /// order kept.
+    #[test]
+    fn wrapper_members_that_overlap_without_containment_keep_arrival_order() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let left = world.types_mut().union(int, ok);
+        let right = world.types_mut().union(int, tail);
+        let left_list = world.types_mut().list(left);
+        let right_list = world.types_mut().list(right);
+        let edges = [
+            wrapper_edge(&mut world, vec![left_list]),
+            wrapper_edge(&mut world, vec![right_list]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![0, 1],
+            "neither surface contains the other, so no member stands in for its sibling and no seat between              them is safer than the one they arrived in (fz-kdt.131)",
+        );
+    }
+
+    /// fz-kdt.179 attack 3: the weld is re-derived, not assumed. Row `i` names
+    /// member `i` of the list transport builds FROM `members`, whatever the
+    /// edge list's own order was.
+    #[test]
+    fn a_seated_selection_welds_row_index_to_member_index() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let left = world.types_mut().union(int, ok);
+        let right = world.types_mut().union(int, tail);
+        let left_list = world.types_mut().list(left);
+        let right_list = world.types_mut().list(right);
+        let edges = [
+            wrapper_edge(&mut world, vec![left_list]),
+            wrapper_edge(&mut world, vec![right_list]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        let plan = selection
+            .plan
+            .expect("two members the runtime can tell apart need a plan");
+        assert_eq!(
+            plan.outcomes
+                .iter()
+                .map(|outcome| outcome.body_id as usize)
+                .collect::<Vec<_>>(),
+            (0..selection.members.len()).collect::<Vec<_>>(),
+            "a selection row's `body_id` is its index in the seated member list, which is the list              transport builds -- the fz-kdt.108 weld, re-derived from the seat",
+        );
+    }
+
+    /// fz-kdt.179 REVIEW PROBE (attack 5): the case the corpus does not
+    /// exercise -- a wrapper whose members the seat must REORDER, not merely
+    /// drop. `[:ok, carved]` sits inside `[:ok | :tail, carved]` on the atom
+    /// axis at subject 0, which SEPARATES, so coverage runs both ways and the
+    /// precision preference seats the narrow member first; because the seat
+    /// puts it first, the drop may NOT take it (both survive). This is the
+    /// reorder path, and the point of the probe is that the weld still holds:
+    /// `members` is the SEATED order (narrow first), whatever the edge list's
+    /// own `cmp_tys` order was, and each row's `body_id` is its index in that
+    /// seated list. This is what every body_id consumer indexes.
+    #[test]
+    fn a_wrapper_the_seat_reorders_welds_row_index_to_member_index() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let (ok, ok_or_tail, carved) = {
+            let types = world.types_mut();
+            let any = types.any();
+            let int = types.int();
+            let ok = types.atom_lit("ok");
+            let tail = types.atom_lit("tail");
+            let ok_or_tail = types.union(ok, tail);
+            let any_pair = types.tuple(&[any, any]);
+            let int_pair = types.tuple(&[int, int]);
+            let carved = types.difference(any_pair, int_pair);
+            (ok, ok_or_tail, carved)
+        };
+        // Edge 0 carries the WIDE surface, edge 1 the NARROW one, so if the
+        // result kept edge-list order it would read [0, 1]; a reorder that
+        // puts the narrow member first reads [1, 0].
+        let edges = [
+            wrapper_edge(&mut world, vec![ok_or_tail, carved]),
+            wrapper_edge(&mut world, vec![ok, carved]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![1, 0],
+            "the narrow member `[:ok, carved]` is seated FIRST though it is edge 1, so the seat reordered \
+             the member list off the edge order -- the case the corpus's 117 selections never force",
+        );
+        let plan = selection
+            .plan
+            .expect("two members the runtime can tell apart need a plan");
+        assert_eq!(
+            plan.outcomes
+                .iter()
+                .map(|outcome| outcome.body_id as usize)
+                .collect::<Vec<_>>(),
+            (0..selection.members.len()).collect::<Vec<_>>(),
+            "even under a reorder the weld holds: row i's body_id is i, indexing the SEATED member list",
+        );
+    }
+
+    /// fz-kdt.179 drop-to-one: THREE nested members collapse to ONE, so the
+    /// wrapper calls the survivor directly. `[int]` and `[int | :a]` each pass
+    /// `[int | :a | :b]`'s head test while naming less than it, and neither
+    /// covers it, so the seat would never put either ahead of it and the drop
+    /// takes BOTH -- reaching the `members.len() <= 1 => plan None` path from a
+    /// three-member wrapper, which no source fixture forces (every list-recursive
+    /// construction wrapper fz mints carries a separated empty-list member that
+    /// survives, so the corpus floor is two, never one).
+    #[test]
+    fn a_wrapper_whose_three_members_all_stand_in_for_one_drops_to_it() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let (narrow, middle, wide) = {
+            let types = world.types_mut();
+            let int = types.int();
+            let a = types.atom_lit("a");
+            let b = types.atom_lit("b");
+            let int_a = types.union(int, a);
+            let int_a_b = types.union(int_a, b);
+            (types.list(int), types.list(int_a), types.list(int_a_b))
+        };
+        let edges = [
+            wrapper_edge(&mut world, vec![narrow]),
+            wrapper_edge(&mut world, vec![middle]),
+            wrapper_edge(&mut world, vec![wide]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![2],
+            "`[int]` and `[int | :a]` both pass `[int | :a | :b]`'s head test and name less, so the drop \
+             takes both and only the widest member is left",
+        );
+        assert!(
+            selection.plan.is_none(),
+            "one member left after a three-member drop is one destination, called directly with no plan",
         );
     }
 
@@ -1892,8 +3568,9 @@ mod tests {
                 surface_semantic_inputs: Box::from([0]),
             },
         ];
-        let plan = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
+        let plan = construction_member_selection(world.types_mut(), &edges)
             .expect("callable flow dispatch should compile")
+            .plan
             .expect("distinct callable correlations should produce a plan");
         assert_ne!(
             world.types().runtime_type_predicate(&closure_a),
@@ -1923,24 +3600,40 @@ mod tests {
     ///
     /// Three arms on three DISTINCT questions, so `question_groups` gives three
     /// groups of one and the retired knob's within-group mirror is the
-    /// IDENTITY -- and the questions are exact atoms that neither contain each
-    /// other nor overlap on an erasing axis, so [`specificity_order`] declines
-    /// to have an opinion and arrival order stands all the way through to the
-    /// plan. That is the shape fz-kdt.131 owns and fz-kdt.107 step 3 leaves
-    /// behind: entirely arrival-decided, and entirely invisible to a knob that
-    /// only reverses groups.
+    /// IDENTITY. What is left over is what a seed has to reach.
     ///
-    /// A seed moves it. That is the whole difference this ticket buys, and it
-    /// is measured here rather than argued.
+    /// THE SUBJECT IS fz-kdt.131's class, and it has to be. Three lists whose
+    /// HEADS overlap pairwise while no surface contains another -- `[int|:ok]`,
+    /// `[int|:tail]`, `[:ok|:tail]`, each pair meeting on one element type and
+    /// disagreeing about the other. Every pair is reached by a common value
+    /// (`[1]`, `[:ok]`, `[:tail]` respectively), so [`seating`] answers
+    /// `Escaping` both ways, [`specificity_order`] declines to have an opinion,
+    /// and the canonical repair may not touch it either: fz-kdt.194's tie-break
+    /// is for pairs no value reaches both of, and these are the opposite.
+    /// Arrival order therefore stands all the way through to the plan, which is
+    /// exactly the residue that must stay perturbable.
+    ///
+    /// A seed moves it. That is the whole difference fz-kdt.141 buys, and it is
+    /// measured here rather than argued. Three exact ATOM arms used to be the
+    /// subject; the atom sets are DISJOINT, so those three arms are pairwise
+    /// separated and fz-kdt.194's repair now settles them from any arrival --
+    /// a stress that can no longer move them cannot prove anything about the
+    /// residue that remains.
     #[test]
     fn a_seed_moves_an_arrival_order_the_group_reversal_cannot() {
         use dispatch_stress::{DispatchStressed, setting};
 
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let alpha = world.types_mut().atom_lit("alpha");
-        let beta = world.types_mut().atom_lit("beta");
-        let gamma = world.types_mut().atom_lit("gamma");
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_tail = world.types_mut().union(int, tail);
+        let ok_or_tail = world.types_mut().union(ok, tail);
+        let alpha = world.types_mut().list(int_or_ok);
+        let beta = world.types_mut().list(int_or_tail);
+        let gamma = world.types_mut().list(ok_or_tail);
         let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
         let target = |atom| CallTargetSummary {
             callee: SelectedCallee::Function(tag),
@@ -1950,6 +3643,20 @@ mod tests {
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];
+        {
+            let questions = target_questions(world.types_mut(), &arrived);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrived));
+            let types = world.types();
+            for (x, y) in [(0, 1), (0, 2), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Escaping,
+                    "arm {x} and arm {y} share an element type, so a value reaches both and neither \
+                     surface names everything the other holds -- fz-kdt.131's class, which no \
+                     canonical order may decide",
+                );
+            }
+        }
         let summary = CallSiteSummary {
             targets: arrived.clone(),
             return_ty: None,
@@ -2109,6 +3816,308 @@ mod tests {
             assert!(
                 std::panic::catch_unwind(|| setting(nonsense)).is_err(),
                 "{nonsense:?} must fail loudly: a stress that sweeps inertly reads as green",
+            );
+        }
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 1, on the design itself): the NAIVE reading of
+    /// the ticket -- fold the canonical tie-break into `seats_before` as an
+    /// extra disjunct and let the backward insertion pass use it -- SILENTLY
+    /// LOSES A COVERING SEAT, and `every_inversion_covers` does not catch it.
+    ///
+    /// Three single-input arms, each input a 2-tuple:
+    ///
+    /// ```text
+    ///     Q  {[int],      :s}
+    ///     R  {[int|:ok],  :s}    R covers Q: same question, strictly wider surface
+    ///                            on an ERASING axis (the list behind the tag)
+    ///     P  {[int|:bb],  :t}    separated from both at tuple position 1 (:t vs :s)
+    /// ```
+    ///
+    /// with `key(Q) < key(P) < key(R)` under `cmp_tys`. Arrival `[P, Q, R]`.
+    ///
+    /// - The LANDED shape (insertion pass, then adjacent-transposition repair)
+    ///   keeps `R` ahead of `Q`: the covering seat the insertion pass made
+    ///   survives, because a swap only ever exchanges the pair it is about.
+    /// - The NAIVE shape lets `Q` walk left past `P` on the tie-break, which
+    ///   puts `P` between `R` and the prefix -- so `R` stops at `P` and never
+    ///   reaches `Q` at all. `Q` comes out ahead of `R`, a pair
+    ///   `seating` calls `Escaping`, and the two were never compared.
+    /// - `every_inversion_covers` accepts the naive result, because `Q` before
+    ///   `R` is ARRIVAL order and therefore not an inversion.
+    #[test]
+    fn a_tie_break_folded_into_the_seat_loses_a_covering_seat() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let bb = world.types_mut().atom_lit("bb");
+        let ok = world.types_mut().atom_lit("ok");
+        let s = world.types_mut().atom_lit("s");
+        let t = world.types_mut().atom_lit("t");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_bb = world.types_mut().union(int, bb);
+        let int_list = world.types_mut().list(int);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let bb_list = world.types_mut().list(int_or_bb);
+        let q_ty = world.types_mut().tuple(&[int_list, s]);
+        let r_ty = world.types_mut().tuple(&[ok_list, s]);
+        let p_ty = world.types_mut().tuple(&[bb_list, t]);
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
+        let target = |ty| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        // arrival [P, Q, R]
+        let arms = [target(p_ty), target(q_ty), target(r_ty)];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        let groups = grouped_by_question(&questions);
+        let types = world.types();
+        assert_eq!(groups, vec![vec![0], vec![1], vec![2]], "three singleton groups");
+        let (p, q, r) = (0usize, 1usize, 2usize);
+        let keys = groups
+            .iter()
+            .map(|group| canonical_key(types, &observable, group))
+            .collect::<Vec<_>>();
+        // The shape this witness needs. If any precondition stops holding the
+        // witness has to be rebuilt, so assert them rather than assume them.
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[p], &groups[q]),
+            Seating::Separated,
+            "P and Q ask disjoint tuple tags at position 1",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[p], &groups[r]),
+            Seating::Separated,
+            "P and R ask disjoint tuple tags at position 1",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[r], &groups[q]),
+            Seating::Covering,
+            "R's surface contains Q's on the erasing position, so the seat MUST put R first",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[q], &groups[r]),
+            Seating::Escaping,
+            "and the other direction is a blind escape -- Q ahead of R is what must not happen",
+        );
+        assert_eq!(
+            types.cmp_tys(&observable[keys[q]], &observable[keys[p]]),
+            Ordering::Less,
+            "key(Q) < key(P)",
+        );
+        assert_eq!(
+            types.cmp_tys(&observable[keys[p]], &observable[keys[r]]),
+            Ordering::Less,
+            "key(P) < key(R)",
+        );
+
+        // READING B, what landed.
+        let landed = specificity_order(types, &questions, &observable);
+        let position = |order: &[usize], arm: usize| order.iter().position(|a| *a == arm).unwrap();
+        assert!(
+            position(&landed, r) < position(&landed, q),
+            "the landed shape keeps the covering seat: R before Q, order {landed:?}",
+        );
+
+        // READING A, the naive fold, rebuilt here exactly as the ticket's
+        // wording admits it.
+        let naive = {
+            let naive_before = |x: usize, y: usize| {
+                seats_before(types, &questions, &observable, &groups[x], &groups[y])
+                    || (matches!(
+                        seating(types, &questions, &observable, &groups[x], &groups[y]),
+                        Seating::Separated
+                    ) && types.cmp_tys(&observable[keys[x]], &observable[keys[y]]) == Ordering::Less)
+            };
+            let mut seated: Vec<usize> = Vec::new();
+            for group in 0..groups.len() {
+                let mut at = seated.len();
+                while at > 0 && naive_before(group, seated[at - 1]) {
+                    at -= 1;
+                }
+                seated.insert(at, group);
+            }
+            seated
+        };
+        assert!(
+            position(&naive, q) < position(&naive, r),
+            "THE NAIVE READING IS UNSAFE: Q comes out ahead of R, a pair the seat calls Escaping, \
+             and the two were never compared -- the tie-break moved Q out of R's insertion walk. \
+             order {naive:?}",
+        );
+        assert!(
+            every_inversion_covers(types, &questions, &observable, &groups, &naive),
+            "and the standing law does NOT catch it: Q before R is ARRIVAL order, so it is not an \
+             inversion, and the escape fix is lost silently",
+        );
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 2, on the doc's account of the limit): the
+    /// residual arrival-dependence the repair leaves is NOT confined to
+    /// fz-kdt.107's and fz-kdt.131's classes. A COVERING pair -- one the seat
+    /// itself decided, and whose order is therefore already a function of the
+    /// arm set -- can sit between two separated groups and block the repair
+    /// just as an `Escaping` pair does.
+    ///
+    /// Same three arms as probe 1. `R` covers `Q`; `P` is separated from both;
+    /// `key(Q) < key(P) < key(R)`.
+    ///
+    /// ```text
+    ///     arrival [P, Q, R]  ->  seat [P, R, Q]  ->  repair [P, R, Q]
+    ///     arrival [Q, R, P]  ->  seat [R, Q, P]  ->  repair [R, Q, P]
+    /// ```
+    ///
+    /// Both are safe -- `R` is ahead of `Q` in both, which is the whole seat
+    /// obligation -- and both leave `P` where the seat's own walk stopped. But
+    /// they are DIFFERENT artifacts, and the pair that blocked the repair from
+    /// reconciling them is the `Covering` one, not a residue anybody owns.
+    ///
+    /// This is why [`canonically_order_separated_neighbours`]'s doc and
+    /// `.agent/docs/dispatch-matrix.md` state the limit as "pairwise separated
+    /// END TO END" and not as "blocked only by a pair whose order means
+    /// something". The first draft of both said the latter, and this gate is
+    /// what refuted it.
+    #[test]
+    fn a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let bb = world.types_mut().atom_lit("bb");
+        let ok = world.types_mut().atom_lit("ok");
+        let s = world.types_mut().atom_lit("s");
+        let t = world.types_mut().atom_lit("t");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_bb = world.types_mut().union(int, bb);
+        let int_list = world.types_mut().list(int);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let bb_list = world.types_mut().list(int_or_bb);
+        let q_ty = world.types_mut().tuple(&[int_list, s]);
+        let r_ty = world.types_mut().tuple(&[ok_list, s]);
+        let p_ty = world.types_mut().tuple(&[bb_list, t]);
+        // THREE callees, so `unroutable_alternatives`' same-callee conjunct
+        // keeps the drop out of this witness; only the seat is under test.
+        let p_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "p_impl", 1);
+        let q_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "q_impl", 1);
+        let r_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "r_impl", 1);
+        let target = |function, ty| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
+            let summary = CallSiteSummary {
+                targets: arrival.to_vec(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three distinguishable arms are three destinations");
+            };
+            dispatch.targets
+        };
+        let (p, q, r) = (target(p_fn, p_ty), target(q_fn, q_ty), target(r_fn, r_ty));
+        let forwards = seated(&mut world, &[p.clone(), q.clone(), r.clone()]);
+        let backwards = seated(&mut world, &[q.clone(), r.clone(), p]);
+        let at = |order: &[CallTargetSummary], arm: &CallTargetSummary| {
+            order
+                .iter()
+                .position(|target| target == arm)
+                .expect("every arm survives")
+        };
+        assert!(
+            at(&forwards, &r) < at(&forwards, &q),
+            "the covering seat holds either way"
+        );
+        assert!(
+            at(&backwards, &r) < at(&backwards, &q),
+            "the covering seat holds either way"
+        );
+        assert_ne!(
+            forwards, backwards,
+            "and yet the two arrivals render DIFFERENT arm orders, with no fz-kdt.107 or fz-kdt.131 \
+             pair anywhere in the callsite: the blocker is the COVERING pair",
+        );
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 3, on the re-homing of
+    /// `a_seed_moves_an_arrival_order_the_group_reversal_cannot`): the OLD
+    /// subject really is settled by the repair, so the re-homing is honest
+    /// rather than a way to hide a lost instrument.
+    ///
+    /// Three exact-atom arms, pairwise disjoint. Under fz-kdt.194 they are
+    /// pairwise SEPARATED all the way through, so the repair reaches one order
+    /// from every arrival -- which is exactly what makes them useless as a
+    /// perturbable residue, and why that instrument had to be re-homed on
+    /// fz-kdt.131's class. It is also the positive statement of the repair's
+    /// reach at unit scale: an end-to-end separated run settles, from all six
+    /// seeds and from the group reversal.
+    #[test]
+    fn three_disjoint_atom_arms_settle_to_one_order_from_every_arrival() {
+        use dispatch_stress::{DispatchStressed, setting};
+
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let alpha = world.types_mut().atom_lit("alpha");
+        let beta = world.types_mut().atom_lit("beta");
+        let gamma = world.types_mut().atom_lit("gamma");
+        let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
+        let target = |atom| CallTargetSummary {
+            callee: SelectedCallee::Function(tag),
+            surface_inputs: vec![atom],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arrived = vec![target(alpha), target(beta), target(gamma)];
+        {
+            let questions = target_questions(world.types_mut(), &arrived);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrived));
+            let types = world.types();
+            for (x, y) in [(0, 1), (0, 2), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Separated,
+                    "three disjoint atoms are pairwise separated",
+                );
+            }
+        }
+        let summary = CallSiteSummary {
+            targets: arrived,
+            return_ty: None,
+        };
+        let seated = |world: &mut World| {
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms the atom tests separate are three destinations");
+            };
+            dispatch.targets
+        };
+        let settled = seated(&mut world);
+        for stress in [
+            "arms:1",
+            "arms:2",
+            "arms:3",
+            "arms:4",
+            "arms:5",
+            "arms:6",
+            "arms:reverse",
+        ] {
+            let permuted = {
+                let _stress = DispatchStressed::install(setting(stress));
+                seated(&mut world)
+            };
+            assert_eq!(
+                permuted, settled,
+                "{stress} no longer moves the old subject -- the instrument would have been \
+                 toothless there, so the re-homing is honest",
             );
         }
     }

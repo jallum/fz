@@ -84,8 +84,9 @@ rather than chase type names that are still resolving.
 
 `DeriveTypeDef` mints the *complete* symbol once, so the answer needs no follow-up
 lookups. A brand `@type Meters :: refines integer` mints
-`mint_brand(integer, "M::Meters")` — a `Ty` whose own axes already carry the inner
-representation (see [`set-theoretic-types`](set-theoretic-types.md)). At a use
+`mint_brand(integer, "M::Meters")` — a `Ty` whose own kind axes already carry the
+inner representation, with its brand slot narrowed to the name (see
+[`set-theoretic-types`](set-theoretic-types.md)). At a use
 site, `is_subtype(Meters, integer)` reads from that symbol's structure; no name
 table is threaded into the lattice. The definition fact is the single place a name
 becomes a symbol, so it is the single place the inner is established.

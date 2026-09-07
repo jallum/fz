@@ -40,7 +40,7 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{
-    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, DispatchMaskMap, StaticCalleeMap,
+    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
 };
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
@@ -128,7 +128,7 @@ pub struct World {
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
     body_keying: BodyKeyingMap,
-    dispatch_masks: DispatchMaskMap,
+    input_demands: InputDemandMap,
     static_callees: StaticCalleeMap,
     call_graph_components: CallGraphComponentMap,
     protocol_callbacks: ProtocolCallbackMap,
@@ -246,7 +246,7 @@ impl World {
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
             body_keying: BodyKeyingMap::new(),
-            dispatch_masks: DispatchMaskMap::new(),
+            input_demands: InputDemandMap::new(),
             static_callees: StaticCalleeMap::new(),
             call_graph_components: CallGraphComponentMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
@@ -703,10 +703,11 @@ impl World {
                 .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)
             {
+                // The evidence collapse mirrors the KEY collapse, so it reads
+                // the same half of the demand fact the key does.
                 let mask = self
-                    .dispatch_masks
-                    .get(activation.function)
-                    .cloned()
+                    .input_demand(activation.function)
+                    .map(|demand| demand.forwarded_dispatch.clone())
                     .unwrap_or_else(|| vec![DispatchDemand::Whole; normalized.len()]);
                 self.types.convergence_collapse_evidence_inputs(&normalized, &mask)
             } else {
@@ -1184,8 +1185,17 @@ impl World {
         self.body_keying.define(function, keying)
     }
 
-    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
-        self.dispatch_masks.define(function, mask)
+    /// The one input-demand fact behind `FactKey::InputDemand`: the local
+    /// dispatch mask and the forwarded demand publish as one value, so keying
+    /// can never observe one without the other.
+    pub(crate) fn define_input_demand(&mut self, function: FunctionId, demand: InputDemand) -> bool {
+        self.input_demands.define(function, demand)
+    }
+
+    /// What one function's inputs are demanded for, behind
+    /// `FactKey::InputDemand`. `None` until `Job::DeriveInputDemand` has run.
+    pub(crate) fn input_demand(&self, function: FunctionId) -> Option<&InputDemand> {
+        self.input_demands.get(function)
     }
 
     /// The call graph's out-edges for one function, behind
@@ -1657,6 +1667,11 @@ impl World {
         ])
     }
 
+    /// The two facts `canonical_activation_key` reads: the body-shape keying
+    /// answer (`Recursive`) and the input demand that shapes the collapse and
+    /// the brand erasure (`InputDemand`). Both are named in ONE ask so a caller
+    /// spends one block on a callee's keying prerequisites, never a ladder
+    /// (fz-kdt.86; waits are AND-satisfied).
     pub(crate) fn require_activation_key_facts(
         &self,
         function: FunctionId,
@@ -1671,15 +1686,15 @@ impl World {
             waits.insert(recursive);
         }
 
-        let dispatch_mask = FactKey::DispatchMask(function);
-        let dispatch_mask_ready = self.has_fact(&dispatch_mask);
-        if dispatch_mask_ready {
-            reads.push(dispatch_mask);
+        let input_demand = FactKey::InputDemand(function);
+        let input_demand_ready = self.has_fact(&input_demand);
+        if input_demand_ready {
+            reads.push(input_demand);
         } else {
-            waits.insert(dispatch_mask);
+            waits.insert(input_demand);
         }
 
-        recursive_ready && dispatch_mask_ready
+        recursive_ready && input_demand_ready
     }
 
     pub(crate) fn lookup_callable_namespace(
@@ -1849,10 +1864,9 @@ impl World {
         function: FunctionId,
         inputs: &[Ty],
     ) -> super::identity::ActivationKey {
-        let mask = self
-            .dispatch_masks
-            .get(function)
-            .expect("activation keying should wait for dispatch mask facts before activation")
+        let demand = self
+            .input_demand(function)
+            .expect("activation keying should wait for input demand facts before activation")
             .clone();
         let keying = self
             .body_keying(function)
@@ -1871,17 +1885,29 @@ impl World {
             // per type and its callees stay grounded (fz-kdt.127). A consuming
             // body keeps the precise key -- its specializations buy direct
             // dispatch. Evidence is precise either way.
+            //
+            // Brand erasure asks the LOCAL question: "does a clause of THIS
+            // body test this slot" (fz-6gb). What a callee downstream demands
+            // of the slot is a different question, and keying the erasure off
+            // it would un-share a forwarder that only transports its callable
+            // (fz-kdt.183: `fwd(f, x)` splits into one activation per lambda
+            // once `apply2/2`'s `:none` test raises the slot).
             if keying.consumes_callable_identity {
                 return key;
             }
-            let arrow = self.types.erase_transported_closure_identities(key.arrow, &mask);
+            let arrow = self
+                .types
+                .erase_transported_closure_identities(key.arrow, &demand.local_dispatch);
             return super::identity::ActivationKey { arrow, ..key };
         }
         // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
-        // convergence collapse of that evidence — recursive non-dispatch slots
-        // widen to their convergence class so the ascent settles. Key != evidence
-        // is intentional; the precise arrow stays in `ActivationInputs`.
-        let arrow = self.types.convergence_collapse(key.arrow, &mask);
+        // convergence collapse of that evidence — recursive slots nothing
+        // demands widen to their convergence class so the ascent settles. Key
+        // != evidence is intentional; the precise arrow stays in
+        // `ActivationInputs`.
+        let arrow = self
+            .types
+            .convergence_collapse(key.arrow, &demand.forwarded_dispatch, &demand.returned);
         super::identity::ActivationKey { arrow, ..key }
     }
 

@@ -114,7 +114,9 @@ impl RuntimeTestAxis {
             Self::Callables => AxisPrecision::PerPosition,
             // Numbers are PRESENCE BITS here, never value sets: the projection
             // records "INT is present" and drops literals and brands alike
-            // (`Types::runtime_type_predicate`). So the reason this axis is
+            // (`Types::runtime_type_predicate`, which never reads the brand
+            // slot -- a refinement narrows WHICH ints a type admits, and this
+            // axis only asks whether an int arrives). So the reason this axis is
             // safe to seat across is NOT that the surface names the value --
             // two arms whose surfaces are `brand X of int` and `brand Y of
             // int` put the SAME question and hold incomparable surfaces. It is
@@ -405,8 +407,8 @@ impl RuntimeTypePredicate {
     /// satisfy every question an arm asks and still lie outside the surface
     /// that arm's body was compiled for, and seating on this relation alone
     /// hands it to a body that never named it (fz-kdt.131).
-    /// `callsite_dispatch::covers` is the conjunct that makes a seat sound;
-    /// this is one half of it.
+    /// `callsite_dispatch::seating` is the relation that makes a seat sound;
+    /// this is one half of its coverage answer.
     pub(crate) fn contained_in(&self, other: &Self) -> bool {
         RuntimeTestAxis::ALL
             .into_iter()
@@ -443,6 +445,36 @@ impl RuntimeTypePredicate {
             .any(|axis| self.axis_erases(other, axis))
     }
 
+    /// Whether ONE value could pass both tests.
+    ///
+    /// Axis by axis, because a value reaches exactly the axes its kind names:
+    /// two tests can both admit a value only where some axis admits one to
+    /// both. It is the SEPARATION question `callsite_dispatch::seating` asks
+    /// first of a pair of arms, one subject at a time -- a plan row is a
+    /// conjunction over its subjects, so one subject that admits nothing to
+    /// both keeps the two arms apart outright, whatever the others say
+    /// (fz-kdt.186).
+    ///
+    /// It OVER-ESTIMATES, axis by axis, and that is the direction a seat needs:
+    /// every axis answers yes wherever it cannot rule a shared value out -- two
+    /// cofinite sets, a head neither side asks, an inexact tuple or callable
+    /// store -- so a `false` here is a claim no value passes both tests, and
+    /// never merely that this layer could not tell.
+    ///
+    /// The bridge from SURFACES to tests is the other half, and it holds
+    /// wherever the projection is a coarsening of the surface it came from:
+    /// two surfaces that share a value then project to two tests that overlap.
+    /// `callsite_dispatch::tests::a_separated_pair_of_tests_is_a_disjoint_pair_of_surfaces`
+    /// holds every axis of a wide battery to it. It is not universal, and the
+    /// gap is a projection defect rather than a fact about this relation: a
+    /// tuple clause with a SUBTRACTED signature loses that whole arity in
+    /// `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int,
+    /// int})` -- a surface holding every pair that is not two ints -- projects
+    /// to a test that admits nothing and does not overlap ITSELF. No seat and
+    /// no drop may turn on that: `callsite_dispatch::seating` treats a position
+    /// where the two arms ask the IDENTICAL question as no separation at all,
+    /// so an unrealizable test can only ever describe an arm the plan's own
+    /// emitted test already refuses.
     pub(crate) fn overlaps(&self, other: &Self) -> bool {
         RuntimeTestAxis::ALL
             .into_iter()
@@ -643,24 +675,24 @@ pub(crate) struct TupleShapes {
     exact: bool,
 }
 
-/// Which positions of a tuple shape a reading looks at.
+/// How much of a value a reading looks at.
 ///
-/// The two readings are the SAME FUNCTION today: every position a shape
-/// carries is one all three lowerings decide, so nothing is left for `Full` to
-/// look at that `Lowered` skipped. That is fz-kdt.138 -- the list-bearing
-/// positions were the whole gap, and the surface-membership tripwire that
-/// subtracts one reading from the other therefore reads zero by construction.
-/// The scope stays threaded because the gap is due to re-open on the list
-/// axis: a head is exact on rejection and erasing on acceptance, so a `Full`
-/// reading that walked the TAIL would find residue the emitted test cannot
-/// (fz-kdt.144).
+/// The gap between the two readings is the LIST SPINE, and nothing else. Every
+/// tuple position a shape carries is one all three lowerings decide
+/// (fz-kdt.138), so the two scopes agree there; a cons cell's head is one load
+/// the lowerings can afford and its tail is not, so they part company on the
+/// list axis alone. That is what makes the difference measurable: subtracting
+/// one reading from the other is exactly the one-sided filter's acceptance
+/// residue, which is what the [`surface_membership`] tripwire counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionScope {
-    /// The positions all three lowerings decide, which is all of them.
+    /// What the three lowerings decide: every tuple position, and one head per
+    /// cons-admitting list clause.
     Lowered,
-    /// Every position the shape carries. What the surface-membership tripwire
-    /// compares `Lowered` against: the gap between the two readings IS the
-    /// population of values a test admits into a body that never named them.
+    /// What the surface names: every tuple position, and every ELEMENT of a
+    /// list, under one clause's element question. The gap between this and
+    /// `Lowered` IS the population of values a test admits into a body that
+    /// never named them.
     Full,
 }
 
@@ -1010,10 +1042,17 @@ pub(crate) type TupleFieldReader<'a> = dyn Fn(RuntimeAnyValue, usize) -> Option<
 /// question can be asked about.
 pub(crate) type ListHeadReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAnyValue> + 'a;
 
+/// Read the rest of a cons cell.
+///
+/// Mirrors [`ListHeadReader`]: the side that owns the representation answers.
+/// `None` is a tail the reader could not produce, which ends a spine walk --
+/// what the representation declines to show, this layer does not judge.
+pub(crate) type ListTailReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAnyValue> + 'a;
+
 /// Everything the interpreter's matcher needs to read a value back.
 ///
 /// The schema maps are the runtime's own numbering, so they are handed in
-/// rather than derived here; the two function slots are the representation's
+/// rather than derived here; the function slots are the representation's
 /// owners answering questions only they can.
 pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) module: &'a Module,
@@ -1022,6 +1061,7 @@ pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) callables: &'a CallableIdentities<'a>,
     pub(crate) fields: &'a TupleFieldReader<'a>,
     pub(crate) list_head: &'a ListHeadReader<'a>,
+    pub(crate) list_tail: &'a ListTailReader<'a>,
 }
 
 impl RuntimeValueReader<'_> {
@@ -1079,13 +1119,13 @@ fn axis_admits(
             }),
             _ => false,
         },
-        RuntimeTestAxis::Lists => match value {
-            RuntimeAnyValue::EmptyList => predicate.lists.shapes().contains(&ListShape::Empty),
-            RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == ValueKind::LIST => {
+        RuntimeTestAxis::Lists => match list_shape_of(value) {
+            Some(ListShape::Empty) => predicate.lists.shapes().contains(&ListShape::Empty),
+            Some(ListShape::NonEmpty) => {
                 predicate.lists.shapes().contains(&ListShape::NonEmpty)
-                    && matches_list_head(&predicate.lists, reader, value, scope)
+                    && matches_list_elements(&predicate.lists, reader, value, scope)
             }
-            _ => false,
+            None => false,
         },
         RuntimeTestAxis::Maps => predicate.maps && has_kind(value, ValueKind::MAP),
         RuntimeTestAxis::Binaries => predicate.binaries && has_kind(value, ValueKind::BITSTRING),
@@ -1188,9 +1228,11 @@ fn matches_tuple_axis(
 /// Whether some shape the test names matches the tuple's fields.
 ///
 /// The tuple's own arity chooses the candidate shapes; a shape matches when
-/// every position the `scope` looks at answers yes. Under
-/// [`PositionScope::Lowered`] that is the positions all three lowerings
-/// decide, so this function and the emitted code answer alike by construction.
+/// every position answers yes. Both scopes ask every position -- fz-kdt.138
+/// retired the last position any lowering declined -- so this function and the
+/// emitted code answer alike by construction. The `scope` is threaded through
+/// because a position's own value can be a LIST, and there the two readings do
+/// differ: see [`matches_list_elements`].
 fn matches_tuple_shape(
     predicate: &RuntimeTypePredicate,
     reader: &RuntimeValueReader<'_>,
@@ -1217,14 +1259,59 @@ fn matches_tuple_shape(
     })
 }
 
-/// Whether some clause's head question admits this cons cell's first element.
+/// Which list shape a runtime value is, or `None` where it is not a list.
+///
+/// The ONE cons-cell reading in this layer: the list axis answers with it and
+/// the element walk stops where it says anything but `NonEmpty`. `[]` reaches
+/// here as its own variant -- `AnyValue::from_ref` normalizes an empty-list ref
+/// before it ever tags one -- so the `is_empty_list` arm states that invariant
+/// rather than adding a second reading of it.
+fn list_shape_of(value: RuntimeAnyValue) -> Option<ListShape> {
+    match value {
+        RuntimeAnyValue::EmptyList => Some(ListShape::Empty),
+        RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == ValueKind::LIST => {
+            Some(if value_ref.is_empty_list() {
+                ListShape::Empty
+            } else {
+                ListShape::NonEmpty
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether some clause's element question admits this cons cell, and how far
+/// the `scope` looks to decide it.
 ///
 /// The shape half above has already decided that a cons cell is admitted at
-/// all; this is the element half, and it is skipped where the axis asks the
-/// head nothing, which is the shape-only reading this layer had before
-/// fz-kdt.107 step 3. The emitted native test is the same disjunction under
-/// the same cons guard, so this function and the compiled code answer alike.
-fn matches_list_head(
+/// all; this is the ELEMENT half, and it is skipped where the axis asks the
+/// head nothing -- the shape-only reading this layer had before fz-kdt.107
+/// step 3, and the one fz-kdt.146's degrade rule still falls back to. Such an
+/// axis has no `Full` content to give, so it is honestly inert under both
+/// scopes rather than dishonestly silent under one.
+///
+/// - Under [`PositionScope::Lowered`] exactly ONE head is loaded and put to the
+///   disjunction of the clauses' head questions. The emitted native test is the
+///   same disjunction under the same cons guard, so this function and the
+///   compiled code answer alike.
+/// - Under [`PositionScope::Full`] the reading is what the TYPE says rather
+///   than what a test can afford: a list clause is homogeneous by construction
+///   (`ListSig` carries one element type for the whole list), so lying inside
+///   the surface means SOME ONE clause's element question admits EVERY element.
+///   Each element is asked under `Full` in turn, so a list inside a list, or a
+///   list inside a tuple position, walks too.
+///
+/// The gap between the two readings is the one-sided filter's acceptance
+/// residue -- the head is exact on rejection and erasing on acceptance, and the
+/// tail is what no emitted test reads. That gap is what the
+/// [`surface_membership`] tripwire measures.
+///
+/// COST. The `Lowered` reading is one load and one disjunction. The `Full`
+/// reading is O(clauses x length) element questions on a flat list, and
+/// O(clauses x outer x inner) one level of nesting down, which is why it is
+/// asked only behind the tripwire's env gate and never on the production
+/// answer.
+fn matches_list_elements(
     lists: &ListShapes,
     reader: &RuntimeValueReader<'_>,
     value: RuntimeAnyValue,
@@ -1233,17 +1320,79 @@ fn matches_list_head(
     if !lists.asks_the_head() {
         return true;
     }
-    let Some(head) = (reader.list_head)(value) else {
-        // A head the representation's owner could not produce is a head no
-        // question can be asked about, so the shape half stands alone.
-        return true;
-    };
-    lists.heads().iter().any(|question| {
-        RuntimeTestAxis::of_value(head)
+    match scope {
+        PositionScope::Lowered => {
+            let Some(head) = (reader.list_head)(value) else {
+                // A head the representation's owner could not produce is a head
+                // no question can be asked about, so the shape half stands
+                // alone.
+                return true;
+            };
+            lists
+                .heads()
+                .iter()
+                .any(|question| admits_element(question, reader, head, scope))
+        }
+        PositionScope::Full => lists
+            .heads()
             .iter()
-            .any(|axis| axis_admits(question, reader, head, *axis, scope))
-    })
+            .any(|question| first_refused_element(question, reader, value).is_none()),
+    }
 }
+
+/// Whether `question` admits `element` on any axis the element's kind reaches.
+fn admits_element(
+    question: &RuntimeTypePredicate,
+    reader: &RuntimeValueReader<'_>,
+    element: RuntimeAnyValue,
+    scope: PositionScope,
+) -> bool {
+    RuntimeTestAxis::of_value(element)
+        .iter()
+        .any(|axis| axis_admits(question, reader, element, *axis, scope))
+}
+
+/// The first element of this list `question` refuses, and where it sits.
+///
+/// `None` is NO refusal this walk can name, which is always read as admitted:
+/// the question answered every element, or the spine ended, or the reader
+/// declined to open a cell, or the walk hit its limit. What the representation
+/// will not show, this layer does not judge.
+///
+/// The walk stops at anything that is not a cons cell -- the empty list and an
+/// improper tail alike -- because neither is an element. It terminates on two
+/// counts: a cons cell's tail is built before the cell is, so a spine the
+/// runtime builds cannot be cyclic, and [`ELEMENT_WALK_LIMIT`] bounds it
+/// anyway, because termination inside a dispatch test should be a fact of the
+/// code rather than a property of the heap it reads.
+fn first_refused_element(
+    question: &RuntimeTypePredicate,
+    reader: &RuntimeValueReader<'_>,
+    list: RuntimeAnyValue,
+) -> Option<(usize, RuntimeAnyValue)> {
+    let mut cursor = list;
+    let mut index = 0;
+    while list_shape_of(cursor) == Some(ListShape::NonEmpty) {
+        if index == ELEMENT_WALK_LIMIT {
+            eprintln!(
+                "surface-membership walk limit: a spine longer than {ELEMENT_WALK_LIMIT} elements is not \
+                 judged, so this list counts as inside the question it was asked"
+            );
+            return None;
+        }
+        let head = (reader.list_head)(cursor)?;
+        if !admits_element(question, reader, head, PositionScope::Full) {
+            return Some((index, head));
+        }
+        cursor = (reader.list_tail)(cursor)?;
+        index += 1;
+    }
+    None
+}
+
+/// The longest spine the `Full` reading walks. A list past it is not judged and
+/// says so on stderr, which only the tripwire's env gate can reach.
+const ELEMENT_WALK_LIMIT: usize = 1 << 16;
 
 fn matches_named_struct_axis(
     predicate: &RuntimeTypePredicate,
@@ -1294,40 +1443,47 @@ fn matches_other_struct_axis(
     !reader.known_named_schemas().contains(&actual) && !known_tuple.contains(&actual)
 }
 
-/// The dynamic surface-membership tripwire (fz-kdt.135).
+/// The dynamic surface-membership tripwire (fz-kdt.135, fz-kdt.144).
 ///
 /// A test is a projection, so a value can pass every question an arm asks and
 /// still lie outside the surface that arm's body was compiled for. The static
 /// gates reason about that hazard on hand-picked pairs; this measures it, on
 /// the production path, over whatever the corpus actually runs.
 ///
-/// What it can see cheaply is the tuple axis: the test is answered under
-/// [`PositionScope::Lowered`], and the tripwire re-asks it under
-/// [`PositionScope::Full`]. A value admitted by the first reading and refused
-/// by the second passed a test no shape of the arm's surface names -- exactly
-/// the blind routing this class of defect is made of. Since fz-kdt.138
-/// deleted the list-position carve-out the two scopes are THE SAME FUNCTION
-/// and the re-ask can refuse nothing; the instrument is inert by construction
-/// until fz-kdt.144's list-tail re-ask gives `Full` content again.
+/// The production answer is [`PositionScope::Lowered`], which is what the three
+/// lowerings can afford. The tripwire re-asks the same value's own axes under
+/// [`PositionScope::Full`], which is what the surface names. A value admitted
+/// by the first reading and refused by the second passed a test no shape of the
+/// arm's surface names -- exactly the blind routing this class of defect is made
+/// of.
 ///
-/// The LIST axis is not re-asked, and it is the reading that gives `Full`
-/// content again: the head is exact on rejection and erasing on acceptance, so
-/// a full re-ask would walk the tail the emitted test never reads. That is
-/// fz-kdt.144.
+/// What the two readings disagree about is the LIST SPINE: a head load is exact
+/// on rejection and erasing on acceptance, so the tail is the one thing no
+/// emitted test reads. Tuple positions are asked identically by both scopes
+/// (fz-kdt.138) and scalar and content-blind axes coincide, so a finding here is
+/// always a list whose later elements leave the clause its head answered.
 ///
-/// The tuple population is EMPTY corpus-wide (fz-kdt.132: the escapes were a
-/// fold accumulator rung with no specialization, not a blind seat), pinned by
-/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`, and
-/// since fz-kdt.138 it is empty BY CONSTRUCTION: the positions `Full` was
-/// built to look at were the list-bearing ones, they are lowered now, and the
-/// two readings coincide. This instrument is inert until fz-kdt.144's list
-/// re-ask gives `Full` content again.
+/// It is off unless `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` is set; `abort` makes
+/// each finding fatal, anything else counts them and reports each on stderr,
+/// which is what a corpus census reads. The report carries the offending
+/// element and its index, because a list escape is untriageable from the value's
+/// kind and the test text alone.
 ///
-/// It is off unless `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` is set; `abort`
-/// makes each finding fatal, anything else counts them and reports each on
-/// stderr, which is what a corpus census reads.
+/// INTERPRETER ONLY, and that is the whole instrument rather than half of one:
+/// every door answers the same `Lowered` question over the same dispatch plans,
+/// so the escaping POPULATION is door-independent by construction. What differs
+/// between the doors is the HARM -- interp survives on dynamic tags where the
+/// native doors read the element through a grounded accessor -- and harm is what
+/// the three-door behaviour sweep measures.
+///
+/// The measured population is
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`'s
+/// table, and the corpus recipe is in `.agent/docs/dispatch-matrix.md`.
 pub(crate) mod surface_membership {
-    use super::{PositionScope, RuntimeTestAxis, RuntimeTypePredicate, RuntimeValueReader, axis_admits};
+    use super::{
+        ListShape, PositionScope, RuntimeTestAxis, RuntimeTypePredicate, RuntimeValueReader, axis_admits,
+        first_refused_element, list_shape_of,
+    };
     use fz_runtime::any_value::AnyValue as RuntimeAnyValue;
     use std::cell::Cell;
 
@@ -1352,6 +1508,10 @@ pub(crate) mod surface_membership {
     thread_local! {
         static MODE: Cell<Mode> = const { Cell::new(Mode::Unread) };
         static ESCAPES: Cell<usize> = const { Cell::new(0) };
+        /// The DENOMINATOR of [`ESCAPES`]: how many admitted values this
+        /// tripwire has looked at. A zero escape count says nothing until this
+        /// says something was looked at (fz-kdt.187).
+        static OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
     }
 
     /// What this thread does with a finding. A process-wide default comes from
@@ -1386,13 +1546,16 @@ pub(crate) mod surface_membership {
     /// from, and report it where it is not in there.
     pub(crate) fn observe(predicate: &RuntimeTypePredicate, reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue) {
         let mode = mode();
-        if mode == Mode::Off || !escaped(predicate, reader, value) {
+        if mode == Mode::Off {
             return;
         }
+        OBSERVATIONS.with(|observations| observations.set(observations.get() + 1));
+        let Some(witness) = escaped(predicate, reader, value) else {
+            return;
+        };
         let report = format!(
             "surface-membership escape: a value the test admits lies outside every shape it names \
-             (value kind {:?}, test {predicate})",
-            value.kind(),
+             ({witness}, test {predicate})",
         );
         ESCAPES.with(|escapes| escapes.set(escapes.get() + 1));
         match mode {
@@ -1402,18 +1565,26 @@ pub(crate) mod surface_membership {
     }
 
     /// Reports every finding on this thread and counts them, for as long as it
-    /// lives, then puts the previous setting and tally back.
+    /// lives, then puts the previous setting and tallies back.
     ///
     /// The census the shell recipe reads off stderr, available to an
-    /// in-process driver as a number.
+    /// in-process driver as two numbers: the findings, and how many values were
+    /// looked at to find them.
     #[cfg(test)]
-    pub(crate) struct SurfaceMembershipCensus(Mode, usize);
+    pub(crate) struct SurfaceMembershipCensus {
+        mode: Mode,
+        escapes: usize,
+        observations: usize,
+    }
 
     #[cfg(test)]
     impl SurfaceMembershipCensus {
         pub(crate) fn install() -> Self {
-            let previous = MODE.with(|mode| mode.replace(Mode::Report));
-            Self(previous, ESCAPES.with(|escapes| escapes.replace(0)))
+            Self {
+                mode: MODE.with(|mode| mode.replace(Mode::Report)),
+                escapes: ESCAPES.with(|escapes| escapes.replace(0)),
+                observations: OBSERVATIONS.with(|observations| observations.replace(0)),
+            }
         }
 
         /// How many values have reached a body whose surface never named them
@@ -1421,27 +1592,152 @@ pub(crate) mod surface_membership {
         pub(crate) fn escapes(&self) -> usize {
             ESCAPES.with(Cell::get)
         }
+
+        /// How many admitted values the tripwire has looked at since this
+        /// census was installed -- the denominator [`Self::escapes`] speaks
+        /// for. A census that observes nothing reports no escape for the same
+        /// reason an empty room is quiet (fz-kdt.187).
+        pub(crate) fn observations(&self) -> usize {
+            OBSERVATIONS.with(Cell::get)
+        }
     }
 
     #[cfg(test)]
     impl Drop for SurfaceMembershipCensus {
         fn drop(&mut self) {
-            MODE.with(|mode| mode.set(self.0));
-            ESCAPES.with(|escapes| escapes.set(self.1));
+            MODE.with(|mode| mode.set(self.mode));
+            ESCAPES.with(|escapes| escapes.set(self.escapes));
+            OBSERVATIONS.with(|observations| observations.set(self.observations));
         }
     }
 
-    fn escaped(predicate: &RuntimeTypePredicate, reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue) -> bool {
-        if !predicate.tuples.is_exact() || !RuntimeTestAxis::of_value(value).contains(&RuntimeTestAxis::Tuples) {
-            return false;
+    /// Admitted by the reading the lowerings share, refused by the reading the
+    /// surface names -- asked on the value's OWN axes, which is the same
+    /// disjunction [`super::matches_runtime_type_predicate`] answers, so the
+    /// first half of this is literally the production answer.
+    ///
+    /// `Some` is the witness a triage reads: what the value is, and where the
+    /// surface first refuses it.
+    fn escaped(
+        predicate: &RuntimeTypePredicate,
+        reader: &RuntimeValueReader<'_>,
+        value: RuntimeAnyValue,
+    ) -> Option<String> {
+        let axes = RuntimeTestAxis::of_value(value);
+        let admits = |scope| {
+            axes.iter()
+                .any(|axis| axis_admits(predicate, reader, value, *axis, scope))
+        };
+        if !admits(PositionScope::Lowered) || admits(PositionScope::Full) {
+            return None;
         }
-        axis_admits(
-            predicate,
-            reader,
-            value,
-            RuntimeTestAxis::Tuples,
-            PositionScope::Lowered,
-        ) && !axis_admits(predicate, reader, value, RuntimeTestAxis::Tuples, PositionScope::Full)
+        let value_text = format!("value {}", render(reader, value, RENDER_DEPTH));
+        Some(match refused_element(predicate, reader, value) {
+            Some(refusal) => format!("{value_text}, {refusal}"),
+            None => value_text,
+        })
+    }
+
+    /// Which element broke the clause that got furthest along a list subject.
+    ///
+    /// A spine escape means EVERY clause refuses some element, so the single
+    /// most useful fact is where the most tolerant of them gave up: that is the
+    /// element the arm's surface does not name and the body behind it will read
+    /// anyway. A value that is not a cons cell has no such element -- its
+    /// rendering already shows the nested list that broke it.
+    fn refused_element(
+        predicate: &RuntimeTypePredicate,
+        reader: &RuntimeValueReader<'_>,
+        value: RuntimeAnyValue,
+    ) -> Option<String> {
+        if list_shape_of(value) != Some(ListShape::NonEmpty) {
+            return None;
+        }
+        let (index, element) = predicate
+            .lists
+            .heads()
+            .iter()
+            .filter_map(|question| first_refused_element(question, reader, value))
+            .max_by_key(|(index, _)| *index)?;
+        Some(format!(
+            "element {index} = {} is outside every clause the surface names",
+            render(reader, element, RENDER_DEPTH),
+        ))
+    }
+
+    /// How many levels down, and how many items across, a witness is rendered.
+    ///
+    /// Bounded on both axes because a report able to print an unbounded value is
+    /// a report able to hang the program it instruments.
+    const RENDER_DEPTH: usize = 3;
+    const RENDER_WIDTH: usize = 8;
+
+    /// A value as the reader can show it.
+    ///
+    /// Only the representation's owner can read a heap value, so this asks the
+    /// same closures the matcher does and nothing else; what the reader declines
+    /// to produce prints as the kind it is.
+    fn render(reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue, depth: usize) -> String {
+        match value {
+            RuntimeAnyValue::Null => "null".to_string(),
+            RuntimeAnyValue::Int(int) => int.to_string(),
+            RuntimeAnyValue::Float(bits) => f64::from_bits(bits).to_string(),
+            RuntimeAnyValue::Atom(atom_id) => match reader.module.atom_names.get(atom_id as usize) {
+                Some(name) => format!(":{name}"),
+                None => format!(":<atom {atom_id}>"),
+            },
+            RuntimeAnyValue::EmptyList => "[]".to_string(),
+            RuntimeAnyValue::HeapRef(_) => match list_shape_of(value) {
+                Some(_) => render_spine(reader, value, depth),
+                None => match super::struct_schema_of(value).and_then(|schema| reader.tuple_arity_of(schema)) {
+                    Some(arity) => render_tuple(reader, value, arity, depth),
+                    None => format!("<{:?}>", value.kind()),
+                },
+            },
+        }
+    }
+
+    fn render_spine(reader: &RuntimeValueReader<'_>, list: RuntimeAnyValue, depth: usize) -> String {
+        if depth == 0 {
+            return "[...]".to_string();
+        }
+        let mut elements = Vec::new();
+        let mut cursor = list;
+        while list_shape_of(cursor) == Some(ListShape::NonEmpty) {
+            if elements.len() == RENDER_WIDTH {
+                elements.push("...".to_string());
+                return format!("[{}]", elements.join(", "));
+            }
+            let Some(head) = (reader.list_head)(cursor) else {
+                elements.push("?".to_string());
+                break;
+            };
+            elements.push(render(reader, head, depth - 1));
+            let Some(tail) = (reader.list_tail)(cursor) else {
+                elements.push("?".to_string());
+                break;
+            };
+            cursor = tail;
+        }
+        match list_shape_of(cursor) {
+            Some(_) => format!("[{}]", elements.join(", ")),
+            // An improper tail is not an element, and saying so is the point.
+            None => format!("[{} | {}]", elements.join(", "), render(reader, cursor, depth - 1)),
+        }
+    }
+
+    fn render_tuple(reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue, arity: usize, depth: usize) -> String {
+        if depth == 0 {
+            return "{...}".to_string();
+        }
+        let fields = (0..arity.min(RENDER_WIDTH))
+            .map(|index| match (reader.fields)(value, index) {
+                Some(field) => render(reader, field, depth - 1),
+                None => "?".to_string(),
+            })
+            .chain((arity > RENDER_WIDTH).then(|| "...".to_string()))
+            .collect::<Vec<_>>();
+        format!("{{{}}}", fields.join(", "))
     }
 }
 
@@ -1954,6 +2250,579 @@ mod tests {
             outer.tuple_arities_at_every_depth(),
             BTreeSet::from([2, 3]),
             "the inner 3-tuple's schema is what makes the nested position askable",
+        );
+    }
+}
+
+/// What one TEST says about one VALUE, over a fake reader, through the
+/// production tripwire (fz-kdt.144).
+///
+/// The lattice tests above ask what two tests say about EACH OTHER. These ask
+/// the other half of the one-sided-filter law: a head is exact on rejection and
+/// erasing on acceptance, so the tail is what only [`PositionScope::Full`]
+/// reads, and the gap between the two readings is what
+/// [`surface_membership::observe`] must report -- no more and no less.
+///
+/// The reader is exactly the shape `select_dispatch_match` builds, and the
+/// predicate is asked through `matches_runtime_type_predicate` and `observe`
+/// rather than through the walk directly, so a case that passes here is a case
+/// the interpreter answers the same way.
+#[cfg(test)]
+mod value_membership_tests {
+    use super::surface_membership::SurfaceMembershipCensus;
+    use super::*;
+    use fz_runtime::any_value::AnyValueRef;
+
+    /// A fake heap: cons cells and tuples addressed by synthetic words the
+    /// reader closures resolve, so no value is ever dereferenced except a
+    /// tuple's schema id, which the runtime's own `struct_schema_id` reads off
+    /// the pointer.
+    struct FakeHeap {
+        cells: Vec<(RuntimeAnyValue, RuntimeAnyValue)>,
+        tuples: Vec<(Box<u32>, Vec<RuntimeAnyValue>)>,
+        module: Module,
+    }
+
+    impl FakeHeap {
+        fn new(atoms: &[&str]) -> Self {
+            let module = Module {
+                atom_names: atoms.iter().map(|name| (*name).to_string()).collect(),
+                ..Module::default()
+            };
+            Self {
+                cells: Vec::new(),
+                tuples: Vec::new(),
+                module,
+            }
+        }
+
+        fn atom(&self, name: &str) -> RuntimeAnyValue {
+            let id = self
+                .module
+                .atom_names
+                .iter()
+                .position(|candidate| candidate == name)
+                .expect("the fake heap must intern every atom a test names");
+            RuntimeAnyValue::Atom(id as u32)
+        }
+
+        /// Cell `index` lives at the synthetic word `(index + 1) * 8`, which is
+        /// never dereferenced and is never null, so it is never the empty list.
+        fn cons(&mut self, head: RuntimeAnyValue, tail: RuntimeAnyValue) -> RuntimeAnyValue {
+            self.cells.push((head, tail));
+            Self::cell_ref(self.cells.len() - 1)
+        }
+
+        fn cell_ref(index: usize) -> RuntimeAnyValue {
+            let addr = ((index + 1) * 8) as *const u8;
+            RuntimeAnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("a list ref"))
+        }
+
+        /// A proper list, built right to left.
+        fn list(&mut self, elements: &[RuntimeAnyValue]) -> RuntimeAnyValue {
+            let mut list = RuntimeAnyValue::EmptyList;
+            for element in elements.iter().rev() {
+                list = self.cons(*element, list);
+            }
+            list
+        }
+
+        /// A cons cell whose tail is itself: a spine no heap the runtime builds
+        /// can hold, and the only way to ask whether the walk's termination is a
+        /// fact of the code.
+        fn cycle(&mut self, head: RuntimeAnyValue) -> RuntimeAnyValue {
+            let cell = self.cons(head, RuntimeAnyValue::EmptyList);
+            let index = self.cells.len() - 1;
+            self.cells[index].1 = cell;
+            cell
+        }
+
+        /// Its schema id is a real `u32` behind a `Box`, because
+        /// `struct_schema_id` reads it off the value itself.
+        fn tuple(&mut self, schema: u32, fields: Vec<RuntimeAnyValue>) -> RuntimeAnyValue {
+            let boxed = Box::new(schema);
+            let addr = (&*boxed) as *const u32 as *const u8;
+            self.tuples.push((boxed, fields));
+            RuntimeAnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::STRUCT, addr).expect("a struct ref"))
+        }
+
+        fn cell_of(&self, value: RuntimeAnyValue) -> Option<&(RuntimeAnyValue, RuntimeAnyValue)> {
+            let RuntimeAnyValue::HeapRef(value_ref) = value else {
+                return None;
+            };
+            if value_ref.tag() != ValueKind::LIST || value_ref.is_empty_list() {
+                return None;
+            }
+            let index = (value_ref.storage_addr() as usize) / 8;
+            self.cells.get(index - 1)
+        }
+
+        fn fields_of(&self, value: RuntimeAnyValue) -> Option<&Vec<RuntimeAnyValue>> {
+            let addr = value.heap_addr()?;
+            self.tuples
+                .iter()
+                .find(|(schema, _)| (&**schema) as *const u32 as *mut u8 == addr)
+                .map(|(_, fields)| fields)
+        }
+    }
+
+    /// How many escapes the production tripwire reports for one value, asked
+    /// the way the interpreter asks it: answer the test, and observe what it
+    /// admitted. `arities` registers the schema id of each tuple arity the test
+    /// names, which is the runtime's own numbering the interpreter hands in.
+    fn escapes(
+        heap: &FakeHeap,
+        predicate: &RuntimeTypePredicate,
+        value: RuntimeAnyValue,
+        arities: &[(usize, u32)],
+    ) -> usize {
+        let tuple_schema_ids = arities.iter().copied().collect::<HashMap<_, _>>();
+        let named_schema_ids = HashMap::new();
+        let callables = |_: u64| None;
+        let fields =
+            |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
+        let list_head = |value: RuntimeAnyValue| heap.cell_of(value).map(|(head, _)| *head);
+        let list_tail = |value: RuntimeAnyValue| heap.cell_of(value).map(|(_, tail)| *tail);
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+        };
+        let census = SurfaceMembershipCensus::install();
+        if matches_runtime_type_predicate(predicate, &reader, value) {
+            surface_membership::observe(predicate, &reader, value);
+        }
+        census.escapes()
+    }
+
+    fn list_test(shapes: FiniteSet<ListShape>, heads: Vec<RuntimeTypePredicate>) -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.lists = ListShapes::exact(shapes, heads);
+        predicate
+    }
+
+    fn any_shape() -> FiniteSet<ListShape> {
+        FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty])
+    }
+
+    fn ints() -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.ints = FiniteSet::any();
+        predicate
+    }
+
+    fn atom_test(name: &str) -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.atoms = FiniteSet::lit(name.to_string());
+        predicate
+    }
+
+    /// The two readings agree on a list the clause actually names: every
+    /// element answers the one element question, so there is nothing to report.
+    #[test]
+    fn a_list_whose_every_element_answers_the_head_question_is_inside_the_surface() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let value = heap.list(&[RuntimeAnyValue::Int(1), RuntimeAnyValue::Int(2)]);
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![ints()]), value, &[]), 0);
+    }
+
+    /// THE ACCEPTANCE RESIDUE, which is the whole point of the instrument: the
+    /// head admits, the TAIL does not, and only the `Full` reading can say so.
+    #[test]
+    fn a_list_whose_tail_leaves_the_head_question_is_outside_the_surface() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let value = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![ints()]), value, &[]), 1);
+    }
+
+    /// PER-CLAUSE HOMOGENEITY, not a union of heads. `[int] | [:ok]` names two
+    /// list types and `[1, :ok]` is neither, so reading the clauses' heads as
+    /// one set would admit it and lose the correlation the clauses keep.
+    #[test]
+    fn a_mixed_list_belongs_to_no_clause_of_a_union_of_homogeneous_list_clauses() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let value = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        let two_clauses = list_test(any_shape(), vec![ints(), atom_test("ok")]);
+        assert_eq!(escapes(&heap, &two_clauses, value, &[]), 1);
+    }
+
+    /// The same list under ONE clause whose ELEMENT type is that union is
+    /// inside, because a clause is one homogeneous element type and this one
+    /// names both. The false escape the per-clause reading must not produce.
+    #[test]
+    fn a_mixed_list_belongs_to_one_clause_whose_element_type_is_that_union() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let value = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        let mut element = ints();
+        element.atoms = FiniteSet::lit("ok".to_string());
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![element]), value, &[]), 0);
+    }
+
+    /// The walk composes: an element that is itself a list is asked under
+    /// `Full` too, so `[[1], [:ok]]` leaves `[[int]]` one level in.
+    #[test]
+    fn an_element_that_is_itself_a_list_is_asked_the_same_way() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let inner_ints = heap.list(&[RuntimeAnyValue::Int(1)]);
+        let inner_atoms = heap.list(&[ok]);
+        let value = heap.list(&[inner_ints, inner_atoms]);
+        let list_of_int_lists = list_test(any_shape(), vec![list_test(any_shape(), vec![ints()])]);
+        assert_eq!(escapes(&heap, &list_of_int_lists, value, &[]), 1);
+    }
+
+    /// `[]` carries nothing for a body to misread, which is the `[]` exception
+    /// stated on the value side: no reading can refuse it.
+    #[test]
+    fn the_empty_list_carries_no_element_to_refuse() {
+        let heap = FakeHeap::new(&["ok"]);
+        assert_eq!(
+            escapes(
+                &heap,
+                &list_test(any_shape(), vec![ints()]),
+                RuntimeAnyValue::EmptyList,
+                &[]
+            ),
+            0
+        );
+    }
+
+    /// An axis that asks no head has no `Full` content, so it reports nothing:
+    /// honest inertness for exactly the clauses fz-kdt.146's degrade rule could
+    /// not shape, rather than a guess about elements nobody projected.
+    #[test]
+    fn a_list_axis_that_asks_no_head_reports_nothing_rather_than_guessing() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let value = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        let mut shape_only = RuntimeTypePredicate::none();
+        shape_only.lists = ListShapes::shape_only(any_shape());
+        assert_eq!(escapes(&heap, &shape_only, value, &[]), 0);
+    }
+
+    /// A list held in a TUPLE position is walked through that position, because
+    /// the scope is threaded through `matches_tuple_shape` already.
+    #[test]
+    fn a_list_held_in_a_tuple_position_is_walked_through_that_position() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let payload = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        let tag = heap.atom("ok");
+        let value = heap.tuple(7, vec![tag, payload]);
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.tuples = TupleShapes::exact(vec![vec![atom_test("ok"), list_test(any_shape(), vec![ints()])]]);
+        assert_eq!(escapes(&heap, &predicate, value, &[(2, 7)]), 1);
+    }
+
+    /// An element question that admits everything refuses nothing, however
+    /// heterogeneous the spine: the surface named all of it.
+    #[test]
+    fn an_element_question_that_admits_everything_refuses_nothing() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let value = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        let element = RuntimeTypePredicate::any();
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![element]), value, &[]), 0);
+    }
+
+    /// A COFINITE head set is "every atom but these", and the walk reads it the
+    /// way the head load does -- admitting what it does not exclude, refusing
+    /// what it does.
+    #[test]
+    fn a_cofinite_element_question_refuses_exactly_what_it_excludes() {
+        let mut heap = FakeHeap::new(&["ok", "err", "other"]);
+        let other = heap.atom("other");
+        let err = heap.atom("err");
+        let mut element = RuntimeTypePredicate::none();
+        element.atoms = FiniteSet {
+            values: ["ok".to_string()].into_iter().collect(),
+            cofinite: true,
+        };
+        let admitted = heap.list(&[other, err]);
+        assert_eq!(
+            escapes(&heap, &list_test(any_shape(), vec![element.clone()]), admitted, &[]),
+            0,
+        );
+        let ok = heap.atom("ok");
+        let excluded = heap.list(&[other, ok]);
+        assert_eq!(
+            escapes(&heap, &list_test(any_shape(), vec![element]), excluded, &[]),
+            1,
+            "the excluded atom is an element outside the clause, wherever in the spine it sits",
+        );
+    }
+
+    /// A content-blind element axis (maps, binaries) is decided by kind alone,
+    /// so it reads the same under both scopes and a list of them never reports.
+    #[test]
+    fn a_content_blind_element_axis_reads_the_same_under_both_scopes() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let map = RuntimeAnyValue::HeapRef(
+            AnyValueRef::from_heap_object(ValueKind::MAP, 0x1000 as *const u8).expect("a map ref"),
+        );
+        let value = heap.list(&[map, map]);
+        let mut element = RuntimeTypePredicate::none();
+        element.maps = true;
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![element]), value, &[]), 0);
+    }
+
+    /// An IMPROPER list's tail is not an element: the walk stops there rather
+    /// than judging a value the list type never described.
+    #[test]
+    fn an_improper_tail_is_not_an_element_and_ends_the_walk() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let improper = heap.cons(RuntimeAnyValue::Int(1), RuntimeAnyValue::Int(2));
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![ints()]), improper, &[]), 0);
+        let ok = heap.atom("ok");
+        let atom_tailed = heap.cons(RuntimeAnyValue::Int(1), ok);
+        assert_eq!(
+            escapes(&heap, &list_test(any_shape(), vec![ints()]), atom_tailed, &[]),
+            0,
+            "an atom tail is not an element either",
+        );
+    }
+
+    /// What the representation declines to show, the instrument does not judge:
+    /// a cons cell the reader cannot open ends the walk silently, exactly as an
+    /// unreadable head ends the `Lowered` reading.
+    #[test]
+    fn a_head_the_representation_declines_to_show_is_not_judged() {
+        let heap = FakeHeap::new(&["ok"]);
+        let orphan = RuntimeAnyValue::HeapRef(
+            AnyValueRef::from_heap_object(ValueKind::LIST, 0x9000 as *const u8).expect("a list ref"),
+        );
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![ints()]), orphan, &[]), 0);
+    }
+
+    /// A CALLABLE element is decided by the construction word the backend
+    /// minted it with, which no scope changes: a closure the question names is
+    /// never a false escape, and one it does not name is refused by BOTH
+    /// readings, so it is never an escape either.
+    #[test]
+    fn a_callable_element_is_decided_by_its_construction_under_both_scopes() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        // A real closure object: word 0 is the header, word 1 the code word.
+        let object: Box<[u64; 2]> = Box::new([0, 66]);
+        let addr = (&*object) as *const [u64; 2] as *const u8;
+        let closure =
+            RuntimeAnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr).expect("a closure ref"));
+        let value = heap.list(&[closure, closure]);
+
+        let shape = CallableShape {
+            target: ClosureTarget(66),
+            captures: vec![list_test(any_shape(), vec![ints()])],
+        };
+        let mut element = RuntimeTypePredicate::none();
+        element.callables = CallableShapes::exact(vec![shape.clone()]);
+        let tuple_schema_ids = HashMap::new();
+        let named_schema_ids = HashMap::new();
+        let callables = move |code: u64| (code == 66).then(|| shape.clone());
+        let fields =
+            |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
+        let list_head = |value: RuntimeAnyValue| heap.cell_of(value).map(|(head, _)| *head);
+        let list_tail = |value: RuntimeAnyValue| heap.cell_of(value).map(|(_, tail)| *tail);
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+        };
+        let predicate = list_test(any_shape(), vec![element]);
+        let census = SurfaceMembershipCensus::install();
+        assert!(
+            matches_runtime_type_predicate(&predicate, &reader, value),
+            "the construction these closures carry is the one the element question names",
+        );
+        surface_membership::observe(&predicate, &reader, value);
+        assert_eq!(
+            census.escapes(),
+            0,
+            "a capture question is answered off the construction word, not off the value's contents, \
+             so it reads the same under both scopes",
+        );
+    }
+
+    /// Termination is a fact of the walk, not of the heap it reads: a spine
+    /// that never ends is abandoned at [`ELEMENT_WALK_LIMIT`] and reported as
+    /// inside, because a report that can hang the program it instruments is
+    /// worse than a report that stops.
+    #[test]
+    fn a_spine_that_never_ends_is_abandoned_at_the_walk_limit() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let value = heap.cycle(RuntimeAnyValue::Int(1));
+        assert_eq!(escapes(&heap, &list_test(any_shape(), vec![ints()]), value, &[]), 0);
+        let ok = heap.atom("ok");
+        let atoms_forever = heap.cycle(ok);
+        assert_eq!(
+            escapes(&heap, &list_test(any_shape(), vec![ints()]), atoms_forever, &[]),
+            0,
+            "and a cycle the question refuses at its first element is refused, not walked",
+        );
+    }
+
+    /// A `[]`-only clause beside a cons clause puts no head question of its
+    /// own, so the cons clause's is the only element question and the empty
+    /// list is still inside.
+    #[test]
+    fn an_empty_list_clause_beside_a_cons_clause_asks_only_the_cons_clauses_question() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let test = list_test(any_shape(), vec![ints()]);
+        assert_eq!(escapes(&heap, &test, RuntimeAnyValue::EmptyList, &[]), 0);
+        let ints_only = heap.list(&[RuntimeAnyValue::Int(1), RuntimeAnyValue::Int(2)]);
+        assert_eq!(escapes(&heap, &test, ints_only, &[]), 0);
+        let mixed = heap.list(&[RuntimeAnyValue::Int(1), ok]);
+        assert_eq!(escapes(&heap, &test, mixed, &[]), 1);
+    }
+
+    /// Three levels: a tuple holding a list of tuples whose own position is a
+    /// list. The refusal is four loads deep and the walk must still find it.
+    #[test]
+    fn a_tuple_inside_a_list_inside_a_tuple_is_walked_to_the_bottom() {
+        let mut heap = FakeHeap::new(&["ok", "err"]);
+        let ok = heap.atom("ok");
+        let err = heap.atom("err");
+        let good_inner = heap.list(&[RuntimeAnyValue::Int(2)]);
+        let bad_inner = heap.list(&[err]);
+        let good = heap.tuple(7, vec![RuntimeAnyValue::Int(1), good_inner]);
+        let bad = heap.tuple(7, vec![RuntimeAnyValue::Int(1), bad_inner]);
+        let spine = heap.list(&[good, bad]);
+        let outer = heap.tuple(7, vec![ok, spine]);
+
+        let mut inner_tuple = RuntimeTypePredicate::none();
+        inner_tuple.tuples = TupleShapes::exact(vec![vec![ints(), list_test(any_shape(), vec![ints()])]]);
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.tuples = TupleShapes::exact(vec![vec![atom_test("ok"), list_test(any_shape(), vec![inner_tuple])]]);
+        assert_eq!(escapes(&heap, &predicate, outer, &[(2, 7)]), 1);
+    }
+
+    /// A clause that would admit a LATER element does not rescue an earlier
+    /// one: per-clause homogeneity is order-blind.
+    #[test]
+    fn a_clause_that_admits_a_later_element_does_not_rescue_an_earlier_one() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let two_clauses = list_test(any_shape(), vec![ints(), atom_test("ok")]);
+        let atom_first = heap.list(&[ok, RuntimeAnyValue::Int(1)]);
+        assert_eq!(escapes(&heap, &two_clauses, atom_first, &[]), 1);
+        let all_atoms = heap.list(&[ok, ok]);
+        assert_eq!(escapes(&heap, &two_clauses, all_atoms, &[]), 0);
+    }
+
+    /// A callable element minted from a construction the clause does not name
+    /// is outside it, wherever in the spine it sits.
+    #[test]
+    fn a_callable_element_from_a_construction_the_clause_never_named_is_outside_it() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let named: Box<[u64; 2]> = Box::new([0, 66]);
+        let other: Box<[u64; 2]> = Box::new([0, 67]);
+        let closure = |object: &[u64; 2]| {
+            RuntimeAnyValue::HeapRef(
+                AnyValueRef::from_heap_object(ValueKind::CLOSURE, object as *const [u64; 2] as *const u8)
+                    .expect("a closure ref"),
+            )
+        };
+        let value = heap.list(&[closure(&named), closure(&other)]);
+
+        let shape = CallableShape {
+            target: ClosureTarget(66),
+            captures: Vec::new(),
+        };
+        let mut element = RuntimeTypePredicate::none();
+        element.callables = CallableShapes::exact(vec![shape.clone()]);
+        let predicate = list_test(any_shape(), vec![element]);
+
+        let tuple_schema_ids = HashMap::new();
+        let named_schema_ids = HashMap::new();
+        let callables = move |code: u64| {
+            (code == 66).then(|| shape.clone()).or_else(|| {
+                (code == 67).then(|| CallableShape {
+                    target: ClosureTarget(67),
+                    captures: Vec::new(),
+                })
+            })
+        };
+        let fields =
+            |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();
+        let list_head = |value: RuntimeAnyValue| heap.cell_of(value).map(|(head, _)| *head);
+        let list_tail = |value: RuntimeAnyValue| heap.cell_of(value).map(|(_, tail)| *tail);
+        let reader = RuntimeValueReader {
+            module: &heap.module,
+            tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
+            callables: &callables,
+            fields: &fields,
+            list_head: &list_head,
+            list_tail: &list_tail,
+        };
+        let census = SurfaceMembershipCensus::install();
+        assert!(matches_runtime_type_predicate(&predicate, &reader, value));
+        surface_membership::observe(&predicate, &reader, value);
+        assert_eq!(census.escapes(), 1);
+    }
+
+    /// An improper tail DEEP in the spine still ends the walk, and a refusal
+    /// before it is still found.
+    #[test]
+    fn an_improper_tail_deeper_in_the_spine_ends_the_walk_where_it_sits() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let test = list_test(any_shape(), vec![ints()]);
+        let improper = heap.cons(RuntimeAnyValue::Int(1), RuntimeAnyValue::Int(2));
+        let deep = heap.cons(RuntimeAnyValue::Int(0), improper);
+        assert_eq!(escapes(&heap, &test, deep, &[]), 0);
+        let refused_then_improper = {
+            let tail = heap.cons(ok, RuntimeAnyValue::Int(2));
+            heap.cons(RuntimeAnyValue::Int(0), tail)
+        };
+        assert_eq!(escapes(&heap, &test, refused_then_improper, &[]), 1);
+    }
+
+    /// A nested clause that admits only NON-EMPTY lists refuses an empty
+    /// element, which no head load can see.
+    #[test]
+    fn an_empty_inner_list_leaves_an_element_clause_that_admits_only_cons_cells() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let inner = heap.list(&[RuntimeAnyValue::Int(1)]);
+        let value = heap.list(&[inner, RuntimeAnyValue::EmptyList]);
+        let non_empty_ints = list_test(FiniteSet::lit(ListShape::NonEmpty), vec![ints()]);
+        assert_eq!(
+            escapes(&heap, &list_test(any_shape(), vec![non_empty_ints]), value, &[]),
+            1
+        );
+    }
+
+    /// THE WALK LIMIT IS A FALSE NEGATIVE, and this pins where it starts: a
+    /// refusal at the last index the walk reaches is reported, and the same
+    /// refusal one element further out is not.
+    #[test]
+    fn the_walk_limit_is_where_a_refusal_stops_being_reported() {
+        let mut heap = FakeHeap::new(&["ok"]);
+        let ok = heap.atom("ok");
+        let test = list_test(any_shape(), vec![ints()]);
+
+        let mut elements = vec![RuntimeAnyValue::Int(1); ELEMENT_WALK_LIMIT - 1];
+        elements.push(ok);
+        let at_the_last_judged_index = heap.list(&elements);
+        assert_eq!(escapes(&heap, &test, at_the_last_judged_index, &[]), 1);
+
+        let mut elements = vec![RuntimeAnyValue::Int(1); ELEMENT_WALK_LIMIT];
+        elements.push(ok);
+        let one_past_it = heap.list(&elements);
+        assert_eq!(
+            escapes(&heap, &test, one_past_it, &[]),
+            0,
+            "past the limit the walk reports nothing, which is a MISSED escape, not a clean list",
         );
     }
 }

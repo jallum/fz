@@ -1,0 +1,26 @@
+#---
+# purpose: "two polymorphic @spec clauses that between them accept every member of a union argument accept the call: arrow-set coverage reads a var-carrying clause domain at any"
+#---
+#
+# Regression target for fz-kdt.192. A parameter position observes its
+# ARGUMENT, so no single clause of `pick/1` accepts `{binary, int} | {int, int}`:
+# `{integer, a}` rejects the `{binary, int}` member and `{binary, a}` rejects
+# the `{int, int}` member. Every runtime value of that argument type is still
+# accepted by exactly one clause, so the call is legal, and the only thing that
+# can see it is arrow-SET coverage over the clause set.
+#
+# A clause variable still free after its bounds are closed accepts anything, so
+# the domain of `pick({integer, a})` is `{integer, any}`. Skipping var-carrying
+# rows instead reported no coverage where coverage holds, and this program --
+# which has always run -- died with error[spec/violation] on all three paths.
+defmodule M do
+  @spec pick({integer, a}) :: a
+  @spec pick({binary, a}) :: a
+  fn pick({_tag, v}), do: v
+end
+
+fn main() do
+  xs = [{1, 7}, {"s", 8}]
+  [h | _] = xs
+  dbg(M.pick(h))
+end
