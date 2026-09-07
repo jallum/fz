@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.30"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Obsolete: Debug-sorted product waits no longer exist",
   "type": "bug",
-  "updated_at": "2026-09-07T18:55:59Z"
+  "updated_at": "2026-09-07T18:56:00Z"
 }
