@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-0am"
+  ],
   "blocks": [],
   "created": "2026-09-07T03:46:17Z",
   "description": "causal.rs defines five aggregate types that are each nothing but u64 counters summed field-wise. VERIFIED: every field of all five is u64, 43 fields total.\n\n  FormulaWork 10, ProductWork 16, SessionWork 9, RecursiveSearchWork 6, ShiftWork 2\n\nThe duplication is already bug-shaped. FormulaWork has a private add() that sums its fields, so formula_totals() reads 'totals.add(work)'. ProductWork has no impl at all, so product_totals() hand-sums all 16 fields inline. Same idea, two shapes, and the hand-sum silently drops any field a future author forgets to add there.\n\nFold them into one summable mechanism so adding a counter cannot desync a totals function from its struct. Types rank highest in the fold rule.\n\nSequence after fz-0am: that arc changes which counters exist. Folding first would fold a set that is about to change.",
