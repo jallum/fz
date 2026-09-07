@@ -4,7 +4,8 @@
     "fz-tfn.40"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-03T08:01:25Z",
   "description": "## Goal\n\nFree immutable source versions once no current source, diagnostic, artifact, macro or retained product owner references them. Semantic withdrawal is already complete at fz-tfn.57; this ticket owns physical reclamation only.\n\n## Model\n\nExact owner counts/edges from source publication and provenance consumers decide lifetime. No age, generation threshold, filename, insertion order, whole-source scan or GC shadow registry.\n\n## TDD and deletion\n\nPerform many explicit replacements; retain and release an old diagnostic/artifact; cover macro-produced source and active/dormant roots. Live source inventory stays bounded by current owners plus intentionally retained versions. Delete append-only historical text/CodeState retention and rediscovery paths. Unchanged artifacts and exact invalidation remain correct.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Retire superseded source snapshots after exact ownership lands",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:40Z"
+  "updated_at": "2026-09-07T18:56:43Z"
 }

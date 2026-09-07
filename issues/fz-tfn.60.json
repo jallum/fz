@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-tfn.13",
     "fz-tfn.14",
-    "fz-tfn.15"
+    "fz-tfn.15",
+    "fz-tfn.20"
   ],
   "blocks": [],
   "created": "2026-09-07T18:47:45Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Prove exact reuse and remove all construction debris",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:42Z"
+  "updated_at": "2026-09-07T18:56:43Z"
 }
