@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-tfn.20",
     "fz-tfn.39"
   ],
   "closed_at": "2026-09-07T18:54:06Z",
@@ -16,5 +15,5 @@
   "status": "closed",
   "title": "Absorbed into fz-tfn.57",
   "type": "bug",
-  "updated_at": "2026-09-07T18:55:49Z"
+  "updated_at": "2026-09-07T18:55:50Z"
 }
