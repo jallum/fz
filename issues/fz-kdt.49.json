@@ -7,14 +7,16 @@
   "blocks": [
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:54:15Z",
+  "close_reason": "Current premise is false; final confluence/order audit moved into fz-kdt.48.",
   "created": "2026-08-26T14:36:53Z",
   "description": "## Status\n\nObsolete as written. The claimed Debug-text product-wait sort no longer exists: current product waits use typed SemanticOrd. Removing that order now would contradict the current fact-engine contract while type interning and keep-first merges still expose execution order.\n\nfz-kdt.48 owns denotational identity, exact row confluence and the post-cutover audit of execution-order sorts. Any sort whose only remaining purpose is raw interner or keep-first sensitivity is deleted there or recorded from the then-current final model. Do not implement this ticket against the stale premise.",
   "id": "fz-kdt.49",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Obsolete: Debug-sorted product waits no longer exist",
   "type": "bug",
-  "updated_at": "2026-09-07T18:54:14Z"
+  "updated_at": "2026-09-07T18:54:15Z"
 }
