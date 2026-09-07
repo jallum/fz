@@ -5,7 +5,6 @@
     "fz-tfn.6"
   ],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.60"
   ],
   "created": "2026-09-03T08:00:25Z",
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Delete scan-era scheduling and telemetry residue",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:41Z"
+  "updated_at": "2026-09-07T18:56:56Z"
 }
