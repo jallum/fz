@@ -4,7 +4,6 @@
     "fz-kdt.114",
     "fz-kdt.169",
     "fz-kdt.182",
-    "fz-kdt.30",
     "fz-kdt.32",
     "fz-kdt.46",
     "fz-kdt.48",
@@ -52,5 +51,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:46Z"
+  "updated_at": "2026-09-07T18:55:48Z"
 }
