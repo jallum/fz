@@ -7,14 +7,16 @@
   "blocks": [
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:53:56Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-tfn.14; all valid acceptance criteria moved into that description.",
   "created": "2026-09-03T08:01:25Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-tfn.14, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nPublisher reconciliation changes only the affected exact rows and aggregate membership; equal updates preserve allocation, generation and order without a full unrelated-contributor rebuild.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-tfn.14 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-tfn.19",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-tfn.14",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:55Z"
+  "updated_at": "2026-09-07T18:53:56Z"
 }
