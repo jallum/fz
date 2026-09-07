@@ -7,14 +7,16 @@
     "fz-tfn.20",
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:54:04Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-tfn.57; all valid acceptance criteria moved into that description.",
   "created": "2026-08-25T01:41:26Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-tfn.57, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nA second module owner, including a collision with a lazy reserved runtime module, cannot overwrite the accepted module body or interface.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-tfn.57 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-kdt.30",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-tfn.57",
   "type": "bug",
-  "updated_at": "2026-09-07T18:54:03Z"
+  "updated_at": "2026-09-07T18:54:04Z"
 }
