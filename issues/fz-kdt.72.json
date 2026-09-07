@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-tfn.14"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-03T09:46:20Z",
   "close_reason": "Exact activation-input contributions are now deduplicated per AnalyzeActivation conclusion with production-boundary ownership coverage and unchanged artifacts/runtime behavior.",
   "created": "2026-08-30T17:00:13Z",
@@ -29,5 +27,5 @@
   "status": "closed",
   "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-09-03T09:46:20Z"
+  "updated_at": "2026-09-07T18:56:14Z"
 }
