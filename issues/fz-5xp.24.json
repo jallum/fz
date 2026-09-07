@@ -9,7 +9,7 @@
   "parent": "fz-5xp",
   "priority": 2,
   "status": "open",
-  "title": " is strict in a guard and widening in an expression",
+  "title": "`==` is strict in a guard and widening in an expression",
   "type": "bug",
-  "updated_at": "2026-09-07T03:55:02Z"
+  "updated_at": "2026-09-07T03:55:19Z"
 }
