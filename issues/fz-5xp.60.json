@@ -6,6 +6,7 @@
   "blocks": [
     "fz-5xp.55"
   ],
+  "closed_at": "2026-09-07T13:15:20Z",
   "created": "2026-09-07T12:49:02Z",
   "description": "Pre-existing; uncovered by fz-5xp.57, which is what first let a binary over\n64 bytes match a pattern at all on the native doors.\n\nMINIMAL REPRODUCER -- `run` only, interp is clean:\n\n    fn main() do\n      dbg(walk(\u003c65 'a's\u003e, 0))\n      dbg(walk(\u003c70 'b's\u003e, 0))\n    end\n    fnp walk(\u003c\u003c_c, rest :: binary\u003e\u003e, n), do: walk(rest, n + 1)\n    fnp walk(_b, n), do: n\n\n    stdout: 65, 70    -- correct\n    exit:   138       -- SIGBUS, silently, after main finishes\n\nTHE TRIGGER IS EXACT:\n\n    two big literals, never matched  -\u003e  exit 0\n    one big literal, walked          -\u003e  exit 0\n    one big + one small, walked      -\u003e  exit 0\n    TWO big literals, both walked    -\u003e  exit 138\n\nWHAT IS ACTUALLY WRONG. At shutdown, mso_drop_all_deferred walks the MSO chain\nand releases each ProcBin's SharedBin. One surviving stub's shared_ptr is not a\nSharedBin at all -- it is the ADDRESS OF `shared_bin_destructor_noop`:\n\n    P TEARDOWN stub=0x90b4c4020 sb=0x101fe7a00 rc=17942349577604580351\n               bit_len=15447069372505408511 bytes_ptr=0xf90007e0d100c3ff\n               dtor=0xaa0103e8f90013e8\n               noop=0x101fe7a00     \u003c-- sb == the noop destructor's address\n\nReading 'fields' off a function pointer gives machine code, and the release then\ndoes a refcount fetch_sub into read-only executable memory:\n\n    stop reason = EXC_BAD_ACCESS (code=2, address=0x101283650)\n    frame #0: core::sync::atomic::atomic_sub::\u003cusize, usize\u003e\n\ncode=2 is a protection failure -- a WRITE to memory that is not writable.\n\nThe stub is not corrupted later: its word0 is the same value at mso_sweep time\nand at teardown. It was already wrong when it was made.\n\nWHERE TO LOOK. Only compiler-baked static SharedBins are involved\n(src/ir_codegen/aot_main.rs define_static_sharedbin, called from\nnative_codegen/prim.rs ConstBitstring). The struct's destructor field at +32 is\na function-address relocation to shared_bin_destructor_noop, and the value that\nends up in the ProcBin is exactly that relocation's target -- so the suspicion is\nthat the second `.fz_bs_sb_N` data symbol's address, or the relocation applied\nto it, resolves to +32 of a neighbouring object. The two statics are emitted\nadjacent (observed at 0xc43270000 and 0xc43270028, exactly 40 bytes apart, with\nno padding).\n\nNOT VERIFIED, and the next step: dump both static symbols' resolved addresses and\ntheir 40 bytes after finalize_definitions, and compare with the sb_ptr each\nfz_alloc_procbin_from_static call receives.\n\nWHY IT WAS INVISIBLE: no fixture had a binary literal over 64 bytes that was\nmatched, because until fz-5xp.57 matching one was impossible. It is also silent\nin release -- the process just exits 138 after printing the right answers.",
   "id": "fz-5xp.60",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Two matched binary literals over 64 bytes corrupt a ProcBin and die at teardown on run",
   "type": "bug",
-  "updated_at": "2026-09-07T12:52:07Z"
+  "updated_at": "2026-09-07T13:15:20Z"
 }
