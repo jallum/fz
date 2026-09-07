@@ -33,9 +33,9 @@
 #
 #   * LIST. Elixir's fifth impl is charlist-to-binary; fz has no charlists
 #     (fz-5xp.41).
-#   * A receiver with no impl. `to_string(%{a: 1})` raises in Elixir and is a
-#     compiler ICE here (fz-5xp.40), so that half of the safety property
-#     cannot be exercised yet.
+#   * A receiver with no impl, which is a compile-time diagnostic here where
+#     Elixir raises at runtime -- `behavior/protocol_without_impl` covers it,
+#     and a fixture cannot hold both a diagnostic and an output golden.
 #   * How `dbg` QUOTES an atom: fz prints `:atom_3` and `:foo bar` where Elixir
 #     prints `:""` and `:"foo bar"` (fz-5xp.44). That is the renderer, not
 #     to_string, and this fixture avoids depending on it.

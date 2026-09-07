@@ -895,7 +895,9 @@ fn materialize_call_edges(
     };
     for entry in entries {
         match &entry.tail {
-            LoweredTail::DirectCall { callsite, dest, .. } => {
+            LoweredTail::DirectCall {
+                callsite, callee, dest, ..
+            } => {
                 let Some(edge) = materialize_direct_call_edge(
                     world,
                     tel,
@@ -911,7 +913,7 @@ fn materialize_call_edges(
                     callsite_args,
                 )?
                 else {
-                    return Ok(None);
+                    return Err(call_reaches_no_target(world, tel, *callee));
                 };
                 call_edges.insert(*callsite, edge);
             }
@@ -971,7 +973,16 @@ fn materialize_direct_call_edge(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     // One door: a callsite that named no targets -- never reached, proven
-    // dead, or reached and still unresolved -- materializes no edge. (The
+    // dead, or reached and still unresolved -- materializes no edge.
+    //
+    // In TAIL position the caller now treats that as fatal and names the
+    // callee (`call_reaches_no_target`), because for a protocol call it means
+    // the receiver's type has no impl and the program cannot run. That rests
+    // on the third case above -- "reached and still unresolved" -- not
+    // occurring by the time edges are materialized, which the lib suite and
+    // the 576-fixture corpus agree with. If one ever does, it will arrive as
+    // that diagnostic on a program that should have compiled, and the fix is
+    // to distinguish the two here rather than to soften the caller. (The
     // `has_fact` pre-test that used to stand here asked a DIFFERENT question:
     // the ledger's, where the store below is lowering's authority and is
     // never pruned. The two diverge only in the ledger-withdrawn/store-stale
@@ -1921,6 +1932,46 @@ fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
     } else {
         AbiValueRepr::ValueRef
     }
+}
+
+/// A tail-position direct call whose callsite settled on no reachable target.
+///
+/// For a PROTOCOL call this is Elixir's `Protocol.UndefinedError`: the
+/// receiver's type has no implementation, so there is nothing to route to.
+/// `to_string(%{a: 1})` and `Enum.count(:atom)` both land here.
+///
+/// It used to fall out of `materialize_call_edges` as `Ok(None)` and hit the
+/// caller's "should have complete call edges after waits" assertion, aborting
+/// the compiler with no span, no code, and no mention of the protocol or the
+/// receiver (fz-5xp.40). A closure call in the same position already skipped
+/// quietly; only the direct-call arm insisted the edge must exist.
+fn call_reaches_no_target(
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
+    callee: super::super::identity::FunctionId,
+) -> FatalError {
+    // The callee's REFERENCE, not its definition: a protocol function is
+    // declared without a body, so it never reaches `Defined` and asking for its
+    // definition panics -- which is how the first attempt at this diagnostic
+    // traded one crash for another.
+    let callee = world.function_ref(callee);
+    let module = world.module_name(callee.module).unwrap_or("").to_string();
+    let qualified = if module.is_empty() {
+        callee.name.clone()
+    } else {
+        format!("{module}.{}", callee.name)
+    };
+    let diagnostic = Diagnostic::error(
+        codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
+        format!(
+            "`{qualified}/{}` has no implementation for the value it is called with; \
+             a protocol dispatches on its receiver's type, and this call matched none",
+            callee.arity
+        ),
+        Span::DUMMY,
+    );
+    emit_through(tel, std::slice::from_ref(&diagnostic));
+    FatalError
 }
 
 fn incomplete_semantic_plan(

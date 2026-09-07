@@ -1,0 +1,32 @@
+#---
+# purpose: "a protocol call whose receiver type has no impl is a diagnostic naming the protocol, not a compiler crash"
+# expect: diagnostic
+# diagnostic.code: artifact/incomplete-semantic-plan
+#---
+#
+# # protocol_without_impl
+#
+# `String.Chars` deliberately has no `@fallback_to_any` in Elixir: interpolating
+# a map RAISES rather than printing something structural, and that refusal is
+# the design's main safety property.
+#
+# fz could not express it. A protocol call with no matching impl reached an
+# internal assertion -- "product materialization should have complete call edges
+# after waits" -- and aborted the compiler with no span, no code, and no mention
+# of the protocol or the receiver. The program did not fail; it failed to exist.
+#
+# The cause was an asymmetry rather than a missing check: in
+# `materialize_call_edges`, a CLOSURE call whose callsite named no targets
+# skipped quietly, while a DIRECT call in the same position forced the whole
+# function to `None`, which the caller asserted could not happen. Protocol
+# calls are direct calls.
+#
+# It was never specific to `String.Chars`: `Enum.count(:atom)` did the same
+# thing on `Enumerable`, and had done all along.
+#
+# Elixir raises `Protocol.UndefinedError` at RUNTIME. fz answers at compile
+# time, because the receiver's type is already known -- which is the better
+# error, and is only available to a language that types the receiver.
+fn main() do
+  dbg(to_string(%{a: 1}))
+end

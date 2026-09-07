@@ -4,12 +4,13 @@
 #
 # Elixir deliberately gives this protocol NO `@fallback_to_any`: interpolating
 # a map or a tuple raises rather than printing something structural. That is
-# the design's main safety property.
+# the design's main safety property, and it is preserved here in both halves.
 #
-# Only half of it holds today. A receiver whose family HAS an impl but whose
-# value is wrong -- a non-byte-aligned bitstring -- panics, below. A receiver
-# with no impl at all, such as a map, is a compiler ICE rather than a raise
-# (fz-5xp.40), so the property cannot yet be stated as a whole.
+# A receiver with no impl at all -- a map, a tuple -- is refused at COMPILE
+# time, naming this protocol, because fz knows the receiver's type where Elixir
+# has to wait until the call happens. A receiver whose family has an impl but
+# whose value is wrong -- a bitstring that is not byte-aligned -- cannot be
+# known statically and panics at runtime, below.
 #
 # fz names the binary value family `Binary` where Elixir names it `BitString`.
 # The impl has to use fz's name: `for: BitString` would classify as a bare
