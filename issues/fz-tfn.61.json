@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-tfn.59"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.53"
+  ],
   "created": "2026-09-07T22:03:42Z",
   "description": "## Goal\n\nGive every current source submission and reserved runtime source one stable typed `SourceOwner`, with each immutable text/provenance instance represented by a distinct `SourceVersion`. Owner identity answers “which logical source is this?”; version identity answers “which exact text and locations produced this observation?”\n\nThis is a live identity cutover for ordinary, runtime, prelude, and macro-produced source on the existing submission path. It does not expose replacement yet.\n\n## Model\n\n- Source-publisher jobs are keyed by stable owner and read that owner's current immutable version.\n- Text, source-map entries, quoted roots, spans, and diagnostic provenance name a version.\n- Module, function, type, struct, protocol, and generated callable identities remain typed semantic identities. Filenames, spans, display labels, submission position, and raw/interned ID ordering are never ownership.\n- Generated callable code/capture identity is distinct from diagnostic provenance; this cut establishes the owner/version vocabulary without pretending location is denotation.\n- Existing World stores remain authoritative. Add no source mirror, replacement history index, rollback state, reconciliation pass, or compatibility identity.\n\n## TDD signal\n\nThrough the public production path, prove unique stable owners and immutable versions for unnamed/named code, runtime modules, preludes, nested modules, item macros, function-body macros, and generated callables. Retained diagnostics and quoted/source spans resolve through the exact version. Semantic ordering and artifact output are independent of owner/version allocation order.\n\nThe current initial-submit work counts, allocations, semantic answers, diagnostics, and artifacts remain unchanged except for deliberately typed identity observations. No cold function is lowered and no product is warmed by this refactor.\n\n## Strategy and deletion\n\nSplit the current `CodeId` conflation at `CodeMap`, then migrate every live source job, fact, declaration provenance field, source map boundary, telemetry key, and consumer in one coherent cut. Do not leave parallel `CodeId`/owner paths or convert by raw integer.\n\nDelete identity inference from source-map slot coincidence, filename/display text, and span-based generated-callable ownership wherever the new typed identities replace them. Update fact-engine, pipeline, source, macro, type, and telemetry documentation from the final code.\n\nFocused identity tests, full library/fixture/CLI doors, deterministic dumps, formatting, check, and strict Clippy pass. Fresh ticket-scoped cold adversarial review precedes the one commit and close.",
   "id": "fz-tfn.61",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Give every source one stable owner and immutable version",
   "type": "task",
-  "updated_at": "2026-09-07T22:06:28Z"
+  "updated_at": "2026-09-07T22:06:30Z"
 }
