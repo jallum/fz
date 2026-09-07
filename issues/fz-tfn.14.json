@@ -4,7 +4,8 @@
     "fz-kdt.48"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-03T08:00:24Z",
   "description": "## Goal\n\nReplace the generic one-consumer contribution abstraction with one explicit, change-aware ActivationInputMap that owns exact publisher rows and their joined antichain.\n\n## Model\n\nExact paired-row identity and dominance come from fz-kdt.48. Publisher conclusion replaces or withdraws only that publisher's contribution under the generic grounded/source-ownership rules. Unchanged publisher rows preserve allocation, position and aggregate generation. Changed contributors update only affected antichain membership; no display rendering or full unrelated-contributor rebuild is authority.\n\nA simple full rebuild may exist only in tests as a differential oracle. Production retains one store, not parallel incremental and compatibility aggregates.\n\n## Required deletion\n\nDelete ContributionMap/JoinContribution surfaces used only by ActivationInputs, generic wrappers, full remove/clone/sort/rejoin on equal updates, redundant telemetry, adapters and stale docs.\n\n## Acceptance\n\nInsertion-order and replacement histories yield identical exact rows, collapse events, activation semantics, work and artifacts. Same contribution is quiet; one changed publisher performs proportional work; exact withdrawal preserves other publishers. Full causal and semantic gates pass.\n\nThis ticket absorbs fz-tfn.19.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Make ActivationInputs one change-aware contribution authority",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:37Z"
+  "updated_at": "2026-09-07T18:56:41Z"
 }
