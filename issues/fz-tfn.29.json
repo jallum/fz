@@ -4,8 +4,7 @@
     "fz-tfn.30"
   ],
   "blocks": [
-    "fz-tfn.24",
-    "fz-tfn.39"
+    "fz-tfn.24"
   ],
   "closed_at": "2026-09-05T23:41:10Z",
   "close_reason": "Completed in 4fc5616d8. Fresh cold_tfn29_telemetry approved exact diff 648a4332e05556f300271c2ccdc4b651696ce2ad2aa6af01b813983457a2c485 without findings. Two parallel matrices 537/537, CLI30/30, JSONL25/25, fmt/docs/strict clippy and commit hooks green. Push queued after .27 CI; no CI bypass.",
@@ -18,5 +17,5 @@
   "status": "closed",
   "title": "Give parallel fixture telemetry files collision-free lifecycle ownership",
   "type": "bug",
-  "updated_at": "2026-09-06T00:25:33Z"
+  "updated_at": "2026-09-07T18:57:02Z"
 }
