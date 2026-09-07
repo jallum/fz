@@ -10566,7 +10566,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 156, 148), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 159, 151), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -11116,23 +11116,25 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// fifteen content-caused analyses on this combined stack; eleven of those runs had
 /// reached a matched `Region::Type` question, so each affected row's
 /// observation denominator falls 373 -> 362 while escapes stay at zero.
+/// Exact input alternatives retain separate callable surfaces, so runtime
+/// member selection observes more type questions while every escape stays zero.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 362, 0),
-    ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
+    ("fixtures2/00183_enum_take_list_range.fz", "", 82, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 82, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 12, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 82, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 382, 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 12, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 382, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 82, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is

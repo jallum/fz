@@ -48,6 +48,13 @@ only. Distinct rows still reach the antichain below, and another analysis
 conclusion has its own contribution set, so neither evidence nor publisher
 ownership is collapsed.
 
+Callsite coalescing joins the walked targets' transport surfaces and return
+evidence while carrying their original activation contributions intact. For
+example, rows `(list(int), list(:left))` and `(list(:right), list(int))`
+remain two rows even when they select one callee key. The column-wise call
+summary is a transport projection, never a new call to resolve or an input
+row to publish.
+
 - whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
   says exactly what a standing row says;
 - whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated

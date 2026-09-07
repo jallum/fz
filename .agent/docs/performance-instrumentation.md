@@ -393,7 +393,7 @@ generations, backend output, and runtime output remain unchanged.
 
 The additional 3/5/13 unexplained product evaluations are recursive effect
 members retried from an `ExecutableEffects(callee)` wait without an intervening
-product movement. `fz-tfn.32` owns finding and correcting that generic
+product movement. `fz-tfn.47` owns finding and correcting that generic
 product-wait retry cause; it must not become an effect-specific path or a
 causality exception.
 

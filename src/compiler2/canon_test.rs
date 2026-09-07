@@ -481,7 +481,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            166,
+            // Exact caller rows retain four specializations hidden by blended evidence.
+            170,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
