@@ -3,13 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-05T14:15:14Z",
-  "description": "Goal: keep the epic CI warning-free on supported GitHub Actions runtimes. Signal: successful CI run 33970075487 emitted a controlled annotation that actions/upload-artifact@v4 targets deprecated Node.js 20 and is being forced onto Node.js 24. Strategy: after the recalculator arc is otherwise complete, select the supported official upload-artifact release, preserve the current coverage artifact name/path/retention and failure behavior, and prove the workflow uploads the same artifact without the deprecation annotation. Acceptance: workflow syntax is valid; lint, audit, docs, full llvm-cov test step, and artifact upload pass; the run has no controlled Node-runtime deprecation warning; documentation is updated only if the operator contract changes. Do not suppress the warning or remove coverage artifacts.",
+  "description": "## Goal\n\nUpdate the GitHub Actions coverage upload step to a supported official release without changing artifact name, path, retention or failure behavior.\n\nThis is independent CI maintenance, not the recalculator epic's final barrier. It has no compiler-ticket prerequisites and is no longer a child of fz-tfn.\n\n## Acceptance\n\nWorkflow syntax is valid; lint, audit, the full llvm-cov test step and artifact upload pass; the run has no controlled Node-runtime deprecation warning. Do not suppress the warning or remove the coverage artifact.",
   "id": "fz-tfn.39",
   "labels": [],
-  "parent": "fz-tfn",
   "priority": 4,
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-07T18:57:10Z"
+  "updated_at": "2026-09-07T18:57:11Z"
 }
