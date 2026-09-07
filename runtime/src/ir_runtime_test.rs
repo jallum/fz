@@ -1,7 +1,7 @@
 use super::*;
 use crate::any_value::{AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count};
 use crate::heap::{Schema, SchemaRegistry};
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
+use crate::procbin::{PROCBIN_BYTES, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -334,7 +334,7 @@ fn alloc_procbin_from_static_preserves_anchor() {
         let bits = heap_object_word(addr, ValueKind::PROCBIN);
         unsafe {
             assert_eq!(bits & TAG_MASK, TAG_PROCBIN);
-            assert_eq!(object_size(bits), 16);
+            assert_eq!(object_size(bits), PROCBIN_BYTES);
             assert_eq!(bitstring_bit_len(bits as *const u8), 64);
             let bp = bitstring_byte_ptr(bits as *const u8);
             assert_eq!(from_raw_parts(bp, 8), &PAYLOAD[..]);
@@ -359,7 +359,7 @@ fn alloc_bitstring_const_large_payload_is_procbin() {
         let bits = heap_object_word(addr, ValueKind::PROCBIN);
         unsafe {
             assert_eq!(bits & TAG_MASK, TAG_PROCBIN);
-            assert_eq!(object_size(bits), 16);
+            assert_eq!(object_size(bits), PROCBIN_BYTES);
             assert_eq!(bitstring_bit_len(bits as *const u8), 70 * 8);
             let bp = bitstring_byte_ptr(bits as *const u8);
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());

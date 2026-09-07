@@ -992,7 +992,7 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_procbin(_addr: *const u8) -> usize {
-    16
+    crate::procbin::PROCBIN_BYTES
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {

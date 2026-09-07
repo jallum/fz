@@ -23,13 +23,14 @@ use crate::any_value::{
     map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot,
     struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
 };
-use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
 use std::rc::Rc;
+use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
@@ -654,13 +655,17 @@ impl Heap {
     ///
     /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
-    /// per-process heap gets a 16-byte tagged ProcBin stub referencing
+    /// per-process heap gets a tagged ProcBin stub referencing
     /// it. Render and bit-match dispatch via
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
+    ///
+    /// This always COPIES `bytes`. To view an existing shared buffer
+    /// without copying it, use `alloc_bitstring_suffix`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut u8 {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
-            return alloc_procbin(self, handle).as_raw();
+            self.alloc_stats.record_shared_bin(bytes.len() as u64);
+            return alloc_procbin(self, handle, 0).as_raw();
         }
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
@@ -679,6 +684,46 @@ impl Heap {
             }
         }
         p
+    }
+
+    /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
+    /// `SharedBin`, returning it as a value.
+    ///
+    /// fz-5xp.55 — above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
+    /// parent's bytes: a new stub retains the same SharedBin at its own
+    /// offset, and nothing is copied. That is what stops a byte scanner
+    /// being quadratic, because every `<<_c, rest :: binary>>` step is a
+    /// suffix.
+    ///
+    /// At or below the threshold the bytes are copied into an inline
+    /// bitstring. Copying is cheaper than a stub at that size, and it keeps
+    /// a small tail from pinning a large buffer alive.
+    ///
+    /// This is the one place the inline/shared choice is made for a suffix,
+    /// so it returns the value rather than a bare pointer the caller has to
+    /// re-classify.
+    ///
+    /// # Safety
+    ///
+    /// `shared` must point at a live `SharedBin` the caller holds a
+    /// reference edge to for the duration of the call.
+    pub unsafe fn alloc_bitstring_suffix(&mut self, shared: *mut SharedBin, byte_offset: u64) -> AnyValue {
+        let (buf_ptr, buf_bytes, buf_bits) = unsafe { ((*shared).bytes_ptr, (*shared).bytes_len, (*shared).bit_len) };
+        assert!(
+            byte_offset as usize <= buf_bytes,
+            "bitstring suffix offset {byte_offset} past the shared buffer"
+        );
+        let suffix_bytes = buf_bytes - byte_offset as usize;
+        if suffix_bytes > SHARED_BIN_THRESHOLD_BYTES {
+            let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
+            let p = alloc_procbin(self, handle, byte_offset).as_raw();
+            return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
+        }
+        // Owned because `alloc_bitstring` takes `&mut self`; the buffer is
+        // off-heap and immovable, so the read itself is safe.
+        let owned = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) }.to_vec();
+        let p = self.alloc_bitstring(&owned, buf_bits - byte_offset * 8);
+        AnyValue::heap_ptr(p, ValueKind::BITSTRING)
     }
 
     /// Closure layout: `schema_id`, header word, raw code pointer, then

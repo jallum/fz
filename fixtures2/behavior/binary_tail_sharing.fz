@@ -1,0 +1,42 @@
+#---
+# purpose: "matching a binary tail views the original's bytes, so the cost of a scan does not grow with the length of what is scanned"
+#---
+#
+# # binary_tail_sharing
+#
+# fz-5xp.55. `<<_c, rest :: binary>>` asks for a SUFFIX of its input, and a
+# suffix of a shared binary is another view of the same bytes rather than a copy
+# of them. This fixture is the proof, and it is written as a COMPARISON rather
+# than as a single number: the same walk over 160 bytes and over 320 bytes must
+# cost the same, because neither one copies.
+#
+# Two counters per walk:
+#
+#   * `:shared_bin_bytes` -- off-heap binary buffers allocated. Copying a tail
+#     shows up here and nowhere else, which is exactly why the counter exists: a
+#     ProcBin stub costs the same whether its bytes were copied or shared, so
+#     the stub counters cannot tell the two apart. Both walks must report 0.
+#
+#   * `:bitstring_bytes` -- on-heap bitstring bytes. NOT zero, and that is
+#     deliberate: a suffix at or below the 64-byte threshold is still copied
+#     inline, because at that size a copy is smaller than a stub and it keeps a
+#     short tail from pinning a long buffer alive. The residue is bounded by the
+#     threshold, so it too is the same for both walks.
+#
+# Before this, every step copied the whole remainder: scanning n bytes copied
+# n + (n-1) + ... bytes, and the two lines below differed by about 4x. Decoding
+# a 919-byte JSON document copied 1.4 MB.
+fn main() do
+  dbg(scan_cost("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+  dbg(scan_cost("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+end
+
+fnp scan_cost(input) do
+  before = Process.heap_alloc_stats()
+  n = walk(input, 0)
+  after_ = Process.heap_alloc_stats()
+  {n, after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:bitstring_bytes] - before[:bitstring_bytes]}
+end
+
+fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+fnp walk(_b, n), do: n

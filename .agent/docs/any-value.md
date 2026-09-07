@@ -79,6 +79,33 @@ the caller process heap through `Heap::alloc_bitstring`, and tags the result
 `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64) or `Bitstring` below it — so
 large results land on the shared-binary path on their own.
 
+### A ProcBin names a suffix
+
+A `ProcBin` stub is not "the shared binary"; it is a byte-aligned *suffix* of
+one. It carries a `byte_offset`, and its length is the parent buffer's length
+minus that offset. The whole binary is the suffix at offset 0. Several stubs
+over the same `SharedBin` at different offsets are the normal case, each owning
+its own reference edge.
+
+That is what makes matching a tail free. `<<_c, rest :: binary>>` asks for a
+suffix, so `fz_bs_read_field_bits` hands back another view of the same bytes
+instead of copying them; `Heap::alloc_bitstring_suffix` decides whether the view
+is worth a stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a
+short tail cannot pin a long buffer. Before this, scanning n bytes copied
+n + (n-1) + … bytes, and decoding a 919-byte JSON document copied 1.4 MB.
+
+Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
+one invisible trailing NUL, so a suffix ends where the NUL is and
+`fz_binary_as_cstring` can hand a tail straight to C. An arbitrary window could
+not, which is why one cannot be built: `alloc_procbin` derives the length from
+the offset rather than accepting one.
+
+Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
+buffers, separately from `total` because they are not heap bytes and do not move
+under Cheney. Without it, copying is invisible: a stub costs the same whether
+its bytes were freshly copied or shared, so the stub counters alone cannot tell
+the two apart.
+
 **Typed fast reads** are fused helpers for callers the typer already proved the
 shape of. They project then load, and `.expect()` the projection, so they panic
 on a mismatched ref rather than inventing a second value model:
@@ -306,7 +333,7 @@ copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
 object) and rewrites the root to the copy — copied, not followed.
 
 Off-heap binaries and resources have their own atomic reference counts. A
-16-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
+32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
 edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
 the process heap keeps, and for the same reason: a stub holds the address in
 word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with

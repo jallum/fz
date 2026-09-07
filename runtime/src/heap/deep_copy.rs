@@ -160,7 +160,8 @@ pub fn deep_copy_any_value(
             }
             let src_pb = unsafe { ProcBin::from_raw(sp) };
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
-            let new_p = alloc_procbin(dst_heap, handle).as_raw();
+            // The copy views the same suffix of the same bytes.
+            let new_p = alloc_procbin(dst_heap, handle, src_pb.byte_offset()).as_raw();
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::PROCBIN)
         }

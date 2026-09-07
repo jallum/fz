@@ -217,13 +217,33 @@ impl Drop for SharedBinHandle {
 
 // ===== ProcBin newtype ======================================================
 
-/// Per-heap stub referencing a `SharedBin`. 16 bytes total:
-///   offset 0..8   shared_ptr: *mut SharedBin
-///   offset 8..16  mso_next:   u64 tagged MSO link, or 0
+/// Per-heap stub naming a byte-aligned SUFFIX of a `SharedBin`'s bytes.
+/// `PROCBIN_BYTES` total:
+///   offset 0..8    shared_ptr:  *mut SharedBin
+///   offset 8..16   mso_next:    u64 tagged MSO link, or 0
+///   offset 16..24  byte_offset: u64 first byte of this stub's view
+///   offset 24..32  unused -- the heap rounds every object to a 16-byte
+///                  slot, so 24 and 32 cost the same.
+///
+/// A whole binary is the suffix at offset 0. A tail match allocates another
+/// stub over the SAME SharedBin at a later offset, which is what makes
+/// `<<_c, rest :: binary>>` copy nothing (fz-5xp.55).
+///
+/// SUFFIX, not an arbitrary window, is the load-bearing constraint. The
+/// buffer carries one invisible trailing NUL ([[fz-wu9]]), and a suffix
+/// ends where the buffer ends -- so the parent's NUL is also every
+/// suffix's NUL and `fz_binary_as_cstring` needs no flattening copy. An
+/// arbitrary window would not have that, which is why one cannot be built:
+/// `alloc_procbin` derives the length from the offset rather than taking
+/// it.
 ///
 /// Cheney forwarding overwrites offset 0 with a headerless forwarding marker.
 /// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
 /// old stub and `shared_ptr` from the to-space copy if the stub survived.
+/// Size of a ProcBin stub in bytes. The single authority: allocation, GC
+/// copying and `object_size` all read it here.
+pub const PROCBIN_BYTES: usize = 32;
+
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ProcBin(NonNull<u8>);
@@ -260,16 +280,27 @@ impl ProcBin {
         }
     }
 
+    /// First byte of this stub's view into the shared buffer.
+    pub fn byte_offset(&self) -> u64 {
+        unsafe { read(self.as_raw().add(16) as *const u64) }
+    }
+
+    fn byte_offset_set(&self, offset: u64) {
+        unsafe {
+            write(self.as_raw().add(16) as *mut u64, offset);
+        }
+    }
+
     pub fn bit_len(&self) -> u64 {
-        unsafe { (*self.shared_raw()).bit_len }
+        unsafe { (*self.shared_raw()).bit_len - self.byte_offset() * 8 }
     }
 
     pub fn bytes_ptr(&self) -> *const u8 {
-        unsafe { (*self.shared_raw()).bytes_ptr }
+        unsafe { (*self.shared_raw()).bytes_ptr.add(self.byte_offset() as usize) }
     }
 
     pub fn bytes_len(&self) -> usize {
-        unsafe { (*self.shared_raw()).bytes_len }
+        unsafe { (*self.shared_raw()).bytes_len - self.byte_offset() as usize }
     }
 }
 
@@ -277,14 +308,23 @@ impl ProcBin {
 
 use crate::heap::{Heap, HeapAllocKind};
 
-/// Allocate a 16-byte ProcBin stub on `heap`, taking ownership of the
-/// SharedBin reference encapsulated in `handle`. The new ProcBin is
-/// pushed onto `heap.mso_head` as the new chain head.
-pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
-    let p = heap.alloc_kind(HeapAllocKind::ProcBin, 16);
+/// Allocate a ProcBin stub on `heap` viewing `handle`'s bytes from
+/// `byte_offset` to the end, taking ownership of the SharedBin reference
+/// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`
+/// as the new chain head.
+///
+/// Pass `0` for the whole binary. The length is derived, not passed: see
+/// the `ProcBin` layout note for why only suffixes are constructible.
+pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64) -> ProcBin {
+    assert!(
+        byte_offset as usize <= handle.bytes_len(),
+        "ProcBin suffix offset {byte_offset} past the shared buffer"
+    );
+    let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
+    pb.byte_offset_set(byte_offset);
     heap.mso_head = heap_object_word(p, ValueKind::PROCBIN);
     pb
 }

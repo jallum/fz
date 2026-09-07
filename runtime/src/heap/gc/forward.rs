@@ -10,6 +10,7 @@ use super::forwarding::{
 use crate::any_value::{
     AnyValue, AnyValueRef, TAG_FWD, TAG_LIST, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, ValueKind, heap_kind_from_tagged,
 };
+use crate::procbin::PROCBIN_BYTES;
 use std::ptr::{copy_nonoverlapping, write};
 
 pub fn cheney_forward_strict_bits(
@@ -194,7 +195,7 @@ pub fn cheney_forward_procbin(
     if let Some(fwd) = is_forwarded_procbin(p) {
         return fwd as *mut u8;
     }
-    copy_to_space_with_first_word_forwarding(p, 16, TAG_PROCBIN, free, to_end, copied_objects, stats)
+    copy_to_space_with_first_word_forwarding(p, PROCBIN_BYTES, TAG_PROCBIN, free, to_end, copied_objects, stats)
 }
 
 pub fn cheney_forward_resource(

@@ -354,7 +354,10 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         object_size(heap_object_word(addr, ValueKind::BITSTRING)),
         bitstring_size_for_bit_len(17)
     );
-    assert_eq!(object_size(heap_object_word(addr, ValueKind::PROCBIN)), 16);
+    assert_eq!(
+        object_size(heap_object_word(addr, ValueKind::PROCBIN)),
+        crate::procbin::PROCBIN_BYTES
+    );
     assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 48);
 }
 

@@ -212,9 +212,9 @@ fn mixed_mso_chain_with_procbin_and_resource() {
     let second_bin = SharedBinHandle::from_bytes(&[4, 5], 16);
     {
         let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
-        let pb1 = alloc_procbin(&mut heap, first_bin.clone());
+        let pb1 = alloc_procbin(&mut heap, first_bin.clone(), 0);
         let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
-        let pb2 = alloc_procbin(&mut heap, second_bin.clone());
+        let pb2 = alloc_procbin(&mut heap, second_bin.clone(), 0);
         let rs2 = alloc_resource(&mut heap, second, AnyValue::nil_atom());
         let rs2_bits = heap_object_word(rs2.as_raw(), ValueKind::RESOURCE);
         let pb2_bits = heap_object_word(pb2.as_raw(), ValueKind::PROCBIN);

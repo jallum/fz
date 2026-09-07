@@ -29,7 +29,8 @@ use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
     TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
     closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_entry, object_size, struct_addr_from_tagged, struct_schema_id,
+    map_addr_from_tagged, map_count, map_entry, object_size, procbin_addr_from_tagged, struct_addr_from_tagged,
+    struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -43,7 +44,7 @@ use crate::heap::{
 };
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
-    SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, bitstring_like_eq,
+    ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, bitstring_like_eq,
     is_bitstring_like,
 };
 use crate::process::{AlignedClosureStorage, Process, ProcessState};
@@ -165,6 +166,7 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     alloc_stat_entries(process, &mut entries, "map", snapshot.map);
     alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
     alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(process, &mut entries, "shared_bin", snapshot.shared_bin);
     alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
     alloc_stat_entries(process, &mut entries, "frame", snapshot.frame);
     alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
@@ -1058,7 +1060,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
 pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
-    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle);
+    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -1255,36 +1257,53 @@ fn fz_bs_read_field_bits(
             if pos + needed_bits > bit_len {
                 return fail();
             }
-            // Build a fresh Bitstring from the slice. Always a COPY: zero-copy
-            // slicing is deferred by design, and it is what makes every byte
-            // scanner quadratic (fz-5xp.55).
-            //
-            // Byte-aligned is the overwhelmingly common case -- every
-            // `<<c, rest :: binary>>` step over a binary is one -- and it can
-            // be a slice copy rather than a walk over individual bits. The bit
-            // path remains for genuinely unaligned reads.
-            // The reader's own position is not consulted after this -- the
-            // caller advances by `needed_bits` -- so the aligned path does not
-            // have to walk it forward.
-            let sub_bytes: Vec<u8> = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
-                let start = pos / 8;
-                bytes[start..start + needed_bits / 8].to_vec()
+            // fz-5xp.55 — a byte-aligned TAIL of a shared binary is another
+            // view of the same bytes, not a copy. This is the step every byte
+            // scanner performs, and copying it is what made scanning
+            // quadratic. Only a suffix qualifies, which is exactly what
+            // `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
+            // decides whether the view is worth a stub.
+            let tail_of_shared = pos.is_multiple_of(8)
+                && pos + needed_bits == bit_len
+                && needed_bits.is_multiple_of(8)
+                && procbin_addr_from_tagged(bs_bits).is_some();
+            if tail_of_shared {
+                let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
+                let offset = src.byte_offset() + (pos / 8) as u64;
+                let shared = src.shared_raw();
+                let value = unsafe { (&mut *process).heap.alloc_bitstring_suffix(shared, offset) };
+                (value, needed_bits)
             } else {
-                let mut w = BitWriter::new();
-                for _ in 0..needed_bits {
-                    w.append_bit(r.read_bit().unwrap());
-                }
-                w.bytes
-            };
-            let new_bs = (unsafe { &mut *process })
-                .heap
-                .alloc_bitstring(&sub_bytes, needed_bits as u64);
-            let new_bs_kind = if sub_bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-                ValueKind::PROCBIN
-            } else {
-                ValueKind::BITSTRING
-            };
-            (AnyValue::heap_ptr(new_bs, new_bs_kind), needed_bits)
+                // Build a fresh Bitstring from the slice: a copy, because the
+                // source either is not shared or the field is not its tail.
+                //
+                // Byte-aligned is the overwhelmingly common case -- every
+                // `<<c, rest :: binary>>` step over a binary is one -- and it can
+                // be a slice copy rather than a walk over individual bits. The bit
+                // path remains for genuinely unaligned reads.
+                // The reader's own position is not consulted after this -- the
+                // caller advances by `needed_bits` -- so the aligned path does not
+                // have to walk it forward.
+                let sub_bytes: Vec<u8> = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
+                    let start = pos / 8;
+                    bytes[start..start + needed_bits / 8].to_vec()
+                } else {
+                    let mut w = BitWriter::new();
+                    for _ in 0..needed_bits {
+                        w.append_bit(r.read_bit().unwrap());
+                    }
+                    w.bytes
+                };
+                let new_bs = (unsafe { &mut *process })
+                    .heap
+                    .alloc_bitstring(&sub_bytes, needed_bits as u64);
+                let new_bs_kind = if sub_bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
+                    ValueKind::PROCBIN
+                } else {
+                    ValueKind::BITSTRING
+                };
+                (AnyValue::heap_ptr(new_bs, new_bs_kind), needed_bits)
+            }
         }
         BitType::Float => {
             let total = size.unwrap_or(64) * unit;
