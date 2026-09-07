@@ -10,9 +10,15 @@
   "id": "fz-5xp.1",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "CORRECTION to this ticket's framing, verified before anyone starts it.\n\nI filed this as \"one region-test emitter serves both dispatch sites (fold, do not copy)\". That is not accurate: the two sites are at DIFFERENT LAYERS.\n\n  native_codegen/receive.rs:1083  emit_bitstring_test emits CRANELIFT IR directly --\n                                  a FunctionBuilder, explicit basic blocks,\n                                  b.ins().brif(cmp, true_b, \u0026[], false_b, \u0026[]).\n                                  ~151 lines.\n  jobs/native.rs:3093             entry dispatch emits FZ IR -- ctx.emit_let(Prim::...)\n                                  returning a Var, lowered to Cranelift later.\n\nSo there is no single function both can call as written.\n\nTHE GOOD NEWS is that the primitives are already there and already used in this\nvery file. jobs/native.rs emits Prim::BitReaderInit, Prim::BitReadField and\nPrim::BitReaderDone today -- that is how an irrefutable binding like\n`\u003c\u003ca, b, rest :: binary\u003e\u003e = s` extracts natively (verified: it yields\n{1, 2, \u003c\u003c3, 4\u003e\u003e} on the native door at HEAD). What is missing is using those\nprimitives to build a boolean TEST for clause selection, not the ability to read\na bitstring.\n\nSo the work is: express Region::Bitstring at the IR layer with the reader prims\nalready in use here, mirroring the SEMANTICS emit_bitstring_test implements\n(the bitstring-like guard, per-field extraction, and variable-size bindings such\nas `binary-size(len)`). Read that function as the specification.\n\nWorth deciding while doing it: whether the receive path should then be re-expressed\nin terms of the IR-level construction too, so the semantics stop living twice --\nthat is the actual fold, and it is the reason to prefer mirroring the existing\nimplementation over inventing a second reading of the shape.\n\nStill verified, unchanged: identical pattern, both positions, at HEAD.\n  receive do \u003c\u003clen, payload::binary-size(len), rest::binary\u003e\u003e -\u003e len end  =\u003e 3, native OK\n  case m  do \u003c\u003clen, payload::binary-size(len), rest::binary\u003e\u003e -\u003e len end  =\u003e native lowering failure\nAnd fixtures2/00310_binary_pattern_header.fz / 00311_binary_variable_size.fz carry no\nfrontmatter and no defer:, and the matrix only scans fixtures2/behavior/, so they are\ncurrently ungated on the native door -- move or mirror them into behavior/ so the\nparity gate actually covers this.",
+      "timestamp": "2026-09-07T01:51:54Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Fold the two native bitstring region-test emitters into one",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:53Z"
+  "updated_at": "2026-09-07T01:51:54Z"
 }
