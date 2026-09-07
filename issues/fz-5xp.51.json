@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T10:42:58Z",
+  "description": "    fz      %{:a =\u003e 1, :b =\u003e 2}\n    elixir  %{a: 1, b: 2}\n\nElixir uses the `key: value` shorthand when every key is an atom that needs no\nquoting, and falls back to `%{\"x\" =\u003e 1}` form otherwise. fz always uses the\narrow form.\n\nBlocks oracle fixtures that print any atom-keyed map -- which is most maps a\nprogram builds by hand. Note the ITERATION ORDER of an atom-keyed map cannot\nmatch Elixir either (separate ticket), so a fixture printing one needs both\nfixed before it can have an oracle; a fixture printing a BINARY-keyed map needs\nonly this one.\n\nDONE = a map renders exactly as Elixir renders it for atom keys, mixed keys,\nand keys needing quotes, with a fixture whose golden comes from the oracle.",
+  "id": "fz-5xp.51",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] dbg renders a map's atom keys as :a =\u003e rather than Elixir's a:",
+  "type": "bug",
+  "updated_at": "2026-09-07T10:42:58Z"
+}
