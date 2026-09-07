@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T10:30:07Z",
   "created": "2026-09-07T10:17:07Z",
   "description": "Found while starting fz-5xp.12, and it is a prerequisite for that ticket's\nfirst work item.\n\n    built = \"a\" \u003c\u003e \"b\"\n    m = %{\"ab\" =\u003e 1, built =\u003e 2}\n\n    elixir  %{\"ab\" =\u003e 2}   count 1   m[\"ab\"] -\u003e 2     (the later key wins)\n    interp  %{\"ab\" =\u003e 2}   count 1   m[\"ab\"] -\u003e 2     agrees\n    run     %{\"ab\" =\u003e 1}   count 1   m[\"ab\"] -\u003e 1     SILENTLY WRONG\n\nA duplicate binary key in a map literal keeps the FIRST value on the JIT door\ninstead of the last. No error.\n\nROOT CAUSE, in runtime/src/heap/key_cmp.rs: the map is a flat SORTED array, but\nits two relations disagree about binary keys.\n\n  * `same_value_ref` compares bitstrings STRUCTURALLY (`bitstring_like_eq`).\n  * `map_key_cmp_refs` orders them by `value_ref_sort_payload`, which for a\n    heap value is its ADDRESS.\n\nSo two structurally-equal binaries at different addresses are EQUAL to lookup\nand UNEQUAL to the sort. They do not become adjacent, so a dedup driven by the\nordering never sees them as the same key. `map_key_cmp_refs` also splits\nBITSTRING from PROCBIN on the tag, so the same content stored inline versus\nshared sorts into different groups while comparing equal.\n\nLookup survives only because it is a LINEAR SCAN using the structural relation\n-- `m[built]` does find the entry today. That is why the bug hid: the slow path\nis the correct one.\n\nWHY IT BLOCKS fz-5xp.12. That ticket's first item is \"binary search in\nHeap::read_map_addr_value_ref (the array is already sorted)\". The array IS\nsorted -- by a relation that does not agree with the equality the search must\nuse, so a binary search over it would MISS a key the scan finds. The ordering\nhas to agree with the equality before the array is searchable at all.\n\nWHY IT IS P1. `Json.decode` builds maps whose keys are binaries constructed at\nruntime, and duplicate keys are legal in JSON input with last-one-wins the\ncommon rule. This is the goal program's central data structure.\n\nDONE = a map's key order agrees with its key equality: bitstrings ordered by\nCONTENT, with BITSTRING and PROCBIN of equal content ordered together. Then\nequal keys collide, the later value wins on every door, and the array becomes\nbinary-searchable. Expect map ITERATION ORDER to change, which is observable\nvia `Enum`/`dbg` -- check it against Elixir, whose small maps are term-ordered,\nrather than against the current goldens.",
   "id": "fz-5xp.48",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] A map's key ORDER disagrees with its key EQUALITY, so equal binary keys do not collide",
   "type": "bug",
-  "updated_at": "2026-09-07T10:17:07Z"
+  "updated_at": "2026-09-07T10:30:07Z"
 }
