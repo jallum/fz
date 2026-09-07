@@ -168,6 +168,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     );
     builder.symbol("fz_binary_concat", ir_runtime::fz_binary_concat as *const u8);
     builder.symbol("fz_atom_to_binary", ir_runtime::fz_atom_to_binary as *const u8);
+    builder.symbol("fz_map_delete", ir_runtime::fz_map_delete as *const u8);
     builder.symbol("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8);
     builder.symbol("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8);
     builder.symbol("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8);

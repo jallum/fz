@@ -574,6 +574,33 @@ impl Heap {
         self.alloc_map_refs_bits(&entries)
     }
 
+    /// A map without `key`, or the same map when the key is absent.
+    ///
+    /// A full copy, like `map_put_value`: the flat array has no hole to leave
+    /// behind. That is why fz-5xp.12 wants `Map.drop/2` to be the first-class
+    /// surface and `delete/2` the one callers are told not to put in a loop --
+    /// the opposite emphasis to Elixir's docs, because the structure underneath
+    /// is a sorted array rather than a HAMT.
+    pub fn map_delete_ref(&mut self, map: AnyValueRef, key: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
+        let map_addr = map.map_addr()?;
+        let count = unsafe { map_count(map_addr) };
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let (entry_key, entry_value) = unsafe { map_entry_refs(map_addr, i) };
+            if same_value_ref(entry_key, key) {
+                continue;
+            }
+            entries.push((entry_key, entry_value));
+        }
+        if entries.len() == count {
+            return Ok(map);
+        }
+        // Already in order: removing entries from a sorted run keeps it sorted.
+        let map_bits = self.alloc_map_refs_bits(&entries);
+        let map_addr = map_addr_from_tagged(map_bits).expect("new map addr");
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
+    }
+
     pub fn map_put_slot_bits(&mut self, map_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
         let map_addr = map_addr_from_tagged(map_bits);
         let count = map_addr.map_or(0, |addr| unsafe { map_count(addr) });

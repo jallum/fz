@@ -1461,6 +1461,18 @@ pub extern "C" fn fz_map_get_float_key_ref(process: *mut Process, map_ref_word: 
     fz_map_get_scalar_key_ref(process, map, AnyValue::float(value))
 }
 
+/// `Map.delete/2`: the map without `key`, or the same map when absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_delete(process: *mut Process, map_ref: u64, key_ref: u64) -> u64 {
+    let map = any_value_ref_from_word(map_ref, "fz_map_delete map");
+    let key = any_value_ref_from_word(key_ref, "fz_map_delete key");
+    (unsafe { &mut *process })
+        .heap
+        .map_delete_ref(map, key)
+        .expect("fz_map_delete")
+        .raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_count(map_ref_word: u64) -> i64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_count map");

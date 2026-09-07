@@ -1,9 +1,81 @@
 defmodule Map do
-  @moduledoc "Map helpers used by Enumerable."
+  @moduledoc "A flat sorted array, not a HAMT -- bulk functions first. See the note below."
+
+  # A map here is a FLAT SORTED ARRAY, and this module's shape says so.
+  #
+  # Elixir's structural sharing does not transfer. `put/3` and `delete/2` each
+  # copy the whole array, so a loop over n keys is O(n^2) -- the exact idiom
+  # Elixir's docs encourage. The BULK functions do one pass and one allocation,
+  # and they are the surface to reach for. Use `put/3` and `delete/2` when you
+  # have ONE key, not in a loop. That emphasis is the opposite of Elixir's and
+  # is deliberate.
+  #
+  # `get` is a binary search (fz-5xp.12), which needs the array's order to agree
+  # with its key equality (fz-5xp.48) and every map to actually be sorted
+  # (fz-5xp.49).
+  #
+  # ITERATION ORDER is by key. For BINARY keys that matches Elixir exactly. For
+  # ATOM keys it cannot: Elixir orders atoms by an internal identity fz does not
+  # share, so `Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there and
+  # `[:a, :b, :c]` here (fz-5xp.50). JSON object keys are strings, so the goal
+  # program is on the side that matches.
 
   extern "C" fn fz_map_count(any) :: integer
   extern "C" fn fz_map_entry_key(any, integer) :: any
   extern "C" fn fz_map_entry_value(any, integer) :: any
+  extern "fz" fn fz_map_delete(any, any) :: any
+
+  @doc "The map without `key`. Copies the whole array; prefer drop/2 for several."
+  @spec delete(any, any) :: any
+  fn delete(map, key), do: fz_map_delete(map, key)
+
+  @doc "The number of entries."
+  @spec size(any) :: integer
+  fn size(map), do: fz_map_count(map)
+
+  @doc "Entries as a {key, value} list, in key order."
+  @spec to_list(any) :: [{any, any}]
+  fn to_list(map), do: to_list(map, fz_map_count(map), 0, [])
+
+  @doc "Just the keys, in order."
+  @spec keys(any) :: [any]
+  fn keys(map), do: keys(map, fz_map_count(map), 0, [])
+
+  @doc "Just the values, in key order."
+  @spec values(any) :: [any]
+  fn values(map), do: values(map, fz_map_count(map), 0, [])
+
+  @doc "True when `key` is present."
+  @spec has_key?(any, any) :: bool
+  fn has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
+
+  fnp has_key?(map, count, index, key) do
+    if index >= count do
+      false
+    else
+      if fz_map_entry_key(map, index) === key do
+        true
+      else
+        has_key?(map, count, index + 1, key)
+      end
+    end
+  end
+
+  fnp keys(map, count, index, acc) do
+    if index >= count do
+      reverse(acc, [])
+    else
+      keys(map, count, index + 1, [fz_map_entry_key(map, index) | acc])
+    end
+  end
+
+  fnp values(map, count, index, acc) do
+    if index >= count do
+      reverse(acc, [])
+    else
+      values(map, count, index + 1, [fz_map_entry_value(map, index) | acc])
+    end
+  end
 
   @doc "Enumerable.reduce/3 callback body for maps."
   @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
@@ -80,7 +152,6 @@ defmodule Map do
     {fz_map_entry_key(map, index), fz_map_entry_value(map, index)}
   end
 
-  fnp to_list(map), do: to_list(map, fz_map_count(map), 0, [])
   fnp to_list(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])

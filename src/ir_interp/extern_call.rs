@@ -9,8 +9,8 @@ use fz_runtime::extern_variadic::{
 };
 use fz_runtime::ir_runtime::{
     fz_atom_to_binary, fz_binary_concat, fz_bitstring_is_binary, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8,
-    fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_entry_key,
-    fz_map_entry_value, fz_op_neg_f, fz_op_neg_i, fz_process_heap_alloc_stats, fz_value_cmp_ref,
+    fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_delete,
+    fz_map_entry_key, fz_map_entry_value, fz_op_neg_f, fz_op_neg_i, fz_process_heap_alloc_stats, fz_value_cmp_ref,
     fz_value_eq_widening_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
@@ -589,6 +589,7 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         "fz_op_rem_if" => Some(fz_op_rem_if as *const ()),
         "fz_op_rem_fi" => Some(fz_op_rem_fi as *const ()),
         "fz_op_rem_ff" => Some(fz_op_rem_ff as *const ()),
+        "fz_map_delete" => Some(fz_map_delete as *const ()),
         "fz_map_count" => Some(fz_map_count as *const ()),
         "fz_map_entry_key" => Some(fz_map_entry_key as *const ()),
         "fz_map_entry_value" => Some(fz_map_entry_value as *const ()),
