@@ -351,6 +351,7 @@ fn guard_cmp(proc: *mut Process, left: AnyValue, right: AnyValue) -> Option<i64>
         return Some(order_of(l, r));
     }
     Some(fz_value_cmp_ref(
+        proc,
         left.as_ref_word(proc).ok()?,
         right.as_ref_word(proc).ok()?,
     ))

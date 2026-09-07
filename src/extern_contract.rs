@@ -40,6 +40,9 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     ("fz_integer_to_binary", ExternAbi::Fz),
     ("fz_process_heap_alloc_stats", ExternAbi::Fz),
     // Plain C symbols the runtime exports for the interpreter to call.
+    // fz-5xp.8 — the total term order. Takes the process because atoms order
+    // by NAME, and the name table lives on the node.
+    ("fz_value_cmp_ref", ExternAbi::Fz),
     ("fz_bitstring_is_binary", ExternAbi::C),
     ("fz_bitstring_valid_utf8", ExternAbi::C),
     ("fz_brand_bitstring_as_utf8", ExternAbi::C),

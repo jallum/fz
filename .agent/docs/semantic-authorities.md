@@ -59,13 +59,26 @@ operator with two meanings, not a divergence. The lowering now derives the
 question from the op, so a call site cannot get it wrong.
 
 **Ordering** — owner `cmp_any_value` / `fz_value_cmp_ref`
-(`runtime/src/ir_runtime.rs`), shared since fz-5xp.18. `guard_cmp`
-(`ir_interp/dispatch_exec.rs`) has integer and float fast paths and then
-delegates; `fz_value_cmp_raw_const` exists so codegen can compare a ref against
-an unboxed payload without allocating a scalar box. Two integers are ordered AS
-INTEGERS — widening both to `f64` loses the distinction above 2^53. Ordering
-between values of different kinds is not supported yet and panics loudly:
-fz-5xp.8.
+(`runtime/src/ir_runtime.rs`), shared since fz-5xp.18 and TOTAL since
+fz-5xp.8: every pair of values has an order, Erlang's
+`number < atom < reference < fun < port < pid < tuple < map < list < bitstring`.
+It takes the process, because atoms order by NAME and the name table lives on
+the node — ids are handed out in first-seen order, so ordering by id would
+depend on which atom the program mentioned first. Equality took a process
+already; ordering was the odd one out.
+
+`guard_cmp` (`ir_interp/dispatch_exec.rs`) has integer and float fast paths and
+then delegates; `fz_value_cmp_raw_const` exists so codegen can compare a ref
+against an unboxed payload without allocating a scalar box. Two integers are
+ordered AS INTEGERS — widening both to `f64` loses the distinction above 2^53.
+
+`Kernel` declares a typed clause per orderable pair — numbers and binaries —
+and NO `any`/`any` clause, so `1 < :atom` is refused at compile time rather
+than answered wrongly at run time. The total order is reached through
+`Kernel.compare/2`, which `Enum.sort/1` uses. That split is not tidiness:
+giving the operators a catch-all makes every comparison callsite with an
+unresolved operand blind to the dispatcher, which the blind-escape census
+catches as a latent miscompile (fz-5xp.64).
 
 **Arithmetic** — no single owner, and that is deliberate. The typed shim NAMES
 are the shared fact: `fz_op_add_ii`, `_if`, `_ff` and so on say which lanes they

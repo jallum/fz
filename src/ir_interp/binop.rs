@@ -23,7 +23,7 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
     // of one question is why the doors disagreed on `2 >= 1.0`.
     macro_rules! float_cmp {
         ($op:tt) => {{
-            let ordering = fz_value_cmp_ref(a.as_ref_word(proc)?, b.as_ref_word(proc)?);
+            let ordering = fz_value_cmp_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?);
             Ok(interp_bool_value(ordering $op 0))
         }};
     }

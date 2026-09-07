@@ -80,7 +80,7 @@ fn eval_interp_operator_extern(
                         0
                     }
                 }
-                _ => fz_value_cmp_ref(args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
+                _ => fz_value_cmp_ref(proc, args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
             },
         };
         let answer = match op {
@@ -552,6 +552,9 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         // interp leg of the matrix can resolve them without relying on
         // dlsym; statically-linked rlibs don't expose these via
         // RTLD_DEFAULT on Linux.
+        // fz-5xp.8 — the total term order, which the cross-type comparison
+        // clauses in `Kernel` are written in terms of.
+        "fz_value_cmp_ref" => Some(fz_value_cmp_ref as *const ()),
         "fz_bitstring_is_binary" => Some(fz_bitstring_is_binary as *const ()),
         "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
         "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),

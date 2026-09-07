@@ -227,8 +227,23 @@ defmodule Enum do
     )
   end
 
+  # fz-5xp.8 — the default sort is Erlang's TOTAL TERM ORDER, not `<=`. `<=` is
+  # declared only for the operand pairs fz can prove, so `Enum.sort/1` over a
+  # mixed list could not even be written in terms of it; `Kernel.compare/2` is
+  # the entry point that orders anything against anything.
+  #
+  # A typed clause family rather than one `compare/2` call, because
+  # `compare/2` takes `any` and marshalling an unboxed integer as `any` BOXES
+  # it: routing every comparison through it cost 54 extra scalar boxes on an
+  # eleven-element sort. The numeric clauses keep the inline compare the
+  # operators already have; only the pairs `<=` cannot express reach the
+  # comparator.
+  fnp default_order(left :: integer, right :: integer), do: left <= right
+  fnp default_order(left :: float, right :: float), do: left <= right
+  fnp default_order(left, right), do: Kernel.compare(left, right) <= 0
+
   @spec sort(Enumerable.t(a)) :: [a]
-  fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right end)
+  fn sort(enumerable), do: sort(enumerable, fn (left, right) -> default_order(left, right) end)
 
   @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
   fn sort(enumerable, sorter), do: sort_list(enumerable, sorter)

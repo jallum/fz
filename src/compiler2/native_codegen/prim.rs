@@ -1970,7 +1970,8 @@ where
         let fref = body
             .jmod
             .declare_func_in_func(runtime.value_cmp_raw_const_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[dyn_ref, kind_tag, raw, swap_flag]);
+        let process = body.process_arg();
+        let inst = body.b.ins().call(fref, &[process, dyn_ref, kind_tag, raw, swap_flag]);
         let ordering = body.b.inst_results(inst)[0];
         let zero = body.b.ins().iconst(types::I64, 0);
         let cmp = body.b.ins().icmp(icc, ordering, zero);
@@ -2014,7 +2015,8 @@ where
     let left = body.tagged_var(var_env, a.0);
     let right = body.tagged_var(var_env, bv.0);
     let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
-    let call = body.b.ins().call(cmp_ref, &[left, right]);
+    let process = body.process_arg();
+    let call = body.b.ins().call(cmp_ref, &[process, left, right]);
     let ordering = body.b.inst_results(call)[0];
     let zero = body.b.ins().iconst(types::I64, 0);
     let slow_cmp = body.b.ins().icmp(icc, ordering, zero);
@@ -2206,7 +2208,8 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
             let left = body.tagged_var(var_env, args[0].0);
             let right = body.tagged_var(var_env, args[1].0);
             let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
-            let call = body.b.ins().call(cmp_ref, &[left, right]);
+            let process = body.process_arg();
+            let call = body.b.ins().call(cmp_ref, &[process, left, right]);
             let ordering = body.b.inst_results(call)[0];
             let zero = body.b.ins().iconst(types::I64, 0);
             body.b.ins().icmp(icc, ordering, zero)

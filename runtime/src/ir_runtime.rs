@@ -26,11 +26,11 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
-    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
-    closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_entry, object_size, procbin_addr_from_tagged, struct_addr_from_tagged,
-    struct_schema_id,
+    AnyValue, AnyValueRef, AnyValueRefPacking, EMPTY_LIST_BITS, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING,
+    TAG_FWD, TAG_LIST, TAG_MASK, TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value,
+    closure_captured_count, closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, object_size, procbin_addr_from_tagged,
+    struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -2221,32 +2221,207 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
 /// not implemented yet (fz-5xp.8); reaching it aborts rather than inventing an
 /// answer, because the behaviour it replaces was a silent wrong one.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_cmp_ref(a_ref: u64, b_ref: u64) -> i64 {
+pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> i64 {
     let a = any_value_from_ref_word(a_ref, "fz_value_cmp_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_cmp_ref rhs");
-    cmp_any_value(a, b)
+    cmp_any_value(process, a, b)
 }
 
-fn cmp_any_value(a: AnyValue, b: AnyValue) -> i64 {
-    // Two integers are ordered AS INTEGERS. Widening both to f64 loses the
-    // distinction above 2^53 and made `9007199254740993 > 9007199254740992`
-    // answer false.
-    if a.kind() == ValueKind::INT && b.kind() == ValueKind::INT {
-        return order_of_i64(a.raw() as i64, b.raw() as i64);
+/// Where a value's KIND sits in the total term order.
+///
+/// Erlang's order, which Elixir inherits and fz follows:
+///
+/// ```text
+/// number < atom < reference < fun < port < pid < tuple < map < list < bitstring
+/// ```
+///
+/// fz has no port or pid values yet; a resource is fz's reference-like thing
+/// and takes that slot. Every number shares one rank because integers and
+/// floats are ordered against each other BY VALUE, not by kind.
+fn term_rank(kind: ValueKind) -> u8 {
+    match kind {
+        ValueKind::INT | ValueKind::FLOAT => 0,
+        ValueKind::ATOM | ValueKind::NULL => 1,
+        ValueKind::RESOURCE => 2,
+        ValueKind::CLOSURE => 3,
+        ValueKind::STRUCT => 4,
+        ValueKind::MAP => 5,
+        ValueKind::LIST => 6,
+        ValueKind::BITSTRING | ValueKind::PROCBIN => 7,
+        _ => 8,
     }
-    if let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) {
-        return order_of_f64(left, right);
+}
+
+/// The total order over every term (fz-5xp.8).
+///
+/// Takes the process because ATOMS ORDER BY NAME, not by id: ids are handed
+/// out in the order atoms are first seen, so `:b < :a` would depend on which
+/// the program mentioned first. The name table lives on the node.
+///
+/// Within a rank:
+///   * numbers by value, integers as integers so the distinction above 2^53
+///     survives (`9007199254740993 > 9007199254740992` was false when both
+///     were widened to f64);
+///   * atoms byte-lexicographically by name;
+///   * tuples by ARITY first, then elementwise -- `{2} < {1, 1}`;
+///   * lists ELEMENTWISE first, a prefix sorting before its extensions --
+///     `[] < [1] < [1, 1] < [2]`, the opposite convention from tuples;
+///   * maps by size, then keys in term order, then values;
+///   * bitstrings byte-lexicographically, a prefix first;
+///   * closures and resources by identity, which is arbitrary but total and
+///     stable within a run -- Erlang's fun order is equally unspecified.
+fn cmp_any_value(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
+    let a_rank = term_rank(a.kind());
+    let b_rank = term_rank(b.kind());
+    if a_rank != b_rank {
+        return if a_rank < b_rank { -1 } else { 1 };
     }
-    if is_bitstring_kind(a.kind()) && is_bitstring_kind(b.kind()) {
-        let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
-        let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
-        return cmp_bitstring(ap, bp);
+    match a.kind() {
+        ValueKind::INT if b.kind() == ValueKind::INT => order_of_i64(a.raw() as i64, b.raw() as i64),
+        ValueKind::INT | ValueKind::FLOAT => {
+            let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) else {
+                unreachable!("rank 0 is exactly the numeric kinds")
+            };
+            order_of_f64(left, right)
+        }
+        ValueKind::ATOM | ValueKind::NULL => cmp_atom_names(process, a, b),
+        ValueKind::STRUCT => cmp_struct(process, a, b),
+        ValueKind::MAP => cmp_map(process, a, b),
+        ValueKind::LIST => cmp_list(process, a, b),
+        _ if is_bitstring_kind(a.kind()) => {
+            let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
+            let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
+            cmp_bitstring(ap, bp)
+        }
+        // Closures and resources: identity order. Total and stable, and no
+        // language question depends on WHICH way round two of them sort.
+        _ => order_of_u64(a.raw(), b.raw()),
     }
-    panic!(
-        "ordering between a {:?} and a {:?} is not supported yet (fz-5xp.8: term ordering)",
-        a.kind(),
-        b.kind()
-    );
+}
+
+fn order_of_u64(left: u64, right: u64) -> i64 {
+    match left.cmp(&right) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+fn cmp_atom_names(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
+    let a_id = atom_id_of(a);
+    let b_id = atom_id_of(b);
+    if a_id == b_id {
+        return 0;
+    }
+    let proc = unsafe { &*process };
+    let a_name = proc.node.atom_name(a_id).unwrap_or_default();
+    let b_name = proc.node.atom_name(b_id).unwrap_or_default();
+    match a_name.as_bytes().cmp(b_name.as_bytes()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+fn atom_id_of(value: AnyValue) -> u32 {
+    match value.kind() {
+        ValueKind::NULL => NIL_ATOM_ID,
+        _ => value.raw() as u32,
+    }
+}
+
+/// Tuples order by ARITY first. `{2} < {1, 1}` because one field is fewer than
+/// two, which is the opposite of how lists compare.
+fn cmp_struct(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
+    let ap = a.raw() as *mut u8;
+    let bp = b.raw() as *mut u8;
+    let a_schema = unsafe { struct_schema_id(ap as *const u8) };
+    let b_schema = unsafe { struct_schema_id(bp as *const u8) };
+    let (a_fields, b_fields) = {
+        let reg = (unsafe { &mut *process }).heap.schemas_registry();
+        let registry = reg.borrow();
+        (
+            registry.get(a_schema).fields.clone(),
+            registry.get(b_schema).fields.clone(),
+        )
+    };
+    if a_fields.len() != b_fields.len() {
+        return if a_fields.len() < b_fields.len() { -1 } else { 1 };
+    }
+    for (a_field, b_field) in a_fields.iter().zip(b_fields.iter()) {
+        let av = (unsafe { &mut *process }).heap.read_field_slot(ap, a_field.offset);
+        let bv = (unsafe { &mut *process }).heap.read_field_slot(bp, b_field.offset);
+        let ordering = cmp_any_value(process, av, bv);
+        if ordering != 0 {
+            return ordering;
+        }
+    }
+    0
+}
+
+/// Maps order by size, then by keys in term order, then by values. Both maps
+/// are flat SORTED arrays, so walking them in step compares the keys in the
+/// order the comparison wants them.
+fn cmp_map(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
+    let ap = a.raw() as *const u8;
+    let bp = b.raw() as *const u8;
+    let a_count = unsafe { map_count(ap) };
+    let b_count = unsafe { map_count(bp) };
+    if a_count != b_count {
+        return if a_count < b_count { -1 } else { 1 };
+    }
+    for i in 0..a_count {
+        let (a_key, _) = unsafe { map_entry(ap, i) };
+        let (b_key, _) = unsafe { map_entry(bp, i) };
+        let ordering = cmp_any_value(process, a_key, b_key);
+        if ordering != 0 {
+            return ordering;
+        }
+    }
+    for i in 0..a_count {
+        let (_, a_value) = unsafe { map_entry(ap, i) };
+        let (_, b_value) = unsafe { map_entry(bp, i) };
+        let ordering = cmp_any_value(process, a_value, b_value);
+        if ordering != 0 {
+            return ordering;
+        }
+    }
+    0
+}
+
+/// Lists order ELEMENTWISE, and a list that runs out first is smaller:
+/// `[] < [1] < [1, 1] < [2]`. The first differing element decides, so a
+/// longer list can still be smaller.
+fn cmp_list(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
+    let mut a_bits = if a.raw() == 0 {
+        EMPTY_LIST_BITS
+    } else {
+        a.raw() | TAG_LIST
+    };
+    let mut b_bits = if b.raw() == 0 {
+        EMPTY_LIST_BITS
+    } else {
+        b.raw() | TAG_LIST
+    };
+    loop {
+        let a_addr = list_addr_from_tagged(a_bits).filter(|p| !p.is_null());
+        let b_addr = list_addr_from_tagged(b_bits).filter(|p| !p.is_null());
+        match (a_addr, b_addr) {
+            (None, None) => return 0,
+            (None, Some(_)) => return -1,
+            (Some(_), None) => return 1,
+            (Some(a_addr), Some(b_addr)) => {
+                let ac = unsafe { &*(a_addr as *const ListCons) };
+                let bc = unsafe { &*(b_addr as *const ListCons) };
+                let ordering = cmp_any_value(process, ac.head_value(), bc.head_value());
+                if ordering != 0 {
+                    return ordering;
+                }
+                a_bits = ac.tail_bits();
+                b_bits = bc.tail_bits();
+            }
+        }
+    }
 }
 
 /// Ordering between a dynamic `AnyValueRef` and an unboxed payload, with no
@@ -2259,7 +2434,13 @@ fn cmp_any_value(a: AnyValue, b: AnyValue) -> i64 {
 /// payload, so codegen passes those directly. `swap` says the unboxed side was
 /// the right-hand operand, so the caller does not have to negate the result.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_cmp_raw_const(ref_word: u64, kind_tag: u32, raw: u64, swap: u32) -> i64 {
+pub extern "C" fn fz_value_cmp_raw_const(
+    process: *mut Process,
+    ref_word: u64,
+    kind_tag: u32,
+    raw: u64,
+    swap: u32,
+) -> i64 {
     let dynamic = any_value_from_ref_word(ref_word, "fz_value_cmp_raw_const");
     let Some(kind) = ValueKind::new(kind_tag as u8) else {
         panic!("fz_value_cmp_raw_const: unknown operand kind {kind_tag}");
@@ -2272,7 +2453,7 @@ pub extern "C" fn fz_value_cmp_raw_const(ref_word: u64, kind_tag: u32, raw: u64,
     } else {
         (unboxed, dynamic)
     };
-    cmp_any_value(left, right)
+    cmp_any_value(process, left, right)
 }
 
 fn is_bitstring_kind(kind: ValueKind) -> bool {

@@ -31,6 +31,10 @@ defmodule Kernel do
   extern "C" fn fz_op_rem_if(integer, float) :: float
   extern "C" fn fz_op_rem_fi(float, integer) :: float
   extern "C" fn fz_op_rem_ff(float, float) :: float
+  # fz-5xp.8 — the total term order over every value, which the cross-type
+  # clauses below are written in terms of. Takes the process (the `fz` ABI)
+  # because atoms order by NAME, not by the id they were interned with.
+  extern "fz" fn fz_value_cmp_ref(any, any) :: integer
   extern "C" fn fz_op_lt_ii(integer, integer) :: bool
   extern "C" fn fz_op_lt_ff(float, float) :: bool
   extern "C" fn fz_op_lt_bb(binary, binary) :: bool
@@ -239,6 +243,19 @@ defmodule Kernel do
   fn left :: integer >= right :: float, do: fz_op_gte_if(left, right)
   fn left :: float >= right :: integer, do: fz_op_gte_fi(left, right)
   fn left :: binary >= right :: binary, do: fz_op_gte_bb(left, right)
+
+  # Erlang's TOTAL TERM ORDER:
+  #   number < atom < reference < fun < port < pid < tuple < map < list < bitstring
+  #
+  # This is the SEPARATE ENTRY POINT the comparison operators deliberately do
+  # not become. `<` and its siblings stay declared for the operand pairs fz can
+  # prove -- numbers and binaries -- because giving them an `any`/`any` clause
+  # makes every comparison callsite with an unresolved operand blind to the
+  # dispatcher, which the blind-escape census catches as a latent miscompile
+  # (fz-5xp.64). Sorting does not need the operators: it needs an order.
+  @doc "Order two terms by Erlang's total term order; negative, zero or positive."
+  @spec compare(any, any) :: integer
+  fn compare(left, right), do: fz_value_cmp_ref(left, right)
 
   @spec any == any :: bool
   fn left == right, do: fz_op_eq(left, right)

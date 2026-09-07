@@ -1477,7 +1477,10 @@ pub mod debug {
         if procbin_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
         }
-        if bits == EMPTY_LIST {
+        // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
+        // and as a LIST-tagged word whose address is null, which is what a
+        // nested `[]` is stored as. Both are the empty list (fz-5xp.63).
+        if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
             "[]".into()
         } else {
             format!("#ptr<{:#x}>", bits)
