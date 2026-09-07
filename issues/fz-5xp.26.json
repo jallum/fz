@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T05:55:43Z",
+  "description": "An integer-keyed bracket index PANICS THE COMPILER on run and build; interp is right.\n\n  fn main() do\n    m = %{1 =\u003e :one}\n    dbg(m[1])\n  end\n\n  elixir      :one\n  fz interp   :one\n  fz run      panicked at src/compiler2/native_codegen/fn_ctx.rs:549:\n              cannot coerce atom and numeric raw ABI reprs\n  fz build    same panic; no binary produced\n\nNarrowed: it needs an INTEGER KEY AND AN ATOM VALUE together.\n  %{1 =\u003e \"s\"} / m[1]    -\u003e \"s\"    on all three doors\n  %{\"k\" =\u003e :v} / m[\"k\"] -\u003e :v     on all three doors\n\nA compiler panic, not a diagnostic, and a three-door divergence. Pre-existing --\nfound while reviewing fz-5xp.4, whose decode of `m[1]` is byte-identical before\nand after; codegen is untouched by that change.\n\nMatters for this epic: fz-5xp.12 adds a real `Map`, and integer keys with atom\nvalues are an ordinary shape (`%{1 =\u003e :ok}`).",
+  "id": "fz-5xp.26",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Integer-keyed bracket index panics the compiler on run and build",
+  "type": "bug",
+  "updated_at": "2026-09-07T05:55:43Z"
+}
