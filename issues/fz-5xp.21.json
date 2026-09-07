@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T14:41:33Z",
   "created": "2026-09-07T01:59:38Z",
   "description": "fz-5xp.18 found ONE semantic question -- ordering -- implemented three times, and\nthe count was the bug. Equality agreed across doors because interp and native\nboth call fz_value_eq_ref. Ordering disagreed because each door hand-rolled it,\nand guards hand-rolled it a third time. `2 \u003e= 1.0` was false on the JIT and true\non interp; `when a \u003e= b` with a = 2, b = 1.0 fell through on BOTH doors.\n\nNothing tells us ordering was the only one. This epic is about to add a lot of\nsemantic predicates (String comparison and casing, Map key identity and\nordering, Keyword lookup, Collectable, term ordering itself), and each is a\nchance to create a new divergence pair.\n\nWORK: audit the semantic questions that more than one door answers, and for each\nsay whether there is a single shared implementation or several. Candidates to\nstart from, each of which has at least one per-door site today:\n\n  truthiness            fz_truthy_ref vs interp's is_truthy\n  equality              fz_value_eq_ref (shared) + lower_eq_binop fast paths\n                        + interp_value_eq fast paths + Region::Equal in two\n                        dispatch lowerings\n  ordering              cmp_any_value (shared as of fz-5xp.18) + both-int fast\n                        paths + guard_cmp\n  arithmetic            fz_op_*_ii/if/fi/ff intrinsics + lower_arith_binop +\n                        ir_interp/binop.rs\n  runtime type tests    runtime_type_predicate.rs claims ONE table with three\n                        lowerings that must each be taught -- verify that claim\n                        holds, since it is the design we want everywhere\n  bitstring matching    receive.rs emit_bitstring_test vs jobs/native.rs\n                        (fz-5xp.1 -- currently one implementation and one hole)\n  map key identity      heap/key_cmp.rs vs anything the compiler folds\n\nDELIVERABLE: a short .agent/docs note listing each question, its single owner,\nand the per-door fast paths that are allowed to exist beside it. A fast path is\nlegitimate -- quicksort's zero-scalar-box pin depends on an inline both-int\ncompare -- but it must be a fast path over shared semantics, not a second\nanswer.\n\nSIGNAL: for anything found with more than one answer, a fixture comparing the\ndoors on the cases where they could differ. Note that mixed int/float\ncomparison survived for as long as it did because NO fixture compared an\ninteger against a float.",
   "id": "fz-5xp.21",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Audit: which semantic questions are answered more than once across the doors",
   "type": "task",
-  "updated_at": "2026-09-07T01:59:38Z"
+  "updated_at": "2026-09-07T14:41:33Z"
 }
