@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T02:21:25Z",
+  "description": "compile_root_jit has 0 production callers. Its three sibling front doors all ship: run_root_interp 4 call sites, run_root_jit 2, compile_root_aot 1. Only tests call it.\n\nSo it is one of: dead public API that should be deleted, or a real three-path parity gap where a JIT compile-without-run entry point ought to be reachable from the CLI. Establish which from the code, then act. Do not cfg(test) a front door to make a lint quiet.",
+  "id": "fz-foq.5",
+  "labels": [],
+  "parent": "fz-foq",
+  "priority": 3,
+  "status": "open",
+  "title": "Decide compile_root_jit: dead API or parity gap",
+  "type": "task",
+  "updated_at": "2026-09-07T02:21:25Z"
+}
