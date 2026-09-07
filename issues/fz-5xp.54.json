@@ -7,9 +7,15 @@
   "id": "fz-5xp.54",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "DIAGNOSED, and narrower than it first looked.\n\nThe DISPATCH path is broken; plain DESTRUCTURING works:\n\n    fnp take(bin, n) do\n      \u003c\u003cs :: binary-size(n), rest :: binary\u003e\u003e = bin      # works\n      {:ok, s, rest}\n    end\n\n    case bin do\n      \u003c\u003cs :: binary-size(n), rest :: binary\u003e\u003e -\u003e ...      # never matches\n    end\n\nDestructuring goes through `lower_bitstring_pattern`, whose\n`LoweredBitSize::Value` carries a ValueId the interpreter resolves from the\nenvironment (`backend_bit_size_value`). That is correct today.\n\nClause heads and `case` go through the DISPATCH MATRIX instead, and the plan\nresolves a size name only against bindings the PATTERN ITSELF makes:\n\n  * dispatch_matrix/pattern.rs looks the name up in `binding_subjects`, which\n    holds names bound by EARLIER FIELDS of the same bitstring, and otherwise\n    emits `BitstringFieldSize::BindingName(name)`;\n  * ir_interp/dispatch_exec.rs resolves `BindingName` from\n    `state.direct_bindings` -- again, the pattern's own bindings.\n\nSo `\u003c\u003ca, s :: binary-size(a)\u003e\u003e` (size bound by an earlier field) works, and a\nsize from the ENCLOSING SCOPE -- a function parameter, or anything bound before\nthe `case` -- is never found. The size comes back absent and the clause fails\nsilently.\n\nTHE SHAPE OF THE FIX. An outer-scope name in a pattern already has a mechanism:\npinning. `Pattern::Pinned` reaches dispatch through a `pinned` map\n(`load_pinned_dispatch_value`). An unbound size name should resolve the same\nway rather than through `direct_bindings`. Four consumers to keep in step:\ncanon.rs, native_codegen/receive.rs, jobs/native.rs and ir_interp/dispatch_exec.rs.\n\nWORKAROUND until then: destructure, do not match. That is enough to fix the JSON\nscanner's O(n^2) string building.",
+      "timestamp": "2026-09-07T11:33:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "[BUG] A variable-size binary segment silently never matches",
   "type": "bug",
-  "updated_at": "2026-09-07T11:31:29Z"
+  "updated_at": "2026-09-07T11:33:22Z"
 }
