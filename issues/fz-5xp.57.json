@@ -4,14 +4,15 @@
   "blocks": [
     "fz-5xp.60"
   ],
+  "closed_at": "2026-09-07T13:15:20Z",
   "created": "2026-09-07T12:30:02Z",
   "description": "Found by fz-5xp.55's fixture, which failed on `run` while passing on `interp`.\n\n    fnp walk(\u003c\u003c_c, rest :: binary\u003e\u003e, n), do: walk(rest, n + 1)\n    fnp walk(_b, n), do: n\n\n    64 bytes: interp=64  run=64\n    65 bytes: interp=65  run=0     \u003c-- silently no match\n   160 bytes: interp=160 run=0\n\nThe bisect lands exactly on SHARED_BIN_THRESHOLD_BYTES. Above it a binary is\nheld as a PROCBIN rather than a BITSTRING, and:\n\n    RuntimeTestAxis::Binaries =\u003e e.kind_flag(value, ValueKind::BITSTRING)\n\nasks about one representation. A PROCBIN answers NO to the Binaries axis, and\nRuntimeTestAxis::of_value maps PROCBIN to no axis at all, so it answers no to\nEVERY runtime type test. The bitstring region test is never even reached --\nfz_bs_reader_init is not called.\n\nBoth a clause head and a `case` are affected. It is silent: the value falls to\nthe next clause.\n\nTHE SHAPE, AGAIN (fz-5xp.21). One question -- 'is this a binary' -- with three\nimplementations: procbin::is_bitstring_like (right, both tags),\nemit_bitstring_like_guard in native_codegen/receive.rs (right, both tags), and\nthese two (wrong, one tag).\n\nFIX: ValueKind::BINARY_REPRS names the representations once; of_value,\nmatches_runtime_axis and the native emit_axis all ask it. A third\nrepresentation would then reach every door by construction.",
   "id": "fz-5xp.57",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A binary over 64 bytes matches NO bitstring pattern on the native doors",
   "type": "bug",
-  "updated_at": "2026-09-07T12:50:45Z"
+  "updated_at": "2026-09-07T13:15:20Z"
 }
