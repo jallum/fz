@@ -1,9 +1,7 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [],
-  "closed_at": "2026-09-07T04:25:33Z",
-  "close_reason": "implemented and accepted in 9aa977b74",
   "created": "2026-09-03T18:54:14Z",
   "description": "## Status\n\nInvalid architecture. PR #123 and commit 9aa977b74 are not accepted and will not be used as-is.\n\nThe semantic defects and production witnesses were real, but retaining InputFlow as a second source-denotation authority introduced reconstruction, duplicate vocabulary and a private calculation path. The valid direct/delivered/projected/reconstructed/protocol/map/callsite/base-return laws now belong to fz-kdt.200, which derives final InputDemand directly from LoweredBody and exact peer facts.\n\nDo not restore InputFlow types, producer/store, alias closure, lineage expansion, relation-only tests or transition telemetry from this ticket. Historical measurements may be used only as baselines and proof material.",
   "id": "fz-kdt.214",
@@ -16,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "closed",
+  "status": "open",
   "title": "Invalid: retained InputFlow duplicated source authority",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:48Z"
+  "updated_at": "2026-09-07T19:01:58Z"
 }
