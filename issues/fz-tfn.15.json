@@ -5,7 +5,8 @@
     "fz-tfn.6"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-03T08:00:25Z",
   "description": "## Goal\n\nAfter exact wait and activation edges land, remove all scan-era scheduling telemetry and store the remaining causal work-start counts directly in their fixed representation.\n\n## Work\n\nDelete root_scans, drain_discovery_sweeps, ActivationFrontier, demand_on_stall and obsolete APIs/schema/docs already made impossible by fz-kdt.46 and fz-tfn.6. Replace HashMap\u003cWorkStartReason, u64\u003e with the existing fixed WorkStartTally and exhaustive increments after the live reason set is final.\n\nRetain exact work-start causality. Compile-time absence and production boundary tests replace counters that could never observe the work they named.\n\n## Acceptance\n\nNo normal-drive discovery scan or scan-era reason remains. Public causal totals retain fidelity for live causes; unchanged and unrelated requests remain zero. Trace compatibility, scheduler/library/matrix/docs/fmt/strict-lint gates pass. Temporary census probes leave.\n\nThis ticket absorbs fz-tfn.16.",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Delete scan-era scheduling and telemetry residue",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:32Z"
+  "updated_at": "2026-09-07T18:56:41Z"
 }
