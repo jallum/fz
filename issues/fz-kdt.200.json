@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-kdt.213"
+    "fz-kdt.213",
+    "fz-tfn.57"
   ],
   "blocks": [],
   "created": "2026-09-03T09:40:38Z",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "Derive final InputDemand directly from source-owned bodies",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:33Z"
+  "updated_at": "2026-09-07T18:56:34Z"
 }
