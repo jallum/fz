@@ -5,9 +5,7 @@
     "fz-kdt.199",
     "fz-tfn.30"
   ],
-  "blocks": [
-    "fz-kdt.200"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T04:25:33Z",
   "close_reason": "implemented and accepted in 9aa977b74",
   "created": "2026-09-03T18:54:14Z",
@@ -25,5 +23,5 @@
   "status": "closed",
   "title": "Invalid: retained InputFlow duplicated source authority",
   "type": "task",
-  "updated_at": "2026-09-07T18:52:59Z"
+  "updated_at": "2026-09-07T18:56:11Z"
 }
