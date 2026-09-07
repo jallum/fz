@@ -12,7 +12,7 @@
 # list -- and only inside a list. One question, two implementations, agreeing
 # for every float with a fractional part and disagreeing for the rest.
 #
-# `Json.encode([1.0])` must not emit `[1]`: JSON has one number type, and the
+# `Json.encode!([1.0])` must not emit `[1]`: JSON has one number type, and the
 # `.0` is the only thing distinguishing a float from an integer on the way out.
 # Elixir's own `inspect` keeps it.
 #

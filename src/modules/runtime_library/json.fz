@@ -1,5 +1,5 @@
 defmodule Json do
-  @moduledoc "JSON decode/1 and encode/1 over fz values."
+  @moduledoc "Elixir's JSON surface: decode/1, decode!/1 and encode!/1 over fz values."
 
   # The goal program of the fz-5xp epic: a real program, written in fz, whose
   # behaviour is checked against an Elixir twin.
@@ -16,26 +16,69 @@ defmodule Json do
   # decoded object prints the same in both. Atom keys could not do that
   # (fz-5xp.50).
 
-  @doc "Decodes a JSON binary. {:ok, value} or {:error, rest}."
+  # THE SURFACE IS ELIXIR'S, not a convenient approximation of it. Elixir's
+  # `JSON` has no plain `encode/1` -- encoding cannot fail for the values it
+  # accepts and can only raise for the ones it does not, so the only spelling
+  # is `encode!/1`. Decoding can fail, so it has both `decode/1` and
+  # `decode!/1`.
+  #
+  # The ERROR REASON is Elixir's too, and it is the part that would have been
+  # easiest to get wrong: a positioned reason, not the leftover input.
+  #
+  #     {:unexpected_end, offset}
+  #     {:invalid_byte, offset, byte}
+  #     {:unexpected_sequence, offset, sequence}
+  #
+  # Internally a failure still carries the REST of the input, which is the
+  # natural thing for a recursive-descent parser to have in hand. The offset is
+  # recovered once, at the boundary, as `byte_size(input) - byte_size(rest)` --
+  # so no position has to be threaded through the parser to report one.
+  @doc "Decodes a JSON binary. {:ok, value} or {:error, reason}."
   @spec decode(binary) :: {:ok, any} | {:error, any}
-  fn decode(input), do: decode_done(value(input))
+  fn decode(input), do: decode_done(value(input), input)
 
-  fnp decode_done({:ok, v, rest}), do: decode_trailing(skip_ws(rest), v)
-  fnp decode_done(other), do: other
+  fnp decode_done({:ok, v, rest}, input), do: decode_trailing(rest, skip_ws(rest), v, input)
+  fnp decode_done({:error, rest}, input), do: {:error, reason(rest, input)}
 
-  fnp decode_trailing("", v), do: {:ok, v}
-  fnp decode_trailing(rest, _v), do: {:error, rest}
+  # Trailing WHITESPACE is accepted, trailing anything else is not -- and the
+  # error points at the whitespace rather than at the junk after it, because
+  # Elixir reports the raw remainder's first byte. `"[1] "` is ok; `"[1] junk"`
+  # is an invalid_byte at the SPACE.
+  fnp decode_trailing(_raw, "", v, _input), do: {:ok, v}
+  fnp decode_trailing(raw, _skipped, _v, input), do: {:error, reason(raw, input)}
 
-  @doc "Encodes an fz value as a JSON binary."
-  @spec encode(any) :: binary
-  fn encode(true), do: "true"
-  fn encode(false), do: "false"
-  fn encode(nil), do: "null"
-  fn encode(v :: integer), do: Integer.to_string(v)
-  fn encode(v :: float), do: Float.to_string(v)
-  fn encode(v :: binary), do: "\"" <> escape(v, "") <> "\""
-  fn encode(v :: [any]), do: "[" <> elements(v, "") <> "]"
-  fn encode(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+  @doc "Decodes a JSON binary, or halts."
+  @spec decode!(binary) :: any
+  fn decode!(input), do: decode_result(decode(input))
+
+  fnp decode_result({:ok, v}), do: v
+  fnp decode_result({:error, _reason}), do: Kernel.panic("JSON.decode!: invalid JSON")
+
+  # The rest at the failure point starts AT the offending byte -- the parser
+  # skips whitespace before deciding -- so the offset is the difference in
+  # lengths and the byte is the first one left.
+  @spec reason(any, binary) :: any
+  fnp reason({:sequence, at}, input), do: {:unexpected_sequence, offset(at, input), String.take_bytes(at, 6)}
+  fnp reason("", input), do: {:unexpected_end, Kernel.byte_size(input)}
+  fnp reason(rest, input), do: invalid_byte(rest, offset(rest, input))
+
+  @spec offset(binary, binary) :: integer
+  fnp offset(rest, input), do: Kernel.byte_size(input) - Kernel.byte_size(rest)
+
+  @spec invalid_byte(binary, integer) :: any
+  fnp invalid_byte(<<c, _r :: binary>>, at), do: {:invalid_byte, at, c}
+  fnp invalid_byte(_rest, at), do: {:unexpected_end, at}
+
+  @doc "Encodes an fz value as a JSON binary, or halts."
+  @spec encode!(any) :: binary
+  fn encode!(true), do: "true"
+  fn encode!(false), do: "false"
+  fn encode!(nil), do: "null"
+  fn encode!(v :: integer), do: Integer.to_string(v)
+  fn encode!(v :: float), do: Float.to_string(v)
+  fn encode!(v :: binary), do: "\"" <> escape(v, "") <> "\""
+  fn encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
+  fn encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
 
   fnp escape("", acc), do: acc
   fnp escape(<<"\"", r :: binary>>, acc), do: escape(r, acc <> "\\\"")
@@ -45,12 +88,12 @@ defmodule Json do
   fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
 
   fnp elements([], acc), do: acc
-  fnp elements([h], acc), do: acc <> encode(h)
-  fnp elements([h | t], acc), do: elements(t, acc <> encode(h) <> ",")
+  fnp elements([h], acc), do: acc <> encode!(h)
+  fnp elements([h | t], acc), do: elements(t, acc <> encode!(h) <> ",")
 
   fnp pairs([], acc), do: acc
-  fnp pairs([{k, v}], acc), do: acc <> encode(k) <> ":" <> encode(v)
-  fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode(k) <> ":" <> encode(v) <> ",")
+  fnp pairs([{k, v}], acc), do: acc <> encode!(k) <> ":" <> encode!(v)
+  fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode!(k) <> ":" <> encode!(v) <> ",")
 
   fnp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)
   fnp skip_ws(<<"\n", r :: binary>>), do: skip_ws(r)
@@ -68,6 +111,15 @@ defmodule Json do
   fnp val(<<"{", r :: binary>>), do: object(skip_ws(r), %{})
   fnp val(<<"-", r :: binary>>), do: negate(number(r))
   fnp val(b = <<c, _ :: binary>>) when c >= 48 and c <= 57, do: number(b)
+  # A token that STARTED as a keyword and did not finish as one is Elixir's
+  # `unexpected_end` at the end of the input -- even `truX`, where there is a
+  # perfectly good offending byte to point at. Once its decoder commits to
+  # `t`/`f`/`n` it reads the keyword or runs out, and reports running out.
+  # These clauses sit after the three that match, so only failures reach them,
+  # and `{:error, ""}` is what makes `reason/2` say end-of-input.
+  fnp val(<<116, _r :: binary>>), do: {:error, ""}
+  fnp val(<<102, _r :: binary>>), do: {:error, ""}
+  fnp val(<<110, _r :: binary>>), do: {:error, ""}
   fnp val(b), do: {:error, b}
 
   fnp negate({:ok, n, r}), do: {:ok, -n, r}
@@ -125,23 +177,27 @@ defmodule Json do
   # 435 allocations either way). Once sub-binaries are cheap (fz-5xp.55),
   # scan-then-slice becomes the right shape and this should change with it.
   fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
-  fnp string(<<"\\", r :: binary>>, acc), do: escaped(r, acc)
+  fnp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
   fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
   fnp string(b, _acc), do: {:error, b}
 
-  fnp escaped(<<"\"", r :: binary>>, acc), do: string(r, acc <> "\"")
-  fnp escaped(<<"\\", r :: binary>>, acc), do: string(r, acc <> "\\")
-  fnp escaped(<<"/", r :: binary>>, acc), do: string(r, acc <> "/")
-  fnp escaped(<<"n", r :: binary>>, acc), do: string(r, acc <> "\n")
-  fnp escaped(<<"t", r :: binary>>, acc), do: string(r, acc <> "\t")
-  fnp escaped(<<"r", r :: binary>>, acc), do: string(r, acc <> "\r")
-  fnp escaped(<<"b", r :: binary>>, acc), do: string(r, acc <> <<8>>)
-  fnp escaped(<<"f", r :: binary>>, acc), do: string(r, acc <> <<12>>)
-  fnp escaped(<<"u", a, b, c, d, r :: binary>>, acc), do: unicode(r, acc, hex4(a, b, c, d))
-  fnp escaped(b, _acc), do: {:error, b}
+  fnp escaped(<<"\"", r :: binary>>, acc, _at), do: string(r, acc <> "\"")
+  fnp escaped(<<"\\", r :: binary>>, acc, _at), do: string(r, acc <> "\\")
+  fnp escaped(<<"/", r :: binary>>, acc, _at), do: string(r, acc <> "/")
+  fnp escaped(<<"n", r :: binary>>, acc, _at), do: string(r, acc <> "\n")
+  fnp escaped(<<"t", r :: binary>>, acc, _at), do: string(r, acc <> "\t")
+  fnp escaped(<<"r", r :: binary>>, acc, _at), do: string(r, acc <> "\r")
+  fnp escaped(<<"b", r :: binary>>, acc, _at), do: string(r, acc <> <<8>>)
+  fnp escaped(<<"f", r :: binary>>, acc, _at), do: string(r, acc <> <<12>>)
+  fnp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at), do: unicode(r, acc, hex4(a, b, c, d), at)
+  fnp escaped(b, _acc, _at), do: {:error, b}
 
-  fnp unicode(_r, _acc, :error), do: {:error, :bad_unicode_escape}
-  fnp unicode(r, acc, cp), do: string(r, acc <> utf8(cp))
+  # A bad `\uXXXX` is Elixir's `unexpected_sequence`, which reports the
+  # BACKSLASH's offset and the six-byte sequence -- so this is the one failure
+  # that has to carry where it started rather than where it stopped. An unknown
+  # SIMPLE escape is an ordinary invalid_byte and needs none of this.
+  fnp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at}}
+  fnp unicode(r, acc, cp, _at), do: string(r, acc <> utf8(cp))
 
   fnp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
   fnp hex4_join(:error, _b, _c, _d), do: :error

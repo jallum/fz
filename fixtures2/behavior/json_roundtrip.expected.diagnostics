@@ -1,52 +1,61 @@
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:38:3
+  --> runtime:Json.fz:41:3
    |
-1 |   fn encode(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+41 |   fnp decode_done({:error, rest}, input), do: {:error, reason(rest, input)}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> runtime:Json.fz:81:3
+   |
+23 |   fn encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> runtime:Json.fz:88:3
+   |
+30 |   fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
    |
    = note: an input matched by no clause halts with `:function_clause` at runtime
    = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:45:3
+  --> runtime:Json.fz:92:3
    |
-8 |   fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-   |
-   = note: an input matched by no clause halts with `:function_clause` at runtime
-   = help: add a wildcard clause `_ -> ...` to cover any remaining input
-
-warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:49:3
-   |
-12 |   fnp elements([h | t], acc), do: elements(t, acc <> encode(h) <> ",")
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+34 |   fnp elements([h | t], acc), do: elements(t, acc <> encode!(h) <> ",")
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
    |
    = note: an input matched by no clause halts with `:function_clause` at runtime
    = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:53:3
+  --> runtime:Json.fz:96:3
    |
-16 |   fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode(k) <> ":" <> encode(v) <> ",")
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
-   |
-   = note: an input matched by no clause halts with `:function_clause` at runtime
-   = help: add a wildcard clause `_ -> ...` to cover any remaining input
-
-warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:84:3
-   |
-47 |   fnp fraction({whole, b}), do: exponent(whole, b)
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+38 |   fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode!(k) <> ":" <> encode!(v) <> ",")
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
    |
    = note: an input matched by no clause halts with `:function_clause` at runtime
    = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Json.fz:206:3
+  --> runtime:Json.fz:136:3
     |
-169 |   fnp reverse([h | t], acc), do: reverse(t, [h | acc])
+78 |   fnp fraction({whole, b}), do: exponent(whole, b)
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+    |
+    = note: an input matched by no clause halts with `:function_clause` at runtime
+    = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> runtime:Json.fz:262:3
+    |
+204 |   fnp reverse([h | t], acc), do: reverse(t, [h | acc])
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
@@ -55,7 +64,7 @@ warning[type/no-matching-clause]: `fn` clauses don't cover every input
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
   --> runtime:Map.fz:245:3
     |
-208 |   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+187 |   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime

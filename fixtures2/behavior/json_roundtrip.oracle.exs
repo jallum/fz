@@ -40,15 +40,14 @@ IO.inspect(JSON.encode!([1, 2.5, nil]))
 IO.inspect(JSON.encode!(%{}))
 IO.inspect(JSON.encode!(%{"a" => [1, nil], "b" => 2}))
 
-ok? = fn r -> match?({:ok, _}, r) end
 
-IO.inspect(ok?.(JSON.decode("[1] junk")))
-IO.inspect(ok?.(JSON.decode("[1,]")))
-IO.inspect(ok?.(JSON.decode("{\"a\": 1,}")))
-IO.inspect(ok?.(JSON.decode("{\"a\" 1}")))
-IO.inspect(ok?.(JSON.decode("")))
-IO.inspect(ok?.(JSON.decode("tru")))
-IO.inspect(ok?.(JSON.decode("[1 2]")))
+IO.inspect(JSON.decode("[1] junk"))
+IO.inspect(JSON.decode("[1,]"))
+IO.inspect(JSON.decode("{\"a\": 1,}"))
+IO.inspect(JSON.decode("{\"a\" 1}"))
+IO.inspect(JSON.decode(""))
+IO.inspect(JSON.decode("tru"))
+IO.inspect(JSON.decode("[1 2]"))
 
 roundtrip = fn v ->
   case JSON.decode(JSON.encode!(v)) do

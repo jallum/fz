@@ -36,13 +36,13 @@
 "[1,2.5,null]"
 "{}"
 "{\"a\":[1,null],\"b\":2}"
-false
-false
-false
-false
-false
-false
-false
+{:error, {:invalid_byte, 3, 32}}
+{:error, {:invalid_byte, 3, 93}}
+{:error, {:invalid_byte, 8, 125}}
+{:error, {:invalid_byte, 5, 49}}
+{:error, {:unexpected_end, 0}}
+{:error, {:unexpected_end, 3}}
+{:error, {:invalid_byte, 3, 50}}
 true
 true
 true

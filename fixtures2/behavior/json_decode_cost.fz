@@ -39,6 +39,6 @@ fnp decode_cost(doc) do
   before = Process.heap_alloc_stats()
   {:ok, v} = Json.decode(doc)
   after_ = Process.heap_alloc_stats()
-  {Json.encode(v), after_[:shared_bin_bytes] - before[:shared_bin_bytes],
+  {Json.encode!(v), after_[:shared_bin_bytes] - before[:shared_bin_bytes],
    after_[:bitstring_allocs] - before[:bitstring_allocs]}
 end
