@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T10:15:10Z",
   "created": "2026-09-07T10:12:35Z",
   "description": "Found and fixed alongside fz-5xp.38 and fz-5xp.46.\n\n    fnp classify(x :: float) when -x \u003e 0.0, do: :negative_float\n    fnp classify(_), do: :other\n    fnp pick(0), do: -4.5\n    fnp pick(_), do: -9\n\n    classify(pick(0))    interp :negative_float    run/build ABORT in fz_unbox_int\n\nThe operand's type is a union at the call, and although the `x :: float` head\ngates the clause, the plan had not narrowed it by the time the GUARD lowered.\n`lower_neg` could prove neither lane and fell to `as_raw_i64`.\n\nIt was specifically NEGATION IN A GUARD. Measured, same shape each time:\n\n    union + annotated head + a non-negation guard   -\u003e works\n    union + annotated head + negation in the BODY   -\u003e works\n    union + annotated head + negation in the GUARD  -\u003e abort\n\nThe body works because fz-5xp.38 rewrites `-x` to `Kernel.negate/1`, whose\ntyped clauses dispatch. A guard is lowered inside the dispatch plan rather than\nas a call, so it never reaches that rewrite -- the one place negation still read\na single lane.\n\nFIXED by giving `lower_neg` a runtime-checked branch for the case where neither\nlane is provable: test the tag, negate in that lane, box the result. The proven\nlanes keep their single instruction.\n\nPinned by behavior/negate_guard, which covers both branches over floats and\nintegers plus a union operand no door can decide statically.\n\nWORTH REVISITING: the narrowing itself. A `x :: float` clause head has already\nproven the operand's lane by the time its guard runs, so the runtime check is\nredundant work the dispatch plan could eliminate. That is a real optimisation\nwith a real invariant behind it, not a cleanup -- filed separately if it shows\nup in a golden.",
   "id": "fz-5xp.47",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Guard negation on an unnarrowed operand aborted natively",
   "type": "bug",
-  "updated_at": "2026-09-07T10:12:35Z"
+  "updated_at": "2026-09-07T10:15:10Z"
 }
