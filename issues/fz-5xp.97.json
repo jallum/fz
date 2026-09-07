@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T22:22:52Z",
   "created": "2026-09-07T22:22:15Z",
   "description": "## Why\n\nUntil `\"\"\"` lexed, a `@doc` could hold one line. The library's documentation was a set of labels -- \"Maps a function over a list.\", \"The value for key, or nil.\" -- which name a function without teaching it. Elixir's own docs are the standard to reach for: a summary sentence, the paragraphs a reader needs, then examples.\n\nNow that `@doc \"\"\" ... \"\"\"` and `@moduledoc \"\"\" ... \"\"\"` carry multi-paragraph text, the library can say what it does.\n\n## Shape\n\nA summary sentence in the present tense describing the return value, any paragraphs that earn their place, then `## Examples`.\n\n**No `iex\u003e` prompts.** fz has no REPL, so a transcript would be fiction. Examples use Elixir's non-doctest form: the call on an indented line, `#=\u003e` and the value beneath.\n\n**Every example is run before it is written.** The value is copied from `fz2 interp`, never predicted and never lifted from Elixir's docs. An example that cannot be made to work is a finding, not something to quietly drop.\n\nSix modules have no `@moduledoc` at all -- `Enum` among them -- and roughly half the public functions have no `@doc`. Those are the gap.\n\n## Constraints\n\nDocumentation only: no code, no `@spec`, no clause reordering. The `#` body comments were cleaned separately and stay as they are.\n\nWhere fz is narrower than Elixir, say so rather than inheriting Elixir's promise: `Enum`'s second half is typed to lists and rejects a range at compile time, a grapheme is a codepoint, `Map` is a sorted array, `Keyword` has no lazy variants, and there is no `Stream`.\n\n## Note\n\nNothing executes these examples afterwards; that ratchet is fz-5xp.89.",
   "id": "fz-5xp.97",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Give the runtime library Elixir-shaped documentation now that heredocs carry it",
   "type": "task",
-  "updated_at": "2026-09-07T22:22:51Z"
+  "updated_at": "2026-09-07T22:22:52Z"
 }
