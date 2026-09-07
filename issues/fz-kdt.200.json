@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-kdt.214"
+    "fz-kdt.214",
+    "fz-kdt.75"
   ],
   "blocks": [
     "fz-kdt.213"
@@ -21,5 +22,5 @@
   "status": "in_progress",
   "title": "Make InputDemand express exact semantic question axes",
   "type": "task",
-  "updated_at": "2026-09-07T05:41:34Z"
+  "updated_at": "2026-09-07T05:46:45Z"
 }
