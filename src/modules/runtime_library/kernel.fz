@@ -42,6 +42,8 @@ defmodule Kernel do
   extern "C" fn fz_op_gte_bb(binary, binary) :: bool
   extern "C" fn fz_op_eq(any, any) :: bool
   extern "C" fn fz_op_neq(any, any) :: bool
+  extern "C" fn fz_op_identical(any, any) :: bool
+  extern "C" fn fz_op_not_identical(any, any) :: bool
   extern "C" fn fz_op_lt_if(integer, float) :: bool
   extern "C" fn fz_op_lt_fi(float, integer) :: bool
   extern "C" fn fz_op_lte_if(integer, float) :: bool
@@ -153,8 +155,11 @@ defmodule Kernel do
   # four numeric combinations out one clause at a time; comparison does the
   # same, so a mixed pair is answered by a typed clause on unboxed lanes
   # rather than by codegen boxing an operand and coercing it behind our back.
-  # The trailing untyped clause answers same-kind numbers, for which the
-  # backend emits a direct comparison, and every non-numeric pair.
+  # Ordering is a PARTIAL function: there is a clause per pair it can order and
+  # no `any`/`any` default, so an unsupported combination has no matching clause
+  # and is refused rather than answered wrongly. Equality is total and keeps its
+  # single structural clause; `==` widens numerics inside the comparator, where
+  # structural identity can stay strict beside it.
 
   @spec integer < integer :: bool
   @spec float < float :: bool
@@ -205,4 +210,13 @@ defmodule Kernel do
 
   @spec any != any :: bool
   fn left != right, do: fz_op_neq(left, right)
+
+  # `===` asks whether two values are the SAME value, where `==` compares
+  # numbers by value: `1 == 1.0` is true and `1 === 1.0` is false. Membership,
+  # `--` and a map key all mean identity, and now say so.
+  @spec any === any :: bool
+  fn left === right, do: fz_op_identical(left, right)
+
+  @spec any !== any :: bool
+  fn left !== right, do: fz_op_not_identical(left, right)
 end

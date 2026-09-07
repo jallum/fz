@@ -51,7 +51,7 @@ defmodule Enum do
   fn reverse(enumerable), do: reduce(enumerable, [], fn (entry, acc) -> [entry | acc] end)
 
   @spec reverse(Enumerable.t(a), [a]) :: [a]
-  fn reverse(enumerable, tail), do: reduce(enumerable, tail, fn (entry, acc) -> [entry | acc] end)
+  fn reverse(enumerable, tail), do: reduce(enumerable, to_list(tail), fn (entry, acc) -> [entry | acc] end)
 
   @spec map(Enumerable.t(a), (a) -> b) :: [b]
   fn map(enumerable, fun), do: map_list(to_list(enumerable), fun)
@@ -268,7 +268,7 @@ defmodule Enum do
   fnp member_result({:ok, found}, _enumerable, _value), do: found
   fnp member_result({:error, _module}, enumerable, value) do
     reduce_while(enumerable, false, fn (entry, _found) ->
-      if entry == value do
+      if entry === value do
         {:halt, true}
       else
         {:cont, false}

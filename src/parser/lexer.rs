@@ -83,6 +83,11 @@ pub enum Tok {
     Eq, // =
     EqEq,
     NotEq,
+    /// `===` — strict equality. `==` compares numbers by value, so `1 == 1.0`
+    /// is true; `===` asks whether two values are the same value, which is what
+    /// membership, `--` and a map key mean.
+    EqEqEq,
+    NotEqEq,
     Lt,
     LtEq,
     Gt,
@@ -131,6 +136,8 @@ fn is_infix_only_continuation(tok: &Tok) -> bool {
             | Tok::And
             | Tok::EqEq
             | Tok::NotEq
+            | Tok::EqEqEq
+            | Tok::NotEqEq
             | Tok::Lt
             | Tok::LtEq
             | Tok::Gt
@@ -614,7 +621,12 @@ impl<'a> Lexer<'a> {
                 Some(b'=') => {
                     self.bump();
                     self.bump();
-                    Tok::EqEq
+                    if self.peek(0) == Some(b'=') {
+                        self.bump();
+                        Tok::EqEqEq
+                    } else {
+                        Tok::EqEq
+                    }
                 }
                 Some(b'>') => {
                     self.bump();
@@ -630,7 +642,12 @@ impl<'a> Lexer<'a> {
                 Some(b'=') => {
                     self.bump();
                     self.bump();
-                    Tok::NotEq
+                    if self.peek(0) == Some(b'=') {
+                        self.bump();
+                        Tok::NotEqEq
+                    } else {
+                        Tok::NotEq
+                    }
                 }
                 _ => return Err(self.err("`!` is not an operator; use `not`".to_string())),
             },

@@ -339,6 +339,14 @@ fn guard_cmp(proc: *mut Process, left: AnyValue, right: AnyValue) -> Option<i64>
     // Numbers are answered without boxing either operand — `as_ref_word` would
     // allocate a scalar box, and a guard comparing two unboxed integers is the
     // hot path quicksort's `when h < p` is made of.
+    // Integers are ordered as integers; only a mixed pair is widened.
+    if let (AnyValue::Int(l), AnyValue::Int(r)) = (left, right) {
+        return Some(match l.cmp(&r) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => 0,
+        });
+    }
     if let (Some(l), Some(r)) = (left.as_float(), right.as_float()) {
         return Some(order_of(l, r));
     }
@@ -401,6 +409,12 @@ where
                 PatternGuardBinOp::Mul => AnyValue::Int(guard_int(l)? * guard_int(r)?),
                 PatternGuardBinOp::Div => AnyValue::Int(guard_int(l)? / guard_int(r)?),
                 PatternGuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
+                // NOTE: a guard's `==` is STRICT here, where an expression's
+                // widens -- the same token meaning two things. Pre-existing, and
+                // not fixed here because native guards lower through
+                // Prim::BinOp(Eq), which pattern matching shares: widening only
+                // this door would trade one divergence for a worse one. See the
+                // guard-equality ticket.
                 PatternGuardBinOp::Eq => interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?),
                 PatternGuardBinOp::Neq => interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?),
                 // fz-5xp.18 — a guard orders its operands the same way the rest

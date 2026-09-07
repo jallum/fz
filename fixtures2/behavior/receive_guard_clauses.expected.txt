@@ -1,0 +1,7 @@
+{:small, 5}
+{:medium, 50}
+{:large, 500}
+{:zero_or_less, 0}
+{:positive, 7}
+{:took, 1}
+{:leftover, :skip}

@@ -59,9 +59,13 @@ pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> R
     match (a, b) {
         (AnyValue::Null, AnyValue::Null) => Ok(true),
         (AnyValue::Int(a), AnyValue::Int(b)) => Ok(a == b),
-        (AnyValue::Int(a), AnyValue::Float(b)) => Ok((a as f64) == b),
-        (AnyValue::Float(a), AnyValue::Int(b)) => Ok(a == (b as f64)),
-        (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a == b),
+        // Structural identity, not `==`: a pinned match, `Enum.member?/2`, `--`
+        // and a container element all ask whether two values are the SAME
+        // value, and `1` is not `1.0`. The `==` operator widens elsewhere.
+        (AnyValue::Int(_), AnyValue::Float(_)) | (AnyValue::Float(_), AnyValue::Int(_)) => Ok(false),
+        // Identity, not `==`: `0.0` and `-0.0` are equal numbers but different
+        // values, and `===` must say so.
+        (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a.to_bits() == b.to_bits()),
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
         (AnyValue::Ref(a), AnyValue::Ref(b)) => Ok(fz_value_eq_ref(proc, a.raw_word(), b.raw_word()) != 0),

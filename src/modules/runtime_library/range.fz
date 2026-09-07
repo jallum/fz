@@ -35,7 +35,10 @@ defmodule Range do
 
   @doc "Returns true when value appears in the range for Enumerable."
   @spec member?(integer, integer, integer, any) :: bool
-  fn member?(first, last, step, value) do
+  # A range holds integers, so nothing else is in it. Without the fallthrough
+  # the arithmetic below reached a float and aborted the process on the native
+  # doors: `Enum.member?(1..5, 3.0)` is false, not a crash.
+  fn member?(first, last, step, value :: integer) do
     if done?(last, step, first) do
       false
     else
@@ -46,6 +49,8 @@ defmodule Range do
       end
     end
   end
+
+  fn member?(_first, _last, _step, _value), do: false
 
   @doc "Slices a range for Enumerable."
   @spec slice(integer, integer, integer, integer, integer, integer) :: [integer]

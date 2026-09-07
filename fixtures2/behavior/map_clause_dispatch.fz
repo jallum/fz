@@ -1,0 +1,66 @@
+#---
+# purpose: "a map pattern selects a clause on every door, in function heads and in case"
+# oracle: oracle.exs
+#---
+#
+# # map_clause_dispatch
+#
+# Map patterns reach dispatch through two region kinds — `map_kind`, which asks
+# whether the subject is a map at all, and `map_key`, which asks whether a
+# particular key is present — and both are decided separately by each of the
+# three doors.
+#
+# Until this fixture, every behavioural fixture exercising either of them
+# matched a map inside a `receive`, so both regions were covered only on the
+# receive matcher and never on entry dispatch. That is the same blind spot that
+# let entry dispatch ship a `Region::Bitstring` arm which merely returned
+# "does not support bitstring tests yet": the variant was handled, the handling
+# was a stub, and no fixture ran it. Exhaustive matching forces an arm to
+# exist; only a fixture forces it to be right.
+#
+# Entry-dispatch map matching is correct today. This fixture is here so it
+# cannot stop being correct quietly.
+#
+# ## What it covers
+#
+#   * clause selection on the presence of a key, and on a key's value;
+#   * a bare `%{}` pattern, which matches any map because a map pattern is a
+#     subset test rather than an exact shape;
+#   * clause order mattering — a more specific pattern ahead of `%{}`;
+#   * a non-map argument falling through to a wildcard, which is the `map_kind`
+#     question rather than the `map_key` one;
+#   * the same shapes in `case`, which reaches the same dispatch;
+#   * a map with non-atom keys, and one with more keys than the pattern names.
+fn main() do
+  dbg(kind(%{tag: :a, value: 7}))
+  dbg(kind(%{tag: :b}))
+  dbg(kind(%{tag: :b, extra: 1}))
+  dbg(kind(%{other: 1}))
+  dbg(kind(%{}))
+  dbg(kind(42))
+  dbg(kind([1, 2]))
+
+  dbg(lookup(%{"name" => "ada", "age" => 36}))
+  dbg(lookup(%{"age" => 36}))
+
+  dbg(described(%{tag: :a, value: 9}))
+  dbg(described(%{value: 9}))
+  dbg(described(:not_a_map))
+end
+
+fnp kind(%{tag: :a, value: v}), do: {:a, v}
+fnp kind(%{tag: :b}), do: :b
+fnp kind(%{}), do: :some_map
+fnp kind(_other), do: :not_a_map
+
+fnp lookup(%{"name" => name}), do: {:named, name}
+fnp lookup(%{}), do: :anonymous
+
+fnp described(subject) do
+  case subject do
+    %{tag: :a, value: v} -> {:case_a, v}
+    %{value: v} -> {:case_value, v}
+    %{} -> :case_map
+    _other -> :case_other
+  end
+end

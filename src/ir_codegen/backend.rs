@@ -237,6 +237,10 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("fz_map_is_map", ir_runtime::fz_map_is_map as *const u8);
     builder.symbol("fz_value_cmp_ref", ir_runtime::fz_value_cmp_ref as *const u8);
     builder.symbol(
+        "fz_value_eq_widening_ref",
+        ir_runtime::fz_value_eq_widening_ref as *const u8,
+    );
+    builder.symbol(
         "fz_value_cmp_raw_const",
         ir_runtime::fz_value_cmp_raw_const as *const u8,
     );

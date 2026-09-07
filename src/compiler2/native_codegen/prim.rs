@@ -989,6 +989,34 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     true,
                 );
             }
+            if decl.symbol == "fz_op_identical" && args.len() == 2 {
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Eq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                    false,
+                );
+            }
+            if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Neq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                    false,
+                );
+            }
             if decl.symbol == "fz_op_neq" && args.len() == 2 {
                 return lower_eq_binop(
                     body,
@@ -1690,8 +1718,12 @@ where
         return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
 
-    // Value-disjoint (brand-erased) fold doesn't need either operand.
-    if descrs_value_disjoint(t, value_types, a, bv) {
+    // Value-disjointness is a MATCHING question: `1.0` never matches `1`, and
+    // `[int]` never matches `[float]`. Under `==` it is not decisive, because
+    // widening bridges exactly those pairs -- `[1] == [1.0]` is true. So the
+    // operator path skips the fold and lets the comparator decide; only
+    // matching, which passes `widen_numerics: false`, still folds.
+    if !widen_numerics && descrs_value_disjoint(t, value_types, a, bv) {
         let raw = body.b.ins().iconst(
             types::I64,
             if is_eq {
@@ -1710,7 +1742,15 @@ where
     {
         let af = body.as_raw_f64(var_env, a.0);
         let bf = body.as_raw_f64(var_env, bv.0);
-        let cmp = body.b.ins().fcmp(f_cc, af, bf);
+        // `==` is IEEE, so `0.0 == -0.0` is true. `===` and matching ask
+        // identity, where those are different values -- compare the bits.
+        let cmp = if widen_numerics {
+            body.b.ins().fcmp(f_cc, af, bf)
+        } else {
+            let ai = body.b.ins().bitcast(types::I64, MemFlags::new(), af);
+            let bi = body.b.ins().bitcast(types::I64, MemFlags::new(), bf);
+            body.b.ins().icmp(int_cc, ai, bi)
+        };
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
@@ -1741,8 +1781,13 @@ where
             return Ok(LowerOut::Condition(same_raw));
         }
         Ok(LowerOut::Strict(strict_bool(body.b, same_raw)))
-    } else if let Some((kind, raw, dyn_var)) =
-        raw_scalar_vs_dynamic(var_env, a, bv).or_else(|| raw_scalar_vs_dynamic(var_env, bv, a))
+    } else if let Some((kind, raw, dyn_var)) = raw_scalar_vs_dynamic(var_env, a, bv)
+        .or_else(|| raw_scalar_vs_dynamic(var_env, bv, a))
+        // `fz_value_eq_raw_const` is a kind+payload compare, so it answers
+        // `launder(1.0) == 1` as false. Under `==` an unboxed INT may still
+        // equal a dynamic float, so that pair goes to the widening comparator
+        // instead. Atoms have no such partner and keep the fast path.
+        .filter(|(kind, _, _)| !(widen_numerics && *kind == ValueKind::INT))
     {
         // One side is an unboxed int/atom and the other's static type isn't
         // known to match: skip boxing the unboxed side into a heap scalar
@@ -1770,7 +1815,16 @@ where
         let a_ref = body.tagged_var(var_env, a.0);
         let b_ref = body.tagged_var(var_env, bv.0);
         let process = body.process_arg();
-        let fref = body.jmod.declare_func_in_func(runtime.value_eq_ref_id, body.b.func);
+        // The `==` operator widens numerics; structural identity does not. The
+        // flag that separates the two static arms has to separate the dynamic
+        // one as well, or the widening leaks into pinned matches,
+        // `Enum.member?/2` and `--`.
+        let eq_fn = if widen_numerics {
+            runtime.value_eq_widening_ref_id
+        } else {
+            runtime.value_eq_ref_id
+        };
+        let fref = body.jmod.declare_func_in_func(eq_fn, body.b.func);
         let inst = body.b.ins().call(fref, &[process, a_ref, b_ref]);
         let eq = body.b.inst_results(inst)[0];
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
@@ -2077,15 +2131,7 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let cmp = match kinds {
         CmpOperands::IntInt => {
-            let icc = match op {
-                BinOp::Eq => IntCC::Equal,
-                BinOp::Neq => IntCC::NotEqual,
-                BinOp::Lt => IntCC::SignedLessThan,
-                BinOp::Le => IntCC::SignedLessThanOrEqual,
-                BinOp::Gt => IntCC::SignedGreaterThan,
-                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
-                other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-            };
+            let icc = int_cc_for(op)?;
             let left = body.as_raw_i64(var_env, args[0].0);
             let right = body.as_raw_i64(var_env, args[1].0);
             body.b.ins().icmp(icc, left, right)
@@ -2108,15 +2154,7 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
             body.b.ins().fcmp(fcc, left, right)
         }
         CmpOperands::BinaryBinary => {
-            let icc = match op {
-                BinOp::Eq => IntCC::Equal,
-                BinOp::Neq => IntCC::NotEqual,
-                BinOp::Lt => IntCC::SignedLessThan,
-                BinOp::Le => IntCC::SignedLessThanOrEqual,
-                BinOp::Gt => IntCC::SignedGreaterThan,
-                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
-                other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-            };
+            let icc = int_cc_for(op)?;
             let left = body.tagged_var(var_env, args[0].0);
             let right = body.tagged_var(var_env, args[1].0);
             let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
@@ -2130,6 +2168,18 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
         return Ok(LowerOut::Condition(cmp));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+}
+
+fn int_cc_for(op: BinOp) -> Result<IntCC, CodegenError> {
+    Ok(match op {
+        BinOp::Eq => IntCC::Equal,
+        BinOp::Neq => IntCC::NotEqual,
+        BinOp::Lt => IntCC::SignedLessThan,
+        BinOp::Le => IntCC::SignedLessThanOrEqual,
+        BinOp::Gt => IntCC::SignedGreaterThan,
+        BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+    })
 }
 
 fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {

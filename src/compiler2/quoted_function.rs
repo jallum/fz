@@ -1552,6 +1552,8 @@ fn operator_token_name(tok: &Tok) -> Option<&'static str> {
         Tok::Percent => "%",
         Tok::EqEq => "==",
         Tok::NotEq => "!=",
+        Tok::EqEqEq => "===",
+        Tok::NotEqEq => "!==",
         Tok::Lt => "<",
         Tok::LtEq => "<=",
         Tok::Gt => ">",

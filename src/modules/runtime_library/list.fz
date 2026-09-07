@@ -11,9 +11,11 @@ defmodule List do
   fn subtract(left, []), do: left
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 
+  @spec delete_first([a], any) :: [a]
   fnp delete_first([], _value), do: []
-  fnp delete_first([head | tail], value) when head == value, do: tail
-  fnp delete_first([head | tail], value), do: [head | delete_first(tail, value)]
+  fnp delete_first([head | tail], value) do
+    if head === value, do: tail, else: [head | delete_first(tail, value)]
+  end
 
   @doc "Enumerable.reduce/3 callback body for lists."
   @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
@@ -34,8 +36,9 @@ defmodule List do
   @doc "Returns true when value appears in list for Enumerable."
   @spec member?([a], any) :: bool
   fn member?([], _value), do: false
-  fn member?([head | tail], value) when head == value, do: true
-  fn member?([head | tail], value), do: member?(tail, value)
+  fn member?([head | tail], value) do
+    if head === value, do: true, else: member?(tail, value)
+  end
 
   @doc "Reverses a list onto a tail."
   @spec reverse([a], [a]) :: [a]

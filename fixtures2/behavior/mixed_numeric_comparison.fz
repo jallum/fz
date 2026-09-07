@@ -17,8 +17,9 @@
 # all, which is why it was invisible to any test that only compared one pair.
 #
 # `==` and `!=` are part of this: Elixir's `==` compares numbers across the
-# integer/float boundary, so `1 == 1.0` is `true`. Only `===` is strict, and fz
-# has no `===`. Equality between non-numbers is untouched and stays structural.
+# integer/float boundary, so `1 == 1.0` is `true`. `===` is the strict form and
+# asks identity instead; `behavior/equality_widening_and_identity.fz` pins the
+# difference. Equality between non-numbers is untouched and stays structural.
 #
 # ## Both halves matter
 #

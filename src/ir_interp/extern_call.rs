@@ -8,7 +8,7 @@ use fz_runtime::extern_variadic::{
 };
 use fz_runtime::ir_runtime::{
     fz_binary_concat, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8, fz_dbg_value, fz_make_ref_raw, fz_map_count,
-    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref,
+    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -22,33 +22,19 @@ use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
-fn interp_operator_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
-    match symbol {
-        "fz_op_eq" => Some(crate::fz_ir::BinOp::Eq),
-        "fz_op_neq" => Some(crate::fz_ir::BinOp::Neq),
-        "fz_op_lt" => Some(crate::fz_ir::BinOp::Lt),
-        "fz_op_lte" => Some(crate::fz_ir::BinOp::Le),
-        "fz_op_gt" => Some(crate::fz_ir::BinOp::Gt),
-        "fz_op_gte" => Some(crate::fz_ir::BinOp::Ge),
-        _ => None,
-    }
-}
-
 /// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects once it knows
 /// both operand kinds. All of them answer through `fz_value_cmp_ref`, the same
 /// runtime function native codegen calls, so the doors cannot drift apart the
 /// way they did while each had its own coercion.
 ///
-/// `Eq`/`Neq` appear here on purpose: `interp_value_eq` is deliberately strict,
-/// so `1 == 1.0` must not route through it.
+/// Only ORDERING has typed intrinsics. Equality is total, so `Kernel` keeps a
+/// single `fz_op_eq`/`fz_op_neq` and a single `===`/`!==`, handled above.
 fn interp_typed_cmp_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
     let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
     if !matches!(suffix, "ii" | "ff" | "if" | "fi" | "bb") {
         return None;
     }
     match op {
-        "eq" => Some(crate::fz_ir::BinOp::Eq),
-        "neq" => Some(crate::fz_ir::BinOp::Neq),
         "lt" => Some(crate::fz_ir::BinOp::Lt),
         "lte" => Some(crate::fz_ir::BinOp::Le),
         "gt" => Some(crate::fz_ir::BinOp::Gt),
@@ -71,21 +57,29 @@ fn eval_interp_operator_extern(
         // pair is compared directly. Boxing them through `as_ref_word` would
         // allocate a scalar box per comparison — visible immediately in
         // `Enum.sort`'s allocation golden.
-        let ordering = match (args[0].as_float(), args[1].as_float()) {
-            (Some(left), Some(right)) => {
-                if left < right {
-                    -1
-                } else if left > right {
-                    1
-                } else {
-                    0
+        // Two integers are compared AS INTEGERS -- going through f64 loses the
+        // distinction above 2^53. Only a mixed pair is widened, and anything
+        // that is not two numbers goes to the shared comparator.
+        let ordering = match (args[0], args[1]) {
+            (AnyValue::Int(left), AnyValue::Int(right)) => match left.cmp(&right) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Equal => 0,
+            },
+            _ => match (args[0].as_float(), args[1].as_float()) {
+                (Some(left), Some(right)) => {
+                    if left < right {
+                        -1
+                    } else if left > right {
+                        1
+                    } else {
+                        0
+                    }
                 }
-            }
-            _ => fz_value_cmp_ref(args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
+                _ => fz_value_cmp_ref(args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
+            },
         };
         let answer = match op {
-            crate::fz_ir::BinOp::Eq => ordering == 0,
-            crate::fz_ir::BinOp::Neq => ordering != 0,
             crate::fz_ir::BinOp::Lt => ordering < 0,
             crate::fz_ir::BinOp::Le => ordering <= 0,
             crate::fz_ir::BinOp::Gt => ordering > 0,
@@ -94,13 +88,37 @@ fn eval_interp_operator_extern(
         };
         return Ok(Some(super::value::interp_bool_value(answer)));
     }
-    let Some(op) = interp_operator_extern(symbol) else {
-        return Ok(None);
-    };
-    if args.len() != 2 {
-        return Err(format!("{symbol}/2 got {} args", args.len()));
+    // `fz_op_eq`/`fz_op_neq` are the `==`/`!=` OPERATORS, which widen numerics.
+    // `eval_binop`'s Eq/Neq is structural identity and stays strict, so the
+    // operator cannot be routed through it.
+    if matches!(symbol, "fz_op_identical" | "fz_op_not_identical") {
+        if args.len() != 2 {
+            return Err(format!("{symbol}/2 got {} args", args.len()));
+        }
+        let same = super::binop::interp_value_eq(runtime.cur_proc(), args[0], args[1])?;
+        let answer = if symbol == "fz_op_identical" { same } else { !same };
+        return Ok(Some(super::value::interp_bool_value(answer)));
     }
-    super::binop::eval_binop(runtime.cur_proc(), op, args[0], args[1]).map(Some)
+    if matches!(symbol, "fz_op_eq" | "fz_op_neq") {
+        if args.len() != 2 {
+            return Err(format!("{symbol}/2 got {} args", args.len()));
+        }
+        let proc = runtime.cur_proc();
+        // One implementation of `==`, shared with native codegen. Two unboxed
+        // numbers skip the boxing that forming a ref would cost; everything
+        // else recurses through the widening comparator, so `[1] == [1.0]` is
+        // true while `interp_value_eq` stays strict for structural identity.
+        let equal = match (args[0], args[1]) {
+            (AnyValue::Int(left), AnyValue::Int(right)) => left == right,
+            (AnyValue::Float(left), AnyValue::Float(right)) => left == right,
+            (AnyValue::Int(left), AnyValue::Float(right)) => left as f64 == right,
+            (AnyValue::Float(left), AnyValue::Int(right)) => left == right as f64,
+            _ => fz_value_eq_widening_ref(proc, args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?) != 0,
+        };
+        let answer = if symbol == "fz_op_eq" { equal } else { !equal };
+        return Ok(Some(super::value::interp_bool_value(answer)));
+    }
+    Ok(None)
 }
 
 fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {

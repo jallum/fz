@@ -155,7 +155,12 @@ pub(crate) fn default_unit_for(ty: BitType) -> u32 {
 //
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
 // (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
-// slow arm asks fz_value_cmp_ref, the one dynamic comparison, and emits native
-// fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
-// and typed int-int fast paths sit in front of the dispatch entirely.
-// Eq/Neq do NOT promote: `1 == 1.0` is false.
+// slow arm promotes both to f64 and emits native fadd/fsub/fmul/fdiv when the
+// result can stay RawF64. Typed float-float and typed int-int fast paths sit in
+// front of the dispatch entirely.
+//
+// Comparison does NOT share this path: `Kernel` gives each comparison operator
+// a clause per operand pair, and the dynamic remainder asks fz_value_cmp_ref.
+// `==` widens numerics (`1 == 1.0` is true, and recursively so for containers);
+// structural identity -- a pinned match, `Enum.member?/2`, `--`, a map key --
+// stays strict and uses fz_value_eq_ref.

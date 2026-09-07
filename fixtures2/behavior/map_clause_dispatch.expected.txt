@@ -1,0 +1,12 @@
+{:a, 7}
+:b
+:b
+:some_map
+:some_map
+:not_a_map
+:not_a_map
+{:named, "ada"}
+:anonymous
+{:case_a, 9}
+{:case_value, 9}
+:case_other

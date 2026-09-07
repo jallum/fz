@@ -2050,14 +2050,14 @@ pub extern "C" fn fz_value_cmp_ref(a_ref: u64, b_ref: u64) -> i64 {
 }
 
 fn cmp_any_value(a: AnyValue, b: AnyValue) -> i64 {
+    // Two integers are ordered AS INTEGERS. Widening both to f64 loses the
+    // distinction above 2^53 and made `9007199254740993 > 9007199254740992`
+    // answer false.
+    if a.kind() == ValueKind::INT && b.kind() == ValueKind::INT {
+        return order_of_i64(a.raw() as i64, b.raw() as i64);
+    }
     if let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) {
-        return if left < right {
-            -1
-        } else if left > right {
-            1
-        } else {
-            0
-        };
+        return order_of_f64(left, right);
     }
     if is_bitstring_kind(a.kind()) && is_bitstring_kind(b.kind()) {
         let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
@@ -2125,10 +2125,57 @@ fn cmp_bitstring(ap: *mut u8, bp: *mut u8) -> i64 {
     }
 }
 
+fn order_of_f64(left: f64, right: f64) -> i64 {
+    if left < right {
+        -1
+    } else if left > right {
+        1
+    } else {
+        0
+    }
+}
+
+fn order_of_i64(left: i64, right: i64) -> i64 {
+    match left.cmp(&right) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
 fn numeric_as_f64(value: AnyValue) -> Option<f64> {
     match value.kind() {
         ValueKind::INT => Some(value.raw() as i64 as f64),
         ValueKind::FLOAT => Some(f64::from_bits(value.raw())),
+        _ => None,
+    }
+}
+
+/// `==` between two dynamic values.
+///
+/// This is NOT [`fz_value_eq_ref`]. Elixir's `==` compares numbers across the
+/// integer/float boundary, so `1 == 1.0` is true, but STRUCTURAL IDENTITY does
+/// not: a pinned match, `Enum.member?/2`, `--`, a map key and a container
+/// element all ask whether two values are the same value, and for them `1` and
+/// `1.0` are different. Putting the widening inside `eq_value` made every one
+/// of those loose at once — `Enum.member?([1,2,3], 1.0)` answered true and
+/// `[1,2,3] -- [1.0]` answered `[2,3]`. The two questions get two entry points.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_eq_widening_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
+    let a = any_value_from_ref_word(a_ref, "fz_value_eq_widening_ref lhs");
+    let b = any_value_from_ref_word(b_ref, "fz_value_eq_widening_ref rhs");
+    u64::from(eq_value(process, a, b, true))
+}
+
+/// Numeric equality with Elixir's semantics, or `None` when the pair is not two
+/// numbers. Two integers are compared AS INTEGERS: routing them through `f64`
+/// makes `9007199254740993 == 9007199254740992` answer true.
+fn numeric_eq(a: AnyValue, b: AnyValue) -> Option<bool> {
+    match (a.kind(), b.kind()) {
+        (ValueKind::INT, ValueKind::INT) => Some(a.raw() as i64 == b.raw() as i64),
+        (ValueKind::FLOAT, ValueKind::FLOAT) => Some(f64::from_bits(a.raw()) == f64::from_bits(b.raw())),
+        (ValueKind::INT, ValueKind::FLOAT) => Some(a.raw() as i64 as f64 == f64::from_bits(b.raw())),
+        (ValueKind::FLOAT, ValueKind::INT) => Some(f64::from_bits(a.raw()) == b.raw() as i64 as f64),
         _ => None,
     }
 }
@@ -2140,20 +2187,23 @@ pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64)
     }
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(eq_value(process, a, b))
+    u64::from(eq_value(process, a, b, false))
 }
 
-fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue) -> bool {
-    // fz-5xp.18 — `==` compares numbers by value across the integer/float
-    // boundary, as Elixir does: `1 == 1.0` is true. Only `===` is strict, and
-    // fz has no `===`. Equality is total, so this belongs here rather than in
-    // per-kind clauses in `Kernel`.
-    if let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) {
-        return left == right;
+/// `widen` selects between the two equality questions fz asks.
+///
+/// `false` is STRUCTURAL IDENTITY: are these the same value? A pinned match,
+/// `Enum.member?/2`, `--` and a map KEY all ask this, and for them `1` and
+/// `1.0` are different. `true` is the `==` OPERATOR, which compares numbers by
+/// value the way Elixir does -- and does so recursively, so `[1] == [1.0]` and
+/// `%{a: 1} == %{a: 1.0}` are true while `%{1 => :a} == %{1.0 => :a}` is false,
+/// because widening applies to values and never to the keys that decide which
+/// entries line up.
+fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue, widen: bool) -> bool {
+    if widen && let Some(answer) = numeric_eq(a, b) {
+        return answer;
     }
-    if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
-        && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
-    {
+    if is_bitstring_kind(a.kind()) && is_bitstring_kind(b.kind()) {
         let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
         let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
         return (unsafe { is_bitstring_like(ap) }) && (unsafe { is_bitstring_like(bp) }) && eq_bitstring(ap, bp);
@@ -2169,31 +2219,40 @@ fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue) -> bool {
             if a.raw() == 0 || b.raw() == 0 {
                 false
             } else {
-                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8)
+                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8, widen)
             }
         }
-        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8),
+        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8, widen),
         ValueKind::STRUCT => {
             let a_schema = unsafe { struct_schema_id(a.raw() as *const u8) };
             let b_schema = unsafe { struct_schema_id(b.raw() as *const u8) };
-            eq_struct(process, a.raw() as *mut u8, b.raw() as *mut u8, a_schema, b_schema)
+            eq_struct(
+                process,
+                a.raw() as *mut u8,
+                b.raw() as *mut u8,
+                a_schema,
+                b_schema,
+                widen,
+            )
         }
         ValueKind::BITSTRING | ValueKind::PROCBIN => unreachable!("handled before kind check"),
         _ => false,
     }
 }
 
-fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8, widen: bool) -> bool {
     // Walk both chains in lockstep. NIL terminates both at the same step.
     let mut a = ap as *const u8;
     let mut b = bp as *const u8;
     loop {
         let ac = unsafe { &*(a as *const ListCons) };
         let bc = unsafe { &*(b as *const ListCons) };
-        if ac.head_kind() != bc.head_kind() {
+        // The kind pre-guard is a fast reject for structural identity, but a
+        // widening `==` must still compare an int head against a float head.
+        if ac.head_kind() != bc.head_kind() && !(widen && numeric_eq(ac.head_value(), bc.head_value()).is_some()) {
             return false;
         }
-        if !eq_value(process, ac.head_value(), bc.head_value()) {
+        if !eq_value(process, ac.head_value(), bc.head_value(), widen) {
             return false;
         }
         // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
@@ -2216,7 +2275,7 @@ fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     }
 }
 
-fn eq_struct(process: *mut Process, ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
+fn eq_struct(process: *mut Process, ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32, widen: bool) -> bool {
     if a_schema != b_schema {
         return false;
     }
@@ -2228,7 +2287,7 @@ fn eq_struct(process: *mut Process, ap: *mut u8, bp: *mut u8, a_schema: u32, b_s
             FieldKind::AnyValue => {
                 let av = (unsafe { &mut *process }).heap.read_field_slot(ap, field.offset);
                 let bv = (unsafe { &mut *process }).heap.read_field_slot(bp, field.offset);
-                if !eq_value(process, av, bv) {
+                if !eq_value(process, av, bv, widen) {
                     return false;
                 }
             }
@@ -2255,7 +2314,7 @@ fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
     unsafe { bitstring_like_eq(ap, bp) }
 }
 
-fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8, widen: bool) -> bool {
     let a_count = unsafe { map_count(ap as *const u8) };
     let b_count = unsafe { map_count(bp as *const u8) };
     if a_count != b_count {
@@ -2266,13 +2325,16 @@ fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     for i in 0..a_count {
         let (ak, av) = unsafe { map_entry(ap as *const u8, i) };
         let (bk, bv) = unsafe { map_entry(bp as *const u8, i) };
-        if ak.kind() != bk.kind() || av.kind() != bv.kind() {
+        // Keys decide which entries line up, so they are compared by identity
+        // even under `==`: `%{1 => :a} == %{1.0 => :a}` is false in Elixir, and
+        // `%{1 => :a, 1.0 => :b}` genuinely has two keys.
+        if ak.kind() != bk.kind() || !eq_value(process, ak, bk, false) {
             return false;
         }
-        if !eq_value(process, ak, bk) {
+        if av.kind() != bv.kind() && !(widen && numeric_eq(av, bv).is_some()) {
             return false;
         }
-        if !eq_value(process, av, bv) {
+        if !eq_value(process, av, bv, widen) {
             return false;
         }
     }

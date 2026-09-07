@@ -455,7 +455,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_count_member_reduce.fz",
             include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
-            26,
+            // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
+            // it used to spell that `==` in a guard and rely on guards being
+            // strict, so the strict operator becomes an executable of its own.
+            27,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",

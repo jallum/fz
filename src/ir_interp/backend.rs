@@ -615,6 +615,7 @@ fn select_clause(
         .iter()
         .map(|value| value.unwrap_or_else(interp_nil_value))
         .collect::<Vec<_>>();
+    let prepared = prepared_dispatch_keys(runtime, dispatch.plan())?;
     let selected = select_dispatch_body(
         runtime,
         types,
@@ -623,9 +624,47 @@ fn select_clause(
         module,
         dispatch.plan(),
         &inputs,
-        &HashMap::new(),
+        &prepared,
     )?;
     Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
+}
+
+/// Materialise a plan's prepared keys so entry dispatch can read them.
+///
+/// A map pattern keyed by a binary — `%{"name" => n}` — is decided through a
+/// PREPARED key: `dispatch_const_key_value` finds the key's index in
+/// `plan.prepared_keys` and then reads the materialised value out of the
+/// pinned map. The receive path supplies those from its bindings, and native
+/// entry dispatch pushes them itself (`jobs/native.rs`, `prepared_key_name`),
+/// but interpreted entry dispatch used to pass an empty map here. The lookup
+/// then found nothing, the region reported "key absent", and the clause was
+/// skipped: `lookup(%{"name" => "ada"})` answered `:anonymous` on `interp`
+/// while `run` and Elixir both answered `{:named, "ada"}`.
+///
+/// Only binary keys need this. Ints, floats, atoms, booleans and nil are
+/// decided from the constant directly and never consult the pinned map.
+fn prepared_dispatch_keys(
+    runtime: &mut IrInterpRuntime,
+    plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+) -> Result<HashMap<String, AnyValue>, String> {
+    use crate::ground_value::DispatchShape;
+    let mut prepared = HashMap::new();
+    for (index, key) in plan.prepared_keys.iter().enumerate() {
+        let Some(DispatchShape::Utf8Binary(bytes)) = key.as_dispatch_shape() else {
+            continue;
+        };
+        let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+            runtime.cur_proc(),
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            (bytes.len() * 8) as u64,
+        );
+        prepared.insert(
+            crate::dispatch_matrix::pattern::prepared_key_name(index),
+            interp_value_from_ref_word(ref_word, "prepared dispatch key")?,
+        );
+    }
+    Ok(prepared)
 }
 
 fn select_dispatch_body(

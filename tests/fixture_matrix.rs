@@ -2261,11 +2261,17 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     // byte-identical on every path (the `expected.txt` assertion above,
     // unchanged), so the two fewer births are two fewer redundant specialized
     // bodies, not a dropped cons allocation.
+    //
+    // fz-5xp.22 drops it again, 6 -> 3. `List.member?` used to ask its question
+    // in a `when head == value` guard and get identity semantics only because
+    // guards happen to be strict; it now says `===` in the body, which is one
+    // clause instead of two and so one birth site instead of two. Output is
+    // byte-identical on every path, and the cons pin above is unchanged.
     let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
     assert_eq!(
         stats,
         ReusableConsTelemetryStats {
-            birth_count: 6,
+            birth_count: 3,
             transport_count: 0,
             runtime_attempted_count: 0,
             runtime_reused_count: 0,
