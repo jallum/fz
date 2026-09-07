@@ -7,9 +7,15 @@
   "id": "fz-5xp.65",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "SECOND INSTANCE, same message, different cause -- which is the point.\n\n    extern \"fz\" fn fz_binary_to_atom(any) :: atom\n\n`atom` is not one of the extern return types (`ExternTy` has Binary, CString,\nI64, F64, Any, Unit). Declaring it produced the SAME error as the unresolved\ncall, with the same empty location:\n\n    error[internal/post-resolution-leftover]: quoted function decode failed:\n      invalid any value ref: ExpectedTag { expected: ValueKind(15), found: ValueKind(3) }\n      --\u003e \u003cgenerated\u003e\n\nTwo unrelated mistakes in a runtime-library module -- a call to a function that\ndoes not exist, and an extern return type that is not supported -- are\nindistinguishable at the surface, and neither names the module, the function or\nthe line. Both cost a bisection to find.\n\nSo this is not one missing diagnostic; it is a path with NO diagnostic, where\nevery way of being wrong arrives as the same internal decode failure. Whatever\nfix lands should make the two say different things, and both should name where\nthey are.",
+      "timestamp": "2026-09-07T15:31:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A call to a non-existent function in a runtime-library module is an internal decode error, not a diagnostic",
   "type": "bug",
-  "updated_at": "2026-09-07T15:29:55Z"
+  "updated_at": "2026-09-07T15:31:08Z"
 }
