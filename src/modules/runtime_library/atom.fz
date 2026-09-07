@@ -1,9 +1,8 @@
 defmodule Atom do
   extern "fz" fn fz_atom_to_binary(atom) :: binary
 
-  # The atom's name. `nil` is "nil" here; the `nil -> ""` that Elixir shows
-  # belongs to `String.Chars.Atom`, not to this
-  # (elixir/lib/elixir/lib/string/chars.ex:30).
+  # The atom's name, so `nil` gives "nil". The empty string Elixir produces for
+  # `nil` comes from `String.Chars.Atom`, not from here.
   @spec to_string(atom) :: binary
   fn to_string(a), do: fz_atom_to_binary(a)
 end

@@ -227,13 +227,13 @@ defmodule Enum do
     )
   end
 
-  # fz-5xp.8 — the default sort is Erlang's TOTAL TERM ORDER, not `<=`. `<=` is
-  # declared only for the operand pairs fz can prove, so `Enum.sort/1` over a
-  # mixed list could not even be written in terms of it; `Kernel.compare/2` is
-  # the entry point that orders anything against anything.
+  # The default sort is Erlang's total term order, not `<=`. `<=` is declared
+  # only for the operand pairs fz can prove, so `Enum.sort/1` over a mixed
+  # list could not even be written in terms of it; `Kernel.compare/2` is the
+  # entry point that orders anything against anything.
   #
   # A typed clause family rather than one `compare/2` call, because
-  # `compare/2` takes `any` and marshalling an unboxed integer as `any` BOXES
+  # `compare/2` takes `any` and marshalling an unboxed integer as `any` boxes
   # it: routing every comparison through it cost 54 extra scalar boxes on an
   # eleven-element sort. The numeric clauses keep the inline compare the
   # operators already have; only the pairs `<=` cannot express reach the
@@ -471,9 +471,6 @@ defmodule Enum do
     end
   end
 
-  # fz-5xp.16 — the tranches fz-5xp.8 (term order), fz-5xp.12 (Map) and
-  # fz-5xp.15 (String.Chars) unblocked.
-  #
   # The min/max family is written against `Kernel.compare/2` rather than `<=`,
   # for the same reason `sort/1` is: `<=` is declared only for the operand
   # pairs fz can prove, so `Enum.max(["a", :b])` could not be written in terms
@@ -748,8 +745,7 @@ defmodule Enum do
   fnp group_put(acc, key, value), do: Map.put(acc, key, [value | Map.get(acc, key, [])])
 
   # A group is built by prepending, so each list comes out reversed; one pass
-  # over the keys puts them back in encounter order, which is what Elixir's
-  # group_by promises.
+  # over the keys puts them back in encounter order.
   @spec group_reverse(any, any) :: any
   fnp group_reverse(acc, key), do: Map.put(acc, key, reverse_list(Map.get(acc, key)))
 

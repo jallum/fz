@@ -1,24 +1,19 @@
 defmodule Map do
-  @moduledoc "A flat sorted array, not a HAMT -- bulk functions first. See the note below."
+  @moduledoc "A map is a flat sorted array, not a HAMT like Elixir's -- bulk functions are the fast path. See the note below."
 
-  # A map here is a FLAT SORTED ARRAY, and this module's shape says so.
+  # A map is a flat sorted array. Structural sharing does not transfer:
+  # `put/3` and `delete/2` each copy the whole array, so a loop over n keys is
+  # O(n^2). The bulk functions below do one pass and one allocation each, and
+  # are the surface to reach for; use `put/3` and `delete/2` for a single key.
   #
-  # Elixir's structural sharing does not transfer. `put/3` and `delete/2` each
-  # copy the whole array, so a loop over n keys is O(n^2) -- the exact idiom
-  # Elixir's docs encourage. The BULK functions do one pass and one allocation,
-  # and they are the surface to reach for. Use `put/3` and `delete/2` when you
-  # have ONE key, not in a loop. That emphasis is the opposite of Elixir's and
-  # is deliberate.
+  # `get` is a binary search, which needs the array's order to agree with its
+  # key equality, and every map to actually be sorted.
   #
-  # `get` is a binary search (fz-5xp.12), which needs the array's order to agree
-  # with its key equality (fz-5xp.48) and every map to actually be sorted
-  # (fz-5xp.49).
-  #
-  # ITERATION ORDER is by key. For BINARY keys that matches Elixir exactly. For
-  # ATOM keys it cannot: Elixir orders atoms by an internal identity fz does not
-  # share, so `Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there and
-  # `[:a, :b, :c]` here (fz-5xp.50). JSON object keys are strings, so the goal
-  # program is on the side that matches.
+  # Iteration order is by key. For binary keys that matches Elixir exactly.
+  # For atom keys it cannot: Elixir orders atoms by an internal identity fz
+  # does not share, so `Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there
+  # and `[:a, :b, :c]` here. JSON object keys are binaries, so decoded objects
+  # order the same way in both.
 
   extern "C" fn fz_map_count(any) :: integer
   extern "C" fn fz_map_entry_key(any, integer) :: any
@@ -30,7 +25,7 @@ defmodule Map do
   extern "fz" fn fz_map_put_float(any, any, float) :: any
   extern "fz" fn fz_map_put_atom_ref(any, any, atom) :: any
 
-  # ---- BULK: one pass, one allocation. Reach for these. ----
+  # One pass, one allocation each. Reach for these when working with several keys.
 
   @doc "A map from a list of {key, value} pairs. Later keys win."
   @spec new([{any, any}]) :: any
@@ -81,7 +76,7 @@ defmodule Map do
   fnp key_listed_or?(true, _t, _v), do: true
   fnp key_listed_or?(false, t, v), do: key_listed?(t, v)
 
-  # ---- SINGLE KEY: each copies the whole array. Not in a loop. ----
+  # Each of these copies the whole array. Use them for a single key, not in a loop.
 
   @doc "The map with `key` set. Copies the whole array; do not use in a loop."
   #

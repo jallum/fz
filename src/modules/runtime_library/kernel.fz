@@ -31,10 +31,10 @@ defmodule Kernel do
   extern "C" fn fz_op_rem_if(integer, float) :: float
   extern "C" fn fz_op_rem_fi(float, integer) :: float
   extern "C" fn fz_op_rem_ff(float, float) :: float
-  # fz-5xp.8 — the total term order over every value, which the cross-type
-  # clauses below are written in terms of. Takes the process (the `fz` ABI)
-  # because atoms order by NAME, not by the id they were interned with.
   extern "C" fn fz_bitstring_byte_size(any) :: integer
+  # The total term order over every value, which the cross-type clauses below
+  # are written in terms of. Takes the process (the `fz` ABI) because atoms
+  # order by name, not by the id they were interned with.
   extern "fz" fn fz_value_cmp_ref(any, any) :: integer
   extern "C" fn fz_op_lt_ii(integer, integer) :: bool
   extern "C" fn fz_op_lt_ff(float, float) :: bool
@@ -65,9 +65,9 @@ defmodule Kernel do
   @spec panic(any) :: never
   fn panic(msg), do: fz_panic(msg)
 
-  # Elixir's `Kernel.to_string/1` is a macro expanding to
-  # `String.Chars.to_string/1` (kernel.ex:3499). Here it is an ordinary
-  # function, because the expansion has nothing to do at compile time.
+  # In Elixir, `to_string/1` is a macro expanding to `String.Chars.to_string/1`.
+  # Here it is an ordinary function, since the macro's expansion has nothing
+  # to do at compile time.
   @spec to_string(any) :: binary
   fn to_string(term), do: StringChars.to_string(term)
 
@@ -119,12 +119,12 @@ defmodule Kernel do
   @spec range(integer, integer, integer) :: any
   fn range(first, last, step), do: Range.new(first, last, step)
 
-  # Unary minus. Every BINARY operator is a typed clause family, so a
+  # Unary minus. Every binary operator is a typed clause family, so a
   # dynamically-typed operand dispatches; unary minus was lowered straight to
   # one machine instruction and read one lane, so `-x` aborted natively where
-  # `0 - x` worked (fz-5xp.38). The front door rewrites `-x` to this call --
-  # except for a literal, which folds to a negative literal and never becomes a
-  # call at all.
+  # `0 - x` worked. The front door rewrites `-x` to this call, except for a
+  # literal, which folds to a negative literal and never becomes a call at
+  # all.
   #
   # Not `0 - x`: that answers `0.0` for `-0.0`, and the sign of zero is
   # observable.
@@ -160,7 +160,7 @@ defmodule Kernel do
   fn left :: float * right :: integer, do: fz_op_mul_if(right, left)
   fn left :: float * right :: float, do: fz_op_mul_ff(left, right)
 
-  # `/` ALWAYS returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
+  # `/` always returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
   # truncating form is `div/2` below. Getting this wrong is silent -- integer
   # division simply loses the fraction -- and a JSON number parser building
   # `3 + 5 / 10` needs `3.5`.
@@ -195,7 +195,7 @@ defmodule Kernel do
   # four numeric combinations out one clause at a time; comparison does the
   # same, so a mixed pair is answered by a typed clause on unboxed lanes
   # rather than by codegen boxing an operand and coercing it behind our back.
-  # Ordering is a PARTIAL function: there is a clause per pair it can order and
+  # Ordering is a partial function: there is a clause per pair it can order and
   # no `any`/`any` default, so an unsupported combination has no matching clause
   # and is refused rather than answered wrongly. Equality is total and keeps its
   # single structural clause; `==` widens numerics inside the comparator, where
@@ -245,15 +245,15 @@ defmodule Kernel do
   fn left :: float >= right :: integer, do: fz_op_gte_fi(left, right)
   fn left :: binary >= right :: binary, do: fz_op_gte_bb(left, right)
 
-  # Erlang's TOTAL TERM ORDER:
+  # Erlang's total term order:
   #   number < atom < reference < fun < port < pid < tuple < map < list < bitstring
   #
-  # This is the SEPARATE ENTRY POINT the comparison operators deliberately do
+  # This is the separate entry point the comparison operators deliberately do
   # not become. `<` and its siblings stay declared for the operand pairs fz can
   # prove -- numbers and binaries -- because giving them an `any`/`any` clause
   # makes every comparison callsite with an unresolved operand blind to the
-  # dispatcher, which the blind-escape census catches as a latent miscompile
-  # (fz-5xp.64). Sorting does not need the operators: it needs an order.
+  # dispatcher, which the blind-escape census catches as a latent miscompile.
+  # Sorting does not need the operators: it needs an order.
   @doc "The number of bytes in a binary."
   @spec byte_size(binary) :: integer
   fn byte_size(bytes), do: fz_bitstring_byte_size(bytes)
@@ -268,9 +268,9 @@ defmodule Kernel do
   @spec any != any :: bool
   fn left != right, do: fz_op_neq(left, right)
 
-  # `===` asks whether two values are the SAME value, where `==` compares
+  # `===` asks whether two values are the same value, where `==` compares
   # numbers by value: `1 == 1.0` is true and `1 === 1.0` is false. Membership,
-  # `--` and a map key all mean identity, and now say so.
+  # `--` and a map key all mean identity.
   @spec any === any :: bool
   fn left === right, do: fz_op_identical(left, right)
 

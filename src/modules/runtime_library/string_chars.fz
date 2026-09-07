@@ -1,16 +1,16 @@
-# `String.Chars`, the protocol behind `to_string/1`. In Elixir it is also what
-# interpolation calls; fz has no interpolation yet (fz-5xp.5), and this is the
-# piece that was missing for it.
+# `StringChars`, the protocol behind `to_string/1`, following Elixir's
+# `String.Chars`. String interpolation lexes to a call to `Kernel.to_string/1`,
+# which dispatches here: `"a#{x}b"` becomes `"a" <> Kernel.to_string(x) <> "b"`
+# before the rest of the compiler ever sees the literal, so an interpolated
+# value converts the same way any other call to `to_string/1` does.
 #
-# Elixir deliberately gives this protocol NO `@fallback_to_any`: interpolating
-# a map or a tuple raises rather than printing something structural. That is
-# the design's main safety property, and it is preserved here in both halves.
-#
-# A receiver with no impl at all -- a map, a tuple -- is refused at COMPILE
-# time, naming this protocol, because fz knows the receiver's type where Elixir
-# has to wait until the call happens. A receiver whose family has an impl but
-# whose value is wrong -- a bitstring that is not byte-aligned -- cannot be
-# known statically and panics at runtime, below.
+# A receiver with no implementation at all -- a map, a tuple -- is refused at
+# compile time, naming this protocol, because fz knows the receiver's type
+# where Elixir has to wait until the call happens. A receiver whose family has
+# an implementation but whose value is out of range -- a bitstring that is not
+# byte-aligned -- cannot be known statically and panics at runtime, below.
+# Either way, there is no generic fallback: an unconvertible value never gets
+# printed as some structural approximation.
 #
 # fz names the binary value family `Binary` where Elixir names it `BitString`.
 # The impl has to use fz's name: `for: BitString` would classify as a bare
@@ -22,8 +22,8 @@ defprotocol StringChars do
 end
 
 defimpl StringChars, for: Atom do
-  # Elixir's one special case (string/chars.ex:30). `Atom.to_string(nil)` is
-  # "nil"; interpolating nil gives "".
+  # `nil` is the one special case: `to_string(nil)` gives `""`, while
+  # `Atom.to_string(nil)` gives `"nil"`.
   fn to_string(nil), do: ""
   fn to_string(a), do: Atom.to_string(a)
 end
@@ -31,14 +31,13 @@ end
 defimpl StringChars, for: Binary do
   extern "C" fn fz_bitstring_is_binary(any) :: integer
 
-  # Elixir guards this impl with `is_binary(term)` and raises for a bitstring
-  # that is not byte-aligned (string/chars.ex:39). fz's `binary` type does not
-  # draw that line -- `<<1::4>>` satisfies a `s :: binary` clause head
-  # (fz-5xp.42) -- so the question is asked at runtime.
+  # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
+  # a `s :: binary` clause head -- so whether a given bitstring is actually a
+  # byte-aligned binary can only be answered at runtime, here.
   #
-  # It is not pedantry: the protocol's result is declared `binary`, and letting
-  # a partial bitstring through means the next `<>` aborts the process with a
-  # byte-alignment assertion far from here.
+  # The protocol's result is declared `binary`: letting a partial bitstring
+  # through would mean the next `<>` aborts the process with a byte-alignment
+  # assertion far from here.
   fn to_string(s) do
     if fz_bitstring_is_binary(s) == 1 do
       s

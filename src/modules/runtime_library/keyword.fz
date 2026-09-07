@@ -1,21 +1,20 @@
 defmodule Keyword do
-  @moduledoc "A list of {atom, value} 2-tuples, ordered and allowing duplicates."
+  @moduledoc "A list of {atom, value} 2-tuples, ordered and allowing duplicates, following Elixir's `Keyword` module."
 
-  # A keyword list is an ORDERED list of 2-tuples whose keys are atoms, and
+  # A keyword list is an ordered list of 2-tuples whose keys are atoms, and
   # duplicates are allowed. That is what separates it from Map, and every
   # function here is shaped by it:
   #
-  #   * `get/2` and `fetch/2` answer with the FIRST match, so a later duplicate
+  #   * `get/2` and `fetch/2` answer with the first match, so a later duplicate
   #     is shadowed rather than merged;
   #   * `put/3` deletes every entry for the key and prepends, so putting makes
   #     the key unique and moves it to the front;
-  #   * `delete/2` removes ALL entries for a key where `delete_first/2` removes
+  #   * `delete/2` removes every entry for a key where `delete_first/2` removes
   #     one;
   #   * `keys/1` and `values/1` keep list order and keep duplicates.
   #
-  # In Elixir this module is `:lists.keyfind` and friends. fz has no such BIFs,
-  # so every function is a plain recursion over the list, which is also what
-  # makes this module need no allocating primitives at all.
+  # Every function here is a plain recursion over the list, so the module needs
+  # no allocating primitives of its own.
 
   @doc "An empty keyword list."
   @spec new() :: keyword()

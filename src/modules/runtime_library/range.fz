@@ -29,10 +29,9 @@ defmodule Range do
     if done?(last, step, first) do
       0
     else
-      # `div/2`, not `/`: a range's count is an INTEGER, and `/` returns a
-      # float (fz-5xp.6). Written with `/` this silently made every range's
-      # count a float and rippled a new type through everything Enumerable
-      # reaches.
+      # `div/2`, not `/`: a range's count is an integer, and `/` returns a
+      # float. Written with `/` this silently made every range's count a
+      # float and rippled a new type through everything Enumerable reaches.
       div(last - first, step) + 1
     end
   end
