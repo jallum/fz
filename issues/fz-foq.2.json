@@ -4,6 +4,7 @@
   "blocks": [
     "fz-foq.4"
   ],
+  "closed_at": "2026-09-07T02:38:38Z",
   "created": "2026-09-07T02:21:23Z",
   "description": "transport_test.rs's production_activation_order_has_one_typed_nontextual_authority scans a list of source files it calls production_order_owners, and that list includes include_str!(\"fixture_facts.rs\").\n\nfixture_facts is #[cfg(test)]-gated -- it is test-only support, not production. Auditing it as a production ordering authority is a category error: it makes the test assert something about code that never ships, and it will mislead the next reader about what fixture_facts is.\n\nRemove that entry. Verify the remaining owners are all genuinely production modules while there.\n\nDone when: production_order_owners lists only non-gated modules, and the full gate is green.",
   "id": "fz-foq.2",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Stop auditing a test-only module as production order authority",
   "type": "task",
-  "updated_at": "2026-09-07T02:33:37Z"
+  "updated_at": "2026-09-07T02:38:38Z"
 }
