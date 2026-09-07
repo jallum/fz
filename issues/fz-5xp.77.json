@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T19:48:14Z",
   "created": "2026-09-07T19:44:16Z",
   "description": "## Why\n\nThe sixteen `.fz` modules that make up fz's standard library live at `src/modules/runtime_library/`, inside the `fz` crate's Rust source tree. `src/` is where rustc looks; fz source is not Rust source and does not belong there.\n\n`runtime/` is not the answer either, despite the name. That directory is the `fz-runtime` crate -- the Rust host: heap, process, `ir_runtime.rs`, the `fz_*` symbols linked into compiled programs. It never reads a `.fz` file. Every reader is `src/modules/runtime_library.rs` in the compiler crate, which `include_str!`s all sixteen. Putting the library under `runtime/lib/` would park fz source in a crate that does not consume it and make the consumer reach across a crate boundary.\n\nA top-level `lib/` says what the directory is -- the fz standard library, the same name and role Elixir gives its own -- and keeps the `fz` crate as its owner.\n\n## What moves\n\n`src/modules/runtime_library/*.fz` -\u003e `lib/*.fz`. Sixteen files. `src/modules/runtime_library.rs`, which embeds them, stays where it is: it is Rust, and it is the consumer.\n\n## What does not move\n\nThe module name a diagnostic renders (`runtime:Kernel.fz`) comes from the `name` field of `RuntimeModuleSource`, not from the path on disk, so no fixture golden changes. The move is the sixteen `include_str!` arguments plus the prose references in `.agent/docs/{any-value,parser-syntax,specs,fixtures,semantic-authorities}.md`, `.agent/deprecated-docs/range.md` and one fixture comment in `fixtures2/behavior/enum_sort.fz`.\n\n`src/compiler2/fixtures/enum_reduce_operator_ref.fz` also stays. It is a compiler test fixture, not library source, and its only consumer is `src/compiler2/transport_contract_test.rs` beside it -- the same co-location argument that keeps `runtime_library.rs` where it is. Whether compiler-test fixtures belong under `fixtures2/` is a separate question this ticket does not answer.\n\n## Acceptance\n\n- `lib/` holds the sixteen library sources; no library source remains under `src/`.\n- Every prose reference to the old path names the new one.\n- Six-target gate green with no re-blessing.",
   "id": "fz-5xp.77",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Move the fz standard library out of the Rust src/ tree into a top-level lib/",
   "type": "task",
-  "updated_at": "2026-09-07T19:48:13Z"
+  "updated_at": "2026-09-07T19:48:14Z"
 }
