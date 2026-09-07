@@ -1,6 +1,6 @@
 # Externs
 
-An `extern "C" fn` declaration is a typed door from fz into a C symbol. The
+An `extern` declaration is a typed door from fz into a native symbol. The
 subsystem decides, per call site, how each fz value crosses that door (its
 *marshal class*), how the C result comes back, and which machine makes the call.
 The shapes live in `src/fz_ir`, are shared by both compilers, and are paired with
@@ -8,25 +8,113 @@ the runtime FFI helpers that actually call out.
 
 The pieces:
 
-- `ExternDecl` (`src/fz_ir/mod.rs`) — the static shape of one door: the C
-  `symbol`, fixed `params` wire types, a `variadic` flag, and the return wire
-  type `ret`.
+- `ExternDecl` (`src/fz_ir/mod.rs`) — the static shape of one door: the
+  `symbol`, fixed `params` wire types, a `variadic` flag, the return wire type
+  `ret`, and the `abi`.
+- `ExternAbi` (`src/fz_ir/mod.rs`) — `C` or `Fz` (below).
 - `ExternTy` — the C wire alphabet (below).
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param),
   `Ascribed(ty)` (`arg :: ty` at the call), or `Auto` (an un-ascribed variadic
   argument awaiting resolution).
 - `LoweredExtern { abi, params, ret }` (`src/compiler2/body.rs`) — compiler2's
-  lowered form: a `LoweredBody::Extern` carries the abi, the param wire types,
-  and the return wire type, and lowering also computes the fz-visible return type
-  from the declared return.
+  lowered form: a `LoweredBody::Extern` carries the `ExternAbi`, the param wire
+  types, and the return wire type, and lowering also computes the fz-visible
+  return type from the declared return.
+
+## Two ABIs
+
+The string in the declaration names the calling convention, and it is parsed
+into `ExternAbi` when the extern is lowered. Only two names exist; anything
+else is a `lower/unsupported` error, never a silent fall back:
+
+```fz
+extern "C"  fn libc::close(integer) :: integer            # a plain C symbol
+extern "fz" fn fz_binary_concat(binary, binary) :: binary # an fz runtime helper
+```
+
+The ABI decides two things at once.
+
+**The implicit process argument.** An `extern "fz"` symbol receives the current
+`*mut Process` as an implicit first argument, ahead of every declared one.
+Anything that allocates on the process heap needs it, which is every
+interesting String, IO and number-formatting primitive. `extern "C"` receives
+exactly the declared arguments.
+
+**What `binary` and `cstring` mean.** A C function taking either wants a
+`*const u8` into the bytes (`cstring` additionally guarantees a trailing NUL).
+An fz runtime helper taking either wants the tagged value ref it works in,
+because it operates in fz's own representation and may allocate a new value.
+Same declared types, two conventions — which is why the ABI has to reach the
+marshalling code rather than being consumed at the front door. `integer` and
+`float` are unaffected: they are raw scalars under both.
+
+Both doors read the same property from the same declaration
+(`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
+allocating primitive is a Rust function, a declaration, a row in
+`extern_contract.rs::RUNTIME_SYMBOLS`, and an address for each door that needs
+one: `ir_codegen/backend.rs::register_runtime_symbols` for the JIT, and
+`ir_interp/extern_call.rs::resolve_symbol` for the interpreter, which cannot
+rely on dlsym reaching a statically-linked rlib. AOT needs no address row for a
+runtime-crate export, which is `#[unsafe(no_mangle)]` and reachable through the
+staticlib link. There is no lowering function to write and no interpreter match
+arm to add.
+
+There is no variadic form of the `fz` ABI: every variadic call goes through a
+fixed-arity C dispatcher, which has nowhere to put the implicit process
+argument. The combination is refused at the declaration rather than in each
+door's lowering.
+
+## The `fz` ABI is reserved to the runtime library
+
+A declaration outside the bootstrap may not name it. The reason is not
+etiquette: the symbols the `fz` ABI can reach are the ones both doors ALSO
+claim by name in their own lowerings, and those two claim sets are not equal.
+`fz_op_add_ii` has a native rung and no interpreter one, so a foreign
+`extern "fz" fn fz_op_add_ii` once answered `5` under `run` and a process
+pointer plus two under `interp`. `resolve_extern_abi` refuses it in the shared
+front end, which is the only place a refusal reaches every door identically.
+
+For the same reason the interpreter's symbol table records the convention each
+Rust function ACTUALLY has, and refuses a declaration that disagrees. An
+address alone is not enough to call something: reaching `fz_dbg_value` from an
+`extern "C"` declaration transmuted an `fn(*mut Process, u64)` to an
+`fn(u64)`, read the argument's ref word as the process pointer, and returned.
+
+Two more checks follow from the same idea. A variadic `extern "fz"` is refused,
+because a variadic call goes through a fixed-arity C dispatcher with nowhere to
+put the process. And `extern_contract.rs::RUNTIME_SYMBOLS`
+records the convention the runtime ACTUALLY provides each of its own symbols
+with, and a declaration that contradicts it is refused. `fz_dbg_value` is
+`fn(*mut Process, u64)`; declaring it `extern "C"` reached it as `fn(u64)`, and
+the same shape on `fz_process_heap_alloc_stats` segfaulted the JIT and AOT
+doors. `address_book_test` holds that table and the interpreter's address book
+together.
+
+All four checks are DEMAND-GATED. An extern that is declared and never called
+is never lowered, so none fires — the declaration compiles silently.
+
+The migration is PARTIAL, deliberately. `kernel.fz` still declares `fz_panic`,
+`fz_self`, `fz_send`, `fz_spawn`, `fz_spawn_opt`, `fz_make_ref` and
+`fz_make_resource` as `extern "C"`. Only `fz_panic` names a real symbol; the
+other six name nothing at all, and are lowered to `fz_self_raw`,
+`fz_send_ref`, `fz_spawn_ref`, `fz_spawn_opt_ref`, `fz_make_ref_raw` and
+`fz_make_resource_ref`, each of which takes a process,
+and the four `fz_op_*_bb` comparisons declare `binary` params that never become
+`*const u8`. Those are intrinsics wearing extern syntax: their lowerings emit
+something other than a call, so both doors still claim them by name and the
+declared ABI is not consulted. `ExternAbi` is therefore a true fact for the
+three symbols above and a placeholder for those. fz-5xp.29 and fz-5xp.30 carry
+the third declaration form that would retire the difference.
 
 ## The wire alphabet
 
 ```text
 I64       proven i64                       F64    proven f64
 Any       one opaque fz value word         Unit   maps to 0 on return
-Binary    *const u8 to a binary's bytes, no NUL guarantee (caller passes length)
-CString   *const u8 to a binary's bytes with a guaranteed trailing NUL
+Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
+          length). Under "fz": the tagged value ref.
+CString   under "C": *const u8 to the bytes with a guaranteed trailing NUL.
+          Under "fz": the tagged value ref.
 Never     diverges
 ```
 
@@ -68,7 +156,10 @@ a list alias bit and never marks a value published (see the alias-bit model in
 owned-cons-reusable. An extern that needs a value after it returns must copy it
 into storage it owns.
 
-## C wire return vs fz-visible return
+## Wire return vs fz-visible return
+
+Note: "fz-visible" here means the TYPE fz code sees, unrelated to the `"fz"`
+calling convention above.
 
 These are separate facts. `ret` governs what crosses the boundary: `Any` boxes a
 scalar into an `AnyValueRef` before the call and reads a boxed word back, while
@@ -81,7 +172,8 @@ what makes an ordinary wrapper come back correctly:
 fn dbg(x), do: fz_dbg_value(x)
 ```
 
-The body calls `fz_dbg_value(any) :: any`, so the argument is boxed and the
+The body calls `extern "fz" fn fz_dbg_value(any) :: any`, so the argument is
+boxed (the ABI adds the process alongside it, which the wrapper never sees) and the
 result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
 unboxes that word back to an `i64`. A repeated type variable means "same type",
 not "same object" — boundary correctness is the marshal class on the way in plus
@@ -134,7 +226,11 @@ native/JIT/AOT paths read it through the shared named-field runtime ABI.
 ## Proof gates
 
 ```text
-cargo test --test fixture_matrix externs
 cargo test --test fixture_matrix file_handle      # resource lifecycle + dtor
 cargo test --test fixture_matrix file_resource_lifecycle
+cargo test --lib address_book_test                # convention <-> address
+cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
+cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
+cargo test --lib compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi
+cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic
 ```

@@ -656,17 +656,25 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `fz_abi` selects what a declared parameter type MEANS.
+///
+/// A C function taking `binary` wants a `*const u8` into the bytes. An fz
+/// runtime helper taking `binary` wants the tagged value ref, because it works
+/// in fz's own representation and may allocate a new one. Same declaration,
+/// two conventions -- which is why the ABI has to reach this far rather than
+/// being consumed at the front door.
 fn marshal_extern_arg<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     var: Var,
     ty: ExternTy,
+    fz_abi: bool,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
         ExternTy::F64 => body.as_raw_f64(var_env, var.0),
+        ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
         ExternTy::Binary | ExternTy::CString => {
             let helper_id = match ty {
                 ExternTy::CString => runtime.binary_as_cstring_id,
@@ -798,7 +806,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let mut call_args = Vec::with_capacity(args.len() + 1);
     call_args.push(fn_ptr);
     for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
-        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty)?);
+        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty, false)?);
     }
 
     let dispatcher_fref = body.jmod.declare_func_in_func(dispatcher, body.b.func);
@@ -919,17 +927,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if decl.symbol == "fz_self" && args.is_empty() {
                 return lower_extern_fz_self(body);
             }
-            if decl.symbol == "fz_process_heap_alloc_stats" && args.is_empty() {
-                let process = body.process_arg();
-                let sig = sig1(&[types::I64], &[types::I64]);
-                let func_id = body
-                    .jmod
-                    .declare_function("fz_process_heap_alloc_stats", Linkage::Import, &sig)
-                    .map_err(|e| CodegenError::new(format!("declare fz_process_heap_alloc_stats: {}", e)))?;
-                let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[process]);
-                return Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]));
-            }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
                 return lower_extern_fz_make_ref(body);
             }
@@ -941,12 +938,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_dbg_value" && args.len() == 1 {
-                return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_binary_concat" && args.len() == 2 {
-                return lower_extern_fz_binary_concat(body, var_env, &arg_vars, dest_var);
             }
             if matches!(decl.symbol.as_str(), "fz_op_add_ii" | "fz_op_add_if" | "fz_op_add_ff") && args.len() == 2 {
                 return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Add, &arg_vars);
@@ -2024,42 +2015,6 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// `fz_dbg_value(value)`: prints the value and returns it. The runtime BIF
-/// renders atom names off the process and routes output through the process's
-/// ExecCtx telemetry sink, so the process is prepended from the pinned register.
-fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let value_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    let call = body.call_named("fz_dbg_value", &[process, value_ref]);
-    let result = body.b.inst_results(call)[0];
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
-    }
-    Ok(LowerOut::DeadUnit)
-}
-
-fn lower_extern_fz_binary_concat<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let process = body.process_arg();
-    let left = body.tagged_var(var_env, args[0].0);
-    let right = body.tagged_var(var_env, args[1].0);
-    let call = body.call_named("fz_binary_concat", &[process, left, right]);
-    let result = body.b.inst_results(call)[0];
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
-    }
-    Ok(LowerOut::DeadUnit)
-}
-
 fn lower_extern_fz_op_arith<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -2279,14 +2234,19 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     args: &[ExternArg],
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
-    let param_tys: Vec<ir::Type> = decl
-        .params
-        .iter()
-        .map(|t| match t {
-            ExternTy::F64 => types::F64,
-            _ => types::I64,
-        })
-        .collect();
+    // An `extern "fz"` helper receives the current process as an implicit
+    // first argument. Declaring it means a new allocating primitive is a
+    // declaration plus a Rust function, not another rung in a name-keyed chain
+    // here and two more in the interpreter.
+    let takes_process = decl.abi.takes_process();
+    let mut param_tys: Vec<ir::Type> = Vec::with_capacity(decl.params.len() + 1);
+    if takes_process {
+        param_tys.push(types::I64);
+    }
+    param_tys.extend(decl.params.iter().map(|t| match t {
+        ExternTy::F64 => types::F64,
+        _ => types::I64,
+    }));
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret_tys: &[ir::Type] = if returns_value {
         match decl.ret {
@@ -2320,12 +2280,17 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         args.len(),
         param_kinds.len()
     );
+    let process_arg = takes_process.then(|| body.process_arg());
     let arg_vals: Vec<ir::Value> = args
         .iter()
         .zip(param_kinds.iter())
-        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty))
+        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty, takes_process))
         .collect::<Result<_, _>>()?;
-    let inst = body.b.ins().call(fref, &arg_vals);
+    let call_args: Vec<ir::Value> = match process_arg {
+        Some(process) => std::iter::once(process).chain(arg_vals).collect(),
+        None => arg_vals,
+    };
+    let inst = body.b.ins().call(fref, &call_args);
     if returns_value {
         let raw = body.b.inst_results(inst)[0];
         if matches!(decl.ret, ExternTy::I64) {

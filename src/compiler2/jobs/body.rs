@@ -17,9 +17,10 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
+use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -1348,23 +1349,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
-        if let Some(abi) = self.surface.extern_abi.clone() {
+        if self.surface.extern_abi.is_some() {
             let signature = self.resolve_extern_signature()?;
-            return Ok((
-                LoweredBody::Extern {
-                    signature: LoweredExtern {
-                        abi,
-                        symbol: extern_symbol_from_name(&self.surface.name).to_string(),
-                        params: signature.params,
-                        variadic: self.surface.variadic,
-                        ret: signature.ret,
-                        return_ty: signature.return_ty,
-                        semantic_contract: signature.semantic_contract,
-                    },
-                },
-                Vec::new(),
-                Vec::new(),
-            ));
+            return Ok((LoweredBody::Extern { signature }, Vec::new(), Vec::new()));
         }
 
         let mut clause_defs = Vec::new();
@@ -1384,7 +1371,97 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         ))
     }
 
+    /// The declared calling convention, or a diagnostic.
+    ///
+    /// Four ways to get it wrong, and every one of them is refused HERE rather
+    /// than in a door's lowering, because a diagnostic raised in the shared
+    /// front end is the only kind every door raises identically. Each of these
+    /// was, at some point, a per-door check that protected fewer doors than it
+    /// appeared to.
+    ///
+    /// 1. An unrecognised name must not fall back to C: the conventions
+    ///    disagree about the implicit process argument and about what a
+    ///    `binary` parameter is, so a wrong guess is a crash inside the callee.
+    ///
+    /// 2. `"fz"` is reserved to the runtime library. It passes fz's own
+    ///    `*mut Process` and fz's internal value representation, which nothing
+    ///    outside the runtime can accept; worse, the symbols it can name are
+    ///    the ones both doors also claim by name in their lowerings, and those
+    ///    two claim sets are not equal, so a foreign declaration of one is a
+    ///    question the doors would answer differently.
+    ///
+    /// 3. There is no variadic `"fz"`: a variadic call goes through a
+    ///    fixed-arity C dispatcher with nowhere to put the process.
+    ///
+    /// 4. A declaration may not contradict what the runtime actually provides.
+    ///    `fz_dbg_value` is `fn(*mut Process, u64)` however it is declared, so
+    ///    an `extern "C"` one reached it as `fn(u64)` -- nil under `interp`,
+    ///    and for the same shape on `fz_process_heap_alloc_stats`, a segfault
+    ///    under `run` and `build`.
+    fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
+        let declared = self
+            .surface
+            .extern_abi
+            .as_deref()
+            .expect("extern signatures only resolve for extern fns");
+        let Some(abi) = ExternAbi::parse(declared) else {
+            return Err(self.extern_abi_error(format!(
+                "unknown extern ABI `{}` on `{}`; expected one of {}",
+                declared,
+                self.surface.name,
+                ExternAbi::ALL
+                    .iter()
+                    .map(|known| format!("`{known}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
+        if abi.takes_process() && !self.declared_by_runtime_library() {
+            return Err(self.extern_abi_error(format!(
+                "`{}` declares the `fz` ABI, which is reserved for fz's own runtime library; \
+                 it passes the running process and fz's internal value representation, \
+                 so declare a foreign symbol `extern \"C\"` instead",
+                self.surface.name
+            )));
+        }
+        if abi.takes_process() && self.surface.variadic {
+            return Err(self.extern_abi_error(format!(
+                "`{}` is variadic and declares the `fz` ABI; every variadic call goes through a \
+                 fixed-arity C dispatcher, which has nowhere to put the implicit process argument",
+                self.surface.name
+            )));
+        }
+        let symbol = extern_symbol_from_name(&self.surface.name);
+        if let Some(provided) = runtime_symbol_abi(symbol)
+            && provided != abi
+        {
+            return Err(self.extern_abi_error(format!(
+                "`{}` names `{}`, which the fz runtime provides with the `{}` ABI, \
+                 but declares `extern \"{}\"`; the two disagree about the implicit process \
+                 argument and about how a binary is passed, so the call would reach the \
+                 symbol with arguments it never accepts",
+                self.surface.name, symbol, provided, abi
+            )));
+        }
+        Ok(abi)
+    }
+
+    fn declared_by_runtime_library(&self) -> bool {
+        self.world
+            .is_bootstrap(super::super::CodeId::from_source(self.surface.name_span.code_id))
+    }
+
+    fn extern_abi_error(&self, message: String) -> FatalError {
+        emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(codes::LOWER_UNSUPPORTED, message, self.surface.name_span),
+        )
+    }
+
     fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
+        // Checked first: it is the cheapest question, and a wrong answer makes
+        // every later one moot.
+        let abi = self.resolve_extern_abi()?;
         let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
             emit_job_diagnostic(
                 self.telemetry,
@@ -1425,11 +1502,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             &semantic_contract.constraints,
         );
         Ok(LoweredExtern {
-            abi: self
-                .surface
-                .extern_abi
-                .clone()
-                .expect("extern signatures only resolve for extern fns"),
+            abi,
             symbol: extern_symbol_from_name(&self.surface.name).to_string(),
             params,
             variadic: self.surface.variadic,

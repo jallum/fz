@@ -1,8 +1,74 @@
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::function_surface::CallableSurface;
-use crate::fz_ir::ExternTy;
+use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::parser::lexer::{Tok, Token};
 use crate::types::Types;
+
+/// The symbols fz itself owns, and the convention each is really provided with.
+///
+/// "Owns" spans two providers, deliberately: some rows are exported by the
+/// runtime crate (`fz_binary_concat`, `fz_map_count`), and the `fz_op_*` rows
+/// are private shims inside `ir_interp/extern_call.rs` that exist only because
+/// native codegen answers those symbols by emitting arithmetic instead of a
+/// call. What unites them is not where the code lives but that fz decides how
+/// they are called, so a declaration claiming otherwise is a lie.
+///
+/// It is provenance, not preference: `fz_dbg_value` is
+/// `fn(*mut Process, u64) -> u64` whatever a declaration says about it, so a
+/// foreign `extern "C" fn fz_dbg_value(any) :: any` ends in a transmute. That
+/// used to be harmless only because both doors claimed those symbols by name
+/// before the declaration was consulted; once the ABI became the authority the
+/// lie reached the callee and segfaulted the JIT and AOT doors.
+///
+/// So the question is answered ONCE, here, and asked from the shared front end
+/// (`resolve_extern_abi`) -- the only place an answer reaches every door
+/// identically -- and again by the interpreter's symbol resolver as
+/// defence-in-depth around a raw transmute.
+///
+/// INCOMPLETE BY CONSTRUCTION, and fz-5xp.32 tracks closing it. The runtime
+/// crate exports far more `fz_*` symbols than appear here, and a foreign
+/// declaration of one that is absent gets no check at all. Absence currently
+/// means "fz makes no claim", which is the right default for a genuinely
+/// foreign symbol like `libc::close` and the wrong one for `fz_self_raw`.
+pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
+    // Allocating helpers reach the process heap, so they take the process.
+    // These are the `extern "fz"` declarations in the runtime library.
+    ("fz_binary_concat", ExternAbi::Fz),
+    ("fz_dbg_value", ExternAbi::Fz),
+    ("fz_process_heap_alloc_stats", ExternAbi::Fz),
+    // Plain C symbols the runtime exports for the interpreter to call.
+    ("fz_bitstring_valid_utf8", ExternAbi::C),
+    ("fz_brand_bitstring_as_utf8", ExternAbi::C),
+    ("fz_map_count", ExternAbi::C),
+    ("fz_map_entry_key", ExternAbi::C),
+    ("fz_map_entry_value", ExternAbi::C),
+    ("fz_resource_test_print_dtor", ExternAbi::C),
+    ("fz_op_add_ii", ExternAbi::C),
+    ("fz_op_add_if", ExternAbi::C),
+    ("fz_op_add_ff", ExternAbi::C),
+    ("fz_op_sub_ii", ExternAbi::C),
+    ("fz_op_sub_if", ExternAbi::C),
+    ("fz_op_sub_fi", ExternAbi::C),
+    ("fz_op_sub_ff", ExternAbi::C),
+    ("fz_op_mul_ii", ExternAbi::C),
+    ("fz_op_mul_if", ExternAbi::C),
+    ("fz_op_mul_ff", ExternAbi::C),
+    ("fz_op_div_ii", ExternAbi::C),
+    ("fz_op_div_if", ExternAbi::C),
+    ("fz_op_div_fi", ExternAbi::C),
+    ("fz_op_div_ff", ExternAbi::C),
+    ("fz_op_rem_ii", ExternAbi::C),
+    ("fz_op_rem_if", ExternAbi::C),
+    ("fz_op_rem_fi", ExternAbi::C),
+    ("fz_op_rem_ff", ExternAbi::C),
+];
+
+pub fn runtime_symbol_abi(symbol: &str) -> Option<ExternAbi> {
+    RUNTIME_SYMBOLS
+        .iter()
+        .find(|(name, _)| *name == symbol)
+        .map(|(_, abi)| *abi)
+}
 
 /// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
 /// to. A `lib::name` prefix is fz-side documentation/namespacing only; the

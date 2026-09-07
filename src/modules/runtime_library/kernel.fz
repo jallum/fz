@@ -1,7 +1,7 @@
 defmodule Kernel do
   @moduledoc "Core prelude functions available without an explicit import."
 
-  extern "C" fn fz_dbg_value(any) :: any
+  extern "fz" fn fz_dbg_value(any) :: any
   extern "C" fn fz_panic(any) :: never
   extern "C" fn fz_spawn(() -> any) :: pid
   extern "C" fn fz_spawn_opt(() -> any, any) :: pid
@@ -9,7 +9,7 @@ defmodule Kernel do
   extern "C" fn fz_send(pid, t) :: t when t: any
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
-  extern "C" fn fz_binary_concat(binary, binary) :: binary
+  extern "fz" fn fz_binary_concat(binary, binary) :: binary
   extern "C" fn fz_op_add_ii(integer, integer) :: integer
   extern "C" fn fz_op_add_if(integer, float) :: float
   extern "C" fn fz_op_add_ff(float, float) :: float

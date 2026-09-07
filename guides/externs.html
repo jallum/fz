@@ -60,7 +60,15 @@ value." The compiler turns each call into the matching C-ABI invocation.
 <p>Read it left to right:</p>
 
 <ul>
-  <li><code>extern "C"</code> — this is a C-ABI function, not a fz function.</li>
+  <li><code>extern "C"</code> — this is a C-ABI function, not a fz function.
+      <code>"C"</code> is the ABI you want, and the only one you can use. The
+      other, <code>"fz"</code>, is reserved for fz's own runtime library: those
+      helpers receive the running process as a hidden first argument, and a
+      <code>binary</code> or <code>cstring</code> parameter reaches them as an
+      fz value rather than a C pointer. Declaring it outside the runtime
+      library is an error, and so is any other ABI name — reported when the
+      extern is first called, since an extern nothing calls is never
+      lowered.</li>
   <li><code>fn getpid()</code> — the name fz code calls it by, and the
       argument list.</li>
   <li><code>:: integer</code> — what the return value will be marshalled

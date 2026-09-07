@@ -7801,10 +7801,13 @@ fn compiler2_interp_retains_single_clause_dispatch_failure() {
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/single_clause_failure_backend_interp.fz".to_string()),
+        // `dbg/1` is the prelude wrapper, used here only to make `:b` opaque so
+        // the clause cannot be decided statically. It used to redeclare
+        // `fz_dbg_value` as `extern "C"`, which reached the runtime helper --
+        // an `fn(*mut Process, u64)` -- through a `fn(u64)` transmute.
         text: r#"
-extern "C" fn fz_dbg_value(any) :: any
 fn choose(:a), do: 1
-fn main(), do: choose(fz_dbg_value(:b))
+fn main(), do: choose(dbg(:b))
 "#
         .to_string(),
     });
@@ -9389,6 +9392,149 @@ fn compiler2_unchanged_backend_request_emits_no_content_movement() {
     assert!(
         records[0].changed,
         "a changed backend settlement represents actual state movement",
+    );
+}
+
+#[test]
+fn compiler2_unknown_extern_abi_is_a_lower_diagnostic() {
+    // The ABI string is not decoration: it decides whether the callee receives
+    // the current process as an implicit first argument, and whether a
+    // `binary` parameter arrives as a `*const u8` or as a tagged value ref.
+    // Falling back to C for an unrecognised name would call the symbol with the
+    // wrong arguments -- a crash inside the callee, blamed on the callee.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("unknown_extern_abi.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "rust" fn some_symbol(integer) :: integer
+end
+
+fn main(), do: Weird.some_symbol(1)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "an unrecognised extern ABI must stop the compile, not silently pick one: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("unknown ABI diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNSUPPORTED.0,
+        "an unrecognised extern ABI is an unsupported lowering case",
+    );
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("`rust`") && message.contains("`C`") && message.contains("`fz`"),
+        "the diagnostic should name the rejected ABI and every ABI that exists, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
+    // The `fz` ABI names symbols that BOTH doors also claim by name in their
+    // own lowerings, and the two claim sets are not the same. So a foreign
+    // declaration of one is a question the doors would answer differently:
+    // `extern "fz" fn fz_op_add_ii` once returned 5 under `run` and a process
+    // pointer plus two under `interp`. Refusing it in the shared front end is
+    // what makes every door refuse it identically.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("foreign_fz_abi.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "fz" fn fz_op_add_ii(integer, integer) :: integer
+end
+
+fn main(), do: Weird.fz_op_add_ii(2, 3)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a foreign `extern \"fz\"` must stop the compile: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("reserved ABI diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("reserved for fz's own runtime library"),
+        "the diagnostic should say why the ABI is not available here, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi() {
+    // `fz_dbg_value` is really `fn(*mut Process, u64) -> u64`. A declaration
+    // saying otherwise is not a preference, it is a lie about a symbol the
+    // runtime owns, and it ends in a transmute: `extern "C"` reached it as
+    // `fn(u64) -> u64`, so the argument's ref word was read as the process
+    // pointer. Under `interp` that returned nil; under `run` and `build`,
+    // `fz_process_heap_alloc_stats` shaped the same way SEGFAULTED.
+    //
+    // So the refusal belongs where FIX A's does -- the shared front end. That
+    // is what lets this be one assertion instead of three: `drive` is the
+    // common ancestor of every door.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("wrong_abi_for_runtime_symbol.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "C" fn fz_dbg_value(any) :: any
+end
+
+fn main(), do: Weird.fz_dbg_value(:zz)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a declaration contradicting the runtime must stop the compile: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("ABI mismatch diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("fz_dbg_value") && message.contains("`fz` ABI"),
+        "the diagnostic should name the symbol and the convention the runtime actually \
+         provides, got: {message}",
     );
 }
 

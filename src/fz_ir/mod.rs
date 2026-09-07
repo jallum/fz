@@ -255,7 +255,57 @@ impl ExternArg {
     }
 }
 
-/// One resolved `extern "C" fn` declaration stored in `Module.externs`.
+/// The calling convention an `extern` declaration names.
+///
+/// `C` is a plain C symbol: it is called with exactly the declared arguments,
+/// and a `binary` parameter arrives as a `*const u8` into the bytes.
+///
+/// `Fz` is an fz runtime helper: it receives the current `*mut Process` as an
+/// implicit first argument -- everything that allocates on the process heap
+/// needs one -- and a `binary` parameter arrives as the tagged value ref the
+/// runtime itself works in.
+///
+/// The convention is DECLARED, so adding an allocating primitive is a
+/// declaration plus a Rust function. It used to be keyed by symbol name, which
+/// meant one hand-written rung in native codegen and another in the
+/// interpreter for every such primitive, and no way for either to know it had
+/// missed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExternAbi {
+    C,
+    Fz,
+}
+
+impl ExternAbi {
+    /// Every convention that exists. `parse` and the diagnostic that lists the
+    /// alternatives both read this, so a new convention is one entry.
+    pub const ALL: &'static [Self] = &[Self::C, Self::Fz];
+
+    /// The name as written in the declaration. Anything else is a diagnostic
+    /// there, never a silent fall back to C.
+    pub fn parse(abi: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|candidate| candidate.as_str() == abi)
+    }
+
+    pub fn takes_process(self) -> bool {
+        matches!(self, Self::Fz)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Fz => "fz",
+        }
+    }
+}
+
+impl std::fmt::Display for ExternAbi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One resolved `extern` declaration stored in `Module.externs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
@@ -265,6 +315,7 @@ pub struct ExternDecl {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternTy,
+    pub abi: ExternAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]

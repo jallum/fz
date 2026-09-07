@@ -1,6 +1,7 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
-use crate::fz_ir::{ExternTy, Module};
+use crate::extern_contract::runtime_symbol_abi;
+use crate::fz_ir::{ExternAbi, ExternTy, Module};
 use crate::telemetry::Telemetry;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::extern_variadic::{
@@ -135,7 +136,10 @@ fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy])
     format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
 }
 
-fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy) -> Result<u64, String> {
+/// `fz_abi` selects what a declared parameter type MEANS, exactly as it does in
+/// the backend: a C function taking `binary` wants a `*const u8` into the
+/// bytes, an fz runtime helper wants the tagged value ref it works in.
+fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) -> Result<u64, String> {
     Ok(match ty {
         ExternTy::I64 => value
             .as_i64()
@@ -144,6 +148,7 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy) -> Result<u64,
             .as_float()
             .ok_or_else(|| "extern float arg must be Float".to_string())?
             .to_bits(),
+        ExternTy::Binary | ExternTy::CString if fz_abi => value.extern_arg_ref_word(proc)?,
         ExternTy::Binary => (unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64,
         ExternTy::CString => (unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64,
         ExternTy::Any => value.extern_arg_ref_word(proc)?,
@@ -245,28 +250,6 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
                 return Err(format!("fz_panic/1 got {} args", args.len()));
             }
             return Err(format!("fz panic: {}", args[0].render(runtime.cur_proc())));
-        }
-        "fz_process_heap_alloc_stats" => {
-            if !args.is_empty() {
-                return Err(format!("fz_process_heap_alloc_stats/0 got {} args", args.len()));
-            }
-            return interp_value_from_extern_ref_word(fz_process_heap_alloc_stats(runtime.cur_proc()));
-        }
-        "fz_dbg_value" => {
-            if args.len() != 1 {
-                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
-            }
-            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            let out = fz_dbg_value(runtime.cur_proc(), ref_word);
-            return interp_value_from_extern_ref_word(out);
-        }
-        "fz_binary_concat" => {
-            if args.len() != 2 {
-                return Err(format!("fz_binary_concat/2 got {} args", args.len()));
-            }
-            let left_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            let right_ref = args[1].extern_arg_ref_word(runtime.cur_proc())?;
-            return interp_value_from_extern_ref_word(fz_binary_concat(runtime.cur_proc(), left_ref, right_ref));
         }
         "fz_map_count" => {
             if args.len() != 1 {
@@ -372,7 +355,7 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
         let raw_args: Vec<u64> = args
             .iter()
             .zip(arg_tys.iter().copied())
-            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty))
+            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false))
             .collect::<Result<_, _>>()?;
         let ret = match (signature.ret, fixed, variadic) {
             (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => unsafe {
@@ -401,12 +384,31 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
         };
     }
 
-    let fp = resolve_symbol(&signature.symbol)?;
-    let raw_args: Vec<u64> = args
-        .iter()
-        .zip(signature.params.iter().copied())
-        .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty))
-        .collect::<Result<_, _>>()?;
+    let fp = resolve_symbol(&signature.symbol, signature.abi)?;
+    // An `extern "fz"` helper receives the current process as an implicit first
+    // argument, declared rather than matched by name.
+    let fz_abi = signature.abi.takes_process();
+    let mut raw_args: Vec<u64> = Vec::with_capacity(args.len() + 1);
+    if fz_abi {
+        raw_args.push(runtime.cur_proc() as u64);
+    }
+    for (value, ty) in args.iter().zip(signature.params.iter().copied()) {
+        raw_args.push(marshal_arg(runtime.cur_proc(), *value, ty, fz_abi)?);
+    }
+    // `dispatch_fn_*` transmute to a concrete fn type per arity, so the
+    // interpreter has a ceiling the backend does not. Reported here, where the
+    // declaration is still in hand, rather than panicking inside the dispatch:
+    // the process word spends one of the slots, so an `extern "fz"` reaches the
+    // ceiling one declared parameter sooner and the count alone would mislead.
+    if raw_args.len() > MAX_INTERP_EXTERN_ARGS {
+        return Err(format!(
+            "extern `{}` passes {} argument(s){} to the interpreter, which supports at most {}",
+            signature.symbol,
+            raw_args.len(),
+            if fz_abi { " including the implicit process" } else { "" },
+            MAX_INTERP_EXTERN_ARGS,
+        ));
+    }
     let returns_value = !matches!(signature.ret, ExternTy::Unit | ExternTy::Never);
     let ret = if returns_value {
         unsafe { dispatch_fn_returning(fp, &raw_args) }
@@ -422,25 +424,109 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
     }
 }
 
-/// Return the function pointer for a named C symbol.
+/// How many machine words `dispatch_fn_returning` / `dispatch_fn_void` can
+/// forward. They transmute to a concrete `extern "C" fn` type per arity, so the
+/// list of arities is the limit. An `extern "fz"` spends one slot on the
+/// implicit process word.
+const MAX_INTERP_EXTERN_ARGS: usize = 4;
+
+fn abi_mismatch(name: &str, declared: ExternAbi, provided: ExternAbi) -> String {
+    format!(
+        "extern `{name}` is declared `extern \"{declared}\"` but the fz runtime provides it \
+         with the `{provided}` ABI; the two disagree about the implicit process argument \
+         and about how a binary is passed"
+    )
+}
+
+/// Every symbol the runtime declares a convention for must be one the
+/// interpreter can actually reach. The convention and the address are separate
+/// structures -- one is pure data the front end reads, the other needs the
+/// linked Rust items -- so this is where they are held together. Drift becomes
+/// a test failure instead of a `dlsym: symbol not found` at run time.
+#[cfg(test)]
+mod address_book_test {
+    use super::*;
+    use crate::extern_contract::RUNTIME_SYMBOLS;
+
+    #[test]
+    fn every_declared_runtime_symbol_resolves() {
+        let missing: Vec<&str> = RUNTIME_SYMBOLS
+            .iter()
+            .filter(|(name, abi)| resolve_symbol(name, *abi).is_err())
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the runtime declares a convention for these symbols but the interpreter cannot \
+             resolve them, so the two structures have drifted: {missing:?}",
+        );
+    }
+
+    #[test]
+    fn a_declaration_that_contradicts_the_runtime_is_refused() {
+        for (name, provided) in RUNTIME_SYMBOLS {
+            let lie = match provided {
+                ExternAbi::C => ExternAbi::Fz,
+                ExternAbi::Fz => ExternAbi::C,
+            };
+            let error = resolve_symbol(name, lie)
+                .err()
+                .unwrap_or_else(|| panic!("`{name}` declared `{lie}` should not resolve"));
+            // Specifically the mismatch, not some other refusal that happens to
+            // fire first -- otherwise a `Fz` lie could pass on the dlsym guard's
+            // "runtime provides no such symbol" message and leave the mismatch
+            // check itself untested.
+            assert!(
+                error.contains(name) && error.contains("provides it with"),
+                "`{name}` declared `{lie}` should be refused AS A MISMATCH: {error}",
+            );
+        }
+    }
+
+    /// The reverse direction -- an address present with no declared convention
+    /// -- is refused rather than transmuted. It is unreachable while the two
+    /// structures agree, which is what the tests above hold. This pins the
+    /// premise: a symbol fz owns but does NOT claim gets no check at all, which
+    /// is fz-5xp.32.
+    #[test]
+    fn a_runtime_symbol_outside_the_table_is_unclaimed() {
+        assert!(
+            runtime_symbol_abi("fz_alloc_frame").is_none(),
+            "fz-5xp.32: the claim set is deliberately not yet closed; if this now \
+             resolves, the table grew and the foreign-declaration hole may be closed",
+        );
+    }
+}
+
+/// The address to call for a declared extern symbol.
 ///
-/// Checks the built-in native table first (all symbols declared in runtime.fz
-/// are registered here so that the interpreter finds them even when the runtime
-/// is statically linked and dlsym(RTLD_DEFAULT) cannot reach the symbols).
-/// Falls back to dlsym for any name not in the table.
-pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
-    // Native table: every symbol declared in runtime.fz. These Rust functions
-    // are linked into the binary; using their address directly avoids relying
-    // on dlsym visibility, which is unreliable for statically-linked rlibs.
+/// Checks the built-in address book first: the runtime's own symbols are
+/// registered there so the interpreter finds them even when the runtime is
+/// statically linked and `dlsym(RTLD_DEFAULT)` cannot reach them. Falls back
+/// to dlsym only for the C ABI -- an address found by name says nothing about
+/// whether the function wants a process word.
+pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), String> {
+    // Address book: the runtime symbols the interpreter must be able to reach.
+    // These Rust functions are linked into the binary; using their address
+    // directly avoids relying on dlsym visibility, which is unreliable for
+    // statically-linked rlibs. Their CONVENTIONS live in `runtime_symbol_abi`,
+    // which the front end consults too, so there is one answer per symbol.
     #[cfg(test)]
     if let Some(fp) = tests_support::lookup_test_symbol(name) {
-        return Ok(fp);
+        return match abi {
+            ExternAbi::C => Ok(fp),
+            ExternAbi::Fz => Err(abi_mismatch(name, abi, ExternAbi::C)),
+        };
     }
+
     let native: Option<*const ()> = match name {
-        // fz_dbg_value / fz_panic / fz_process_heap_alloc_stats are process
-        // intrinsics special-cased in call_extern above; their widened BIF ABI
-        // (leading process arg) no longer matches the generic FFI path, so they
-        // must never be resolved as plain symbols here.
+        // fz_panic never returns, so it stays special-cased in call_extern
+        // above and must never be resolved as a plain symbol here. The process
+        // intrinsics that DO return a value are declared `extern "fz"` and go
+        // through the generic path, which supplies the leading process
+        // argument from the declaration.
+        "fz_dbg_value" => Some(fz_dbg_value as *const ()),
+        "fz_process_heap_alloc_stats" => Some(fz_process_heap_alloc_stats as *const ()),
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only
@@ -477,9 +563,33 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         _ => None,
     };
     if let Some(fp) = native {
+        // Defence-in-depth around the transmute below. `resolve_extern_abi`
+        // already refused a declaration that disagrees with the runtime, in
+        // the shared front end so that every door refuses it; this is the last
+        // gate before an address becomes a concrete fn type.
+        match runtime_symbol_abi(name) {
+            Some(provided) if provided != abi => return Err(abi_mismatch(name, abi, provided)),
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "extern `{name}` is in the interpreter's address table but the runtime \
+                     declares no convention for it"
+                ));
+            }
+        }
         return Ok(fp);
     }
-    // Fallback: dlsym for user-declared externs not in the native table.
+    // Fallback: dlsym for user-declared externs not in the native table. Only
+    // the C ABI can be satisfied this way -- an address found by name says
+    // nothing about whether the function wants a process word, and the `fz`
+    // ABI is reserved to the runtime library, whose symbols are all in the
+    // table above.
+    if abi.takes_process() {
+        return Err(format!(
+            "extern `{}` declares the `fz` ABI, but the fz runtime provides no such symbol",
+            name
+        ));
+    }
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
     #[cfg(unix)]
     let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
@@ -513,7 +623,7 @@ unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
             let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = transmute(fp);
             f(args[0], args[1], args[2], args[3])
         },
-        n => panic!("extern arity {} not supported (max 4)", n),
+        n => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
     }
 }
 
@@ -539,7 +649,7 @@ unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
             let f: unsafe extern "C" fn(u64, u64, u64, u64) = transmute(fp);
             f(args[0], args[1], args[2], args[3])
         },
-        n => panic!("extern arity {} not supported (max 4)", n),
+        n => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
     }
 }
 

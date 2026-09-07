@@ -21,7 +21,7 @@ Read:
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
 - [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
 - [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
-- [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
+- [externs](docs/externs.md) — the FFI door: the two ABIs (`"C"` vs `"fz"`, the implicit process argument, what `binary` means), the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.

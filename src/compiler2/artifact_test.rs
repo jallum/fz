@@ -13,7 +13,8 @@ use crate::compiler2::transport::{
 };
 use crate::compiler2::types::Ty;
 use crate::fz_ir::{
-    Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
+    Block, BlockId, ExternAbi, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term,
+    Var,
 };
 
 fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (RootId, FunctionId, ActivationKey) {
@@ -296,6 +297,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         params: vec![ExternTy::CString, ExternTy::I64],
         variadic: true,
         ret: ExternTy::I64,
+        abi: ExternAbi::C,
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {
@@ -483,6 +485,7 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         params: vec![ExternTy::CString],
         variadic: false,
         ret: ExternTy::I64,
+        abi: ExternAbi::C,
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {
