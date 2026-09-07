@@ -4,14 +4,16 @@
   "blocks": [
     "fz-kdt.69.3"
   ],
+  "closed_at": "2026-09-07T22:07:14Z",
+  "close_reason": "Acceptance law and nontermination witness transferred to fz-kdt.64",
   "created": "2026-08-30T19:26:23Z",
   "description": "## Status\n\nAbsorbed into `fz-kdt.64`, the bounded consumer-owned `ReturnType`/`ActivationInputs` support cutover.\n\n## Preserved law and evidence\n\nStructural continuation reachability and delivered-value availability are distinct. Temporary absence of a callee `ReturnType` must not erase downstream callsites that do not consume that value, while operations that do consume it remain locally gated. Absence is not the empty type, no `any` placeholder is invented, and a proven-empty return still kills the path.\n\nThe focused direct/closure tail-chain regression, current lifecycle counters, and `fz-kdt.106`/abandoned-decommission nontermination evidence transfer to `fz-kdt.64`. That ticket must make the distinction part of the final supported-alternative model before deleting preservation. It must not restore the old live-edge/decommission experiment or weaken telemetry pins.\n\nNo standalone implementation remains.",
   "id": "fz-kdt.76",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed: separate reachability from absent return evidence",
   "type": "task",
-  "updated_at": "2026-09-07T22:07:13Z"
+  "updated_at": "2026-09-07T22:07:14Z"
 }
