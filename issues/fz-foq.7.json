@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-0am"
+    "fz-0am",
+    "fz-foq.3"
   ],
   "blocks": [],
   "created": "2026-09-07T13:43:52Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Justify or drop the one-assertion-deep report surface",
   "type": "task",
-  "updated_at": "2026-09-07T13:43:52Z"
+  "updated_at": "2026-09-07T13:43:53Z"
 }

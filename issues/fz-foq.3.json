@@ -4,7 +4,8 @@
     "fz-0am"
   ],
   "blocks": [
-    "fz-foq.4"
+    "fz-foq.4",
+    "fz-foq.7"
   ],
   "created": "2026-09-07T02:21:24Z",
   "description": "## What the module actually is\n\nsrc/telemetry/causal.rs (1960 lines) is the assertion vocabulary of the compiler's own test suite. Measured: exactly three files name CausalReport --\n\n  src/telemetry/public_trace_test.rs   lib unit tests for the telemetry projection\n  tests/fz2_cli.rs                     target-fixture acceptance (zero uncaused, pinned work counts)\n  src/compiler2/pull.rs                only inside its #[cfg(test)] mod tests (opens 2559)\n\nNo binary, no production path. It is 'pub use telemetry::causal' out of lib.rs:29, so it LOOKS like a published analysis library, but nothing ships against it and its whole consumer set is tests.\n\n## What is load-bearing vs incidental\n\nLoad-bearing: .uncaused (17 uses -- the north-star invariant that every re-run named a moved input), formula_totals/product_totals (10/9 -- pinned per-fixture work counts), canonical_multiset (6 -- the cross-run comparand), .sessions (19), .formulas/.products.\n\nOne consumer only, all public_trace_test.rs: .product_publications, .final_population, .lifecycles, .shifts, derive_requests(). Not automatically waste -- .lifecycles proves the retract-and-remint signature and .undefined_first_uses proves the self-describing contract -- but the surface is one assertion deep in five places and worth a look when the arc restructures it.\n\nDead: distinct_demanded_products() has zero callers anywhere including inside causal.rs. It is pub, so dead_code cannot see it. Delete with fz-0am.4.\n\n## The decision, now settled\n\nThe earlier framing offered two answers -- test support, or unshipped production. The consumer measurement settles it: this is test scaffolding, so it goes to a dev-dependency crate the way fz-foq.1 moved fixture metadata. Coupling to the lib is one enum (handler::EventKind, 6 uses); cargo permits the cycle through the dev-dependency edge.\n\nThe rejected alternative, keeping it in the lib against a future fz2 subcommand that reads a trace, is not supported by anything in the tree: the CLI writes traces (--log-telemetry) and ships nothing that reads one. If such a subcommand is ever wanted, moving the crate back is cheap; leaving 1650 lines of test vocabulary in the compiler on that speculation is not.\n\n## Sequence\n\nBlocked by fz-0am: that arc removes ~275-300 lines of inference and folds Cause into WorkStartReason. Move what remains, not what is there now.",
@@ -25,5 +26,5 @@
   "status": "open",
   "title": "Move causal to a dev-dependency crate after fz-0am shrinks it",
   "type": "task",
-  "updated_at": "2026-09-07T09:47:07Z"
+  "updated_at": "2026-09-07T13:43:53Z"
 }
