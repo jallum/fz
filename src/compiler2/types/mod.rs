@@ -36,8 +36,7 @@ use crate::types::{
 use bits::BasicBits;
 
 pub use crate::types::{
-    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
-    TypeVarId,
+    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, TypeVarId,
 };
 
 pub use arrow_match::ArrowMatch;
@@ -295,10 +294,6 @@ impl Types {
 
     pub fn cpointer(&mut self) -> Ty {
         self.opaque_of("cpointer")
-    }
-
-    pub fn differs_only_nominally(&self, a: &Ty, b: &Ty) -> bool {
-        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b)
     }
 
     pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
@@ -2014,7 +2009,7 @@ impl SharedTypes for Types {
         Types::is_disjoint(self, a, b)
     }
 
-    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, _nominals: Nominals<'_, Self::Ty>) -> bool {
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
         Types::is_value_disjoint(self, a, b)
     }
 
