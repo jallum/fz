@@ -2,7 +2,6 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
-    "fz-tfn.13",
     "fz-tfn.39"
   ],
   "created": "2026-08-26T14:36:12Z",
@@ -20,5 +19,5 @@
   "status": "open",
   "title": "Intern one Ty per denotation with exact paired activation evidence",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:13Z"
+  "updated_at": "2026-09-07T18:56:17Z"
 }
