@@ -4,7 +4,6 @@
     "fz-kdt.213"
   ],
   "blocks": [
-    "fz-kdt.200",
     "fz-kdt.46",
     "fz-tfn.40",
     "fz-tfn.47"
@@ -18,5 +17,5 @@
   "status": "open",
   "title": "Atomically own source replacement and failed derivations",
   "type": "bug",
-  "updated_at": "2026-09-07T19:08:56Z"
+  "updated_at": "2026-09-07T19:12:04Z"
 }
