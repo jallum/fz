@@ -99,8 +99,7 @@ pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
-    EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticClosure, SemanticClosureMap,
-    ShapeDemand,
+    EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand,
 };
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
