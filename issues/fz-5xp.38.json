@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:44:01Z",
+  "description": "Found while fixing fz-5xp.33.\n\nEvery BINARY arithmetic operator is a typed clause family in kernel.fz:\n\n    fn left :: integer - right :: integer, do: fz_op_sub_ii(left, right)\n    fn left :: float   - right :: float,   do: fz_op_sub_ff(left, right)\n    ... (fz-5xp.18)\n\nRuntime clause dispatch then picks the right one, so a dynamically-typed\noperand works. UNARY minus has no family. It is lowered straight to\n`Prim::UnOp(Neg)` in native codegen, which reads ONE lane.\n\nMeasured, one call site each, same program shape:\n\n    fnp pick(0), do: 4.5\n    fnp pick(_), do: 9\n\n    dbg(0 - pick(0))     interp -4.5   run -4.5   build -4.5\n    dbg(-pick(0))        interp -4.5   run ABORT  build ABORT\n\nSubtracting from zero works and negating does not, which is the definition of\none question with two implementations. fz-5xp.33 gave `Prim::UnOp(Neg)` a float\nlane, so every case where the operand's lane is known statically now agrees on\nall three doors; a union operand still aborts natively.\n\nWHY IT MATTERS FOR THE GOAL PROGRAM: a JSON number parser negates a value that\nmay be integer or float depending on the text it just scanned. That is exactly\nthe union shape above.\n\nDO IT THE WAY THE BINARY OPERATORS WERE DONE. The user's rule when fz-5xp.18\nsettled this for comparisons: \"if we remove the special-casing for \u003c, \u003c=, etc.\nand treat them as function calls, then unsupported combinations will be compiler\nerrors.\" The same applies here, and it retires `Prim::UnOp(Neg)`'s hand-written\nlanes rather than adding a third.\n\nSHAPE. Needs `fz_op_neg_i` / `fz_op_neg_f` externs plus their shims and\n`RUNTIME_SYMBOLS` rows, and a decision about the surface: kernel.fz's operator\nclauses are all INFIX (`fn left :: integer + right :: integer`), so either the\nparser learns prefix operator clauses, or the front door rewrites `-x` to a\nnamed call the way `source_sugar.rs` already rewrites `\u003c\u003e`, `++`, `in` and\nfriends. The second is smaller and uses machinery that exists.\n\nWATCH OUT: `-0.0` must stay `-0.0`. That rules out the tempting rewrite of `-x`\nto `0 - x`, which turns it into `0.0`. Check `UnOp::Not` at the same time -- it\nis the other unary and was never examined.",
+  "id": "fz-5xp.38",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Unary minus is the last operator not routed through Kernel",
+  "type": "task",
+  "updated_at": "2026-09-07T08:44:01Z"
+}
