@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-foq.1"
+  ],
   "blocks": [],
   "created": "2026-09-07T02:21:25Z",
   "description": "42 fully-pub methods have no non-test caller and no integration-test consumer. They are methods on production types (World::callsite_targets, PublicTrace::events_named, Value::is_numeric, ...), not free functions, so they cannot literally move into a test file.\n\nMove each into a #[cfg(test)] impl block on its own type. This beats narrowing to pub(crate): the item does not exist in a production build, so reuse is a compile error rather than a judgment call. cfg(test) items stay visible to unit tests across modules, so no test loses access.\n\nExcluded: compile_root_jit. It has 0 production callers while its three sibling front doors ship (run_root_interp 4, run_root_jit 2, compile_root_aot 1). That is dead public API or a three-path parity gap, not scaffolding -- it gets its own decision, not a silent gate.\n\nDone when: no fully-pub function outside the harness surface lacks a non-test consumer, and the full gate is green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Move remaining unit-test-only methods behind cfg(test)",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:25Z"
+  "updated_at": "2026-09-07T02:21:26Z"
 }

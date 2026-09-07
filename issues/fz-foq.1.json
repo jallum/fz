@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-foq.4"
+  ],
   "created": "2026-09-07T02:21:23Z",
   "description": "fixture_metadata.rs is 475 lines whose entire import list is std::fmt and std::path::Path. It has no production consumer -- compiler2/mod.rs only re-exports it -- yet it is fully pub so tests/fixture_matrix.rs can reach it, and tests/ compiles against the lib as an external crate and cannot see cfg(test).\n\nMove the module to its own workspace crate consumed as a [dev-dependencies] of fz. Lib unit tests (fixture_metadata_test, fixture_contract_harness_test) and tests/fixture_matrix.rs then share one copy. Cargo permits the dev-dependency cycle. Delete the re-exports from compiler2/mod.rs.\n\nDone when: the crate exists, all consumers compile against it, no fixture-metadata symbol is reachable from the production lib, and the full gate is green.",
   "id": "fz-foq.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Extract fixture_metadata to a dev-dependency crate",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:23Z"
+  "updated_at": "2026-09-07T02:21:26Z"
 }
