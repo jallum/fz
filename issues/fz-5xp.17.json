@@ -11,6 +11,7 @@
     "fz-5xp.2"
   ],
   "blocks": [],
+  "closed_at": "2026-09-07T16:08:39Z",
   "created": "2026-09-06T23:44:37Z",
   "description": "THE GOAL of fz-5xp. Everything else exists to make this writable.\n\nA complete JSON parser and serializer in fz, plus a small query driver, with a\nhand-written Elixir twin as the oracle and pinned allocation goldens. ~300-400 lines\nacross 4-6 modules, against a current ceiling of ~22 executable lines\n(behavior/quicksort.fz, the largest real program fz has ever run).\n\nShape:\n  input = \"{\\\"users\\\":[{\\\"name\\\":\\\"ada\\\",\\\"age\\\":36}]}\"\n  {:ok, doc} = Json.decode(input)\n  dbg(Json.encode(doc))\n  dbg(Enum.map(doc[\"users\"], fn u -\u003e u[\"name\"] end))\n  dbg(Process.heap_alloc_stats())\n\nWhy JSON specifically:\n  - self-contained. fz has NO argv, NO stdin, and no way for arbitrary libc calls to\n    return bytes -- but a runtime-provided extern CAN return a binary\n    (fz_binary_concat proves it). JSON takes an embedded literal and prints.\n  - forces the library by demand: scanning -\u003e String + native bitstring dispatch;\n    objects -\u003e a real Map; arrays -\u003e Enum builders; numbers -\u003e Integer/Float format;\n    errors -\u003e {:ok,_}|{:error,_}, which is the only error idiom fz has (no exceptions).\n  - measures BOTH costs. The parser is first-order recursion, where TRMC and owned-cons\n    reuse should shine. The query driver is HOF-heavy, where the indirect-call tax\n    shows: there is no inliner anywhere, the callable slot is blind at the recursive\n    core, and artifact.rs:1081 makes any position reached by two distinct lambdas a\n    boxed ValueRef -\u003e CallEdge::Indirect. One program, both signals.\n  - round-trip decode(encode(x)) == x is a second oracle independent of stdout.\n\nAcceptance: green on run + interp + build against ONE Elixir-owned golden, plus\nallocation goldens that are argued, not merely recorded.",
   "id": "fz-5xp.17",
@@ -31,7 +32,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Json.decode/1 and Json.encode/1 -- the goal program",
   "type": "task",
   "updated_at": "2026-09-07T16:08:39Z"
