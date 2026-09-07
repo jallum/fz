@@ -487,6 +487,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "fz-fixture-metadata",
  "fz-runtime",
  "indexmap",
  "libc",
@@ -499,6 +500,10 @@ dependencies = [
  "syn",
  "target-lexicon",
 ]
+
+[[package]]
+name = "fz-fixture-metadata"
+version = "0.1.0"
 
 [[package]]
 name = "fz-runtime"

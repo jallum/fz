@@ -240,6 +240,12 @@ the path under test.
 
 ## Fixtures2 Frontmatter
 
+The frontmatter parser is the `fz-fixture-metadata` crate, a dev-dependency of
+`fz`. It depends only on `std`, so it is shared by the lib's unit tests and by
+the `tests/fixture_matrix` harness, which compiles against `fz` as an external
+crate. It is deliberately not part of the compiler: nothing in a production
+build can reach it.
+
 Compiler2 fixtures live under `fixtures2/`. Their source-frontmatter can carry
 two independent kinds of intent:
 

@@ -300,7 +300,6 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
     Ok(Some(metadata))
 }
 
-#[cfg(test)]
 pub fn fixture_frontmatter_prefix_bytes(source: &str) -> Result<Option<u32>, FixtureMetadataError> {
     if !source.starts_with("#---") {
         return Ok(None);
@@ -473,3 +472,6 @@ fn parse_usize(value: &str, line_no: usize, key: &str) -> Result<usize, FixtureM
         .parse::<usize>()
         .map_err(|_| FixtureMetadataError::new(line_no, format!("`{key}` expects an unsigned integer, got `{value}`")))
 }
+
+#[cfg(test)]
+mod lib_test;

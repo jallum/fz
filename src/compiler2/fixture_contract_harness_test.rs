@@ -1,10 +1,10 @@
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
-use super::fixture_metadata::{
-    EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
-};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::handler::{Event, Handler};
+use fz_fixture_metadata::{
+    EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
