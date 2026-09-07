@@ -14,11 +14,11 @@ use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
 use super::{FactKey, Job};
 
-/// Public front door for the side-by-side incremental compiler.
+/// Public front door for the incremental compiler.
 ///
 /// Code enters Compiler2 as compiler-owned source text, receives stable
-/// identity immediately, and can then seed root-scoped semantic work without
-/// invoking the legacy lowering or planner pipeline.
+/// identity immediately, and seeds root-scoped semantic work through named
+/// facts and products.
 pub struct Compiler2<T: Telemetry> {
     world: World,
     telemetry: T,
@@ -186,8 +186,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         match stage {
             DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
             // Native dumps share the front-door routing: the guarded product
-            // boundary plus a single `LowerNativeProgram` job, never the legacy
-            // root-wide planning ladder.
+            // boundary plus one `LowerNativeProgram` job.
             DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
         }
     }
@@ -272,8 +271,8 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         &self.world
     }
 
-    /// Drives one root to `BackendProgram` and runs it through the shared
-    /// interpreter runtime without reopening the legacy planner pipeline.
+    /// Drives one root to `BackendProgram` and runs that published artifact
+    /// through the backend interpreter.
     pub fn run_root_interp(&mut self, root: RootId) -> Result<i64, String> {
         let program = self.product_backend_program_for_root(root)?;
         let tel = &self.telemetry;
