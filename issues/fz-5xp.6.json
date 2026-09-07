@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T11:17:51Z",
   "created": "2026-09-06T23:43:22Z",
   "description": "DECIDED 2026-09-06. Silent wrong answer for any ported Elixir arithmetic.\n\n  expr     fz    Elixir\n  7 / 2     3     3.5\n  1 / 2     0     0.5\n\nkernel.fz:118 declares '@spec integer / integer :: integer' deliberately, and there is\nno div/2 or rem/2. Elixir's / is ALWAYS float division; div/2 is integer division;\nrem/2 is the remainder. Elixir has no % operator at all.\n\nScope:\n  - / on (integer, integer) returns float\n  - add Kernel.div/2 and Kernel.rem/2\n  - decide the fate of fz's % operator (Elixir has none) -- keep as fz-specific or retire\n  - migrate every in-tree user: runtime library (Range.count uses ((last-first)/step)+1)\n    and fixtures2\n\nThis is a breaking change with a real migration. It is worth it because the oracle\nharness makes Elixir the definition of correct, and an integer / is a trap that the\noracle only catches when a fixture happens to divide.",
   "id": "fz-5xp.6",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Adopt Elixir division semantics: / always returns float, add div/2 and rem/2",
   "type": "task",
-  "updated_at": "2026-09-06T23:43:22Z"
+  "updated_at": "2026-09-07T11:17:51Z"
 }
