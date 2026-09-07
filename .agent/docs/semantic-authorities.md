@@ -137,6 +137,15 @@ fz-5xp.61.
 rather than by construction, because an address table has to exist somewhere:
 see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
 
+**Text** — `String` (`src/modules/runtime_library/string.fz`) is plain fz over
+binaries, and declares only two primitives of its own: `byte_size/1`, a header
+read, and `to_atom/1`, which reaches the node's atom table. Everything else is
+recursion over a binary, which is only affordable because a tail is a view
+(fz-5xp.55) and a computed size can be matched (fz-5xp.54). Case mapping is
+ASCII only; the Unicode tables belong in their own module and are not written
+yet, so `upcase`/`downcase` are checked against Elixir's `:ascii` mode rather
+than its default.
+
 ## Reading this list
 
 Two properties make an entry safe. The rule is stated once, and the places that

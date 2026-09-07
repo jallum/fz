@@ -1,0 +1,327 @@
+defmodule String do
+  @moduledoc "UTF-8 text: byte-level operations, codepoints, and search."
+
+  # WHAT MAKES THIS MODULE WRITABLE IN fz RATHER THAN IN RUST.
+  #
+  # Almost everything here is a byte scanner, and until recently a byte scanner
+  # was quadratic: matching `<<c, rest :: binary>>` copied the whole remainder
+  # at every step (fz-5xp.55), and a segment whose size was computed could not
+  # be matched at all (fz-5xp.54). With a tail now a VIEW of the original and a
+  # computed size resolvable, `split/2` and friends are ordinary fz recursion
+  # over a binary and cost what they should.
+  #
+  # So this module declares exactly ONE primitive beyond what Kernel already
+  # gives it -- and that one is `byte_size/1`, which is a header read.
+  #
+  # CASE MAPPING is `:ascii` only for now. Elixir generates 2,989 codepoints of
+  # case mapping plus 103 special casings from Unicode data; that table belongs
+  # in its own module so demand-driven loading pays for it, and it is not here
+  # yet. `upcase/1` and `downcase/1` therefore say `:ascii` in their name rather
+  # than pretending to be complete.
+
+  extern "fz" fn fz_binary_to_atom(any) :: any
+
+  @doc "The number of bytes."
+  @spec length(binary) :: integer
+  fn length(s), do: codepoint_count(s, 0)
+
+  @spec codepoint_count(binary, integer) :: integer
+  fnp codepoint_count(<<>>, acc), do: acc
+  fnp codepoint_count(s, acc), do: codepoint_count_step(next_codepoint(s), acc)
+
+  @spec codepoint_count_step({binary, binary} | nil, integer) :: integer
+  fnp codepoint_count_step(nil, acc), do: acc
+  fnp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
+
+  @doc "True when s begins with prefix."
+  @spec starts_with?(binary, binary) :: bool
+  fn starts_with?(s, prefix), do: starts_with_size?(s, prefix, byte_size(prefix))
+
+  @spec starts_with_size?(binary, binary, integer) :: bool
+  fnp starts_with_size?(s, prefix, n) do
+    if byte_size(s) < n do
+      false
+    else
+      take_bytes(s, n) === prefix
+    end
+  end
+
+  @doc "True when s ends with suffix."
+  @spec ends_with?(binary, binary) :: bool
+  fn ends_with?(s, suffix), do: ends_with_size?(s, suffix, byte_size(s), byte_size(suffix))
+
+  @spec ends_with_size?(binary, binary, integer, integer) :: bool
+  fnp ends_with_size?(s, suffix, total, n) do
+    if total < n do
+      false
+    else
+      drop_bytes(s, total - n) === suffix
+    end
+  end
+
+  @doc "The first n bytes."
+  @spec take_bytes(binary, integer) :: binary
+  fn take_bytes(s, n), do: take_bytes_result(s, n)
+
+  @spec take_bytes_result(binary, integer) :: binary
+  fnp take_bytes_result(s, n) do
+    case s do
+      <<head :: binary-size(n), _rest :: binary>> -> head
+      _other -> s
+    end
+  end
+
+  @doc "Everything after the first n bytes."
+  @spec drop_bytes(binary, integer) :: binary
+  fn drop_bytes(s, n), do: drop_bytes_result(s, n)
+
+  @spec drop_bytes_result(binary, integer) :: binary
+  fnp drop_bytes_result(s, n) do
+    case s do
+      <<_head :: binary-size(n), rest :: binary>> -> rest
+      _other -> ""
+    end
+  end
+
+  @doc "len bytes starting at start."
+  @spec byte_slice(binary, integer, integer) :: binary
+  fn byte_slice(s, start, len), do: take_bytes(drop_bytes(s, start), len)
+
+  @doc "Replaces prefix with replacement when present."
+  @spec replace_prefix(binary, binary, binary) :: binary
+  fn replace_prefix(s, prefix, replacement) do
+    if starts_with?(s, prefix) do
+      replacement <> drop_bytes(s, byte_size(prefix))
+    else
+      s
+    end
+  end
+
+  @doc "Replaces suffix with replacement when present."
+  @spec replace_suffix(binary, binary, binary) :: binary
+  fn replace_suffix(s, suffix, replacement) do
+    if ends_with?(s, suffix) do
+      take_bytes(s, byte_size(s) - byte_size(suffix)) <> replacement
+    else
+      s
+    end
+  end
+
+  @doc "Replaces every leading occurrence of match."
+  @spec replace_leading(binary, binary, binary) :: binary
+  fn replace_leading(s, match, replacement), do: replace_leading_guard(s, match, replacement, byte_size(match))
+
+  @spec replace_leading_guard(binary, binary, binary, integer) :: binary
+  fnp replace_leading_guard(s, _match, _replacement, 0), do: s
+  fnp replace_leading_guard(s, match, replacement, n) do
+    if starts_with?(s, match) do
+      replacement <> replace_leading_guard(drop_bytes(s, n), match, replacement, n)
+    else
+      s
+    end
+  end
+
+  @doc "Replaces every trailing occurrence of match."
+  @spec replace_trailing(binary, binary, binary) :: binary
+  fn replace_trailing(s, match, replacement), do: replace_trailing_guard(s, match, replacement, byte_size(match))
+
+  @spec replace_trailing_guard(binary, binary, binary, integer) :: binary
+  fnp replace_trailing_guard(s, _match, _replacement, 0), do: s
+  fnp replace_trailing_guard(s, match, replacement, n) do
+    if ends_with?(s, match) do
+      replace_trailing_guard(take_bytes(s, byte_size(s) - n), match, replacement, n) <> replacement
+    else
+      s
+    end
+  end
+
+  @doc "Removes leading and trailing whitespace."
+  @spec trim(binary) :: binary
+  fn trim(s), do: trim_trailing(trim_leading(s))
+
+  @doc "Removes leading whitespace."
+  @spec trim_leading(binary) :: binary
+  fn trim_leading(<<c, rest :: binary>>) do
+    if whitespace?(c), do: trim_leading(rest), else: <<c, rest :: binary>>
+  end
+  fn trim_leading(s), do: s
+
+  @doc "Removes trailing whitespace."
+  @spec trim_trailing(binary) :: binary
+  fn trim_trailing(s), do: trim_trailing_at(s, byte_size(s))
+
+  @spec trim_trailing_at(binary, integer) :: binary
+  fnp trim_trailing_at(_s, 0), do: ""
+  fnp trim_trailing_at(s, n) do
+    if whitespace?(byte_at(s, n - 1)) do
+      trim_trailing_at(s, n - 1)
+    else
+      take_bytes(s, n)
+    end
+  end
+
+  @spec byte_at(binary, integer) :: integer
+  fnp byte_at(s, index), do: first_byte(drop_bytes(s, index))
+
+  @spec first_byte(binary) :: integer
+  fnp first_byte(<<c, _rest :: binary>>), do: c
+  fnp first_byte(_s), do: 0
+
+  # Elixir trims the Unicode whitespace set; this is the ASCII part of it,
+  # which is what `:ascii` case handling elsewhere in this module matches.
+  @spec whitespace?(integer) :: bool
+  fnp whitespace?(32), do: true
+  fnp whitespace?(9), do: true
+  fnp whitespace?(10), do: true
+  fnp whitespace?(11), do: true
+  fnp whitespace?(12), do: true
+  fnp whitespace?(13), do: true
+  fnp whitespace?(_c), do: false
+
+  # Two recursions rather than one `map_bytes(s, fun)`, because a closure CALL
+  # inside a bitstring segment does not compile (fz-5xp.66). `<<fun.(c)>>` is
+  # the natural way to write this and is exactly what fails.
+  @doc "ASCII upper-casing."
+  @spec upcase(binary) :: binary
+  fn upcase(<<c, rest :: binary>>) when c >= 97 and c <= 122, do: <<c - 32>> <> upcase(rest)
+  fn upcase(<<c, rest :: binary>>), do: <<c>> <> upcase(rest)
+  fn upcase(_s), do: ""
+
+  @doc "ASCII lower-casing."
+  @spec downcase(binary) :: binary
+  fn downcase(<<c, rest :: binary>>) when c >= 65 and c <= 90, do: <<c + 32>> <> downcase(rest)
+  fn downcase(<<c, rest :: binary>>), do: <<c>> <> downcase(rest)
+  fn downcase(_s), do: ""
+
+  @doc "Repeats s n times."
+  @spec duplicate(binary, integer) :: binary
+  fn duplicate(_s, 0), do: ""
+  fn duplicate(s, n), do: s <> duplicate(s, n - 1)
+
+  @doc "True when s contains pattern."
+  @spec contains?(binary, binary) :: bool
+  fn contains?(s, pattern), do: index_of(s, pattern) >= 0
+
+  @doc "The byte offset of the first occurrence, or -1."
+  @spec index_of(binary, binary) :: integer
+  fn index_of(s, pattern), do: index_from(s, pattern, 0, byte_size(pattern))
+
+  @spec index_from(binary, binary, integer, integer) :: integer
+  fnp index_from(_s, _pattern, _at, 0), do: -1
+  fnp index_from(s, pattern, at, n) do
+    if byte_size(s) < n do
+      -1
+    else
+      if starts_with?(s, pattern) do
+        at
+      else
+        index_from(drop_bytes(s, 1), pattern, at + 1, n)
+      end
+    end
+  end
+
+  @doc "How many non-overlapping times pattern occurs."
+  @spec count(binary, binary) :: integer
+  fn count(s, pattern), do: count_from(s, pattern, 0, byte_size(pattern))
+
+  @spec count_from(binary, binary, integer, integer) :: integer
+  fnp count_from(_s, _pattern, acc, 0), do: acc
+  fnp count_from(s, pattern, acc, n) do
+    index = index_of(s, pattern)
+    if index < 0 do
+      acc
+    else
+      count_from(drop_bytes(s, index + n), pattern, acc + 1, n)
+    end
+  end
+
+  @doc "Splits on every occurrence of pattern."
+  @spec split(binary, binary) :: [binary]
+  fn split(s, pattern), do: split_from(s, pattern, byte_size(pattern))
+
+  @spec split_from(binary, binary, integer) :: [binary]
+  fnp split_from(s, _pattern, 0), do: [s]
+  fnp split_from(s, pattern, n) do
+    index = index_of(s, pattern)
+    if index < 0 do
+      [s]
+    else
+      [take_bytes(s, index) | split_from(drop_bytes(s, index + n), pattern, n)]
+    end
+  end
+
+  @doc "Replaces every occurrence of pattern."
+  @spec replace(binary, binary, binary) :: binary
+  fn replace(s, pattern, replacement), do: join(split(s, pattern), replacement)
+
+  @doc "Joins with separator between the parts."
+  @spec join([binary], binary) :: binary
+  fn join([], _separator), do: ""
+  fn join([only], _separator), do: only
+  fn join([head | tail], separator), do: head <> separator <> join(tail, separator)
+
+  @doc "{codepoint, rest} for the first codepoint, or nil when empty."
+  @spec next_codepoint(binary) :: {binary, binary} | nil
+  fn next_codepoint(<<>>), do: nil
+  fn next_codepoint(s), do: split_codepoint(s, codepoint_size(first_byte(s)))
+
+  @spec split_codepoint(binary, integer) :: {binary, binary} | nil
+  fnp split_codepoint(s, size), do: {take_bytes(s, size), drop_bytes(s, size)}
+
+  # UTF-8 says how long a codepoint is in its FIRST byte, so a decoder never
+  # has to look ahead to know how far to advance.
+  @spec codepoint_size(integer) :: integer
+  fnp codepoint_size(c) when c < 128, do: 1
+  fnp codepoint_size(c) when c < 224, do: 2
+  fnp codepoint_size(c) when c < 240, do: 3
+  fnp codepoint_size(_c), do: 4
+
+  @doc "Every codepoint as its own binary."
+  @spec codepoints(binary) :: [binary]
+  fn codepoints(s), do: codepoints_step(next_codepoint(s))
+
+  @spec codepoints_step({binary, binary} | nil) :: [binary]
+  fnp codepoints_step(nil), do: []
+  fnp codepoints_step({cp, rest}), do: [cp | codepoints(rest)]
+
+  @doc "True for valid UTF-8."
+  @spec valid?(binary) :: bool
+  fn valid?(s), do: Utf8.valid?(s)
+
+  # NOT `to_charlist/1`. Elixir's returns a CHARLIST, which is a list of
+  # integers that `inspect` renders as `~c"abc"`; charlists are deferred
+  # project-wide, so fz has no such type and no such rendering. The value here
+  # is the same list, and the name says byte list so it does not claim a parity
+  # it cannot show.
+  @doc "Every byte as an integer."
+  @spec to_byte_list(binary) :: [integer]
+  fn to_byte_list(<<c, rest :: binary>>), do: [c | to_byte_list(rest)]
+  fn to_byte_list(_s), do: []
+
+  @doc "The atom with this name, interning it if new."
+  @spec to_atom(binary) :: atom
+  fn to_atom(s), do: fz_binary_to_atom(s)
+
+  @doc "Reverses the codepoints."
+  @spec reverse(binary) :: binary
+  fn reverse(s), do: reverse_onto(s, "")
+
+  @spec reverse_onto(binary, binary) :: binary
+  fnp reverse_onto(s, acc), do: reverse_step(next_codepoint(s), acc)
+
+  @spec reverse_step({binary, binary} | nil, binary) :: binary
+  fnp reverse_step(nil, acc), do: acc
+  fnp reverse_step({cp, rest}, acc), do: reverse_onto(rest, cp <> acc)
+
+  @doc "The first codepoint, or nil."
+  @spec first(binary) :: binary | nil
+  fn first(s), do: first_step(next_codepoint(s))
+
+  @spec first_step({binary, binary} | nil) :: binary | nil
+  fnp first_step(nil), do: nil
+  fnp first_step({cp, _rest}), do: cp
+
+  @doc "The last codepoint, or nil."
+  @spec last(binary) :: binary | nil
+  fn last(s), do: first(reverse(s))
+end

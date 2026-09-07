@@ -41,6 +41,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("runtime_library/keyword.fz"),
     },
     RuntimeModuleSource {
+        name: "String",
+        source: include_str!("runtime_library/string.fz"),
+    },
+    RuntimeModuleSource {
         name: "Enum",
         source: include_str!("runtime_library/enum.fz"),
     },

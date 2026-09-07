@@ -1,0 +1,26 @@
+5
+true
+false
+true
+"world"
+"HEllo"
+"helLO"
+"XXXbc"
+"abYYY"
+"hi"
+"hi"
+"hi"
+"HéLLO"
+"hÉllo"
+"ababab"
+true
+2
+["a", "b", "c"]
+"a+b+c"
+["h", "é", "l", "l", "o"]
+{"h", "éllo"}
+true
+[97, 98, 99]
+"olléh"
+"h"
+"o"

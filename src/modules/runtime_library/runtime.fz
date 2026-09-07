@@ -13,6 +13,7 @@ alias List
 alias Map
 alias Process
 alias Range
+alias String
 alias StringChars
 alias Utf8
 
@@ -35,6 +36,7 @@ import Kernel, only: [
   dbg: 1,
   div: 2,
   make_ref: 0,
+  byte_size: 1,
   make_resource: 2,
   panic: 1,
   range: 3,

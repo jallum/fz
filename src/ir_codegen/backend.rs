@@ -188,6 +188,11 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ),
         ("fz_binary_concat", ir_runtime::fz_binary_concat as *const u8),
         ("fz_atom_to_binary", ir_runtime::fz_atom_to_binary as *const u8),
+        ("fz_binary_to_atom", ir_runtime::fz_binary_to_atom as *const u8),
+        (
+            "fz_bitstring_byte_size",
+            ir_runtime::fz_bitstring_byte_size as *const u8,
+        ),
         ("fz_map_delete", ir_runtime::fz_map_delete as *const u8),
         ("fz_map_from_kv", ir_runtime::fz_map_from_kv as *const u8),
         ("fz_map_put_ref", ir_runtime::fz_map_put_ref as *const u8),

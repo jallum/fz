@@ -942,6 +942,43 @@ pub extern "C" fn fz_op_rem_ff(left: f64, right: f64) -> f64 {
     left % right
 }
 
+/// Intern a binary as an atom, the way `String.to_atom/1` does.
+///
+/// Atoms are node-global and never collected, which is why Elixir warns about
+/// calling this on untrusted input. The table is the same one compile-time
+/// atoms live in, so an atom the program already mentions interns to the id it
+/// already has.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("String.to_atom expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("String.to_atom expects a byte-aligned binary");
+    }
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(p), (bit_len / 8) as usize) };
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        panic!("String.to_atom expects valid UTF-8");
+    };
+    let id = (unsafe { &*process }).node.intern_atom(name);
+    box_scalar_for_any(process, id as u64, ValueKind::ATOM)
+}
+
+/// The number of BYTES in a binary. Refuses a partial bitstring, which has no
+/// byte size (fz-5xp.42 is the type-level half of the same question).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("byte_size expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("byte_size expects a byte-aligned binary");
+    }
+    (bit_len / 8) as i64
+}
+
 /// Is this bitstring byte-aligned -- a `binary` rather than a partial
 /// `bitstring`?
 ///
