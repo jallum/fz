@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-tfn.30"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.114",
     "fz-tfn.15",
@@ -28,5 +26,5 @@
   "status": "in_progress",
   "title": "Make fact demand and subscriptions exact-edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:05Z"
+  "updated_at": "2026-09-07T18:56:06Z"
 }
