@@ -1,38 +1,31 @@
 defmodule Json do
-  @moduledoc "Elixir's JSON surface: decode/1, decode!/1 and encode!/1 over fz values."
+  @moduledoc "JSON decoding and encoding over fz values, following Elixir's `JSON` module."
 
-  # The goal program of the fz-5xp epic: a real program, written in fz, whose
-  # behaviour is checked against an Elixir twin.
-  #
-  # Values map as Elixir's json libraries map them:
+  # Values map like this:
   #
   #   true / false / null   ->  true / false / nil
   #   number                ->  integer when it has no fraction, else float
   #   string                ->  binary
   #   array                 ->  list
-  #   object                ->  map with BINARY keys
+  #   object                ->  map with binary keys
   #
-  # Binary keys matter: fz orders them by content, exactly as Elixir does, so a
-  # decoded object prints the same in both. Atom keys could not do that
-  # (fz-5xp.50).
-
-  # THE SURFACE IS ELIXIR'S, not a convenient approximation of it. Elixir's
-  # `JSON` has no plain `encode/1` -- encoding cannot fail for the values it
-  # accepts and can only raise for the ones it does not, so the only spelling
-  # is `encode!/1`. Decoding can fail, so it has both `decode/1` and
-  # `decode!/1`.
+  # Object keys are binaries rather than atoms, so a decoded object orders by
+  # key content and prints the same way its Elixir counterpart does.
   #
-  # The ERROR REASON is Elixir's too, and it is the part that would have been
-  # easiest to get wrong: a positioned reason, not the leftover input.
+  # Encoding cannot fail for the values it accepts and raises for the ones it
+  # does not, so `encode!/1` is the only spelling. Decoding can fail, so there
+  # is both `decode/1` and `decode!/1`.
+  #
+  # A failure reason carries a position rather than the leftover input:
   #
   #     {:unexpected_end, offset}
   #     {:invalid_byte, offset, byte}
   #     {:unexpected_sequence, offset, sequence}
   #
-  # Internally a failure still carries the REST of the input, which is the
-  # natural thing for a recursive-descent parser to have in hand. The offset is
-  # recovered once, at the boundary, as `byte_size(input) - byte_size(rest)` --
-  # so no position has to be threaded through the parser to report one.
+  # Inside the parser a failure carries the rest of the input, which is what a
+  # recursive-descent parser has in hand. The offset is recovered once, at the
+  # boundary, as `byte_size(input) - byte_size(rest)`, so no position needs to
+  # be threaded through the parser.
   @doc "Decodes a JSON binary. {:ok, value} or {:error, reason}."
   @spec decode(binary) :: {:ok, any} | {:error, any}
   fn decode(input), do: decode_done(value(input), input)
@@ -40,10 +33,9 @@ defmodule Json do
   fnp decode_done({:ok, v, rest}, input), do: decode_trailing(rest, skip_ws(rest), v, input)
   fnp decode_done({:error, rest}, input), do: {:error, reason(rest, input)}
 
-  # Trailing WHITESPACE is accepted, trailing anything else is not -- and the
-  # error points at the whitespace rather than at the junk after it, because
-  # Elixir reports the raw remainder's first byte. `"[1] "` is ok; `"[1] junk"`
-  # is an invalid_byte at the SPACE.
+  # Trailing whitespace is accepted; trailing anything else is not. The error
+  # points at the raw remainder's first byte, so `"[1] "` is ok and
+  # `"[1] junk"` is an invalid_byte at the space.
   fnp decode_trailing(_raw, "", v, _input), do: {:ok, v}
   fnp decode_trailing(raw, _skipped, _v, input), do: {:error, reason(raw, input)}
 
@@ -54,9 +46,9 @@ defmodule Json do
   fnp decode_result({:ok, v}), do: v
   fnp decode_result({:error, _reason}), do: Kernel.panic("JSON.decode!: invalid JSON")
 
-  # The rest at the failure point starts AT the offending byte -- the parser
-  # skips whitespace before deciding -- so the offset is the difference in
-  # lengths and the byte is the first one left.
+  # The parser skips whitespace before deciding, so the rest at a failure
+  # starts at the offending byte: the offset is the difference in lengths and
+  # the byte is the first one left.
   @spec reason(any, binary) :: any
   fnp reason({:sequence, at}, input), do: {:unexpected_sequence, offset(at, input), String.take_bytes(at, 6)}
   fnp reason("", input), do: {:unexpected_end, Kernel.byte_size(input)}
@@ -111,12 +103,12 @@ defmodule Json do
   fnp val(<<"{", r :: binary>>), do: object(skip_ws(r), %{})
   fnp val(<<"-", r :: binary>>), do: negate(number(r))
   fnp val(b = <<c, _ :: binary>>) when c >= 48 and c <= 57, do: number(b)
-  # A token that STARTED as a keyword and did not finish as one is Elixir's
-  # `unexpected_end` at the end of the input -- even `truX`, where there is a
-  # perfectly good offending byte to point at. Once its decoder commits to
-  # `t`/`f`/`n` it reads the keyword or runs out, and reports running out.
-  # These clauses sit after the three that match, so only failures reach them,
-  # and `{:error, ""}` is what makes `reason/2` say end-of-input.
+  # Once a token starts with `t`, `f` or `n` the decoder is committed to a
+  # keyword: it either reads the whole one or runs out, and a token that does
+  # not finish is reported as running out. So `truX` is an unexpected_end at
+  # the end of the input rather than an invalid_byte at the `X`. These clauses
+  # sit after the three that match, so only failures reach them, and
+  # `{:error, ""}` is what makes `reason/2` say end-of-input.
   fnp val(<<116, _r :: binary>>), do: {:error, ""}
   fnp val(<<102, _r :: binary>>), do: {:error, ""}
   fnp val(<<110, _r :: binary>>), do: {:error, ""}
@@ -125,8 +117,7 @@ defmodule Json do
   fnp negate({:ok, n, r}), do: {:ok, -n, r}
   fnp negate(other), do: other
 
-  # An integer unless a fraction follows, which is how JSON distinguishes them
-  # and how Elixir's decoders report them.
+  # An integer unless a fraction follows, which is how JSON distinguishes them.
   fnp number(b), do: fraction(digits(b, 0))
 
   fnp digits(<<c, r :: binary>>, acc) when c >= 48 and c <= 57, do: digits(r, acc * 10 + (c - 48))
@@ -140,9 +131,8 @@ defmodule Json do
   end
   fnp fraction_digits(b, whole, num, den), do: exponent(whole + num / den, b)
 
-  # `1e3`, `1.5E-2`. JSON allows an exponent on an integer too, and the result is
-  # a float either way -- `1e3` is `1.0e3`, not `1000`, which is what Elixir's
-  # decoder reports.
+  # `1e3`, `1.5E-2`. JSON allows an exponent on an integer too, and the result
+  # is a float either way: `1e3` is `1.0e3`, not `1000`.
   fnp exponent(n, <<"e", r :: binary>>), do: exponent_sign(n, r)
   fnp exponent(n, <<"E", r :: binary>>), do: exponent_sign(n, r)
   fnp exponent(n, b), do: {:ok, n, b}
@@ -156,12 +146,12 @@ defmodule Json do
   end
   fnp exponent_digits(n, b, acc, sign), do: {:ok, scale(n * 1.0, acc, sign), b}
 
-  # ONE multiply or divide by an exact power of ten, not `e` of them. Scaling
-  # step by step accumulates rounding: seven divisions by 10.0 turned `1.0e-7`
-  # into `1.0000000000000002e-7`, which is a different double and a different
-  # rendering. Powers of ten up to 10^22 are exact in a float, so building the
-  # power first and applying it once is correctly rounded over the range JSON
-  # numbers actually use.
+  # One multiply or divide by an exact power of ten, rather than `e` of them.
+  # Scaling step by step accumulates rounding: seven divisions by 10.0 turn
+  # `1.0e-7` into `1.0000000000000002e-7`, a different double that renders
+  # differently. Powers of ten up to 10^22 are exact in a float, so building
+  # the power first and applying it once is correctly rounded over the range
+  # JSON numbers use.
   fnp scale(n, 0, _sign), do: n
   fnp scale(n, e, sign), do: apply_scale(n, pow10(e, 1.0), sign)
 
@@ -171,11 +161,11 @@ defmodule Json do
   fnp pow10(0, acc), do: acc
   fnp pow10(e, acc), do: pow10(e - 1, acc * 10.0)
 
-  # Byte at a time, because a SLICE would not help: every `<<c, r :: binary>>`
-  # step copies the remainder, so the traversal is already quadratic and a
-  # second pass to measure a run costs more than the appends save (measured:
-  # 435 allocations either way). Once sub-binaries are cheap (fz-5xp.55),
-  # scan-then-slice becomes the right shape and this should change with it.
+  # A byte at a time rather than scan-then-slice. Every `<<c, r :: binary>>`
+  # step copies the remainder, so the traversal is already quadratic, and a
+  # second pass to measure a run costs more than the appends it saves: both
+  # shapes measured 435 allocations. Scanning first becomes worthwhile once a
+  # sub-binary is a view onto its source rather than a copy.
   fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
   fnp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
   fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
@@ -192,10 +182,10 @@ defmodule Json do
   fnp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at), do: unicode(r, acc, hex4(a, b, c, d), at)
   fnp escaped(b, _acc, _at), do: {:error, b}
 
-  # A bad `\uXXXX` is Elixir's `unexpected_sequence`, which reports the
-  # BACKSLASH's offset and the six-byte sequence -- so this is the one failure
-  # that has to carry where it started rather than where it stopped. An unknown
-  # SIMPLE escape is an ordinary invalid_byte and needs none of this.
+  # A bad `\uXXXX` is an unexpected_sequence, reported at the backslash's
+  # offset with the six-byte sequence, so it is the one failure that carries
+  # where it started rather than where it stopped. An unknown simple escape is
+  # an ordinary invalid_byte and needs none of this.
   fnp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at}}
   fnp unicode(r, acc, cp, _at), do: string(r, acc <> utf8(cp))
 
@@ -211,9 +201,8 @@ defmodule Json do
   fnp hex(c) when c >= 65 and c <= 70, do: c - 55
   fnp hex(_c), do: :error
 
-  # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined --
-  # a lone surrogate encodes as itself, which is what a decoder without pair
-  # handling does, and is the one place this is not yet Elixir.
+  # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined, so
+  # a lone surrogate encodes as itself.
   fnp utf8(cp) when cp < 128, do: <<cp>>
   fnp utf8(cp) when cp < 2048 do
     <<192 + div(cp, 64), 128 + rem(cp, 64)>>
@@ -222,9 +211,8 @@ defmodule Json do
     <<224 + div(cp, 4096), 128 + rem(div(cp, 64), 64), 128 + rem(cp, 64)>>
   end
 
-  # `]` closes an EMPTY array only at the start. After a comma a value is
-  # required, so `[1,]` is an error -- accepting it was the one place this
-  # decoder was more permissive than the grammar and than Elixir.
+  # `]` closes an empty array only at the start. After a comma a value is
+  # required, so `[1,]` is an error.
   fnp array(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
   fnp array(b, acc), do: array_element(b, acc)
 
@@ -237,7 +225,7 @@ defmodule Json do
   fnp array_next(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
   fnp array_next(b, _acc), do: {:error, b}
 
-  # `}` closes an EMPTY object only at the start; after a comma a key is
+  # `}` closes an empty object only at the start. After a comma a key is
   # required, so `{"a": 1,}` is an error.
   fnp object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
   fnp object(b, acc), do: object_entry(b, acc)
