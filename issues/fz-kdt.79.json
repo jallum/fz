@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T19:26:24Z",
-  "description": "## Goal\n\nMake `CallSiteMap` and `CallSiteTargetsMap` exact value stores for the live `CallSiteSummary`/`CallSiteTargets` ledger facts. When the last publisher withdraws a callsite fact, remove its stored resolution so absence is bottom and a later `Unresolved` publication cannot inherit a stale `Resolved` answer.\n\n## Signal\n\n- A red World test publishes resolved summary and targets through one `AnalyzeActivation` conclusion, concludes while omitting both, and proves both facts are absent and `callsite_resolution`, `callsite_summary`, `callsite_target_resolution`, and `callsite_targets` all return `None`.\n- The same test re-publishes `Unresolved` and proves both resolution accessors return `Unresolved`, both resolved accessors return `None`, and the remint wakes/moves readers as a fresh replacing fact.\n- Artifact helpers no longer construct store-without-ledger state; they either publish matching facts or accept isolated semantic values directly.\n- Focused compiler2 tests and corpus/lib/matrix/CLI gates pass; a census finds zero reads of a callsite map entry whose corresponding fact is absent.\n\n## Strategy\n\n- Add key removal to both maps and, after `work_graph.complete`, consume its `FactChange` entries whose `new_revision` is `None` to prune matching store keys. Keep pruning at the single ledger-completion boundary, not scattered reader gates.\n- Cover multi-publisher behavior: prune only on actual final retraction, never when one publisher withdraws but the fact remains.\n- Delete or update `artifact.rs:1252-1260` and semantic-fixpoint wording that claim the stale split or defer it to dead fz-kdt.69.3.\n- Keep Unresolved-as-bottom join behavior only within a live fact epoch; retraction starts a fresh epoch.\n\nNo store-outlives-ledger contract, no per-consumer `has_fact` shims, no stale resolved answer surviving retraction, and no test-only impossible World state.",
+  "description": "## Status\n\nAbsorbed into `fz-tfn.53`, the typed atomic source-publication cutover.\n\n## Preserved law\n\n`CallSiteMap` and `CallSiteTargetsMap` have exactly the lifetime of their authoritative `CallSiteSummary`/`CallSiteTargets` fact claims. When the last publisher retracts, the typed value disappears; a later `Unresolved` publication begins a fresh epoch and cannot inherit stale `Resolved` content. Multi-publisher withdrawal prunes only after the final claim leaves.\n\n`fz-tfn.53` must prove resolved → absent → unresolved at the unified publication boundary and remove store-without-ledger helpers. It must not implement the old proposed after-the-fact scan of `FactChange`, add per-reader `has_fact` gates, or retain a second cleanup authority.\n\nNo standalone implementation remains; the law and its production-boundary test are acceptance criteria of `fz-tfn.53`.",
   "id": "fz-kdt.79",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
   "status": "open",
-  "title": "Prune callsite semantic stores when their facts retract",
+  "title": "Absorbed: callsite values follow typed publication lifetime",
   "type": "task",
-  "updated_at": "2026-09-03T04:05:34Z"
+  "updated_at": "2026-09-07T22:07:12Z"
 }
