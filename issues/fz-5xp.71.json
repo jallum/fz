@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T16:05:51Z",
+  "description": "Split out of fz-5xp.14 with authorization (user, 2026-09-07: 'we can skip them\nfor the moment').\n\n`String.splitter/3` is `split/3` that yields parts lazily instead of building\nthe whole list, and in Elixir it returns a Stream. fz has no Stream and no lazy\nenumerable of any kind.\n\nEverything else in fz-5xp.14's class D shipped; this is the only one that needs\na capability rather than code.\n\nWHAT IT WOULD TAKE: fz's Enumerable already has the SUSPEND half of the reduce\nprotocol -- `{:suspend, acc}` and the `{:suspended, acc, continuation}` reply\nare implemented in enum.fz and list.fz -- which is exactly the machinery a\nStream is built on. So this is closer than it looks: what is missing is a Stream\nmodule that packages a suspendable reduce as a value, not the suspension\nmechanism itself.\n\nRelated: several Enum functions would become lazy the same way, and\nfz-5xp.16's remaining audit item about the fifth Enumerable callback\n(reduce_while/3) bears on what a Stream would have to implement.",
+  "id": "fz-5xp.71",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "String.splitter/3 needs a Stream",
+  "type": "task",
+  "updated_at": "2026-09-07T16:05:51Z"
+}
