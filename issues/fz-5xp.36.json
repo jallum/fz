@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:37:37Z",
+  "description": "Found by the cold review of fz-5xp.31. All three doors AGREE, so it is a\nrendering question, not a divergence.\n\n    dbg(1.0)          -\u003e 1.0\n    dbg([1.0, 2.0])   -\u003e [1, 2]\n\nA whole float renders with its `.0` at the top level and loses it inside a\nlist. Elixir prints `[1.0, 2.0]`.\n\nMATTERS FOR THE EPIC because the goal program is JSON: `Json.encode([1.0])`\nmust not emit `[1]`, and `fz-5xp.15` (Float to-string) plus `fz-5xp.17` both\nhave oracles that will compare rendered floats against Elixir's. Whatever\nrenders a float inside a container needs to be the same code that renders one\nat the top level -- one question, one implementation.\n\nDONE = a float renders identically wherever it appears, matched against an\nElixir oracle, including inside lists, tuples, maps and nested combinations.",
+  "id": "fz-5xp.36",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Whole floats lose their .0 inside a list",
+  "type": "bug",
+  "updated_at": "2026-09-07T08:37:37Z"
+}
