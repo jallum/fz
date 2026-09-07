@@ -59,9 +59,40 @@ pub struct FactChange<F> {
     pub new_revision: Option<u64>,
     pub old_settled: bool,
     pub new_settled: bool,
+    content_movement: Option<ContentMovement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContentMovement {
+    Ascent,
+    Shift,
 }
 
 impl<F> FactChange<F> {
+    pub(crate) fn replacing(
+        key: F,
+        old_revision: Option<u64>,
+        new_revision: Option<u64>,
+        old_settled: bool,
+        new_settled: bool,
+    ) -> Self {
+        let content_movement = if old_revision.unwrap_or(0) == new_revision.unwrap_or(0) {
+            None
+        } else if old_revision.is_none() {
+            Some(ContentMovement::Ascent)
+        } else {
+            Some(ContentMovement::Shift)
+        };
+        Self {
+            key,
+            old_revision,
+            new_revision,
+            old_settled,
+            new_settled,
+            content_movement,
+        }
+    }
+
     /// Whether what a `Current` reader can see moved.
     ///
     /// Absent and present-at-bottom read the same, so `None` <-> `Some(0)` is
@@ -71,7 +102,11 @@ impl<F> FactChange<F> {
     /// at 0 (`appearance_revision`), so every replacing fact's appearance and
     /// retraction still moves — `Some(n > 0)` <-> `None` included.
     pub fn content_changed(&self) -> bool {
-        self.old_revision.unwrap_or(0) != self.new_revision.unwrap_or(0)
+        self.content_movement.is_some()
+    }
+
+    pub(crate) fn content_movement(&self) -> Option<ContentMovement> {
+        self.content_movement
     }
 
     pub fn readiness_changed(&self) -> bool {
@@ -275,6 +310,25 @@ where
         changed_keys: Vec<F>,
         publisher_unfinal: bool,
     ) -> FactReplace<F> {
+        self.replace_outputs_after_run(
+            publisher,
+            previous_output_keys,
+            outputs,
+            changed_keys,
+            publisher_unfinal,
+            false,
+        )
+    }
+
+    pub(crate) fn replace_outputs_after_run(
+        &mut self,
+        publisher: &P,
+        previous_output_keys: &OrderedSet<F>,
+        outputs: Vec<F>,
+        changed_keys: Vec<F>,
+        publisher_unfinal: bool,
+        publisher_rebased: bool,
+    ) -> FactReplace<F> {
         let mut output_keys = OrderedSet::default();
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
@@ -307,6 +361,7 @@ where
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
+            let withdrew_publisher = !output_keys.contains(&key) && slot.publishers.contains(publisher);
 
             if output_keys.contains(&key) {
                 let was_absent = slot.publishers.is_empty();
@@ -336,6 +391,13 @@ where
 
             if old_revision != new_revision || old_settled != new_settled {
                 changed.push(FactChange {
+                    content_movement: content_movement(
+                        &key,
+                        old_revision,
+                        new_revision,
+                        publisher_rebased,
+                        withdrew_publisher,
+                    ),
                     key,
                     old_revision,
                     new_revision,
@@ -361,6 +423,17 @@ where
         outputs: Vec<F>,
         changed_keys: Vec<F>,
         publisher_unfinal: bool,
+    ) -> FactReplace<F> {
+        self.extend_outputs_after_run(publisher, outputs, changed_keys, publisher_unfinal, false)
+    }
+
+    pub(crate) fn extend_outputs_after_run(
+        &mut self,
+        publisher: &P,
+        outputs: Vec<F>,
+        changed_keys: Vec<F>,
+        publisher_unfinal: bool,
+        publisher_rebased: bool,
     ) -> FactReplace<F> {
         let mut output_keys = OrderedSet::default();
         for key in outputs {
@@ -396,6 +469,7 @@ where
 
             if old_revision != new_revision || old_settled != new_settled {
                 changed.push(FactChange {
+                    content_movement: content_movement(key, old_revision, new_revision, publisher_rebased, false),
                     key: key.clone(),
                     old_revision,
                     new_revision,
@@ -427,6 +501,7 @@ where
             new_revision: revision,
             old_settled,
             new_settled,
+            content_movement: None,
         })
     }
 
@@ -453,11 +528,31 @@ where
                     new_revision,
                     old_settled,
                     new_settled,
+                    content_movement: None,
                 });
             }
         }
         changed
     }
+}
+
+fn content_movement<F: ClaimShape>(
+    key: &F,
+    old_revision: Option<u64>,
+    new_revision: Option<u64>,
+    publisher_rebased: bool,
+    withdrew_publisher: bool,
+) -> Option<ContentMovement> {
+    if old_revision.unwrap_or(0) == new_revision.unwrap_or(0) {
+        return None;
+    }
+    if old_revision.is_none() {
+        return Some(ContentMovement::Ascent);
+    }
+    if new_revision.is_none() || withdrew_publisher || publisher_rebased || !key.is_cumulative() {
+        return Some(ContentMovement::Shift);
+    }
+    Some(ContentMovement::Ascent)
 }
 
 /// The revision a fact is minted at when it first gains a publisher.

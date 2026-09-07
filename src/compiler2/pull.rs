@@ -673,13 +673,13 @@ impl ProductMemo {
         if self.observed_products.contains(key) {
             let after = self.external_state(key);
             if before != after {
-                self.external_changes.push(FactChange {
-                    key: key.clone(),
-                    old_revision: before.revision,
-                    new_revision: after.revision,
-                    old_settled: before.settled,
-                    new_settled: after.settled,
-                });
+                self.external_changes.push(FactChange::replacing(
+                    key.clone(),
+                    before.revision,
+                    after.revision,
+                    before.settled,
+                    after.settled,
+                ));
             }
         }
     }
@@ -1676,14 +1676,16 @@ impl ProductSessions {
         }
         let mut changes = coalesced
             .into_values()
-            .filter(|change| change.content_changed() || change.readiness_changed())
-            .map(|change| FactChange {
-                key: DependencyKey::Product(ProductAddress { root, key: change.key }),
-                old_revision: change.old_revision,
-                new_revision: change.new_revision,
-                old_settled: change.old_settled,
-                new_settled: change.new_settled,
+            .map(|change| {
+                FactChange::replacing(
+                    DependencyKey::Product(ProductAddress { root, key: change.key }),
+                    change.old_revision,
+                    change.new_revision,
+                    change.old_settled,
+                    change.new_settled,
+                )
             })
+            .filter(|change| change.content_changed() || change.readiness_changed())
             .collect::<Vec<_>>();
         changes.sort_by(|left, right| left.key.semantic_cmp(&right.key, types));
         for change in &changes {
@@ -1906,13 +1908,13 @@ impl ProductSessions {
             .iter()
             .map(|key| {
                 let before = session.memo.external_state(key);
-                FactChange {
-                    key: DependencyKey::Product(ProductAddress { root, key: key.clone() }),
-                    old_revision: before.revision,
-                    new_revision: None,
-                    old_settled: before.settled,
-                    new_settled: false,
-                }
+                FactChange::replacing(
+                    DependencyKey::Product(ProductAddress { root, key: key.clone() }),
+                    before.revision,
+                    None,
+                    before.settled,
+                    false,
+                )
             })
             .collect()
     }

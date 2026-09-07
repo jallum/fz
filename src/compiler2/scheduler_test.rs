@@ -85,13 +85,7 @@ fn external_product_wait_uses_authoritative_readiness_alongside_fact_waits() {
     assert_eq!(scheduler.pop(), None, "the remaining product wait is still unsettled");
     product.0.settled = true;
     let step = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: false,
-            new_settled: true,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), false, true)],
         &product,
         &TestOrder,
     );
@@ -123,13 +117,7 @@ fn replacing_external_reads_detaches_the_old_dependency() {
     product.0.revision = Some(2);
     product.0.settled = false;
     let step = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(2),
-            old_settled: true,
-            new_settled: false,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(2), true, false)],
         &product,
         &TestOrder,
     );
@@ -161,13 +149,7 @@ fn quiescence_cannot_certify_a_fact_while_its_external_ground_is_dirty() {
     }
     product.0.settled = false;
     scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: true,
-            new_settled: false,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), true, false)],
         &product,
         &TestOrder,
     );
@@ -242,13 +224,7 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
     for (before, after) in [(true, false), (false, true)] {
         product.0.settled = after;
         let step = scheduler.apply_external_changes_ordered(
-            vec![FactChange {
-                key: "product",
-                old_revision: Some(1),
-                new_revision: Some(1),
-                old_settled: before,
-                new_settled: after,
-            }],
+            vec![FactChange::replacing("product", Some(1), Some(1), before, after)],
             &product,
             &TestOrder,
         );
@@ -261,13 +237,7 @@ fn external_product_equal_validation_restores_finality_without_running_its_reade
     }
     product.0.revision = Some(2);
     let step = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(2),
-            old_settled: true,
-            new_settled: true,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(2), true, true)],
         &product,
         &TestOrder,
     );
@@ -320,12 +290,8 @@ impl ClaimShape for &'static str {
 
 #[test]
 fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology() {
-    let change = |key: &'static str, revision: u64| crate::compiler2::FactChange {
-        key,
-        old_revision: revision.checked_sub(1),
-        new_revision: Some(revision),
-        old_settled: false,
-        new_settled: false,
+    let change = |key: &'static str, revision: u64| {
+        crate::compiler2::FactChange::replacing(key, revision.checked_sub(1), Some(revision), false, false)
     };
     let mut pending = vec![change("a", 1), change("c", 2), change("b", 3), change("c", 4)];
     let mut revisions = Vec::new();
@@ -1141,6 +1107,108 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
         !scheduler.rebased(&reader),
         "growth of a cumulative fact is an ascent: readers re-run and join, no rebase",
     );
+}
+
+fn scheduler_with_cumulative_reader_and_two_publishers(
+    surviving_publication_changed: bool,
+) -> (TestScheduler, u32, u32) {
+    let mut scheduler = TestScheduler::new();
+    let withdrawing_writer = 1_u32;
+    let surviving_writer = 2_u32;
+    let reader = 3_u32;
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_inputs")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        withdrawing_writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_inputs"],
+        vec!["cum_inputs"],
+    );
+    complete(
+        &mut scheduler,
+        surviving_writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_inputs"],
+        surviving_publication_changed
+            .then_some("cum_inputs")
+            .into_iter()
+            .collect(),
+    );
+    while scheduler.pop().is_some() {}
+    (scheduler, withdrawing_writer, reader)
+}
+
+#[test]
+fn compiler2_scheduler_changed_cumulative_withdrawal_rebases_readers_while_the_fact_survives() {
+    let (mut scheduler, withdrawing_writer, reader) = scheduler_with_cumulative_reader_and_two_publishers(true);
+
+    let before = scheduler
+        .facts()
+        .revision(&"cum_inputs")
+        .expect("the cumulative fact should be present before withdrawal");
+    let step = complete(
+        &mut scheduler,
+        withdrawing_writer,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        vec!["cum_inputs"],
+    );
+
+    assert_eq!(
+        scheduler.facts().revision(&"cum_inputs"),
+        Some(before + 1),
+        "the surviving publisher keeps the narrowed aggregate present at a new revision",
+    );
+    let wakes = wakes_for(&step, reader);
+    assert_eq!(
+        wakes.len(),
+        1,
+        "the changed withdrawal should wake its exact reader once"
+    );
+    assert!(
+        wakes[0].shift,
+        "removing content from a still-present cumulative aggregate is a ground shift",
+    );
+    assert!(
+        scheduler.rebased(&reader),
+        "the reader must replace evidence derived from the withdrawn contribution",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_equal_cumulative_withdrawal_wakes_nobody() {
+    let (mut scheduler, withdrawing_writer, reader) = scheduler_with_cumulative_reader_and_two_publishers(false);
+
+    let before = scheduler.facts().revision(&"cum_inputs");
+    let step = complete(
+        &mut scheduler,
+        withdrawing_writer,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        scheduler.facts().revision(&"cum_inputs"),
+        before,
+        "removing an equal contribution preserves the aggregate revision",
+    );
+    assert!(
+        wakes_for(&step, reader).is_empty(),
+        "an equal withdrawal is no content movement",
+    );
+    assert!(!scheduler.rebased(&reader), "an equal withdrawal shifts no ground");
 }
 
 /// fz-kdt.84: a cumulative fact's first claim carrying NO content is presence,
@@ -2038,13 +2106,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
     assert!(!scheduler.facts().is_settled(&"answer") && !scheduler.facts().is_settled(&"cum_cycle"));
     product.0.settled = true;
     scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: false,
-            new_settled: true,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), false, true)],
         &product,
         &TestOrder,
     );
@@ -2065,13 +2127,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
 
     product.0.settled = false;
     let dirty = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: true,
-            new_settled: false,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), true, false)],
         &product,
         &TestOrder,
     );
@@ -2093,13 +2149,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
     );
     product.0.settled = true;
     let restored = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: false,
-            new_settled: true,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), false, true)],
         &product,
         &TestOrder,
     );
@@ -2112,13 +2162,7 @@ fn cooutput_finality_obeys_external_ground_and_later_readiness_movements() {
     assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"cum_cycle"));
     product.0.revision = Some(2);
     let moved = scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(2),
-            old_settled: true,
-            new_settled: true,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(2), true, true)],
         &product,
         &TestOrder,
     );
@@ -2181,13 +2225,7 @@ fn quiescent_read_accounting_distinguishes_old_ground_from_new_unquiet_edges() {
     assert!(scheduler.facts().is_settled(&"answer") && scheduler.facts().is_settled(&"coanswer"));
     product.0.settled = false;
     scheduler.apply_external_changes_ordered(
-        vec![FactChange {
-            key: "product",
-            old_revision: Some(1),
-            new_revision: Some(1),
-            old_settled: true,
-            new_settled: false,
-        }],
+        vec![FactChange::replacing("product", Some(1), Some(1), true, false)],
         &product,
         &TestOrder,
     );

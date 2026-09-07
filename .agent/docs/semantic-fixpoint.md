@@ -298,7 +298,10 @@ the ignition path for that caller-discovered callee's first analysis pass.
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. The `Activation` CLAIM rides a
+changes can withdraw stale contributions. If another publisher remains, the
+store reports whether that withdrawal actually narrowed the joined input rows;
+a changed withdrawal travels as a ground shift, while an equal withdrawal is
+quiet. The `Activation` CLAIM rides a
 stricter rule than the inputs do: a non-rebased conclusion keeps every
 `Activation` it did not re-emit, and only a rebased one — whose ground actually
 shifted — withdraws. The

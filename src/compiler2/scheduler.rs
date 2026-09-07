@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{ClaimShape, FactChange, FactMovement, FactState, FactTable, FactUse};
+use super::facts::{ClaimShape, ContentMovement, FactChange, FactMovement, FactState, FactTable, FactUse};
 use super::ordered_set::OrderedSet;
 use super::semantic::SemanticOrd;
 
@@ -341,7 +341,7 @@ where
                 self.propagate_quiet_wave(vec![change.key.clone()], change.new_settled, &mut pending, ctx);
             }
         }
-        let (wakes, movements) = self.dispatch_changes(pending, false, external, ctx);
+        let (wakes, movements) = self.dispatch_changes(pending, external, ctx);
         AppliedStep {
             changed: changes,
             movements,
@@ -531,25 +531,30 @@ where
         let quiet_before = self.quiet_snapshot(&touched);
         let mut dirtied = Vec::new();
         let replaced = if waiting {
-            let extended = self
-                .facts
-                .extend_outputs(job, effects.outputs, effects.changed, unfinal);
+            let extended =
+                self.facts
+                    .extend_outputs_after_run(job, effects.outputs, effects.changed, unfinal, was_rebased);
             let mut claims = previous_output_keys;
             claims.extend(extended.output_keys.iter().cloned());
             dirtied = self.facts.mark_dirty(job, &claims);
             self.deps.replace_outputs(job.clone(), claims);
             extended
         } else {
-            let concluded =
-                self.facts
-                    .replace_outputs(job, &previous_output_keys, effects.outputs, effects.changed, unfinal);
+            let concluded = self.facts.replace_outputs_after_run(
+                job,
+                &previous_output_keys,
+                effects.outputs,
+                effects.changed,
+                unfinal,
+                was_rebased,
+            );
             self.deps.replace_outputs(job.clone(), concluded.output_keys.clone());
             concluded
         };
         pending_changes.extend(replaced.changed.iter().cloned());
         pending_changes.extend(dirtied);
         self.propagate_quiet_flips(&touched, quiet_before, &mut pending_changes, ctx);
-        let (wakes, movements) = self.dispatch_changes(pending_changes, was_rebased, external, ctx);
+        let (wakes, movements) = self.dispatch_changes(pending_changes, external, ctx);
         AppliedStep {
             changed: replaced.changed,
             movements,
@@ -571,7 +576,6 @@ where
     fn dispatch_changes<Ctx>(
         &mut self,
         mut pending_changes: Vec<FactChange<F>>,
-        was_rebased: bool,
         external: &impl ExternalDependencyStates<F>,
         ctx: &Ctx,
     ) -> (Vec<Wake<J, F>>, Vec<FactMovement<F>>)
@@ -589,16 +593,8 @@ where
             // growing frontier on every iteration.
             let change =
                 take_next_fact_change(&mut pending_changes, ctx).expect("the non-empty change wave has a next fact");
-            if change.content_changed() {
-                // An APPEARANCE is an ascent, never a shift: there was no
-                // earlier answer for the new one to have refuted. A cumulative
-                // fact's climb off bottom (0 -> 1) is an ordinary bump, so a
-                // REBASED publisher's first real evidence propagates as a shift
-                // -- the conservative direction, and measured to add no shift
-                // and no rebased completion on any target fixture (fz-kdt.84).
-                let retraction = change.new_revision.is_none();
-                let revision_bump = change.old_revision.is_some() && change.new_revision.is_some();
-                let shift = retraction || (revision_bump && (was_rebased || !change.key.is_cumulative()));
+            if let Some(content_movement) = change.content_movement() {
+                let shift = content_movement == ContentMovement::Shift;
                 self.enqueue_dependents(
                     FactUse::current(change.key.clone()),
                     shift,
@@ -694,7 +690,7 @@ where
                 self.settle_quiescent_fact(fact, &mut changes, external, ctx);
             }
         }
-        let (wakes, movements) = self.dispatch_changes(changes.clone(), false, external, ctx);
+        let (wakes, movements) = self.dispatch_changes(changes.clone(), external, ctx);
         AppliedStep {
             changed: changes,
             movements,

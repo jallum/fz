@@ -871,6 +871,18 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         },
     );
 
+    let fact = FactKey::ActivationInputs(key.clone());
+    let dependency = DependencyKey::Fact(fact.clone());
+    let reader = Job::LowerFunction(function);
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(fact)],
+            ..JobEffects::default()
+        },
+    );
+    while world.work_graph.pop().is_some() {}
+
     let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
     assert!(
         step.changed.iter().any(|change| {
@@ -885,6 +897,24 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         world.activation_inputs_joined(&key),
         Some(vec![input_b]),
         "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
+    );
+    let wakes = step
+        .wakes
+        .iter()
+        .filter(|wake| wake.job == reader && wake.cause == FactUse::current(dependency.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        wakes.len(),
+        1,
+        "the narrowed aggregate should wake its exact reader once"
+    );
+    assert!(
+        wakes[0].shift,
+        "the authoritative contribution withdrawal must reach the reader as a ground shift",
+    );
+    assert!(
+        world.work_graph.rebased(&reader),
+        "the reader must replace evidence derived from the removed input row",
     );
 }
 

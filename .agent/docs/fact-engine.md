@@ -252,7 +252,10 @@ reached with no ground under it retracts nothing it never refuted.
 `FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
 and `ActivationInputs` hold monotone joins maintained by their `World` stores
 (content only grows between ground shifts); every other fact's content
-overwrites. The scheduler classifies every content change:
+overwrites. The fact table classifies each publication transition while it
+still knows whether a publisher updated, rebased, or withdrew. `FactChange`
+carries that closed `ContentMovement` to the scheduler; the scheduler routes
+the movement and never reconstructs its direction from revisions or key shape:
 
 - **Ascent** — a first appearance carrying content, or growth of a cumulative
   fact from an unshifted publisher. Readers re-run and join. A cumulative
@@ -261,18 +264,21 @@ overwrites. The scheduler classifies every content change:
   chaotic iteration: monotone transfers over finite chains converge to the
   unique least fixpoint on any fair schedule, so wake order is performance,
   never correctness.
-- **Ground shift** — a retraction, a replacing fact's content change, or any
-  change concluded by a rebased publisher. Each reader's claims go unsettled,
-  the reader is flagged **rebased** and re-enqueued. A rebased job's next
-  conclusion replaces its cumulative store values instead of joining (the
-  only narrowing path) and its changes propagate as shifts in turn; equal
-  recomputation propagates nothing, so the shift cone is exactly the set of
-  jobs whose recomputed outputs actually differ — narrowing keeps today's
-  minimal-rerun incrementality.
+- **Ground shift** — a retraction, a replacing fact's content change, any
+  change concluded by a rebased publisher, or a changed contribution
+  withdrawal even when another publisher keeps the cumulative fact present.
+  Each reader's claims go unsettled, the reader is flagged **rebased** and
+  re-enqueued. A rebased job's next conclusion replaces its cumulative store
+  values instead of joining (the only narrowing path) and its changes
+  propagate as shifts in turn; an equal withdrawal or recomputation reports
+  no content movement, so the shift cone is exactly the set of jobs whose
+  recomputed outputs actually differ — narrowing keeps today's minimal-rerun
+  incrementality.
 
 The revision is a change token, not a content hash: stores report `changed`
-only on real content movement (equal joins are quiet), and subscribers wake on
-`old_revision != new_revision`.
+only on real content movement (equal joins and equal withdrawals are quiet),
+and `ContentMovement` determines whether subscribers ascend or rebase. The
+revision pair records that content moved; it cannot say in which direction.
 
 ## Content, cleanliness and finality are three questions
 

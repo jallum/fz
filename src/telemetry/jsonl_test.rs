@@ -503,13 +503,7 @@ fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
             changed: keys
                 .iter()
                 .cloned()
-                .map(|key| FactChange {
-                    key,
-                    old_revision: None,
-                    new_revision: Some(1),
-                    old_settled: false,
-                    new_settled: true,
-                })
+                .map(|key| FactChange::replacing(key, None, Some(1), false, true))
                 .collect(),
             movements: keys
                 .iter()
@@ -564,13 +558,7 @@ fn fact_dependency_steps_preserve_the_existing_causal_json_shape() {
     let root = RootId::for_test(7);
     let key = DependencyKey::Fact(FactKey::RootEntry(root));
     let step = AppliedStep {
-        changed: vec![FactChange {
-            key: key.clone(),
-            old_revision: None,
-            new_revision: Some(1),
-            old_settled: false,
-            new_settled: true,
-        }],
+        changed: vec![FactChange::replacing(key.clone(), None, Some(1), false, true)],
         wakes: vec![Wake {
             cause: FactUse::settled(key.clone()),
             job: Job::SeedRoot(root),
