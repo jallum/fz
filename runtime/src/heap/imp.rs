@@ -354,7 +354,34 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
+    /// Write a map, sorting and deduping first.
+    ///
+    /// A map is a flat SORTED array and every lookup assumes it. This is the
+    /// raw writer, and it used to trust its caller: `fz_process_heap_alloc_stats`
+    /// handed it insertion order, whose atom ids do not ascend because most of
+    /// those atoms were interned earlier by the compiler. Nothing noticed while
+    /// lookup was a linear scan -- the scan consults the equality and never the
+    /// order, so an unsorted map works. The moment a binary search went in, that
+    /// map returned nil for keys it contained (fz-5xp.49).
+    ///
+    /// So the invariant is held HERE, once, rather than asked of four callers.
+    /// The two that already sort pay a scan over sorted input, which is what a
+    /// merge sort costs on an ordered run.
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
+        let mut sorted: Vec<(AnyValue, AnyValue)> = entries.to_vec();
+        sorted.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
+        let mut entries: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(sorted.len());
+        for (key, value) in sorted {
+            // Last one wins, matching Elixir and the sibling builders.
+            if let Some((last_key, last_value)) = entries.last_mut()
+                && same_any_value(*last_key, key)
+            {
+                *last_value = value;
+                continue;
+            }
+            entries.push((key, value));
+        }
+        let entries = &entries[..];
         let total = map_size_for_count(entries.len());
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
@@ -804,25 +831,20 @@ impl Heap {
         addr: *mut u8,
         key: AnyValueRef,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        // A LINEAR SCAN, deliberately, using the structural relation.
-        //
-        // fz-5xp.12 wants a binary search here and the array is sorted -- but
-        // only on the paths that sort it. `Heap::alloc_map_slots` writes
-        // entries in the order given, and `fz_process_heap_alloc_stats` hands
-        // it insertion order, whose atom ids do not ascend because most of
-        // those atoms were interned earlier by the compiler. A search over that
-        // map misses keys the scan finds: `stats[:map_bytes]` went nil and its
-        // fixtures lost a line of output.
-        //
-        // So the search waits on the invariant being true of every construction
-        // path, not just most of them (fz-5xp.49).
+        // Binary search. Two things make it valid, and both had to be fixed:
+        // the ORDER agrees with the EQUALITY (fz-5xp.48, which was a silent
+        // wrong answer for binary keys), and every map is actually sorted
+        // (fz-5xp.49, held by `alloc_map_slots`).
         let count = unsafe { map_count(addr) };
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { map_entry_refs(addr, i) };
-            if !same_value_ref(entry_key, key) {
-                continue;
+        let (mut low, mut high) = (0usize, count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let (entry_key, entry_value) = unsafe { map_entry_refs(addr, middle) };
+            match map_key_cmp_refs(entry_key, key) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(Some(entry_value)),
             }
-            return Ok(Some(entry_value));
         }
         Ok(None)
     }
@@ -832,16 +854,22 @@ impl Heap {
         map: AnyValueRef,
         key: AnyValue,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        // Linear, for the same reason as `read_map_addr_value_ref` above.
+        // The `AnyValue` sibling of `read_map_addr_value_ref`, searched the same
+        // way: `map_key_cmp_any` agrees with `same_any_value`.
         let addr = map.map_addr()?;
         let count = unsafe { map_count(addr) };
-        for i in 0..count {
-            let (entry_key, _) = unsafe { map_entry(addr, i) };
-            if !same_any_value(entry_key, key) {
-                continue;
+        let (mut low, mut high) = (0usize, count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let (entry_key, _) = unsafe { map_entry(addr, middle) };
+            match map_key_cmp_any(entry_key, key) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => {
+                    let (_, entry_value) = unsafe { map_entry_refs(addr, middle) };
+                    return Ok(Some(entry_value));
+                }
             }
-            let (_, entry_value) = unsafe { map_entry_refs(addr, i) };
-            return Ok(Some(entry_value));
         }
         Ok(None)
     }

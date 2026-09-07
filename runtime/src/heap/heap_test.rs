@@ -1437,10 +1437,17 @@ fn map_packed_tags_round_trip() {
         let mut h = Heap::new(1024, empty_registry());
         let bits = h.alloc_map_slots(&entries);
         let p = map_addr_from_tagged(bits).unwrap();
-        for (i, expected) in entries.iter().enumerate() {
-            let got = unsafe { map_entry(p, i) };
-            assert_eq!(got, *expected);
-        }
+        // The SET of entries round-trips, not their positions. A map is a
+        // sorted array and `alloc_map_slots` sorts (fz-5xp.49), so where an
+        // entry lands is the map's business; what this test is about is that
+        // the packed key/value KIND tags survive the write and read back as the
+        // same values.
+        let mut written: Vec<(AnyValue, AnyValue)> = (0..entries.len()).map(|i| unsafe { map_entry(p, i) }).collect();
+        let mut expected = entries.clone();
+        let by_debug = |pair: &(AnyValue, AnyValue)| format!("{:?}", pair);
+        written.sort_by_key(by_debug);
+        expected.sort_by_key(by_debug);
+        assert_eq!(written, expected, "count {count}");
     }
 }
 
