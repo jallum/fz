@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:37:15Z",
+  "description": "Found by the cold review of fz-5xp.31. PRE-EXISTING (identical at HEAD).\n\n    extern \"C\" fn libc::sqrt(float) :: float\n    libc::sqrt(9)          # note: integer literal, float parameter\n\n  interp -\u003e 3.0     `AnyValue::as_float` widens `Int` (src/ir_interp/value.rs)\n  run    -\u003e panic: tagged float decoding has been retired\n            (src/compiler2/native_codegen/value.rs)\n  build  -\u003e the same\n\nOne door silently coerces, two abort. Both behaviours are defensible; having\nboth is not.\n\nTHE CHOICE is the same one already made for `==` in fz-5xp.9: fz widens integer\nto float where the operation is numeric. If extern arguments widen too, the\ninterpreter is right and native needs an int-to-float conversion at the marshal.\nIf they do not, the interpreter should refuse and the refusal belongs in the\nshared front end, where the declared parameter type and the argument type are\nboth known -- a wrong argument type for a declared extern is a compile-time\nquestion, not a runtime one.\n\nPrefer the second: an extern's declared wire types are a contract with a foreign\nfunction, and quietly reinterpreting an argument is how the register-bank bug in\nfz-5xp.31 stayed invisible for so long.\n\nDONE = one behaviour on all three doors, with a fixture.",
+  "id": "fz-5xp.35",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] An integer passed to a float extern parameter is coerced on interp and aborts natively",
+  "type": "bug",
+  "updated_at": "2026-09-07T08:37:15Z"
+}
