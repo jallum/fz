@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T05:22:51Z",
   "created": "2026-09-07T02:37:34Z",
   "description": "DEBT CREATED BY fz-5xp.1, filed as its price rather than left to drift.\n\nfz-5xp.1 filled the entry-dispatch hole by writing a THIRD reading of the same\nquestion. Before it there were two implementations and one hole; after it there\nare three implementations. That is the shape fz-5xp.18 had just finished\nproving expensive, and this ticket exists so the count goes back down.\n\nWHAT IS ACTUALLY FOLDABLE -- verified, because \"three into one\" is not available:\n\n  EMITTERS (two, foldable):\n    native_codegen/receive.rs:1083   emit_bitstring_test\n      Emits Cranelift directly, into a standalone C-ABI leaf function the\n      scheduler calls: extern \"C\" fn(msg_ref, pinned, out) -\u003e u32, returning a\n      1-based clause index and writing bound values into a caller buffer\n      (runtime/src/park.rs MatcherFn). Carries PatternDispatchPlan\u003cRuntimeTypePredicate\u003e.\n    compiler2/jobs/native.rs         lower_bitstring_region\n      Emits fz IR -- ctx.emit_let / Term::If / block parameters -- as inline\n      control flow inside an ordinary compiled function. Carries\n      PatternDispatchPlan\u003cTy\u003e.\n    Same Region enum, same semantics, different emission target, different type\n    handle. One of these should be expressed in terms of the other, or both in\n    terms of a shared description of a region test.\n\n  EXECUTOR (one, NOT code-shareable):\n    ir_interp/dispatch_exec.rs:591   dispatch_read_bitstring\n      Walks runtime values rather than emitting instructions. An interpreter and\n      a backend cannot share this body. What keeps it honest is the parity gate,\n      not a shared function.\n\nSo the target is ONE EMITTER + ONE EXECUTOR + A GATE, not one implementation.\n\nSCOPE NOTE: this is bigger than bitstrings. Region::Type, Region::Equal,\nRegion::List, Region::TupleArity, Region::MapKeyPresent and Region::Guard are\nALL implemented in both emitters today. Bitstring is simply the one where the\nduplication became visible, because entry dispatch never got its copy. Folding\nonly the bitstring arm would be the least valuable version of this ticket.\n\nWHY IT MATTERS BEYOND TIDINESS: the divergence is not hypothetical. fz-5xp.18\nfound `2 \u003e= 1.0` answering false on one door and true on another for exactly\nthis reason, and a third comparison implementation in guards that was wrong on\nBOTH doors. Every region kind duplicated across the two emitters is a pair that\ncan drift the same way, and only a fixture that exercises the region on every\ndoor will notice.\n\nGATE: fixtures2/behavior/bitstring_clause_dispatch.fz already covers the\nbitstring region on all three doors against an Elixir twin. A fold should keep\nit green without being re-blessed.\n\nRelated: fz-5xp.21 audits which semantic questions are answered more than once;\nthis is the dispatch-layer instance of that audit.",
   "id": "fz-5xp.22",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Fold the two native dispatch region emitters into one",
   "type": "task",
-  "updated_at": "2026-09-07T02:51:03Z"
+  "updated_at": "2026-09-07T05:22:51Z"
 }
