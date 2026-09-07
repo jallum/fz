@@ -1,0 +1,6 @@
+:negative_float
+:other
+:negative_int
+:other
+:negative_float
+:negative_int

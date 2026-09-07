@@ -901,6 +901,20 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     }
 }
 
+/// `-x` for an integer. Its own symbol rather than `0 - x`, because the two
+/// differ: `0.0 - 0.0` is `0.0` while `-0.0` is `-0.0`, and the float sibling
+/// below has to preserve that.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_neg_i(value: i64) -> i64 {
+    -value
+}
+
+/// `-x` for a float. `fneg` flips the sign bit, so `-0.0` stays `-0.0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {
+    -value
+}
+
 /// Is this bitstring byte-aligned -- a `binary` rather than a partial
 /// `bitstring`?
 ///

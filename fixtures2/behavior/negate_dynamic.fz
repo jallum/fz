@@ -1,0 +1,44 @@
+#---
+# purpose: "negating a value that may be an integer or a float works on every door, like every other operator"
+# oracle: oracle.exs
+#---
+#
+# # negate_dynamic
+#
+# Every BINARY arithmetic operator is a typed clause family in `Kernel`, so a
+# dynamically-typed operand dispatches on its runtime type. Unary minus was
+# lowered straight to one machine instruction and read a single lane, so it
+# aborted natively on exactly the values subtraction handled fine:
+#
+#     0 - pick(0)     interp -4.5   run -4.5   build -4.5
+#     -pick(0)        interp -4.5   run ABORT  build ABORT
+#
+# Subtracting from zero worked and negating did not. `-x` is now
+# `Kernel.negate(x)`, which makes the two agree by construction.
+#
+# A JSON number parser is exactly this shape: it negates a value that is an
+# integer or a float depending on the text it just scanned.
+#
+# ## What it covers
+#
+#   * negation of a union-typed value, both arms;
+#   * negation through a function whose parameter is untyped, so the lane
+#     cannot be known at the call;
+#   * `-0.0`, which must stay `-0.0`. This is why `-x` is NOT lowered as
+#     `0 - x`: that answers `0.0`, and the sign of zero is observable;
+#   * negative literals beside them, which fold to literals rather than calls.
+fnp pick(0), do: 4.5
+fnp pick(_), do: 9
+
+fnp negate_any(x), do: -x
+
+fn main() do
+  dbg(-pick(0))
+  dbg(-pick(1))
+  dbg(negate_any(2.5))
+  dbg(negate_any(7))
+  dbg(negate_any(0.0))
+  dbg(-0.0)
+  dbg(-3)
+  dbg(-3.5)
+end

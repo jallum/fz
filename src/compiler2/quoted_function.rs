@@ -349,7 +349,15 @@ fn decode_named_expr(
     match (name.as_str(), args.len()) {
         ("-", 1) => {
             let inner = decode_expr(&args[0], Some(span))?;
-            Ok(Spanned::new(Expr::UnOp(UnOp::Neg, Box::new(inner)), span))
+            // A negative LITERAL is a literal, exactly as in patterns
+            // (`decode_negative_pattern`). Folding it keeps `-3` a constant
+            // instead of a call to `Kernel.negate/1`, which is what
+            // `source_sugar` rewrites every other unary minus into.
+            match inner.node {
+                Expr::Int(value) => Ok(Spanned::new(Expr::Int(-value), span)),
+                Expr::Float(value) => Ok(Spanned::new(Expr::Float(-value), span)),
+                _ => Ok(Spanned::new(Expr::UnOp(UnOp::Neg, Box::new(inner)), span)),
+            }
         }
         ("not", 1) => {
             let inner = decode_expr(&args[0], Some(span))?;

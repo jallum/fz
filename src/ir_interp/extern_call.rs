@@ -10,7 +10,8 @@ use fz_runtime::extern_variadic::{
 use fz_runtime::ir_runtime::{
     fz_atom_to_binary, fz_binary_concat, fz_bitstring_is_binary, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8,
     fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_entry_key,
-    fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref, fz_value_eq_widening_ref,
+    fz_map_entry_value, fz_op_neg_f, fz_op_neg_i, fz_process_heap_alloc_stats, fz_value_cmp_ref,
+    fz_value_eq_widening_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -575,6 +576,8 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         "fz_op_sub_if" => Some(fz_op_sub_if as *const ()),
         "fz_op_sub_fi" => Some(fz_op_sub_fi as *const ()),
         "fz_op_sub_ff" => Some(fz_op_sub_ff as *const ()),
+        "fz_op_neg_i" => Some(fz_op_neg_i as *const ()),
+        "fz_op_neg_f" => Some(fz_op_neg_f as *const ()),
         "fz_op_mul_ii" => Some(fz_op_mul_ii as *const ()),
         "fz_op_mul_if" => Some(fz_op_mul_if as *const ()),
         "fz_op_mul_ff" => Some(fz_op_mul_ff as *const ()),

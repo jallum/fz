@@ -389,7 +389,11 @@ where
             let v = eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match)?;
             match op {
                 PatternGuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
-                PatternGuardUnaryOp::Neg => AnyValue::Int(-guard_int(v)?),
+                // The same negation an EXPRESSION gets. Forcing the operand to
+                // an integer here made `when -x > 0.0` silently fail its guard
+                // for a float and fall to the next clause, so `interp` answered
+                // a different clause than `run` and `build` (fz-5xp.46).
+                PatternGuardUnaryOp::Neg => super::binop::eval_unop(crate::fz_ir::UnOp::Neg, v).ok()?,
             }
         }
         PatternGuardExpr::Binary { op, lhs, rhs } => {

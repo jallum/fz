@@ -10,6 +10,8 @@ defmodule Kernel do
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
   extern "fz" fn fz_binary_concat(binary, binary) :: binary
+  extern "C" fn fz_op_neg_i(integer) :: integer
+  extern "C" fn fz_op_neg_f(float) :: float
   extern "C" fn fz_op_add_ii(integer, integer) :: integer
   extern "C" fn fz_op_add_if(integer, float) :: float
   extern "C" fn fz_op_add_ff(float, float) :: float
@@ -110,6 +112,20 @@ defmodule Kernel do
   @doc "Constructs a Range struct."
   @spec range(integer, integer, integer) :: any
   fn range(first, last, step), do: Range.new(first, last, step)
+
+  # Unary minus. Every BINARY operator is a typed clause family, so a
+  # dynamically-typed operand dispatches; unary minus was lowered straight to
+  # one machine instruction and read one lane, so `-x` aborted natively where
+  # `0 - x` worked (fz-5xp.38). The front door rewrites `-x` to this call --
+  # except for a literal, which folds to a negative literal and never becomes a
+  # call at all.
+  #
+  # Not `0 - x`: that answers `0.0` for `-0.0`, and the sign of zero is
+  # observable.
+  @spec negate(integer) :: integer
+  @spec negate(float) :: float
+  fn negate(x :: integer), do: fz_op_neg_i(x)
+  fn negate(x :: float), do: fz_op_neg_f(x)
 
   @spec integer + integer :: integer
   @spec float + float :: float

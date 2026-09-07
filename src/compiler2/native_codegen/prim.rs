@@ -1490,8 +1490,43 @@ where
         let xf = body.as_raw_f64(var_env, x.0);
         return Ok(LowerOut::RawF64(body.b.ins().fneg(xf)));
     }
-    let xi = body.as_raw_i64(var_env, x.0);
-    Ok(LowerOut::RawI64(body.b.ins().ineg(xi)))
+    if matches!(repr, ArgRepr::RawInt) || ty_is_int(t, value_types, x) {
+        let xi = body.as_raw_i64(var_env, x.0);
+        return Ok(LowerOut::RawI64(body.b.ins().ineg(xi)));
+    }
+    // Neither lane is provable, so ask the value at runtime.
+    //
+    // An expression never gets here -- the front door rewrites `-x` to
+    // `Kernel.negate/1`, whose typed clauses dispatch (fz-5xp.38). A GUARD
+    // does: it is lowered inside the dispatch plan rather than as a call, so
+    // `when -x > 0.0` on an operand the plan has not yet narrowed reached
+    // `as_raw_i64` and aborted in `fz_unbox_int` (fz-5xp.47).
+    let value = *var_env.get(&x.0).expect("neg operand");
+    let is_int = body.value_is_tag(value, ValueKind::INT);
+    let int_blk = body.b.create_block();
+    let float_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, types::I64);
+    let no_args: Vec<BlockArg> = Vec::new();
+    body.b.ins().brif(is_int, int_blk, &no_args, float_blk, &no_args);
+
+    body.b.switch_to_block(int_blk);
+    body.b.seal_block(int_blk);
+    let raw_int = body.value_raw_int_for_checked_branch(value);
+    let negated_int = body.b.ins().ineg(raw_int);
+    let boxed_int = body.box_int_for_any(negated_int);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(boxed_int)]);
+
+    body.b.switch_to_block(float_blk);
+    body.b.seal_block(float_blk);
+    let raw_float = body.value_raw_float(value);
+    let negated_float = body.b.ins().fneg(raw_float);
+    let boxed_float = body.box_float_for_any(negated_float);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(boxed_float)]);
+
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    Ok(LowerOut::ValueRef(body.b.block_params(join_blk)[0]))
 }
 
 fn try_typed_binop_fast_path<T, F, I, M>(
