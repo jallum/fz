@@ -208,6 +208,7 @@ List cons (16 bytes): head payload word
                       link word = tail address + head-kind nibble + alias bit
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
+                      -- ENTRIES ARE SORTED BY KEY, see below
 Closure:              schema id + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
@@ -221,6 +222,43 @@ a rendered fun reports (`#fn<env_schema/arity>`, matching Elixir's
 `#Function<index.uniq/arity>`); the environment half moves whenever demand
 elides a capture or inlining folds one away, which is why rendering it produced
 goldens that changed without the program changing.
+
+### A map is a flat SORTED array
+
+Not a HAMT. Elixir's structural-sharing intuitions do not transfer: `put` and
+`delete` each copy the whole array, so a loop over n keys is O(n^2). `Map`'s
+module docs say this and put the BULK functions first, which is the opposite of
+Elixir's emphasis and deliberate.
+
+Sortedness is an INVARIANT, not a convention, because lookup binary-searches it.
+Two things have to hold and both were once false:
+
+- the key ORDER has to agree with the key EQUALITY. Bitstrings were ordered by
+  ADDRESS while `same_value_ref` compared them structurally, so two equal binary
+  keys never became adjacent, a dedup driven by the order never saw them
+  collide, and `%{"ab" => 1, ("a" <> "b") => 2}` kept both entries -- the JIT
+  door answering `1` where Elixir and the interpreter answer `2` (fz-5xp.48).
+  Binary keys now order by CONTENT, and `BITSTRING` and `PROCBIN` of equal
+  content order together. Lists, tuples and maps as keys are still ordered AND
+  compared by address, so they agree with each other but not with structural
+  equality — that is fz-5xp.27;
+
+- every map has to actually BE sorted. Both raw writers -- `alloc_map_slots` and
+  `alloc_map_refs_bits` -- now sort and dedup, holding the invariant in two
+  places rather than asking it of every caller. They were fixed a commit apart
+  for the same reason each time: a caller that did not sort. `fz_process_heap_alloc_stats`
+  handed insertion order to the first (fz-5xp.49); `fz_map_from_kv` handed
+  unsorted pairs to the second (fz-5xp.12). A linear scan hides this completely,
+  because a scan consults the equality and never the order.
+
+Dedup keeps the LAST value for a duplicate key, matching Elixir.
+
+ITERATION ORDER is by key, and matches Elixir exactly for BINARY keys. It cannot
+for ATOM keys: Elixir orders atoms by an internal identity fz does not share, so
+`Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there and `[:a, :b, :c]` here
+(fz-5xp.50). A fixture that prints an atom-keyed map cannot have an Elixir
+oracle; one that prints a binary-keyed map can. JSON object keys are strings,
+which is why the goal program can be oracled at all.
 
 The list link's **alias bit** is a conservative cell-local reuse guard. A cons
 is the single owner of its tail link until it is *published*; publication turns

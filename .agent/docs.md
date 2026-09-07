@@ -28,7 +28,7 @@ Read:
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
-- [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage, codegen value lanes, and GC.
+- [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage (including the map's flat SORTED array and the order-agrees-with-equality invariant), codegen value lanes, and GC.
 - [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
 - [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.
