@@ -4,8 +4,7 @@
     "fz-tfn.48"
   ],
   "blocks": [
-    "fz-tfn.39",
-    "fz-tfn.56"
+    "fz-tfn.39"
   ],
   "closed_at": "2026-09-06T14:13:44Z",
   "close_reason": "Implemented, fully verified, and ticket-cold accepted in commit 40563eeb7c05839f44536768d239832832e40c3b",
@@ -18,5 +17,5 @@
   "status": "closed",
   "title": "Eliminate repeated ancestor scans during rooted alternate-parent repair",
   "type": "bug",
-  "updated_at": "2026-09-06T14:41:30Z"
+  "updated_at": "2026-09-07T18:56:21Z"
 }
