@@ -3,7 +3,6 @@
   "blocked_by": [],
   "blocks": [
     "fz-kdt.114",
-    "fz-tfn.15",
     "fz-tfn.39"
   ],
   "created": "2026-08-25T02:14:31Z",
@@ -25,5 +24,5 @@
   "status": "in_progress",
   "title": "Make fact demand and subscriptions exact-edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:07Z"
+  "updated_at": "2026-09-07T18:56:09Z"
 }
