@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:13:48Z",
+  "description": "Surfaced while building String.Chars for fz-5xp.15. PRE-EXISTING and general --\nit is not specific to the new protocol.\n\n    Enum.count(:not_enumerable)     # Enumerable has no impl for Atom\n    Enum.count({1, 2})              # nor for Tuple\n    to_string(%{a: 1})              # StringChars has no impl for Map\n\nAll three:\n\n    thread 'main' panicked at src/compiler2/jobs/artifact.rs:142:6:\n    product materialization should have complete call edges after waits\n\nAn internal assertion, with no span, no code, and no mention of the protocol or\nthe receiver.\n\nWHY THIS BLOCKS fz-5xp.15. That ticket's main design point is that Elixir gives\n`String.Chars` NO `@fallback_to_any` on purpose: interpolating a map or a tuple\nRAISES rather than printing something structural, and the ticket says \"in fz it\nbecomes panic\". A panic is a defined outcome a program can be written against.\nAn ICE is not: the compiler falls over before the program exists. So the safety\nproperty fz-5xp.15 exists to preserve cannot currently be expressed.\n\nElixir, for comparison:\n\n    ** (Protocol.UndefinedError) protocol String.Chars not implemented for\n       %{a: 1} of type Map\n\nWHAT THE ANSWER PROBABLY IS. The receiver's type is known at the call: the\n`artifact.rs:142` assertion fires because dispatch found no impl and left the\ncall edge incomplete, which every later stage assumes cannot happen. Where the\nreceiver type is ground, \"no impl for this protocol and this type\" is decidable\nat compile time and deserves a real diagnostic with the callsite's span, naming\nthe protocol and the type -- better than Elixir, which can only raise at\nruntime. Where the receiver is a union that MIGHT have an impl, the arm with no\nimpl has to become a runtime panic.\n\nDONE = the three calls above each produce a diagnostic (ground receiver) or a\nruntime panic (union receiver) naming the protocol and the receiver type, on all\nthree doors, with a fixture. The `artifact.rs:142` assertion should then be\nunreachable for this reason.",
+  "id": "fz-5xp.40",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "[BUG] A protocol call with no matching impl is a compiler ICE, not a diagnostic",
+  "type": "bug",
+  "updated_at": "2026-09-07T09:13:48Z"
+}
