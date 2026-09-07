@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:09:08Z",
+  "description": "Serialize the completion's (reason, causes) in jsonl.rs alongside the existing changed/wakes/movements/blocked.\n\nHonour the original arc constraint: a telemetry-off run costs nothing. Emission is behind --log-telemetry like the rest of the stream.\n\nDone when a public log answers 'why did this evaluation run' by reading one record, with no cross-position join.",
+  "id": "fz-0am.2",
+  "labels": [],
+  "parent": "fz-0am",
+  "priority": 2,
+  "status": "open",
+  "title": "Project the carried cause onto the public stream",
+  "type": "task",
+  "updated_at": "2026-09-07T09:09:08Z"
+}
