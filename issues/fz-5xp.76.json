@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T19:17:04Z",
+  "description": "## What to change\n\nThe comment style asked for on PR #122 -- gently pedagogic, simple, just the facts, with no ticket numbers or ticket state and no capitals used for emphasis -- was applied to `json.fz` only, because that is the file the review pointed at. The sibling modules still carry the old style.\n\nTicket references appear 17 times, in `enum.fz`, `kernel.fz`, `map.fz`, `range.fz`, `string.fz` and `string_chars.fz`:\n\n```\n# fz-5xp.8 -- the default sort is Erlang's TOTAL TERM ORDER, not `\u003c=`.\n# `get` is a binary search (fz-5xp.12), which needs the array's order to agree\n# with its key equality (fz-5xp.48) ...\n```\n\nCapitals-for-emphasis appears on about 39 lines, including whole-phrase shouting (`A map here is a FLAT SORTED ARRAY`, `ITERATION ORDER is by key`, `---- BULK: one pass ----`).\n\nSome of these comments also narrate how the code came to be rather than what it does -- \"the tranches fz-5xp.8 (term order), fz-5xp.12 (Map) and fz-5xp.15 (String.Chars) unblocked\" is epic state, not a fact about the module.\n\n## How\n\nKeep every fact, including measurements and genuine limitations; drop the provenance around them. Where a comment explains a choice by pointing at a ticket, write the reason instead -- if it cannot be written without the ticket, it is not yet explained. Where a module follows Elixir's model, one note in the `@moduledoc` carries it and the per-clause re-justifications come out.\n\n## Note\n\n`Json.fz` and `Map.fz` line numbers are pinned by `json_roundtrip.expected.diagnostics` and `json_decode_cost.expected.diagnostics`, which quote runtime-library source. Any comment edit in those two modules shifts them, so the goldens are re-blessed with the change. Only line numbers move; compare with the numbers stripped to confirm that.",
+  "id": "fz-5xp.76",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "The runtime library's sibling modules still carry ticket numbers and shouty emphasis in their comments",
+  "type": "task",
+  "updated_at": "2026-09-07T19:17:04Z"
+}
