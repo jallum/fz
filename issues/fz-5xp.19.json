@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T08:40:16Z",
   "created": "2026-09-07T00:43:17Z",
   "description": "Hit while implementing fz-5xp.18. An extern whose parameter is an integer lane and whose RETURN is a float lane is mis-marshalled on both execution paths. Filed rather than worked around: fz-5xp.18 took a different route (typed comparison intrinsics returning bool), so this defect is unblocked but still live and will bite the first String/Float primitive shaped this way.\n\nREPRO. `fz_promote_f64` already exists in the runtime (`runtime/src/ir_runtime.rs:2000`, `raw_int as f64`), is already JIT-registered (`src/ir_codegen/backend.rs:238`) and already has a wire signature (`src/ir_codegen/runtime_syms.rs:102`, `(\u0026[I64], \u0026[F64])`). Declaring it from fz source:\n\n  extern \"C\" fn fz_promote_f64(integer) :: float\n\nNATIVE — the generated extern wrapper fails Cranelift verification:\n\n  codegen: verify fz_promote_f64__e22:\n  - inst2 (v4 = call fn2(v2)): arg 0 (v2) has type f64, expected i64\n\n  function u0:0(i64, i64) -\u003e i64 tail {\n      sig0 = (i64) -\u003e f64 system_v      ; fn0 = u0:58\n      sig3 = (i64) -\u003e f64 system_v      ; fn2 = u0:50\n  block0(v0: i64, v1: i64):\n      v2 = call fn0(v0)                 ; promotes the ARGUMENT to f64\n      v3 = call fn1(v1)\n      v4 = call fn2(v2)                 ; then calls the extern, which wants i64\n      return_call_indirect sig2, v3(v4, v1)\n  }\n\nThe wrapper promotes the argument as though the declared FLOAT RETURN made the\nparameter a float lane, then calls the real extern with the promoted value. The\ndeclared parameter type (integer) is not what decides the argument lane.\n\nINTERP — no verifier to catch it; the call silently returns a wrong value.\nObserved: every mixed comparison built on it answered as though the integer were\nsmaller, i.e. the f64 result was reinterpreted rather than returned.\n\nWHY IT MATTERS. `ExternTy::F64` is a declared wire type (`src/extern_contract.rs:29`)\nand the runtime already exposes float-returning helpers. Any future\n`fz_float_to_binary`-adjacent primitive, or anything shaped\n`(integer) :: float`, is on this path. See fz-5xp.15 (Float formatting) and\nfz-5xp.14 (String), both of which add primitives with float lanes.\n\nSCOPE. Find where the extern wrapper decides argument lanes from the return\ntype rather than the parameter types, fix it on the generic path, and cover it\nwith a fixture that declares an `(integer) :: float` extern and runs on all\nthree doors. Note the interp leg needs the symbol bound in\n`src/ir_interp/extern_call.rs` (statically-linked rlibs are not visible to\ndlsym), which is a separate, known step.\n\nRelated: fz-5xp.3, which makes extern properties declared rather than\nspecial-cased. This defect is an argument for doing that work with lanes in\nmind, not only the process argument.",
   "id": "fz-5xp.19",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "An extern declared (integer) :: float fails to lower on both native and interp",
   "type": "bug",
-  "updated_at": "2026-09-07T08:37:38Z"
+  "updated_at": "2026-09-07T08:40:16Z"
 }
