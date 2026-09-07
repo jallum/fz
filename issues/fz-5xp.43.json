@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:45:01Z",
+  "description": "Found by cold review of fz-5xp.15.\n\n    defmodule Integer do defstruct [:v] end\n    fn main(), do: dbg(to_string(7))\n\n    error[resolve/unknown-import]: module `Integer` does not export `to_string/1`\n      --\u003e runtime:StringChars.fz:29:24\n\nThe user's `defstruct` wins `classify_impl_target` (src/compiler2/world.rs),\nso the RUNTIME LIBRARY's own `StringChars.Integer` impl body now resolves\n`Integer.to_string(i)` against the user's module. The only span in the\ndiagnostic points at runtime-library source; the user's `defmodule` is never\nmentioned. Same for `Float` and `Atom`. Elixir warns about redefining the\nmodule and then works.\n\nSofter sibling, no diagnostic at all: a user `defmodule Integer` WITHOUT a\ndefstruct silently REPLACES the runtime module -- `Integer.to_string/1`\ndisappears -- and if the user's module happens to define `to_string/1` it\nsilently becomes the `StringChars.Integer` impl.\n\nPRE-EXISTING MECHANISM, newly reachable: before fz-5xp.15 no runtime module was\nnamed after a builtin value family, so nothing depended on the collision. Now\n`Atom`, `Integer` and `Float` all are.\n\nDONE = a user module shadowing a runtime-library module is either diagnosed at\nthe user's own span or namespaced so it cannot capture the library's internal\ncalls. Not \"the library should avoid those names\": `Integer.to_string/1` is the\nElixir-parity spelling and the epic wants it.\n\nRelated: a user `defimpl` for a family the runtime library already implements is\nsilently IGNORED rather than overriding or erroring (verified with\n`defimpl Enumerable, for: List`), which is the same question of who wins.",
+  "id": "fz-5xp.43",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A user defstruct named Integer, Float or Atom silently captures the builtin family's protocol dispatch",
+  "type": "task",
+  "updated_at": "2026-09-07T09:45:01Z"
+}
