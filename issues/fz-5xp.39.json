@@ -7,9 +7,15 @@
   "id": "fz-5xp.39",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Landed. CORRECTION to this ticket's own repro list: `1e10` is a SyntaxError in\nELIXIR too, not just fz --\n\n    elixir -e 'IO.inspect(1e10)'  -\u003e  ** (SyntaxError) invalid syntax\n\nAn exponent requires a fractional part. So fz now accepts exactly what Elixir\naccepts (`1.0e14`, `1.0e-7`, `1.0E3`, `1.5e+3`, `1_000.5e-3`) and still\nrejects `1e10`. Accepting it would have been a divergence dressed up as a\nconvenience.\n\nThe exponent is taken only when a digit actually follows, so `1.0end` still\nlexes as Float(1.0) + End.\n\nbehavior/float_rendering now covers the values it previously had to omit --\n1.0e-7, 5.0e-324, 1.7976931348623157e308, and both sides of the 1.0e16\nnotation boundary -- against the Elixir oracle on all three doors.",
+      "timestamp": "2026-09-07T10:00:21Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] Float literals cannot have an exponent",
   "type": "bug",
-  "updated_at": "2026-09-07T09:05:15Z"
+  "updated_at": "2026-09-07T10:00:21Z"
 }
