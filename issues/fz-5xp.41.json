@@ -7,9 +7,15 @@
   "id": "fz-5xp.41",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "AUTHORIZED to stay as it is for now (user, 2026-09-07: 'we're in a better\nposition for now'). The absent String.Chars.List impl is a knowingly accepted\ngap, not an oversight, and this ticket is the record of it.",
+      "timestamp": "2026-09-07T14:18:26Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "String.Chars has four of Elixir's five impls: List is absent",
   "type": "task",
-  "updated_at": "2026-09-07T09:14:12Z"
+  "updated_at": "2026-09-07T14:18:26Z"
 }
