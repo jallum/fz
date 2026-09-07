@@ -4,7 +4,6 @@
     "fz-tfn.30"
   ],
   "blocks": [
-    "fz-kdt.48",
     "fz-tfn.39"
   ],
   "closed_at": "2026-09-06T19:41:09Z",
@@ -40,5 +39,5 @@
   "status": "closed",
   "title": "Absorb decidably subsumed list clauses at the Ty interning boundary",
   "type": "task",
-  "updated_at": "2026-09-06T20:06:59Z"
+  "updated_at": "2026-09-07T18:56:12Z"
 }
