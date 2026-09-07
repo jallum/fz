@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T18:54:00Z",
   "close_reason": "Superseded by the atomic implementation boundary fz-tfn.47; all valid acceptance criteria moved into that description.",
   "created": "2026-09-04T15:37:04Z",
@@ -15,5 +13,5 @@
   "status": "closed",
   "title": "Absorbed into fz-tfn.47",
   "type": "bug",
-  "updated_at": "2026-09-07T18:54:00Z"
+  "updated_at": "2026-09-07T18:55:43Z"
 }
