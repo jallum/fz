@@ -9,9 +9,15 @@
   "id": "fz-5xp.8",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "fz-5xp.18 leaves you a deletion. Kernel now answers every integer/float pair through a typed clause, and runtime type dispatch selects those clauses even when the static type is a numeric union (verified: operands typed `integer | float` agree with Elixir on all six operators, all three doors). So `lower_cmp_binop`'s coercion slow path in native_codegen/prim.rs -- the both_int tag test, the brif, the box_float_for_any call and the fz_promote_f64 pair -- is no longer reachable for numbers.\n\nWhat still reaches it is exactly non-numeric operands, which is this ticket's subject and where it currently produces a wrong answer rather than an error (Enum.sort([\"pear\",\"apple\",\"fig\"]) returns [\"pear\",\"fig\",\"apple\"]). Whatever term ordering lands here should DELETE that path rather than sit beside it -- a comparison seat that silently promotes a binary to a float is the thing being replaced, not a fallback worth keeping.",
+      "timestamp": "2026-09-07T00:45:54Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "There is no term ordering: Enum.sort is silently wrong on non-numerics",
   "type": "bug",
-  "updated_at": "2026-09-06T23:44:50Z"
+  "updated_at": "2026-09-07T00:45:54Z"
 }
