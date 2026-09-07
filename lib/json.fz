@@ -1,5 +1,29 @@
 defmodule Json do
-  @moduledoc "JSON decoding and encoding over fz values, following Elixir's `JSON` module."
+  @moduledoc """
+  JSON decoding and encoding over fz values, following Elixir's `JSON` module.
+
+  Values map between JSON and fz as follows:
+
+    * a number becomes an integer when it has no fraction, and a float
+      otherwise
+    * `true`, `false` and `null` become `true`, `false` and `nil`
+    * a string becomes a binary
+    * an array becomes a list
+    * an object becomes a map with binary keys
+
+  Decoding can fail, so there is both `decode/1` and `decode!/1`. Encoding
+  cannot fail for the values it accepts, so `encode!/1` is the only
+  spelling.
+
+  ## Examples
+
+      Json.decode("{\\"a\\": 1}")
+      #=> {:ok, %{"a" => 1}}
+
+      Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
+      #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
+
+  """
 
   # Values map like this:
   #
@@ -26,7 +50,37 @@ defmodule Json do
   # recursive-descent parser has in hand. The offset is recovered once, at the
   # boundary, as `byte_size(input) - byte_size(rest)`, so no position needs to
   # be threaded through the parser.
-  @doc "Decodes a JSON binary. {:ok, value} or {:error, reason}."
+  @doc """
+  Decodes a JSON binary.
+
+  Returns `{:ok, value}`, or `{:error, reason}` where `reason` carries the
+  byte offset at which decoding stopped:
+
+      {:unexpected_end, offset}
+      {:invalid_byte, offset, byte}
+      {:unexpected_sequence, offset, sequence}
+
+  `unexpected_end` means the input ran out before a complete value.
+  `invalid_byte` names the offending byte at `offset`, including trailing
+  input left over after an otherwise complete value. `unexpected_sequence`
+  means a `\\uXXXX` escape's four digits were not all hex; `sequence` is
+  the six bytes read for it, starting at the backslash.
+
+  ## Examples
+
+      Json.decode("{\\"a\\": 1}")
+      #=> {:ok, %{"a" => 1}}
+
+      Json.decode("[1, 2")
+      #=> {:error, {:unexpected_end, 5}}
+
+      Json.decode("[1, 2] junk")
+      #=> {:error, {:invalid_byte, 6, 32}}
+
+      Json.decode("\\"a\\\\uZZZZb\\"")
+      #=> {:error, {:unexpected_sequence, 2, "\\\\uZZZZ"}}
+
+  """
   @spec decode(binary) :: {:ok, any} | {:error, any}
   fn decode(input), do: decode_done(value(input), input)
 
@@ -39,7 +93,21 @@ defmodule Json do
   fnp decode_trailing(_raw, "", v, _input), do: {:ok, v}
   fnp decode_trailing(raw, _skipped, _v, input), do: {:error, reason(raw, input)}
 
-  @doc "Decodes a JSON binary, or halts."
+  @doc """
+  Decodes a JSON binary, or halts.
+
+  Returns the decoded value, like `decode/1`, but halts the process instead
+  of returning an `{:error, reason}` tuple.
+
+  ## Examples
+
+      Json.decode!("[1,2,3]")
+      #=> [1, 2, 3]
+
+  On invalid input, `decode!/1` halts the process rather than returning; for
+  example `Json.decode!("not json")` halts with `"JSON.decode!: invalid JSON"`.
+
+  """
   @spec decode!(binary) :: any
   fn decode!(input), do: decode_result(decode(input))
 
@@ -61,7 +129,24 @@ defmodule Json do
   fnp invalid_byte(<<c, _r :: binary>>, at), do: {:invalid_byte, at, c}
   fnp invalid_byte(_rest, at), do: {:unexpected_end, at}
 
-  @doc "Encodes an fz value as a JSON binary, or halts."
+  @doc """
+  Encodes an fz value as a JSON binary, or halts.
+
+  Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
+  a map. Any other value halts the process, so there is no plain
+  `encode/1`. A map's keys are encoded with `encode!/1` too, so a binary
+  key becomes a quoted JSON string; other key types will not produce valid
+  JSON.
+
+  ## Examples
+
+      Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
+      #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
+
+      Json.encode!(1.5)
+      #=> "1.5"
+
+  """
   @spec encode!(any) :: binary
   fn encode!(true), do: "true"
   fn encode!(false), do: "false"

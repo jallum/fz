@@ -67,3 +67,23 @@ lookahead in the parser. Continuation vs. new-statement is a static,
 per-token fact resolved once at tokenize time (leading position) or an
 ordinary grammar rule (trailing position) — never a runtime guess about
 what a future token "looks like".
+
+## Heredocs are string literals
+
+`"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines
+with the closing delimiter's indentation stripped. It is a string LITERAL, not
+a raw string, so it carries both of a literal's behaviours:
+
+- **Escapes are processed.** Source `one\"two` stores `one"two`. A lone `"`
+  needs no escape, since only `"""` terminates the heredoc, so a backslash that
+  should survive into the text has to be doubled: `"{\\"a\\": 1}"` in the source
+  stores `"{\"a\": 1}"`.
+- **Interpolation runs.** `"a#{1 + 1}b"` inside a heredoc stores `a2b`.
+  `\#{x}` suppresses it and stores `#{x}`; `dbg` re-escapes a literal `#{` when
+  it renders, so a round trip looks doubled and is not.
+
+Both apply to `@doc """ ... """` and `@moduledoc """ ... """`, which take the
+same string token. Documentation that quotes fz syntax is therefore executable
+text: a doc explaining interpolation contains `#{...}` and will interpolate it,
+and an unbound name there currently changes what the module compiles to without
+reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.

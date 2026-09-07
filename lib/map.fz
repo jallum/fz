@@ -1,5 +1,15 @@
 defmodule Map do
-  @moduledoc "A map is a flat sorted array, not a HAMT like Elixir's -- bulk functions are the fast path. See the note below."
+  @moduledoc """
+  A map is a flat sorted array, not a hash map like Elixir's.
+
+  Keys stay in sorted order, so `get/2` and `has_key?/2` are binary
+  searches. `put/3` and `delete/2` each copy the whole array, so a loop
+  over `n` keys is `O(n^2)`. `new/1`, `merge/2`, `take/2`, `drop/2`,
+  `filter/2`, and `split/2` each do one pass and one allocation instead --
+  reach for one of those when a call site touches more than one key.
+
+  See the note below for how key order compares to Elixir's.
+  """
 
   # A map is a flat sorted array. Structural sharing does not transfer:
   # `put/3` and `delete/2` each copy the whole array, so a loop over n keys is
@@ -27,27 +37,94 @@ defmodule Map do
 
   # One pass, one allocation each. Reach for these when working with several keys.
 
-  @doc "A map from a list of {key, value} pairs. Later keys win."
+  @doc """
+  Builds a map from a list of `{key, value}` pairs. When a key repeats,
+  the last pair wins.
+
+  ## Examples
+
+      Map.new([{:a, 1}, {:b, 2}])
+      #=> %{:a => 1, :b => 2}
+
+      Map.new([{:a, 1}, {:a, 2}])
+      #=> %{:a => 2}
+
+  """
   @spec new([{any, any}]) :: any
   fn new(pairs), do: build(pairs, [], [])
 
-  @doc "Both maps, with `b`'s value winning on a shared key."
+  @doc """
+  Merges `a` and `b` into one map. Where both have a key, `b`'s value wins.
+
+  One pass, one allocation.
+
+  ## Examples
+
+      Map.merge(%{a: 1, b: 2}, %{b: 3, c: 4})
+      #=> %{:a => 1, :b => 3, :c => 4}
+
+  """
   @spec merge(any, any) :: any
   fn merge(a, b), do: build(to_list(a) ++ to_list(b), [], [])
 
-  @doc "Only the given keys, in one pass."
+  @doc """
+  Returns a new map with only the given `keys`.
+
+  Keys with no entry in `map` are ignored. One pass, one allocation.
+
+  ## Examples
+
+      Map.take(%{a: 1, b: 2, c: 3}, [:a, :c])
+      #=> %{:a => 1, :c => 3}
+
+      Map.take(%{a: 1, b: 2, c: 3}, [:a, :zzz])
+      #=> %{:a => 1}
+
+  """
   @spec take(any, [any]) :: any
   fn take(map, keys), do: build(taken(map, keys, []), [], [])
 
-  @doc "Everything except the given keys, in one pass."
+  @doc """
+  Returns a new map without the given `keys`.
+
+  Keys with no entry in `map` are ignored. One pass, one allocation.
+
+  ## Examples
+
+      Map.drop(%{a: 1, b: 2, c: 3}, [:b])
+      #=> %{:a => 1, :c => 3}
+
+  """
   @spec drop(any, [any]) :: any
   fn drop(map, keys), do: build(dropped(to_list(map), keys, []), [], [])
 
-  @doc "The entries whose {key, value} the function keeps."
+  @doc """
+  Returns a new map keeping only the `{key, value}` pairs for which `fun`
+  returns true.
+
+  One pass, one allocation.
+
+  ## Examples
+
+      Map.filter(%{a: 1, b: 2, c: 3}, fn ({_k, v}) -> rem(v, 2) == 1 end)
+      #=> %{:a => 1, :c => 3}
+
+  """
   @spec filter(any, ({any, any}) -> bool) :: any
   fn filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
 
-  @doc "{taken, dropped} by the given keys, in one pass each."
+  @doc """
+  Returns `{taken, dropped}`: the given `keys` and everything else, as two
+  maps.
+
+  Equivalent to `{take(map, keys), drop(map, keys)}`, one pass each.
+
+  ## Examples
+
+      Map.split(%{a: 1, b: 2, c: 3}, [:a, :c])
+      #=> {%{:a => 1, :c => 3}, %{:b => 2}}
+
+  """
   @spec split(any, [any]) :: {any, any}
   fn split(map, keys), do: {take(map, keys), drop(map, keys)}
 
@@ -78,7 +155,22 @@ defmodule Map do
 
   # Each of these copies the whole array. Use them for a single key, not in a loop.
 
-  @doc "The map with `key` set. Copies the whole array; do not use in a loop."
+  @doc """
+  Returns the map with `value` set for `key`, overwriting any existing
+  entry.
+
+  Copies the whole array; prefer `new/1` or `merge/2` over a loop of
+  `put/3` calls.
+
+  ## Examples
+
+      Map.put(%{a: 1}, :b, 2)
+      #=> %{:a => 1, :b => 2}
+
+      Map.put(%{a: 1}, :a, 99)
+      #=> %{:a => 99}
+
+  """
   #
   # A typed clause family, like the arithmetic operators in `Kernel`. A scalar
   # value has to reach the heap through its own writer -- handing an unboxed
@@ -90,38 +182,121 @@ defmodule Map do
   fn put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
   fn put(map, key, value), do: fz_map_put_ref(map, key, value)
 
-  @doc "The value for `key`, or nil."
+  @doc """
+  Returns the value for `key`, or `nil` when the key is absent.
+
+  ## Examples
+
+      Map.get(%{a: 1}, :a)
+      #=> 1
+
+      Map.get(%{a: 1}, :b)
+      #=> nil
+
+  """
   @spec get(any, any) :: any
   fn get(map, key), do: map[key]
 
-  @doc "The value for `key`, or `default`."
+  @doc """
+  Returns the value for `key`, or `default` when the key is absent.
+
+  ## Examples
+
+      Map.get(%{a: 1}, :a, 0)
+      #=> 1
+
+      Map.get(%{a: 1}, :b, 0)
+      #=> 0
+
+  """
   @spec get(any, any, any) :: any
   fn get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
 
   fnp get_or(map, key, _default, true), do: map[key]
   fnp get_or(_map, _key, default, false), do: default
 
-  @doc "The map without `key`. Copies the whole array; prefer drop/2 for several."
+  @doc """
+  Returns the map without `key`, or `map` unchanged if `key` is absent.
+
+  Copies the whole array; prefer `drop/2` for removing several keys.
+
+  ## Examples
+
+      Map.delete(%{a: 1, b: 2}, :a)
+      #=> %{:b => 2}
+
+      Map.delete(%{a: 1}, :zzz)
+      #=> %{:a => 1}
+
+  """
   @spec delete(any, any) :: any
   fn delete(map, key), do: fz_map_delete(map, key)
 
-  @doc "The number of entries."
+  @doc """
+  Returns the number of entries in `map`.
+
+  ## Examples
+
+      Map.size(%{a: 1, b: 2})
+      #=> 2
+
+      Map.size(%{})
+      #=> 0
+
+  """
   @spec size(any) :: integer
   fn size(map), do: fz_map_count(map)
 
-  @doc "Entries as a {key, value} list, in key order."
+  @doc """
+  Returns the entries as a `{key, value}` list, in key order.
+
+  ## Examples
+
+      Map.to_list(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> [{"a", 1}, {"b", 2}, {"c", 3}]
+
+  """
   @spec to_list(any) :: [{any, any}]
   fn to_list(map), do: to_list(map, fz_map_count(map), 0, [])
 
-  @doc "Just the keys, in order."
+  @doc """
+  Returns just the keys, in key order.
+
+  ## Examples
+
+      Map.keys(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> ["a", "b", "c"]
+
+  """
   @spec keys(any) :: [any]
   fn keys(map), do: keys(map, fz_map_count(map), 0, [])
 
-  @doc "Just the values, in key order."
+  @doc """
+  Returns just the values, in key order.
+
+  ## Examples
+
+      Map.values(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> [1, 2, 3]
+
+  """
   @spec values(any) :: [any]
   fn values(map), do: values(map, fz_map_count(map), 0, [])
 
-  @doc "True when `key` is present."
+  @doc """
+  Returns true when `key` is present in `map`.
+
+  A binary search, like `get/2` and `get/3`.
+
+  ## Examples
+
+      Map.has_key?(%{a: 1}, :a)
+      #=> true
+
+      Map.has_key?(%{a: 1}, :b)
+      #=> false
+
+  """
   @spec has_key?(any, any) :: bool
   fn has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
 
@@ -153,24 +328,92 @@ defmodule Map do
     end
   end
 
-  @doc "Enumerable.reduce/3 callback body for maps."
+  @doc """
+  The `Enumerable.reduce/3` callback body for maps.
+
+  Called by `Enumerable`, not usually by hand; reach for `Enum.reduce/3`
+  and friends instead.
+
+  ## Examples
+
+      Map.reduce(%{a: 1, b: 2}, {:cont, 0}, fn ({_k, v}, acc) -> {:cont, acc + v} end)
+      #=> {:done, 3}
+
+  """
   @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
   fn reduce(map, acc, reducer), do: reduce(map, fz_map_count(map), acc, reducer)
 
-  @doc "Enumerable.reduce_while/3 callback body for maps."
+  @doc """
+  The `Enumerable.reduce_while/3` callback body for maps.
+
+  Called by `Enumerable`, not usually by hand; reach for
+  `Enum.reduce_while/3` instead.
+
+  ## Examples
+
+      Map.reduce_while(%{a: 1, b: 2, c: 3}, 0, fn ({_k, v}, acc) ->
+        if v == 2 do
+          {:halt, acc}
+        else
+          {:cont, acc + v}
+        end
+      end)
+      #=> 1
+
+  """
   @spec reduce_while(any, b, (any, b) -> {:cont, b} | {:halt, c}) :: b | c
   fn reduce_while(map, acc, reducer), do: reduce_while_cont(map, fz_map_count(map), 0, acc, reducer)
 
-  @doc "Counts a map for Enumerable."
+  @doc """
+  Returns the number of entries in `map`, the `Enumerable.count/1`
+  callback. Same as `size/1`.
+
+  ## Examples
+
+      Map.count(%{a: 1, b: 2})
+      #=> 2
+
+  """
   @spec count(any) :: integer
   fn count(map), do: fz_map_count(map)
 
-  @doc "Returns true when a key-value pair appears in the map for Enumerable."
+  @doc """
+  Returns true when the `{key, value}` pair appears in `map`, the
+  `Enumerable.member?/2` callback.
+
+  Anything other than a `{key, value}` tuple is never a member.
+
+  ## Examples
+
+      Map.member?(%{a: 1}, {:a, 1})
+      #=> true
+
+      Map.member?(%{a: 1}, {:a, 2})
+      #=> false
+
+      Map.member?(%{a: 1}, :not_a_pair)
+      #=> false
+
+  """
   @spec member?(any, any) :: bool
   fn member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
   fn member?(_map, _value), do: false
 
-  @doc "Returns the slice contract for maps."
+  @doc """
+  Returns the `Enumerable.slice/1` contract for `map`: `{:ok, size,
+  to_list}`, where `to_list` ignores its argument and returns the map's
+  entries.
+
+  ## Examples
+
+      {:ok, n, to_list} = Map.slice(%{a: 1, b: 2})
+      n
+      #=> 2
+
+      to_list.(nil)
+      #=> [a: 1, b: 2]
+
+  """
   @spec slice(any) :: {:ok, integer, any}
   fn slice(map) do
     {:ok, fz_map_count(map), (fn (_map) -> to_list(map) end)}

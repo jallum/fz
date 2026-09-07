@@ -1,16 +1,16 @@
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:445:3
+  --> runtime:Enum.fz:976:3
     |
-405 |   fnp split_sort_list([left_head, right_head | tail], left, right) do
+936 |   fnp split_sort_list([left_head, right_head | tail], left, right) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime
     = help: add a wildcard clause `_ -> ...` to cover any remaining input
 
 warning[type/no-matching-clause]: `fn` clauses don't cover every input
-  --> runtime:Enum.fz:457:3
+  --> runtime:Enum.fz:988:3
     |
-417 |   fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
+948 |   fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
     |
     = note: an input matched by no clause halts with `:function_clause` at runtime

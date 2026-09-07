@@ -1,10 +1,29 @@
 defmodule Float do
+  @moduledoc "Functions for working with floats."
+
   extern "fz" fn fz_float_to_binary(float) :: binary
 
   # Not the rendering `dbg` uses. `inspect/1` writes a whole float below 1.0e16
   # out in full, as `1000000000000000.0`, where this gives whichever notation is
   # shorter, `1.0e15`. Elixir draws the same distinction, so the runtime carries
   # both renderings and neither is a rounding of the other.
+  @doc """
+  Returns the float's shortest textual representation as a binary.
+
+  This picks whichever of standard or scientific notation is shorter. That is
+  not the rendering `dbg/1` and `inspect/1` use: `inspect/1` writes any float
+  below 1.0e16 out in full, so the two can disagree on the same value without
+  either being a rounding of the other.
+
+  ## Examples
+
+      Float.to_string(3.14)
+      #=> "3.14"
+
+      Float.to_string(1000000000000000.0)
+      #=> "1.0e15"
+
+  """
   @spec to_string(float) :: binary
   fn to_string(f), do: fz_float_to_binary(f)
 end

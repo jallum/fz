@@ -1,15 +1,59 @@
 defmodule Range do
-  @moduledoc "Integer range values."
+  @moduledoc """
+  A range represents a sequence of integers from `first` to `last`,
+  in steps of `step`.
+
+  A range is a struct with three fields — `first`, `last`, and `step`
+  — built with `Range.new/3`, or with the `first..last` and
+  `first..last//step` syntax that desugars to it (`first..last` is
+  short for a `step` of `1`). Ranges are inclusive of both `first` and
+  `last`: `1..5` holds `1`, `2`, `3`, `4`, and `5`.
+
+  Ranges implement the `Enumerable` protocol, so they work with every
+  function in `Enum`:
+
+      Enum.to_list(1..5)
+      #=> [1, 2, 3, 4, 5]
+
+      Enum.to_list(5..1//-1)
+      #=> [5, 4, 3, 2, 1]
+
+  The functions in this module beyond `new/3` are `Enumerable`
+  callback bodies; they are reached through `Enum`, not called
+  directly.
+  """
 
   defstruct [:first, :last, :step]
 
   @type t :: %Range{first: integer, last: integer, step: integer}
 
-  @doc "Constructs a Range struct."
+  @doc """
+  Creates a new range from `first` to `last`, in steps of `step`.
+
+  This is the function `first..last` and `first..last//step` desugar
+  to; `first..last` supplies `1` for `step`. A range is inclusive of
+  both `first` and `last`. If `step`'s sign doesn't match the
+  direction from `first` to `last`, the range holds no elements.
+
+  ## Examples
+
+      Range.new(1, 5, 1)
+      #=> 1..5
+
+      Range.new(1, 5, 2)
+      #=> 1..5//2
+
+  """
   @spec new(integer, integer, integer) :: t
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 
-  @doc "Enumerable.reduce/3 callback body for ranges."
+  @doc """
+  Implements the `Enumerable.reduce/3` callback for ranges.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.reduce/2`, `Enum.reduce/3`, and every other
+  `Enum` function that folds over a range, by way of `Enum.to_list/1`.
+  """
   @spec reduce(integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
   fn reduce(first, last, step, {:cont, :first}, reducer), do: reduce_start(first, last, step, first, :first, reducer)
   fn reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
@@ -19,11 +63,30 @@ defmodule Range do
   end
   fn reduce(_first, _last, _step, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
 
-  @doc "Enumerable.reduce_while/3 callback body for ranges."
+  @doc """
+  Implements the `Enumerable.reduce_while/3` callback for ranges.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.reduce_while/3` and the `Enum` functions built
+  on it, such as `Enum.take_while/2`, `Enum.all?/1`, and `Enum.find/2`.
+  """
   @spec reduce_while(integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
   fn reduce_while(first, last, step, acc, reducer), do: reduce_while_cont(first, last, step, first, acc, reducer)
 
-  @doc "Counts range elements for Enumerable."
+  @doc """
+  Implements the `Enumerable.count/1` callback for ranges.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.count/1`. Because a range's bounds are known
+  up front, this returns the count directly instead of walking the
+  range element by element.
+
+  ## Examples
+
+      Range.count(1, 5, 1)
+      #=> 5
+
+  """
   @spec count(integer, integer, integer) :: integer
   fn count(first, last, step) do
     if done?(last, step, first) do
@@ -36,7 +99,24 @@ defmodule Range do
     end
   end
 
-  @doc "Returns true when value appears in the range for Enumerable."
+  @doc """
+  Implements the `Enumerable.member?/2` callback for ranges.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.member?/2` and the `in` operator. Because a
+  range's bounds and step are known up front, membership is decided
+  by arithmetic rather than a search; a non-integer can never belong
+  to a range of integers.
+
+  ## Examples
+
+      Range.member?(1, 10, 2, 5)
+      #=> true
+
+      Range.member?(1, 10, 2, 4)
+      #=> false
+
+  """
   @spec member?(integer, integer, integer, any) :: bool
   # A range holds integers, so nothing else is in it. Without the fallthrough
   # the arithmetic below reached a float and aborted the process on the native
@@ -55,7 +135,21 @@ defmodule Range do
 
   fn member?(_first, _last, _step, _value), do: false
 
-  @doc "Slices a range for Enumerable."
+  @doc """
+  Implements the slicing half of the `Enumerable.slice/1` callback for
+  ranges: `Enumerable.slice/1` closes over `first`, `last`, and `step`
+  and returns this function to be called with `start`, `amount`, and
+  `stride`.
+
+  This is protocol plumbing, not a function to call directly, and
+  fz's `Enum` module does not yet have a function that reaches it.
+
+  ## Examples
+
+      Range.slice(1, 10, 1, 0, 3, 1)
+      #=> [1, 2, 3]
+
+  """
   @spec slice(integer, integer, integer, integer, integer, integer) :: [integer]
   fn slice(first, last, step, start, amount, stride) do
     slice_from(last, step + stride - 1, first + (start * step), amount, [])

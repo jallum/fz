@@ -1,5 +1,76 @@
 defmodule String do
-  @moduledoc "UTF-8 text: byte-level operations, codepoints, and search, following Elixir's `String` module where it applies."
+  @moduledoc """
+  UTF-8 encoded binaries, and the operations Elixir groups under `String`.
+
+  An fz string is an ordinary binary holding UTF-8 bytes. Two strings
+  concatenate with `<>`, the same as any other binary:
+
+      "hello" <> " " <> "world"
+      #=> "hello world"
+
+  ## Codepoints, graphemes, and bytes
+
+  `length/1` counts codepoints, not bytes -- a codepoint can take one to
+  four bytes, so a string's length and its byte size can differ:
+
+      String.length("héllo")
+      #=> 5
+
+      byte_size("héllo")
+      #=> 6
+
+  Elixir's `String` distinguishes a codepoint (one Unicode scalar value)
+  from a grapheme (what a reader perceives as one character, per Unicode
+  Standard Annex #29) -- an accented letter like "é" can be written as one
+  codepoint or as two ("e" plus a combining accent), and Elixir's
+  `graphemes/1` merges the two-codepoint form back into a single grapheme.
+  fz does not implement UAX #29: here a grapheme IS a codepoint, so
+  `graphemes/1` and `codepoints/1` return the same list, and a base letter
+  followed by a combining mark stays two elements instead of merging into
+  one:
+
+      String.codepoints(<<101, 204, 129>>)
+      #=> ["e", "́"]
+
+      String.graphemes(<<101, 204, 129>>)
+      #=> ["e", "́"]
+
+  This is correct for the vast majority of text; it differs from Elixir
+  only for combining marks, regional indicators, and other multi-codepoint
+  emoji sequences, where Elixir reports one grapheme and fz reports
+  several.
+
+  ## Case mapping
+
+  `upcase/1` and `downcase/1` are full Unicode case mapping, not ASCII --
+  some codepoints expand into several on upcasing, such as German "ß":
+
+      String.upcase("straße")
+      #=> "STRASSE"
+
+  ## Patterns
+
+  Where Elixir's `split/3`, `replace/4`, `contains?/2` and friends accept
+  a string, a list of strings, a regex, or a compiled pattern, the fz
+  versions here take a single binary. An empty pattern is also not
+  special-cased the way Elixir's are: `contains?/2` and `split/2` on `""`
+  report no match rather than matching everywhere.
+
+  ## Byte-level operations
+
+  Not every function here needs codepoints. `to_byte_list/1` is not
+  Elixir's `to_charlist/1` -- fz has no charlist type, so it returns the
+  same list of raw byte integers under a name that does not claim a parity
+  it cannot show. `take_bytes/2`, `drop_bytes/2`, and `byte_slice/3` work
+  in bytes directly, for callers who already know their boundaries line up
+  with codepoints.
+
+  ## Invalid UTF-8
+
+  fz does not assume its binaries are valid UTF-8. `valid?/1` checks a
+  whole binary, `chunk/1` splits one into maximal valid/invalid runs, and
+  `replace_invalid/2` replaces every invalid byte.
+  """
 
   # Almost everything here is a byte scanner over binaries. A tail is a view
   # of the original binary rather than a copy, and a segment whose size is
@@ -18,7 +89,24 @@ defmodule String do
   extern "fz" fn fz_binary_upcase(any) :: binary
   extern "fz" fn fz_binary_downcase(any) :: binary
 
-  @doc "The number of bytes."
+  @doc """
+  Returns the number of codepoints in `s`.
+
+  This is not `byte_size/1`: a codepoint can take one to four bytes, so a
+  string's length and its byte size can differ.
+
+  ## Examples
+
+      String.length("hello")
+      #=> 5
+
+      String.length("héllo")
+      #=> 5
+
+      byte_size("héllo")
+      #=> 6
+
+  """
   @spec length(binary) :: integer
   fn length(s), do: codepoint_count(s, 0)
 
@@ -30,7 +118,20 @@ defmodule String do
   fnp codepoint_count_step(nil, acc), do: acc
   fnp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
 
-  @doc "True when s begins with prefix."
+  @doc """
+  Returns whether `s` starts with `prefix`.
+
+  `prefix` is a single binary, not a list of alternatives.
+
+  ## Examples
+
+      String.starts_with?("hello", "he")
+      #=> true
+
+      String.starts_with?("hello", "xx")
+      #=> false
+
+  """
   @spec starts_with?(binary, binary) :: bool
   fn starts_with?(s, prefix), do: starts_with_size?(s, prefix, byte_size(prefix))
 
@@ -43,7 +144,20 @@ defmodule String do
     end
   end
 
-  @doc "True when s ends with suffix."
+  @doc """
+  Returns whether `s` ends with `suffix`.
+
+  `suffix` is a single binary, not a list of alternatives.
+
+  ## Examples
+
+      String.ends_with?("hello", "lo")
+      #=> true
+
+      String.ends_with?("hello", "xx")
+      #=> false
+
+  """
   @spec ends_with?(binary, binary) :: bool
   fn ends_with?(s, suffix), do: ends_with_size?(s, suffix, byte_size(s), byte_size(suffix))
 
@@ -56,7 +170,22 @@ defmodule String do
     end
   end
 
-  @doc "The first n bytes."
+  @doc """
+  Returns the first `n` bytes of `s`.
+
+  This is a byte offset, not a codepoint count -- pass a boundary that
+  does not fall inside a multi-byte codepoint and the result stays valid
+  UTF-8. When `s` has fewer than `n` bytes, `s` is returned unchanged.
+
+  ## Examples
+
+      String.take_bytes("hello world", 5)
+      #=> "hello"
+
+      String.take_bytes("hi", 10)
+      #=> "hi"
+
+  """
   @spec take_bytes(binary, integer) :: binary
   fn take_bytes(s, n), do: take_bytes_result(s, n)
 
@@ -68,7 +197,20 @@ defmodule String do
     end
   end
 
-  @doc "Everything after the first n bytes."
+  @doc """
+  Returns everything in `s` after the first `n` bytes.
+
+  When `s` has fewer than `n` bytes, the result is `""`.
+
+  ## Examples
+
+      String.drop_bytes("hello world", 6)
+      #=> "world"
+
+      String.drop_bytes("hi", 10)
+      #=> ""
+
+  """
   @spec drop_bytes(binary, integer) :: binary
   fn drop_bytes(s, n), do: drop_bytes_result(s, n)
 
@@ -80,11 +222,32 @@ defmodule String do
     end
   end
 
-  @doc "len bytes starting at start."
+  @doc """
+  Returns `len` bytes of `s` starting at byte offset `start`.
+
+  ## Examples
+
+      String.byte_slice("hello world", 6, 5)
+      #=> "world"
+
+  """
   @spec byte_slice(binary, integer, integer) :: binary
   fn byte_slice(s, start, len), do: take_bytes(drop_bytes(s, start), len)
 
-  @doc "Replaces prefix with replacement when present."
+  @doc """
+  Replaces `prefix` with `replacement` when `s` starts with it.
+
+  Returns `s` unchanged when it does not.
+
+  ## Examples
+
+      String.replace_prefix("hello", "he", "HE")
+      #=> "HEllo"
+
+      String.replace_prefix("hello", "xx", "HE")
+      #=> "hello"
+
+  """
   @spec replace_prefix(binary, binary, binary) :: binary
   fn replace_prefix(s, prefix, replacement) do
     if starts_with?(s, prefix) do
@@ -94,7 +257,20 @@ defmodule String do
     end
   end
 
-  @doc "Replaces suffix with replacement when present."
+  @doc """
+  Replaces `suffix` with `replacement` when `s` ends with it.
+
+  Returns `s` unchanged when it does not.
+
+  ## Examples
+
+      String.replace_suffix("hello", "lo", "LO")
+      #=> "helLO"
+
+      String.replace_suffix("hello", "xx", "LO")
+      #=> "hello"
+
+  """
   @spec replace_suffix(binary, binary, binary) :: binary
   fn replace_suffix(s, suffix, replacement) do
     if ends_with?(s, suffix) do
@@ -104,7 +280,17 @@ defmodule String do
     end
   end
 
-  @doc "Replaces every leading occurrence of match."
+  @doc """
+  Replaces every leading occurrence of `match` in `s` with `replacement`.
+
+  Stops at the first position that does not start with `match`.
+
+  ## Examples
+
+      String.replace_leading("aaabc", "a", "X")
+      #=> "XXXbc"
+
+  """
   @spec replace_leading(binary, binary, binary) :: binary
   fn replace_leading(s, match, replacement), do: replace_leading_guard(s, match, replacement, byte_size(match))
 
@@ -118,7 +304,18 @@ defmodule String do
     end
   end
 
-  @doc "Replaces every trailing occurrence of match."
+  @doc """
+  Replaces every trailing occurrence of `match` in `s` with `replacement`.
+
+  Stops at the first position, scanning from the end, that does not end
+  with `match`.
+
+  ## Examples
+
+      String.replace_trailing("abccc", "c", "Y")
+      #=> "abYYY"
+
+  """
   @spec replace_trailing(binary, binary, binary) :: binary
   fn replace_trailing(s, match, replacement), do: replace_trailing_guard(s, match, replacement, byte_size(match))
 
@@ -132,11 +329,33 @@ defmodule String do
     end
   end
 
-  @doc "Removes leading and trailing whitespace."
+  @doc """
+  Removes leading and trailing whitespace from `s`.
+
+  This trims the Unicode whitespace set, not just ASCII space -- the
+  ideographic space (U+3000) below is trimmed along with plain spaces.
+
+  ## Examples
+
+      String.trim("  hi  ")
+      #=> "hi"
+
+      String.trim("　hi　")
+      #=> "hi"
+
+  """
   @spec trim(binary) :: binary
   fn trim(s), do: trim_trailing(trim_leading(s))
 
-  @doc "Removes leading whitespace."
+  @doc """
+  Removes leading whitespace from `s`.
+
+  ## Examples
+
+      String.trim_leading("  hi")
+      #=> "hi"
+
+  """
   @spec trim_leading(binary) :: binary
   fn trim_leading(s), do: trim_leading_step(s, next_codepoint(s))
 
@@ -146,7 +365,15 @@ defmodule String do
     if whitespace?(cp), do: trim_leading(rest), else: s
   end
 
-  @doc "Removes trailing whitespace."
+  @doc """
+  Removes trailing whitespace from `s`.
+
+  ## Examples
+
+      String.trim_trailing("hi  ")
+      #=> "hi"
+
+  """
   @spec trim_trailing(binary) :: binary
   fn trim_trailing(s), do: reverse(trim_leading(reverse(s)))
 
@@ -193,24 +420,94 @@ defmodule String do
   #
   # This is full casing: the 103 special casings expand one codepoint into
   # several, so "straße" upcases to "STRASSE".
-  @doc "Unicode upper-casing."
+  @doc """
+  Converts every codepoint in `s` to uppercase.
+
+  This is full Unicode casing, so a single codepoint can expand into
+  several -- German "ß" upcases to two letters, "SS".
+
+  ## Examples
+
+      String.upcase("héllo")
+      #=> "HÉLLO"
+
+      String.upcase("straße")
+      #=> "STRASSE"
+
+  """
   @spec upcase(binary) :: binary
   fn upcase(s), do: fz_binary_upcase(s)
 
-  @doc "Unicode lower-casing."
+  @doc """
+  Converts every codepoint in `s` to lowercase.
+
+  This is full Unicode casing: the Turkish dotted capital "İ" downcases
+  to two codepoints, a plain "i" followed by a combining dot above.
+
+  ## Examples
+
+      String.downcase("HÉLLO")
+      #=> "héllo"
+
+      String.downcase("İ")
+      #=> "i̇"
+
+  """
   @spec downcase(binary) :: binary
   fn downcase(s), do: fz_binary_downcase(s)
 
-  @doc "Repeats s n times."
+  @doc """
+  Returns `s` repeated `n` times.
+
+  ## Examples
+
+      String.duplicate("ab", 3)
+      #=> "ababab"
+
+      String.duplicate("ab", 0)
+      #=> ""
+
+  """
   @spec duplicate(binary, integer) :: binary
   fn duplicate(_s, 0), do: ""
   fn duplicate(s, n), do: s <> duplicate(s, n - 1)
 
-  @doc "True when s contains pattern."
+  @doc """
+  Returns whether `s` contains `pattern`.
+
+  `pattern` is a single binary. Unlike Elixir, an empty pattern is not
+  treated as matching everywhere -- it reports no match.
+
+  ## Examples
+
+      String.contains?("hello", "ell")
+      #=> true
+
+      String.contains?("hello", "zz")
+      #=> false
+
+      String.contains?("hello", "")
+      #=> false
+
+  """
   @spec contains?(binary, binary) :: bool
   fn contains?(s, pattern), do: index_of(s, pattern) >= 0
 
-  @doc "The byte offset of the first occurrence, or -1."
+  @doc """
+  Returns the byte offset of the first occurrence of `pattern` in `s`.
+
+  Returns `-1` when `pattern` does not occur, and also when `pattern` is
+  `""`.
+
+  ## Examples
+
+      String.index_of("hello", "ll")
+      #=> 2
+
+      String.index_of("hello", "zz")
+      #=> -1
+
+  """
   @spec index_of(binary, binary) :: integer
   fn index_of(s, pattern), do: index_from(s, pattern, 0, byte_size(pattern))
 
@@ -228,7 +525,20 @@ defmodule String do
     end
   end
 
-  @doc "How many non-overlapping times pattern occurs."
+  @doc """
+  Returns how many non-overlapping times `pattern` occurs in `s`.
+
+  Returns `0` for `""`, rather than treating it as occurring everywhere.
+
+  ## Examples
+
+      String.count("banana", "an")
+      #=> 2
+
+      String.count("banana", "zz")
+      #=> 0
+
+  """
   @spec count(binary, binary) :: integer
   fn count(s, pattern), do: count_from(s, pattern, 0, byte_size(pattern))
 
@@ -243,7 +553,22 @@ defmodule String do
     end
   end
 
-  @doc "Splits on every occurrence of pattern."
+  @doc """
+  Splits `s` on every occurrence of `pattern`.
+
+  `pattern` is a single binary, not a list of patterns or a regex. When
+  `pattern` does not occur, the result is `[s]`; unlike Elixir, splitting
+  on `""` also returns `[s]` rather than the string's graphemes.
+
+  ## Examples
+
+      String.split("a,b,c", ",")
+      #=> ["a", "b", "c"]
+
+      String.split("abc", ",")
+      #=> ["abc"]
+
+  """
   @spec split(binary, binary) :: [binary]
   fn split(s, pattern), do: split_from(s, pattern, byte_size(pattern))
 
@@ -258,17 +583,54 @@ defmodule String do
     end
   end
 
-  @doc "Replaces every occurrence of pattern."
+  @doc """
+  Replaces every occurrence of `pattern` in `s` with `replacement`.
+
+  `pattern` is a single binary. Built from `split/2` and `join/2`, so an
+  empty `pattern` leaves `s` unchanged rather than inserting `replacement`
+  between every codepoint.
+
+  ## Examples
+
+      String.replace("a-b-c", "-", "+")
+      #=> "a+b+c"
+
+  """
   @spec replace(binary, binary, binary) :: binary
   fn replace(s, pattern, replacement), do: join(split(s, pattern), replacement)
 
-  @doc "Joins with separator between the parts."
+  @doc """
+  Joins the binaries in `parts`, with `separator` between each pair.
+
+  ## Examples
+
+      String.join(["a", "b", "c"], "-")
+      #=> "a-b-c"
+
+      String.join([], "-")
+      #=> ""
+
+      String.join(["only"], "-")
+      #=> "only"
+
+  """
   @spec join([binary], binary) :: binary
   fn join([], _separator), do: ""
   fn join([only], _separator), do: only
   fn join([head | tail], separator), do: head <> separator <> join(tail, separator)
 
-  @doc "{codepoint, rest} for the first codepoint, or nil when empty."
+  @doc """
+  Returns the first codepoint of `s` and the rest, or `nil` when `s` is empty.
+
+  ## Examples
+
+      String.next_codepoint("héllo")
+      #=> {"h", "éllo"}
+
+      String.next_codepoint("")
+      #=> nil
+
+  """
   @spec next_codepoint(binary) :: {binary, binary} | nil
   fn next_codepoint(<<>>), do: nil
   fn next_codepoint(s), do: split_codepoint(s, codepoint_size(first_byte(s)))
@@ -292,16 +654,53 @@ defmodule String do
   #
   # Until then a grapheme is a codepoint, which is correct for everything
   # outside combining marks, regional indicators and emoji sequences.
-  @doc "The byte length of the first grapheme."
+  @doc """
+  Returns the byte length of the first grapheme of `s`.
+
+  Since a grapheme is a codepoint in fz, this is the byte length of the
+  first codepoint, which UTF-8 encodes as one to four bytes.
+
+  ## Examples
+
+      String.next_grapheme_size("héllo")
+      #=> 1
+
+      String.next_grapheme_size("éllo")
+      #=> 2
+
+  """
   @spec next_grapheme_size(binary) :: integer
   fn next_grapheme_size(s), do: codepoint_size(first_byte(s))
 
-  @doc "{grapheme, rest} for the first grapheme, or nil when empty."
+  @doc """
+  Returns the first grapheme of `s` and the rest, or `nil` when `s` is empty.
+
+  ## Examples
+
+      String.next_grapheme("héllo")
+      #=> {"h", "éllo"}
+
+      String.next_grapheme("")
+      #=> nil
+
+  """
   @spec next_grapheme(binary) :: {binary, binary} | nil
   fn next_grapheme(""), do: nil
   fn next_grapheme(s), do: split_codepoint(s, next_grapheme_size(s))
 
-  @doc "Every grapheme as its own binary."
+  @doc """
+  Returns every grapheme of `s` as its own binary.
+
+  A grapheme is a codepoint here, so this returns the same list as
+  `codepoints/1` -- see the module documentation for where that differs
+  from Elixir.
+
+  ## Examples
+
+      String.graphemes("héllo")
+      #=> ["h", "é", "l", "l", "o"]
+
+  """
   @spec graphemes(binary) :: [binary]
   fn graphemes(s), do: graphemes_step(next_grapheme(s))
 
@@ -309,7 +708,15 @@ defmodule String do
   fnp graphemes_step(nil), do: []
   fnp graphemes_step({g, rest}), do: [g | graphemes(rest)]
 
-  @doc "Every codepoint as its own binary."
+  @doc """
+  Returns every codepoint of `s` as its own binary.
+
+  ## Examples
+
+      String.codepoints("héllo")
+      #=> ["h", "é", "l", "l", "o"]
+
+  """
   @spec codepoints(binary) :: [binary]
   fn codepoints(s), do: codepoints_step(next_codepoint(s))
 
@@ -317,7 +724,18 @@ defmodule String do
   fnp codepoints_step(nil), do: []
   fnp codepoints_step({cp, rest}), do: [cp | codepoints(rest)]
 
-  @doc "True for valid UTF-8."
+  @doc """
+  Returns whether `s` is valid UTF-8.
+
+  ## Examples
+
+      String.valid?("hi")
+      #=> true
+
+      String.valid?(<<255>>)
+      #=> false
+
+  """
   @spec valid?(binary) :: bool
   fn valid?(s), do: Utf8.valid?(s)
 
@@ -325,16 +743,45 @@ defmodule String do
   # `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so fz
   # has no such type or rendering. This returns the same list of integers,
   # under a name that does not claim a parity it cannot show.
-  @doc "Every byte as an integer."
+  @doc """
+  Returns every byte of `s` as an integer.
+
+  Not `to_charlist/1`: Elixir's returns a charlist, which `inspect`
+  renders as `~c"abc"`, and fz has no charlist type. This returns the
+  same list of integers under a name that does not claim a parity it
+  cannot show.
+
+  ## Examples
+
+      String.to_byte_list("abc")
+      #=> [97, 98, 99]
+
+  """
   @spec to_byte_list(binary) :: [integer]
   fn to_byte_list(<<c, rest :: binary>>), do: [c | to_byte_list(rest)]
   fn to_byte_list(_s), do: []
 
-  @doc "The atom with this name, interning it if new."
+  @doc """
+  Returns the atom named `s`, interning it if it does not already exist.
+
+  ## Examples
+
+      String.to_atom("hello")
+      #=> :hello
+
+  """
   @spec to_atom(binary) :: atom
   fn to_atom(s), do: fz_binary_to_atom(s)
 
-  @doc "Reverses the codepoints."
+  @doc """
+  Reverses the codepoints of `s`.
+
+  ## Examples
+
+      String.reverse("héllo")
+      #=> "olléh"
+
+  """
   @spec reverse(binary) :: binary
   fn reverse(s), do: reverse_onto(s, "")
 
@@ -345,7 +792,18 @@ defmodule String do
   fnp reverse_step(nil, acc), do: acc
   fnp reverse_step({cp, rest}, acc), do: reverse_onto(rest, cp <> acc)
 
-  @doc "The first codepoint, or nil."
+  @doc """
+  Returns the first codepoint of `s`, or `nil` when `s` is empty.
+
+  ## Examples
+
+      String.first("héllo")
+      #=> "h"
+
+      String.first("")
+      #=> nil
+
+  """
   @spec first(binary) :: binary | nil
   fn first(s), do: first_step(next_codepoint(s))
 
@@ -353,7 +811,18 @@ defmodule String do
   fnp first_step(nil), do: nil
   fnp first_step({cp, _rest}), do: cp
 
-  @doc "True when every codepoint is printable."
+  @doc """
+  Returns whether every codepoint in `s` is printable.
+
+  ## Examples
+
+      String.printable?("héllo")
+      #=> true
+
+      String.printable?(<<0>>)
+      #=> false
+
+  """
   @spec printable?(binary) :: bool
   fn printable?(s), do: valid?(s) and printable_bytes?(s)
 
@@ -380,7 +849,22 @@ defmodule String do
   fnp printable_byte?(27), do: true
   fnp printable_byte?(_c), do: false
 
-  @doc "The integer this string names, or halts."
+  @doc """
+  Returns the integer that `s` names, in base 10.
+
+  `s` must be an optional leading `-` followed by one or more decimal
+  digits; anything else halts the program. There is no base argument, so
+  callers wanting another base cannot use this function.
+
+  ## Examples
+
+      String.to_integer("42")
+      #=> 42
+
+      String.to_integer("-7")
+      #=> -7
+
+  """
   @spec to_integer(binary) :: integer
   fn to_integer(<<45, rest :: binary>>), do: 0 - digits_value(rest, 0, byte_size(rest))
   fn to_integer(s), do: digits_value(s, 0, byte_size(s))
@@ -396,7 +880,21 @@ defmodule String do
   end
   fnp digits_fold(_s, _acc), do: Kernel.panic("String.to_integer: not an integer")
 
-  @doc "The float this string names, or halts."
+  @doc """
+  Returns the float that `s` names, or halts.
+
+  `s` must have exactly one `.`, with digits on both sides -- `"1"` halts
+  where `"1.0"` succeeds, matching Elixir's own `to_float/1`.
+
+  ## Examples
+
+      String.to_float("2.5")
+      #=> 2.5
+
+      String.to_float("-0.25")
+      #=> -0.25
+
+  """
   @spec to_float(binary) :: float
   fn to_float(s), do: float_parts(split(s, "."))
 
@@ -423,7 +921,15 @@ defmodule String do
   fnp pow10(0), do: 1.0
   fnp pow10(n), do: 10.0 * pow10(n - 1)
 
-  @doc "Replaces every invalid UTF-8 sequence with replacement."
+  @doc """
+  Replaces every invalid UTF-8 byte sequence in `s` with `replacement`.
+
+  ## Examples
+
+      String.replace_invalid(<<104, 255, 105>>, "?")
+      #=> "h?i"
+
+  """
   @spec replace_invalid(binary, binary) :: binary
   fn replace_invalid(s, replacement), do: replace_invalid_step(s, replacement)
 
@@ -443,7 +949,18 @@ defmodule String do
     end
   end
 
-  @doc "Splits into runs that are all valid or all invalid UTF-8."
+  @doc """
+  Splits `s` into runs that are all valid or all invalid UTF-8.
+
+  ## Examples
+
+      String.chunk("hi")
+      #=> ["hi"]
+
+      String.chunk(<<104, 255, 105>>)
+      #=> ["h", <<255>>, "i"]
+
+  """
   @spec chunk(binary) :: [binary]
   fn chunk(""), do: []
   fn chunk(s), do: chunk_run(s, valid_here?(s))
@@ -473,7 +990,18 @@ defmodule String do
   fnp chunk_step(_s, false), do: 1
   fnp chunk_step(s, true), do: codepoint_size(first_byte(s))
 
-  @doc "The last codepoint, or nil."
+  @doc """
+  Returns the last codepoint of `s`, or `nil` when `s` is empty.
+
+  ## Examples
+
+      String.last("héllo")
+      #=> "o"
+
+      String.last("")
+      #=> nil
+
+  """
   @spec last(binary) :: binary | nil
   fn last(s), do: first(reverse(s))
 end

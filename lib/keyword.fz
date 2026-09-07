@@ -1,5 +1,29 @@
 defmodule Keyword do
-  @moduledoc "A list of {atom, value} 2-tuples, ordered and allowing duplicates, following Elixir's `Keyword` module."
+  @moduledoc """
+  A keyword list is an ordered list of `{atom, value}` two-tuples, most
+  often written with the `key: value` shorthand.
+
+      [a: 1, b: 2] == [{:a, 1}, {:b, 2}]
+      #=> true
+
+  Unlike `Map`, a keyword list keeps the order its entries were written in
+  and allows the same key to appear more than once. That combination
+  shapes every function in this module:
+
+    * Functions that read a single value, such as `get/2` and `fetch/2`,
+      answer with the first matching entry, so a later duplicate is
+      shadowed rather than merged.
+    * Functions that write a single value, such as `put/3`, remove every
+      existing entry for the key first, so afterward the key is unique
+      and sits at the front of the list.
+    * Functions that return every value for a key, such as `get_values/2`,
+      `keys/1`, and `values/1`, keep the duplicates and their original
+      order.
+
+  Every function here is a plain recursion over the list, so an operation
+  costs time proportional to the length of the list rather than the
+  constant time of a map lookup.
+  """
 
   # A keyword list is an ordered list of 2-tuples whose keys are atoms, and
   # duplicates are allowed. That is what separates it from Map, and every
@@ -16,33 +40,97 @@ defmodule Keyword do
   # Every function here is a plain recursion over the list, so the module needs
   # no allocating primitives of its own.
 
-  @doc "An empty keyword list."
+  @doc """
+  Returns an empty keyword list.
+
+  ## Examples
+
+      Keyword.new()
+      #=> []
+
+  """
   @spec new() :: keyword()
   fn new(), do: []
 
-  @doc "Builds a keyword list from an enumerable of 2-tuples."
+  @doc """
+  Builds a keyword list from an enumerable of `{atom, value}` two-tuples.
+
+  ## Examples
+
+      Keyword.new([{:a, 1}, {:b, 2}])
+      #=> [a: 1, b: 2]
+
+  """
   @spec new(any) :: keyword()
   fn new(pairs), do: Enum.to_list(pairs)
 
-  @doc "The value for key, or nil."
+  @doc """
+  Returns the value for `key`, or `nil` when the key is absent.
+
+  See `get/3` to supply a different default, and `fetch/2` to tell a
+  missing key apart from a stored `nil`.
+
+  ## Examples
+
+      Keyword.get([a: 1], :a)
+      #=> 1
+
+  """
   @spec get(keyword(), atom) :: any
   fn get(keywords, key), do: get(keywords, key, nil)
 
-  @doc "The value for key, or default."
+  @doc """
+  Returns the value for `key`, or `default` when the key is absent.
+
+  If `key` appears more than once, the first match wins.
+
+  ## Examples
+
+      Keyword.get([a: 1, b: 2], :a, 0)
+      #=> 1
+
+      Keyword.get([a: 1, b: 2], :c, 0)
+      #=> 0
+
+      Keyword.get([a: 1, a: 2], :a, 0)
+      #=> 1
+
+  """
   @spec get(keyword(), atom, any) :: any
   fn get([], _key, default), do: default
   fn get([{entry_key, value} | tail], key, default) do
     if entry_key === key, do: value, else: get(tail, key, default)
   end
 
-  @doc "{:ok, value} for the first match, or :error."
+  @doc """
+  Returns `{:ok, value}` for the first entry matching `key`, or `:error`.
+
+  ## Examples
+
+      Keyword.fetch([a: 1, b: 2], :a)
+      #=> {:ok, 1}
+
+      Keyword.fetch([a: 1], :z)
+      #=> :error
+
+  """
   @spec fetch(keyword(), atom) :: {:ok, any} | :error
   fn fetch([], _key), do: :error
   fn fetch([{entry_key, value} | tail], key) do
     if entry_key === key, do: {:ok, value}, else: fetch(tail, key)
   end
 
-  @doc "The value for key, or halts when absent."
+  @doc """
+  Returns the value for `key`, or halts when the key is absent.
+
+  Use `fetch/2` to get `:error` back instead of halting.
+
+  ## Examples
+
+      Keyword.fetch!([a: 1], :a)
+      #=> 1
+
+  """
   @spec fetch!(keyword(), atom) :: any
   fn fetch!(keywords, key), do: fetch_result(fetch(keywords, key), key)
 
@@ -50,7 +138,20 @@ defmodule Keyword do
   fnp fetch_result({:ok, value}, _key), do: value
   fnp fetch_result(:error, key), do: Kernel.panic("key not found in keyword list: #{key}")
 
-  @doc "Every value stored under key, in list order."
+  @doc """
+  Returns every value stored under `key`, in list order.
+
+  Returns an empty list when the key is absent.
+
+  ## Examples
+
+      Keyword.get_values([a: 1, b: 2, a: 3], :a)
+      #=> [1, 3]
+
+      Keyword.get_values([a: 1], :z)
+      #=> []
+
+  """
   @spec get_values(keyword(), atom) :: [any]
   fn get_values([], _key), do: []
   fn get_values([{entry_key, value} | tail], key) do
@@ -61,48 +162,136 @@ defmodule Keyword do
     end
   end
 
-  @doc "Replaces every entry for key with one at the front."
+  @doc """
+  Stores `value` under `key`, replacing every existing entry for `key`.
+
+  Removes every entry already present for `key`, then prepends the new
+  one, so afterward the key is unique and at the front of the list.
+
+  ## Examples
+
+      Keyword.put([a: 1, b: 2], :a, 9)
+      #=> [a: 9, b: 2]
+
+      Keyword.put([a: 1, a: 2], :a, 9)
+      #=> [a: 9]
+
+  """
   @spec put(keyword(), atom, any) :: keyword()
   fn put(keywords, key, value), do: [{key, value} | delete(keywords, key)]
 
-  @doc "Stores key only when it is absent."
+  @doc """
+  Stores `value` under `key`, unless the key already has an entry.
+
+  Returns the list unchanged when `key` is already present.
+
+  ## Examples
+
+      Keyword.put_new([a: 1], :a, 9)
+      #=> [a: 1]
+
+      Keyword.put_new([a: 1], :b, 2)
+      #=> [b: 2, a: 1]
+
+  """
   @spec put_new(keyword(), atom, any) :: keyword()
   fn put_new(keywords, key, value) do
     if has_key?(keywords, key), do: keywords, else: [{key, value} | keywords]
   end
 
-  @doc "Removes every entry for key."
+  @doc """
+  Removes every entry for `key`.
+
+  Returns the list unchanged when `key` is absent. Use `delete_first/2`
+  to remove only the first entry when duplicates exist.
+
+  ## Examples
+
+      Keyword.delete([a: 1, b: 2, a: 3], :a)
+      #=> [b: 2]
+
+  """
   @spec delete(keyword(), atom) :: keyword()
   fn delete([], _key), do: []
   fn delete([{entry_key, value} | tail], key) do
     if entry_key === key, do: delete(tail, key), else: [{entry_key, value} | delete(tail, key)]
   end
 
-  @doc "Removes the first entry for key."
+  @doc """
+  Removes the first entry for `key`, leaving any later duplicates in place.
+
+  Returns the list unchanged when `key` is absent.
+
+  ## Examples
+
+      Keyword.delete_first([a: 1, b: 2, a: 3], :a)
+      #=> [b: 2, a: 3]
+
+  """
   @spec delete_first(keyword(), atom) :: keyword()
   fn delete_first([], _key), do: []
   fn delete_first([{entry_key, value} | tail], key) do
     if entry_key === key, do: tail, else: [{entry_key, value} | delete_first(tail, key)]
   end
 
-  @doc "True when key has at least one entry."
+  @doc """
+  Returns `true` when `key` has at least one entry.
+
+  ## Examples
+
+      Keyword.has_key?([a: 1], :a)
+      #=> true
+
+      Keyword.has_key?([a: 1], :z)
+      #=> false
+
+  """
   @spec has_key?(keyword(), atom) :: bool
   fn has_key?([], _key), do: false
   fn has_key?([{entry_key, _value} | tail], key) do
     if entry_key === key, do: true, else: has_key?(tail, key)
   end
 
-  @doc "Every key, in list order, with duplicates kept."
+  @doc """
+  Returns every key, in list order, with duplicates kept.
+
+  ## Examples
+
+      Keyword.keys([a: 1, b: 2, a: 3])
+      #=> [:a, :b, :a]
+
+  """
   @spec keys(keyword()) :: [atom]
   fn keys([]), do: []
   fn keys([{key, _value} | tail]), do: [key | keys(tail)]
 
-  @doc "Every value, in list order, with duplicates kept."
+  @doc """
+  Returns every value, in list order, with duplicates kept.
+
+  ## Examples
+
+      Keyword.values([a: 1, b: 2, a: 3])
+      #=> [1, 2, 3]
+
+  """
   @spec values(keyword()) :: [any]
   fn values([]), do: []
   fn values([{_key, value} | tail]), do: [value | values(tail)]
 
-  @doc "Keeps only the entries whose keys are listed."
+  @doc """
+  Keeps only the entries whose keys appear in `wanted`.
+
+  Preserves list order and any duplicate keys.
+
+  ## Examples
+
+      Keyword.take([a: 1, b: 2, c: 3], [:a, :c])
+      #=> [a: 1, c: 3]
+
+      Keyword.take([a: 1, b: 2, c: 3, a: 5], [:a, :c])
+      #=> [a: 1, c: 3, a: 5]
+
+  """
   @spec take(keyword(), [atom]) :: keyword()
   fn take([], _wanted), do: []
   fn take([{key, value} | tail], wanted) do
@@ -113,7 +302,17 @@ defmodule Keyword do
     end
   end
 
-  @doc "Drops the entries whose keys are listed."
+  @doc """
+  Drops the entries whose keys appear in `unwanted`.
+
+  Preserves list order and any remaining duplicate keys.
+
+  ## Examples
+
+      Keyword.drop([a: 1, b: 2, c: 3], [:a, :c])
+      #=> [b: 2]
+
+  """
   @spec drop(keyword(), [atom]) :: keyword()
   fn drop([], _unwanted), do: []
   fn drop([{key, value} | tail], unwanted) do
@@ -124,12 +323,47 @@ defmodule Keyword do
     end
   end
 
-  @doc "Right-hand entries win, and their keys become unique."
+  @doc """
+  Folds `right` into `left`, one entry at a time, using `put/3`.
+
+  Every key from `right` ends up with a single entry, placed the way
+  `put/3` places it: at the front, ahead of whatever `left` (or an
+  earlier step of the fold) still has left over. When `right` itself
+  repeats a key, its last entry wins. Keys that only appear in `left`
+  are kept as they were, duplicates included.
+
+  ## Examples
+
+      Keyword.merge([a: 1, b: 2], [a: 9, c: 3])
+      #=> [c: 3, a: 9, b: 2]
+
+      Keyword.merge([a: 1, a: 2], [a: 9])
+      #=> [a: 9]
+
+      Keyword.merge([a: 1], [a: 2, a: 3])
+      #=> [a: 3]
+
+  """
   @spec merge(keyword(), keyword()) :: keyword()
   fn merge(left, []), do: left
   fn merge(left, [{key, value} | tail]), do: merge(put(left, key, value), tail)
 
-  @doc "Applies fun to the value for key, or stores default when absent."
+  @doc """
+  Applies `fun` to the value for `key`, or stores `default` when the key is absent.
+
+  When `key` is present this behaves like `update!/3`: every duplicate
+  entry for the key is removed and the updated value is stored once. When
+  it is absent, `default` is stored via `put/3`, unmodified by `fun`.
+
+  ## Examples
+
+      Keyword.update([a: 1], :a, 0, fn x -> x + 1 end)
+      #=> [a: 2]
+
+      Keyword.update([a: 1], :z, 0, fn x -> x + 1 end)
+      #=> [z: 0, a: 1]
+
+  """
   @spec update(keyword(), atom, any, (any) -> any) :: keyword()
   fn update(keywords, key, default, fun), do: update_result(fetch(keywords, key), keywords, key, default, fun)
 
@@ -137,15 +371,46 @@ defmodule Keyword do
   fnp update_result({:ok, value}, keywords, key, _default, fun), do: put(keywords, key, fun.(value))
   fnp update_result(:error, keywords, key, default, _fun), do: put(keywords, key, default)
 
-  @doc "Applies fun to the value for key, or halts when absent."
+  @doc """
+  Applies `fun` to the value for `key`, or halts when the key is absent.
+
+  ## Examples
+
+      Keyword.update!([a: 1], :a, fn x -> x + 1 end)
+      #=> [a: 2]
+
+  """
   @spec update!(keyword(), atom, (any) -> any) :: keyword()
   fn update!(keywords, key, fun), do: put(keywords, key, fun.(fetch!(keywords, key)))
 
-  @doc "{value, rest} for the first entry, or {default, keywords}."
+  @doc """
+  Removes every entry for `key`, returning `{value, rest}` for the first match.
+
+  Returns `{nil, keywords}` unchanged when `key` is absent. See `pop/3` to
+  choose a different default.
+
+  ## Examples
+
+      Keyword.pop([a: 1, b: 2], :a)
+      #=> {1, [b: 2]}
+
+      Keyword.pop([a: 1], :z)
+      #=> {nil, [a: 1]}
+
+  """
   @spec pop(keyword(), atom) :: {any, keyword()}
   fn pop(keywords, key), do: pop(keywords, key, nil)
 
-  @doc "{value, rest} for the first entry, or {default, keywords}."
+  @doc """
+  Removes every entry for `key`, returning `{value, rest}` for the first
+  match, or `{default, keywords}` unchanged when the key is absent.
+
+  ## Examples
+
+      Keyword.pop([a: 1], :z, 99)
+      #=> {99, [a: 1]}
+
+  """
   @spec pop(keyword(), atom, any) :: {any, keyword()}
   fn pop(keywords, key, default), do: pop_result(fetch(keywords, key), keywords, key, default)
 
@@ -153,7 +418,18 @@ defmodule Keyword do
   fnp pop_result({:ok, value}, keywords, key, _default), do: {value, delete(keywords, key)}
   fnp pop_result(:error, keywords, _key, default), do: {default, keywords}
 
-  @doc "True when every element is a 2-tuple with an atom key."
+  @doc """
+  Returns `true` when every element is an `{atom, value}` two-tuple.
+
+  ## Examples
+
+      Keyword.keyword?([a: 1, b: 2])
+      #=> true
+
+      Keyword.keyword?([{1, 2}])
+      #=> false
+
+  """
   @spec keyword?(any) :: bool
   fn keyword?([]), do: true
   fn keyword?([{key, _value} | tail]), do: atom_key?(key) and keyword?(tail)

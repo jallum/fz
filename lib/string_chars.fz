@@ -17,6 +17,31 @@
 # nominal target and silently never match a binary receiver.
 
 defprotocol StringChars do
+  @moduledoc """
+  The protocol behind `to_string/1` and string interpolation.
+
+  A type converts to a binary by implementing `to_string/1` with `defimpl
+  StringChars, for: SomeType`. `Kernel.to_string/1` dispatches here, and so
+  does every interpolated value, since `"a\#{x}b"` lexes to
+  `"a" <> Kernel.to_string(x) <> "b"`.
+
+  A receiver whose family has no implementation at all is refused at compile
+  time, naming this protocol; there is no generic fallback that stringifies a
+  value structurally.
+  """
+
+  @doc """
+  Converts `term` to a binary.
+
+  ## Examples
+
+      to_string(:hello)
+      #=> "hello"
+
+      "value: \#{5}"
+      #=> "value: 5"
+
+  """
   @spec to_string(t) :: binary
   fn to_string(term)
 end

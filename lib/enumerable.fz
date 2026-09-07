@@ -1,16 +1,57 @@
 defprotocol Enumerable do
+  @moduledoc """
+  The protocol behind `Enum`: a common contract for any type whose values can
+  be produced one at a time.
+
+  A type becomes enumerable by implementing every callback below, with
+  `defimpl Enumerable, for: SomeType`. `Enum`'s own functions -- `Enum.reduce/3`,
+  `Enum.count/1`, `Enum.member?/2`, and the rest -- are how these are normally
+  reached, rather than calling this protocol directly.
+  """
+
+  @doc """
+  Reduces the enumerable to a single value, driven by `reducer`'s `:cont`,
+  `:halt`, and `:suspend` instructions.
+
+  `Enum.reduce/2` and `Enum.reduce/3` are built on this one callback, so every
+  implementation has to get it right: it is what every other `Enum` operation
+  -- `map`, `filter`, `count`'s fallback, and so on -- ultimately reduces to.
+  """
   @spec reduce(t(a), b, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
   fn reduce(enumerable, acc, reducer)
 
+  @doc """
+  Reduces the enumerable, stopping as soon as `reducer` returns `{:halt, _}`.
+
+  `Enum.reduce_while/3` calls this directly.
+  """
   @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
   fn reduce_while(enumerable, acc, reducer)
 
+  @doc """
+  Returns the number of elements, or reports that this enumerable cannot
+  count itself without a full traversal.
+
+  `Enum.count/1` falls back to counting by reduction when this returns
+  `{:error, _}`.
+  """
   @spec count(t(a)) :: {:ok, integer} | {:error, any}
   fn count(enumerable)
 
+  @doc """
+  Reports whether `value` occurs in the enumerable, or that membership cannot
+  be answered without a full traversal.
+
+  `Enum.member?/2` falls back to a reducing search when this returns
+  `{:error, _}`.
+  """
   @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
   fn member?(enumerable, value)
 
+  @doc """
+  Returns the enumerable's size together with a slicing function, or reports
+  that it cannot be sliced without a full traversal.
+  """
   @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
   fn slice(enumerable)
 end

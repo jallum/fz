@@ -1,5 +1,22 @@
 defmodule Kernel do
-  @moduledoc "Core prelude functions available without an explicit import."
+  @moduledoc """
+  The functions and operators available everywhere, without a `Kernel.` prefix.
+
+  `Kernel` supplies:
+
+    * the arithmetic operators `+`, `-`, `*`, `/`, `%` and unary minus
+    * the comparison operators `<`, `<=`, `>`, `>=`, plus `==`, `!=`, `===`,
+      `!==` and the total term order `compare/2`
+    * process primitives: `self/0`, `send/2`, `spawn/1`, `spawn/2`,
+      `make_ref/0` and `make_resource/2`
+    * `panic/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
+      aborting the current process
+    * `dbg/1`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
+
+  Every arithmetic and comparison operator is a typed clause family: one
+  clause per pair of operand types it supports, and no catch-all. A pair
+  outside that set is refused at compile time rather than answered.
+  """
 
   extern "fz" fn fz_dbg_value(any) :: any
   extern "C" fn fz_panic(any) :: never
@@ -61,61 +78,185 @@ defmodule Kernel do
   extern "C" fn fz_op_gte_if(integer, float) :: bool
   extern "C" fn fz_op_gte_fi(float, integer) :: bool
 
-  @doc "Aborts the current process."
+  @doc """
+  Aborts the current process with `msg` as the reason.
+
+  There is no return value: the process stops before this call returns.
+  """
   @spec panic(any) :: never
   fn panic(msg), do: fz_panic(msg)
 
   # In Elixir, `to_string/1` is a macro expanding to `String.Chars.to_string/1`.
   # Here it is an ordinary function, since the macro's expansion has nothing
   # to do at compile time.
+  @doc """
+  Converts `term` to a binary via the `StringChars` protocol.
+
+  ## Examples
+
+      Kernel.to_string(42)
+      #=> "42"
+
+      Kernel.to_string(:hello)
+      #=> "hello"
+
+  """
   @spec to_string(any) :: binary
   fn to_string(term), do: StringChars.to_string(term)
 
-  @doc "Prints a value to standard output and returns it unchanged."
+  @doc """
+  Prints `x` to standard output and returns it unchanged.
+
+  ## Examples
+
+      Kernel.dbg(1 + 2)
+      #=> 3
+
+  """
   @spec dbg(t) :: t when t: any
   fn dbg(x), do: fz_dbg_value(x)
 
-  @doc "Aborts if the value is nil or false."
+  @doc """
+  Aborts the current process if `x` is `nil` or `false`.
+
+  Returns `nil` when `x` is truthy.
+
+  ## Examples
+
+      Kernel.assert(1 == 1)
+      #=> nil
+
+  """
   @spec assert(any) :: nil
   fn assert(x), do: if x, do: nil, else: panic("assertion failed")
 
-  @doc "Aborts with the given message if the value is nil or false."
+  @doc """
+  Aborts the current process with `msg` as the reason if `x` is `nil` or
+  `false`.
+
+  Like `assert/1`, but with a custom message.
+  """
   @spec assert(any, any) :: nil
   fn assert(x, msg), do: if x, do: nil, else: panic(msg)
 
-  @doc "Aborts if the value is truthy."
+  @doc """
+  Aborts the current process if `x` is truthy.
+
+  Returns `nil` when `x` is `nil` or `false`.
+
+  ## Examples
+
+      Kernel.refute(1 == 2)
+      #=> nil
+
+  """
   @spec refute(any) :: nil
   fn refute(x), do: if x, do: panic("refutation failed"), else: nil
 
-  @doc "Aborts with the given message if the value is truthy."
+  @doc """
+  Aborts the current process with `msg` as the reason if `x` is truthy.
+
+  Like `refute/1`, but with a custom message.
+  """
   @spec refute(any, any) :: nil
   fn refute(x, msg), do: if x, do: panic(msg), else: nil
 
-  @doc "Starts a process by applying a zero-argument function."
+  @doc """
+  Starts a process that applies the zero-argument function `fun`, and
+  returns its pid.
+
+  ## Examples
+
+      me = Kernel.self()
+      Kernel.spawn(fn () -> Kernel.send(me, 1 + 2) end)
+      receive do
+        x -> x
+      end
+      #=> 3
+
+  """
   @spec spawn(() -> any) :: pid
   fn spawn(fun), do: fz_spawn(fun)
 
-  @doc "Starts a process with runtime options."
+  @doc """
+  Starts a process like `spawn/1`, plus a minimum heap size hint in bytes.
+
+  The hint is accepted but not yet acted on.
+
+  ## Examples
+
+      parent = Kernel.self()
+      Kernel.spawn(fn () -> Kernel.send(parent, 42) end, 4096)
+      receive do
+        x -> x
+      end
+      #=> 42
+
+  """
   @spec spawn(() -> any, keyword()) :: pid
   fn spawn(fun, opts), do: fz_spawn_opt(fun, opts)
 
-  @doc "Returns the current process identifier."
+  @doc """
+  Returns the pid of the calling process.
+  """
   @spec self() :: pid
   fn self(), do: fz_self()
 
-  @doc "Sends a message to a process and returns the message. The receiver is a pid or its raw integer index; the runtime addresses processes by index and has no registry."
+  @doc """
+  Sends `msg` to `pid` and returns `msg`.
+
+  The receiver is a pid or its raw integer index; the runtime addresses
+  processes by index and has no registry.
+
+  ## Examples
+
+      Kernel.send(1, 42)
+      #=> 42
+
+      receive do
+        x -> x
+      end
+      #=> 42
+
+  """
   @spec send(pid | integer, t) :: t when t: any
   fn send(pid, msg), do: fz_send(pid, msg)
 
-  @doc "Returns a fresh opaque reference."
+  @doc """
+  Returns a fresh, opaque reference; no two calls in a process return the
+  same one.
+
+  ## Examples
+
+      Kernel.make_ref()
+      #=> 1
+
+  """
   @spec make_ref() :: ref
   fn make_ref(), do: fz_make_ref()
 
-  @doc "Wraps a host handle and destructor in a resource."
+  @doc """
+  Wraps a host handle `value` and destructor `dtor` in a resource.
+
+  `value` is an integer or a C pointer. `dtor` runs once, when the
+  resource is garbage-collected, even if the handle has been bound to
+  more than one name.
+  """
   @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
   fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
 
-  @doc "Constructs a Range struct."
+  @doc """
+  Constructs a `Range` from `first` to `last`, stepping by `step`.
+
+  ## Examples
+
+      Kernel.range(1, 5, 1)
+      #=> 1..5
+
+      Kernel.range(1, 10, 2)
+      #=> 1..10//2
+
+  """
   @spec range(integer, integer, integer) :: any
   fn range(first, last, step), do: Range.new(first, last, step)
 
@@ -128,11 +269,39 @@ defmodule Kernel do
   #
   # Not `0 - x`: that answers `0.0` for `-0.0`, and the sign of zero is
   # observable.
+  @doc """
+  Returns the negation of `x`.
+
+  This is what `-x` compiles to when `x` is not a literal.
+
+  ## Examples
+
+      Kernel.negate(5)
+      #=> -5
+
+      Kernel.negate(0.0)
+      #=> -0.0
+
+  """
   @spec negate(integer) :: integer
   @spec negate(float) :: float
   fn negate(x :: integer), do: fz_op_neg_i(x)
   fn negate(x :: float), do: fz_op_neg_f(x)
 
+  @doc """
+  Returns the sum of `left` and `right`.
+
+  Mixing an integer and a float returns a float.
+
+  ## Examples
+
+      1 + 2
+      #=> 3
+
+      1 + 2.0
+      #=> 3.0
+
+  """
   @spec integer + integer :: integer
   @spec float + float :: float
   @spec integer + float :: float
@@ -142,6 +311,20 @@ defmodule Kernel do
   fn left :: float + right :: integer, do: fz_op_add_if(right, left)
   fn left :: float + right :: float, do: fz_op_add_ff(left, right)
 
+  @doc """
+  Returns the difference of `left` and `right`.
+
+  Mixing an integer and a float returns a float.
+
+  ## Examples
+
+      5 - 3
+      #=> 2
+
+      5 - 3.0
+      #=> 2.0
+
+  """
   @spec integer - integer :: integer
   @spec float - float :: float
   @spec integer - float :: float
@@ -151,6 +334,20 @@ defmodule Kernel do
   fn left :: float - right :: integer, do: fz_op_sub_fi(left, right)
   fn left :: float - right :: float, do: fz_op_sub_ff(left, right)
 
+  @doc """
+  Returns the product of `left` and `right`.
+
+  Mixing an integer and a float returns a float.
+
+  ## Examples
+
+      3 * 4
+      #=> 12
+
+      3 * 4.0
+      #=> 12.0
+
+  """
   @spec integer * integer :: integer
   @spec float * float :: float
   @spec integer * float :: float
@@ -164,6 +361,20 @@ defmodule Kernel do
   # truncating form is `div/2` below. Getting this wrong is silent -- integer
   # division simply loses the fraction -- and a JSON number parser building
   # `3 + 5 / 10` needs `3.5`.
+  @doc """
+  Returns the quotient of `left` and `right`, as a float.
+
+  For the truncating integer quotient, see `div/2`.
+
+  ## Examples
+
+      1 / 2
+      #=> 0.5
+
+      4 / 2
+      #=> 2.0
+
+  """
   @spec integer / integer :: float
   @spec float / float :: float
   @spec integer / float :: float
@@ -173,14 +384,49 @@ defmodule Kernel do
   fn left :: float / right :: integer, do: fz_op_div_fi(left, right)
   fn left :: float / right :: float, do: fz_op_div_ff(left, right)
 
-  @doc "Truncating integer division, Elixir's div/2."
+  @doc """
+  Returns the truncating integer quotient of `left` divided by `right`.
+
+  Unlike `/`, which always returns a float, `div/2` discards the remainder.
+
+  ## Examples
+
+      Kernel.div(7, 2)
+      #=> 3
+
+  """
   @spec div(integer, integer) :: integer
   fn div(left, right), do: fz_op_div_ii(left, right)
 
-  @doc "Integer remainder, Elixir's rem/2."
+  @doc """
+  Returns the remainder of `left` divided by `right`, with the sign of
+  `left`.
+
+  ## Examples
+
+      Kernel.rem(7, 2)
+      #=> 1
+
+      Kernel.rem(-7, 2)
+      #=> -1
+
+  """
   @spec rem(integer, integer) :: integer
   fn rem(left, right), do: fz_op_rem_ii(left, right)
 
+  @doc """
+  Returns the remainder of `left` divided by `right`; the operator form of
+  `rem/2`.
+
+  ## Examples
+
+      7 % 2
+      #=> 1
+
+      -7 % 2
+      #=> -1
+
+  """
   @spec integer % integer :: integer
   @spec float % float :: float
   @spec integer % float :: float
@@ -201,6 +447,26 @@ defmodule Kernel do
   # single structural clause; `==` widens numerics inside the comparator, where
   # structural identity can stay strict beside it.
 
+  @doc """
+  Returns whether `left` is less than `right`.
+
+  Declared per orderable pair (numbers and binaries); comparing an
+  unsupported pair, such as a number and an atom, is refused at compile
+  time rather than answered. For a total order over every value, see
+  `compare/2`.
+
+  ## Examples
+
+      1 < 2
+      #=> true
+
+      1 < 1.5
+      #=> true
+
+      "abc" < "abd"
+      #=> true
+
+  """
   @spec integer < integer :: bool
   @spec float < float :: bool
   @spec integer < float :: bool
@@ -212,6 +478,18 @@ defmodule Kernel do
   fn left :: float < right :: integer, do: fz_op_lt_fi(left, right)
   fn left :: binary < right :: binary, do: fz_op_lt_bb(left, right)
 
+  @doc """
+  Returns whether `left` is less than or equal to `right`.
+
+  Declared per orderable pair, like `</2`; see its documentation for the
+  partial-ordering note.
+
+  ## Examples
+
+      1 <= 1
+      #=> true
+
+  """
   @spec integer <= integer :: bool
   @spec float <= float :: bool
   @spec integer <= float :: bool
@@ -223,6 +501,20 @@ defmodule Kernel do
   fn left :: float <= right :: integer, do: fz_op_lte_fi(left, right)
   fn left :: binary <= right :: binary, do: fz_op_lte_bb(left, right)
 
+  @doc """
+  Returns whether `left` is greater than `right`.
+
+  Declared per orderable pair, like `</2`.
+
+  ## Examples
+
+      2 > 1
+      #=> true
+
+      "abc" > "abb"
+      #=> true
+
+  """
   @spec integer > integer :: bool
   @spec float > float :: bool
   @spec integer > float :: bool
@@ -234,6 +526,17 @@ defmodule Kernel do
   fn left :: float > right :: integer, do: fz_op_gt_fi(left, right)
   fn left :: binary > right :: binary, do: fz_op_gt_bb(left, right)
 
+  @doc """
+  Returns whether `left` is greater than or equal to `right`.
+
+  Declared per orderable pair, like `</2`.
+
+  ## Examples
+
+      1 >= 1
+      #=> true
+
+  """
   @spec integer >= integer :: bool
   @spec float >= float :: bool
   @spec integer >= float :: bool
@@ -254,26 +557,113 @@ defmodule Kernel do
   # makes every comparison callsite with an unresolved operand blind to the
   # dispatcher, which the blind-escape census catches as a latent miscompile.
   # Sorting does not need the operators: it needs an order.
-  @doc "The number of bytes in a binary."
+  @doc """
+  Returns the number of bytes in `bytes`.
+
+  For the number of codepoints, see `String.length/1`.
+
+  ## Examples
+
+      Kernel.byte_size("hello")
+      #=> 5
+
+      Kernel.byte_size("héllo")
+      #=> 6
+
+  """
   @spec byte_size(binary) :: integer
   fn byte_size(bytes), do: fz_bitstring_byte_size(bytes)
 
-  @doc "Order two terms by Erlang's total term order; negative, zero or positive."
+  @doc """
+  Compares `left` and `right` by the total term order, and returns a
+  negative integer, `0`, or a positive integer.
+
+  Unlike `===/2`, numbers compare by value across types: `1` and `1.0`
+  compare equal. Every value has a place in this order, including pairs
+  `</2` and its siblings cannot order: `compare/2` is the entry point
+  `Enum.sort/1` uses to order a mixed list.
+
+  ## Examples
+
+      Kernel.compare(1, 2)
+      #=> -1
+
+      Kernel.compare(1, 1.0)
+      #=> 0
+
+      Kernel.compare(:a, 1)
+      #=> 1
+
+  """
   @spec compare(any, any) :: integer
   fn compare(left, right), do: fz_value_cmp_ref(left, right)
 
+  @doc """
+  Returns whether `left` and `right` are equal, comparing numbers by value.
+
+  `1 == 1.0` is true; for identity instead, see `===/2`.
+
+  ## Examples
+
+      1 == 1.0
+      #=> true
+
+      [1, 2] == [1, 2]
+      #=> true
+
+  """
   @spec any == any :: bool
   fn left == right, do: fz_op_eq(left, right)
 
+  @doc """
+  Returns whether `left` and `right` are not equal; the negation of `==/2`.
+
+  ## Examples
+
+      1 != 2
+      #=> true
+
+      1 != 1.0
+      #=> false
+
+  """
   @spec any != any :: bool
   fn left != right, do: fz_op_neq(left, right)
 
   # `===` asks whether two values are the same value, where `==` compares
   # numbers by value: `1 == 1.0` is true and `1 === 1.0` is false. Membership,
   # `--` and a map key all mean identity.
+  @doc """
+  Returns whether `left` and `right` are the same value.
+
+  Unlike `==/2`, `===` does not compare numbers across types: `1 === 1.0`
+  is false. Membership, `--` and map keys all mean identity.
+
+  ## Examples
+
+      1 === 1.0
+      #=> false
+
+      [1, 2] === [1, 2]
+      #=> true
+
+  """
   @spec any === any :: bool
   fn left === right, do: fz_op_identical(left, right)
 
+  @doc """
+  Returns whether `left` and `right` are not the same value; the negation
+  of `===/2`.
+
+  ## Examples
+
+      1 !== 1.0
+      #=> true
+
+      1 !== 1
+      #=> false
+
+  """
   @spec any !== any :: bool
   fn left !== right, do: fz_op_not_identical(left, right)
 end
