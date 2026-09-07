@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T14:15:14Z",
   "created": "2026-09-07T09:45:13Z",
   "description": "Found by cold review of fz-5xp.15, which added the fifth copy.\n\n    if bytes.len() \u003e SHARED_BIN_THRESHOLD_BYTES {\n        heap_ref_word(ValueKind::PROCBIN, p)\n    } else {\n        heap_ref_word(ValueKind::BITSTRING, p)\n    }\n\nappears in runtime/src/ir_runtime.rs at `fz_bs_finalize`, `fz_binary_concat`,\n`fz_alloc_bitstring_const`, and now `alloc_text` -- over a\n`Heap::alloc_bitstring` (runtime/src/heap/imp.rs) that ALREADY branches on the\nsame threshold to decide what it allocated. So the decision is made once inside\nthe heap and then re-derived by every caller from the byte length.\n\nfz-5xp.15 added `alloc_text` as a shared helper for its three new primitives,\nwhich was the right instinct and the wrong scope: it folded three future copies\nand left the four existing ones alone.\n\nDONE = `Heap::alloc_bitstring` returns the tagged word, and no caller decides\n`PROCBIN` vs `BITSTRING` again. One question, one implementation -- and the\nthreshold stops being a constant that four call sites have to agree about.",
   "id": "fz-5xp.45",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "The inline-bitstring vs shared-procbin choice is written five times",
   "type": "task",
-  "updated_at": "2026-09-07T09:45:13Z"
+  "updated_at": "2026-09-07T14:15:14Z"
 }
