@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-5xp.81"
+    "fz-5xp.81",
+    "fz-5xp.82"
   ],
   "blocks": [],
   "created": "2026-09-07T20:04:56Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Enum: lay the module out the way Elixir lays out its own",
   "type": "task",
-  "updated_at": "2026-09-07T20:05:00Z"
+  "updated_at": "2026-09-07T20:05:01Z"
 }
