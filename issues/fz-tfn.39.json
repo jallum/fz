@@ -13,7 +13,6 @@
     "fz-kdt.57",
     "fz-kdt.58",
     "fz-kdt.68",
-    "fz-kdt.7",
     "fz-tfn.11",
     "fz-tfn.12",
     "fz-tfn.13",
@@ -57,5 +56,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:39Z"
+  "updated_at": "2026-09-07T18:55:40Z"
 }
