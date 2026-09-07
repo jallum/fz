@@ -35,10 +35,28 @@ for a known-Atom operand and answer a constant `1` for a known Int or Float;
 those are sound because a number is never false, but the Atom arm is a
 restatement and would have to move with the rule.
 
-**Equality** — owner `fz_value_eq_ref` (`runtime/src/ir_runtime.rs`). Both
-`lower_eq_binop` (native) and `interp_value_eq` (interp) reach it; both carry
-same-kind scalar fast paths above it. `Region::Equal` in the two dispatch
-lowerings compares against a constant and goes through the same function.
+**Equality — two questions, and the IR names both.** `eq_value(a, b, widen)`
+(`runtime/src/ir_runtime.rs`) is the owner, and the `widen` flag is not a
+tuning knob: it selects which question is being asked.
+
+  * `widen: true` is the `==` OPERATOR. Numbers compare by value, recursively,
+    so `1 == 1.0`, `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}` are all true —
+    while `%{1 => :a} == %{1.0 => :a}` is false, because widening applies to
+    values and never to the keys that decide which entries line up. Entry
+    points `fz_value_eq_widening_ref`, `interp_operator_eq`, and IR
+    `BinOp::Eq`/`Neq`.
+  * `widen: false` is STRUCTURAL IDENTITY: `===`, a pinned match, a map key,
+    `Enum.member?/2`, `--`, and every kind of pattern matching. `1` and `1.0`
+    are different values. Entry points `fz_value_eq_ref`, `interp_value_eq`,
+    and IR `BinOp::Identical`/`NotIdentical`.
+
+The IR ops are the load-bearing part. One `BinOp::Eq` used to serve both, with
+the question decided by a `widen_numerics` boolean that each lowering CALL SITE
+set from what it knew about its caller — so a guard, which reached the matching
+call site, answered `same?(1, 1.0)` as `:different` where Elixir says `:equal`
+(fz-5xp.24). Both doors agreed, which is why it read as correct: it was one
+operator with two meanings, not a divergence. The lowering now derives the
+question from the op, so a call site cannot get it wrong.
 
 **Ordering** — owner `cmp_any_value` / `fz_value_cmp_ref`
 (`runtime/src/ir_runtime.rs`), shared since fz-5xp.18. `guard_cmp`

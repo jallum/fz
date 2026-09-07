@@ -413,14 +413,14 @@ where
                 PatternGuardBinOp::Mul => AnyValue::Int(guard_int(l)? * guard_int(r)?),
                 PatternGuardBinOp::Div => AnyValue::Int(guard_int(l)? / guard_int(r)?),
                 PatternGuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
-                // NOTE: a guard's `==` is STRICT here, where an expression's
-                // widens -- the same token meaning two things. Pre-existing, and
-                // not fixed here because native guards lower through
-                // Prim::BinOp(Eq), which pattern matching shares: widening only
-                // this door would trade one divergence for a worse one. See the
-                // guard-equality ticket.
-                PatternGuardBinOp::Eq => interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?),
-                PatternGuardBinOp::Neq => interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?),
+                // fz-5xp.24 — a guard's `==` is the `==` OPERATOR, so it widens:
+                // `when a == b` with a = 1 and b = 1.0 is true. It was strict
+                // here because native guards lowered through Prim::BinOp(Eq),
+                // which pattern MATCHING also used, and matching must stay
+                // strict. The IR now names the two questions separately, so
+                // both doors can ask this one.
+                PatternGuardBinOp::Eq => interp_bool_value(interp_operator_eq(runtime.cur_proc(), l, r).ok()?),
+                PatternGuardBinOp::Neq => interp_bool_value(!interp_operator_eq(runtime.cur_proc(), l, r).ok()?),
                 // fz-5xp.18 — a guard orders its operands the same way the rest
                 // of the language does, through `fz_value_cmp_ref`. Comparing
                 // as integers could not see a float at all: `when a >= b` with

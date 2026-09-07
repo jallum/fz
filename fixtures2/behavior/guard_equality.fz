@@ -1,0 +1,73 @@
+#---
+# purpose: "`==` means the same thing in a guard as in an expression, and matching stays strict"
+# oracle: oracle.exs
+#---
+#
+# # guard_equality
+#
+# `==` used to mean two different things depending on where it was written:
+#
+#     fnp same?(a, b) when a == b, do: :equal
+#     fnp same?(_a, _b), do: :different
+#
+#     same?(1, 1.0)   fz: :different    Elixir: :equal
+#     1 == 1.0        fz: true          Elixir: true
+#
+# The same token widened in an expression and was strict in a guard, on BOTH
+# doors -- so it was not a door divergence, it was one operator with two
+# meanings.
+#
+# The cause was in the IR. `Prim::BinOp(Eq)` served both the `==` operator and
+# every kind of MATCHING, and which one it meant was decided by a
+# `widen_numerics` boolean that each lowering call site set from what it knew
+# about its caller. Guards reached the matching call site, so guards got the
+# matching answer.
+#
+# Matching must stay strict -- `case 1.0 do 1 -> ... end` does not match in
+# Elixir and must not here -- so the two cannot share an op. The IR now names
+# both: `Eq`/`Neq` are the operator, `Identical`/`NotIdentical` are structural
+# identity, and the lowering derives the question from the op instead of
+# inferring it.
+#
+# Both halves are pinned below, because fixing the guard by widening everything
+# would be just as wrong as the bug.
+fnp same?(a, b) when a == b, do: :equal
+fnp same?(_a, _b), do: :different
+
+fnp differs?(a, b) when a != b, do: :differs
+fnp differs?(_a, _b), do: :same
+
+fnp pick(1), do: :matched_int
+fnp pick(1.0), do: :matched_float
+fnp pick(_x), do: :no_match
+
+fnp pinned(a, b) when a == b, do: :pinned_equal
+fnp pinned(_a, _b), do: :pinned_different
+
+fn main() do
+  # the operator, in a guard
+  dbg(same?(1, 1.0))
+  dbg(same?(1, 1))
+  dbg(same?(1.0, 1))
+  dbg(same?(2, 1.0))
+  dbg(same?(:a, :a))
+  dbg(same?("x", "x"))
+  dbg(same?([1], [1.0]))
+
+  # the operator, in an expression -- the same answers
+  dbg(1 == 1.0)
+  dbg(1 === 1.0)
+  dbg(2 == 1.0)
+  dbg([1] == [1.0])
+
+  # negation in a guard
+  dbg(differs?(1, 1.0))
+  dbg(differs?(1, 2))
+
+  # MATCHING stays strict: a float never matches an integer literal
+  dbg(pick(1))
+  dbg(pick(1.0))
+  dbg(pick(2))
+
+  dbg(pinned(1, 1.0))
+end

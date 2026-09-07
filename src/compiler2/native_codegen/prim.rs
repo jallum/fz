@@ -894,8 +894,8 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq => {
-                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var, false)
+                BinOp::Eq | BinOp::Neq | BinOp::Identical | BinOp::NotIdentical => {
+                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     lower_cmp_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
@@ -956,7 +956,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     arg_vars[0],
                     arg_vars[1],
                     dest_var,
-                    true,
                 );
             }
             if decl.symbol == "fz_op_identical" && args.len() == 2 {
@@ -966,11 +965,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     value_types,
                     var_env,
                     runtime,
-                    BinOp::Eq,
+                    BinOp::Identical,
                     arg_vars[0],
                     arg_vars[1],
                     dest_var,
-                    false,
                 );
             }
             if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
@@ -980,11 +978,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     value_types,
                     var_env,
                     runtime,
-                    BinOp::Neq,
+                    BinOp::NotIdentical,
                     arg_vars[0],
                     arg_vars[1],
                     dest_var,
-                    false,
                 );
             }
             if decl.symbol == "fz_op_neq" && args.len() == 2 {
@@ -998,7 +995,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     arg_vars[0],
                     arg_vars[1],
                     dest_var,
-                    true,
                 );
             }
             if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
@@ -1698,13 +1694,15 @@ fn raw_scalar_vs_dynamic(
 /// raw atom compare for atom/nil/bool pairs, the no-allocation raw-scalar
 /// check when only one side is an unboxed int/atom, or calls the runtime
 /// value_eq_ref for the fully heterogeneous fallback.
-/// `widen_numerics` separates the two questions this lowering answers.
+/// The OP says which of the two questions is being asked. `Eq`/`Neq` are the
+/// `==` operator, which compares numbers by value, so `1 == 1.0` is true.
+/// `Identical`/`NotIdentical` are structural identity -- `===`, and what every
+/// kind of matching asks -- for which `1` and `1.0` are different values and
+/// the value-disjointness fold applies.
 ///
-/// The `==` operator compares numbers by value, so `1 == 1.0` is true. Clause
-/// and pattern matching does not: `case 1.0 do 1 -> ... end` must not match,
-/// exactly as in Elixir. Only the operator path passes `true`; every matching
-/// caller passes `false` and keeps the value-disjointness fold that decides a
-/// float can never equal an integer literal.
+/// This used to be a `widen_numerics: bool` that each CALL SITE set from what
+/// it knew about its caller, which is how a guard came to ask the matching
+/// question and answer `same?(1, 1.0)` as `:different` (fz-5xp.24).
 fn lower_eq_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1715,13 +1713,13 @@ fn lower_eq_binop<M, T>(
     a: Var,
     bv: Var,
     dest_var: Var,
-    widen_numerics: bool,
 ) -> Result<LowerOut, CodegenError>
 where
     M: cranelift_module::Module,
     T: Types<Ty = Ty>,
 {
-    let is_eq = matches!(op, BinOp::Eq);
+    let is_eq = matches!(op, BinOp::Eq | BinOp::Identical);
+    let widen_numerics = matches!(op, BinOp::Eq | BinOp::Neq);
     let int_cc = if is_eq { IntCC::Equal } else { IntCC::NotEqual };
     let f_cc = if is_eq { FloatCC::Equal } else { FloatCC::NotEqual };
 

@@ -12,7 +12,7 @@ use fz_runtime::ir_runtime::{
     fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_delete,
     fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom, fz_map_put_atom_ref, fz_map_put_float,
     fz_map_put_int, fz_map_put_ref, fz_op_div_ii_to_float, fz_op_neg_f, fz_op_neg_i, fz_process_heap_alloc_stats,
-    fz_value_cmp_ref, fz_value_eq_widening_ref,
+    fz_value_cmp_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -107,18 +107,7 @@ fn eval_interp_operator_extern(
         if args.len() != 2 {
             return Err(format!("{symbol}/2 got {} args", args.len()));
         }
-        let proc = runtime.cur_proc();
-        // One implementation of `==`, shared with native codegen. Two unboxed
-        // numbers skip the boxing that forming a ref would cost; everything
-        // else recurses through the widening comparator, so `[1] == [1.0]` is
-        // true while `interp_value_eq` stays strict for structural identity.
-        let equal = match (args[0], args[1]) {
-            (AnyValue::Int(left), AnyValue::Int(right)) => left == right,
-            (AnyValue::Float(left), AnyValue::Float(right)) => left == right,
-            (AnyValue::Int(left), AnyValue::Float(right)) => left as f64 == right,
-            (AnyValue::Float(left), AnyValue::Int(right)) => left == right as f64,
-            _ => fz_value_eq_widening_ref(proc, args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?) != 0,
-        };
+        let equal = super::binop::interp_operator_eq(runtime.cur_proc(), args[0], args[1])?;
         let answer = if symbol == "fz_op_eq" { equal } else { !equal };
         return Ok(Some(super::value::interp_bool_value(answer)));
     }

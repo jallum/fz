@@ -1,0 +1,17 @@
+:equal
+:equal
+:equal
+:different
+:equal
+:equal
+:equal
+true
+false
+false
+true
+:same
+:differs
+:matched_int
+:matched_float
+:no_match
+:pinned_equal

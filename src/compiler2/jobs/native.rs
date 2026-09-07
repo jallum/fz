@@ -1291,7 +1291,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BackendStep::AssertLiteral { source, literal } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
                     let expected = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, source, expected));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::AssertStruct { source, module_name } => {
@@ -1306,7 +1306,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
                     let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(var));
                     let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, is_miss, false_v));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -1338,7 +1338,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BackendStep::AssertSame { source, value } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
                     let value = self.env_runtime_var(ctx, executable, env, *value);
-                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, value));
+                    let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, source, value));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::SplitList { source, head, tail } => {
@@ -3061,13 +3061,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (value, _) = ctx.emit_let(Prim::MatcherMapGet(subject, key));
                 let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
                 let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
-                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, is_miss, false_v));
                 var
             }
             Region::Equal(ComparisonValue::Const(value)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let expected = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?;
-                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, expected));
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, expected));
                 var
             }
             Region::Guard(guard) => {
@@ -3083,7 +3083,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             Region::Equal(ComparisonValue::Pinned(pinned)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let pinned = self.dispatch_pinned_var(plan, state, *pinned)?;
-                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, pinned));
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, pinned));
                 var
             }
             Region::Bitstring(shape) => self.lower_bitstring_region(ctx, plan, subject, shape, state)?,

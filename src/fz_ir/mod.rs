@@ -335,8 +335,21 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// The `==` OPERATOR, which compares numbers by value: `1 == 1.0` is true,
+    /// and so are `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}`.
     Eq,
     Neq,
+    /// STRUCTURAL IDENTITY -- the `===` operator, and the question every kind of
+    /// MATCHING asks. `1` and `1.0` are different values, so
+    /// `case 1.0 do 1 -> ... end` must not match.
+    ///
+    /// Separate from `Eq` because they are two questions, not one question with
+    /// a flag. They used to share `Eq`, with a `widen_numerics` boolean that
+    /// each lowering call site set from what it happened to know about its
+    /// caller -- so a guard, which reached the matching lowering, answered
+    /// `same?(1, 1.0)` as `:different` where Elixir says `:equal` (fz-5xp.24).
+    Identical,
+    NotIdentical,
     Lt,
     Le,
     Gt,
@@ -1162,6 +1175,8 @@ impl fmt::Display for BinOp {
             BinOp::Mod => "%",
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
+            BinOp::Identical => "===",
+            BinOp::NotIdentical => "!==",
             BinOp::Lt => "<",
             BinOp::Le => "<=",
             BinOp::Gt => ">",
