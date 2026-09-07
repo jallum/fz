@@ -10,9 +10,15 @@
   "id": "fz-5xp.80",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in 57a86546d. take_positive_step/2 and Enum.slice/1 deleted; concat_list/2 folded into List.concat/2 rather than renamed, since it was that function clause for clause. Every expected.txt unchanged including the allocation goldens; eight diagnostics goldens re-blessed for line drift, and enum_map_family loses exactly one warning -- the clause-coverage warning about concat_list/2. Gate green: lib 1978/0, matrix 642/0, aot 30/0, cli 225/0, doc, clippy, fmt.",
+      "timestamp": "2026-09-07T20:34:17Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Enum: delete the dead code and the duplicate helper name",
   "type": "task",
-  "updated_at": "2026-09-07T20:30:50Z"
+  "updated_at": "2026-09-07T20:34:17Z"
 }
