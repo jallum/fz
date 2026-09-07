@@ -74,11 +74,11 @@ pub(super) fn analyze_activation(
     if !world.has_fact(&activation_fact) {
         // Nothing claims this activation -- no caller has reached it yet, or
         // every caller has withdrawn it. That is an answer, not a block: a
-        // wait here would have no producer (`World::seed_activation_producer`
-        // refuses a key whose inputs anything else supplies), and a wedged
-        // waiter stalls retraction-heavy drives. The conclusion re-lists the
-        // job's standing claims AND the reads standing behind them: claims
-        // keep the subscriptions that derived them, so the parked cone stays
+        // wait here would have no producer (`World::activation_existence_producer`
+        // refuses a non-root key whose inputs anything else supplies), and a
+        // wedged waiter stalls retraction-heavy drives. The conclusion
+        // re-lists the job's standing claims AND the reads standing behind
+        // them: claims keep the subscriptions that derived them, so the parked cone stays
         // exactly as final as its ground -- never settled from amnesia (the
         // one-absent-read conclusion was measured to do exactly that). The
         // `Activation` read wakes this job on a first or later claim; the

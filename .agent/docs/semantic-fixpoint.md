@@ -552,14 +552,21 @@ the basis for the remaining type-system tickets.
 
 ## Ownership boundaries
 
-- `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
-  `Executable` demand facts.
+- `SeedRoot` owns `RootEntry(root)` and is the sole seed authority for the entry
+  `Activation`, `ActivationInputs`, and `Executable` demand facts. Demanding
+  either entry activation fact maps back to this same job; `SeedActivation`
+  cannot reconstruct or retain a competing seed claim. A caller analysis may
+  still legitimately co-publish the same key — notably when the root entry
+  calls itself — and that caller claim survives `SeedRoot`'s independent
+  withdrawal. The root slot retains every canonical entry key it has owned, so
+  seed authority remains unambiguous while keying facts are withdrawn and after
+  a new key replaces the old one.
 - `SeedActivation(a)` owns `Activation(a)`/`ActivationInputs(a)` for the
   activations the runtime-demand frontier minted from a callable surface which
   no analysis walked and no caller claimed. It reconstructs the input row from
   the key's own arrow, so `World::demand_fact_producer` routes a demand to it
   only while `ActivationInputs(a)` has no publisher
-  (`World::seed_activation_producer`). A key a caller discovered is the
+  (`World::activation_existence_producer`). A key a caller discovered is the
   caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it

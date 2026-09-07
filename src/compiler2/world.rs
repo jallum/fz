@@ -809,8 +809,23 @@ impl World {
         self.roots.get(id).clone()
     }
 
+    pub(crate) fn root_owns_activation(&self, id: RootId, activation: &ActivationKey) -> bool {
+        self.roots.owns_activation(id, activation)
+    }
+
+    /// Mints one canonical activation key and records entry ownership when the
+    /// raw request is this root's own function and input. RootMap retains that
+    /// identity across later keying revisions and fact withdrawal.
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {
-        self.canonical_activation_key(root, function, inputs)
+        let is_root_entry = {
+            let entry = self.roots.get(root);
+            entry.function == function && entry.input == inputs
+        };
+        let activation = self.canonical_activation_key(root, function, inputs);
+        if is_root_entry {
+            self.roots.define_activation(root, activation.clone());
+        }
+        activation
     }
 
     /// The correlated body-input evidence of an activation, once its fact
@@ -2784,6 +2799,16 @@ impl World {
         self.work_graph
             .enqueue(Job::SeedRoot(root_id), WorkStartReason::Ignition);
         root_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn define_root_with_input_for_test(&mut self, function: FunctionId, input: Vec<Ty>) -> RootId {
+        self.roots.define(RootEntry {
+            function,
+            input,
+            need: ExecutableNeed::Value,
+            kind: RootKind::Runtime,
+        })
     }
 
     fn take_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<Diagnostic> {

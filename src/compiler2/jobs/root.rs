@@ -119,10 +119,11 @@ pub(super) fn seed_root(
 ///
 /// The input row is RECONSTRUCTED from the key's own arrow, which is the truth
 /// only for such a key: nothing else ever described it. That is why
-/// `World::seed_activation_producer` routes a demand here only while
-/// `ActivationInputs` has no publisher — for an activation some caller
-/// discovered, this reconstruction would fabricate that caller's evidence and
-/// undo the caller's own withdrawal of the key (fz-kdt.69.1).
+/// `World::activation_existence_producer` routes a demand here only for a
+/// non-root activation while `ActivationInputs` has no publisher — root entries
+/// route to `SeedRoot`, and for an activation some caller discovered this
+/// reconstruction would fabricate that caller's evidence and undo the caller's
+/// own withdrawal of the key (fz-kdt.69.1, fz-kdt.75).
 ///
 /// This concludes (no waits), so `Activation` and `ActivationInputs` settle and
 /// any consumer walking the runtime-demand frontier reaches the executable as an

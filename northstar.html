@@ -353,6 +353,7 @@
     DeriveRecursive(FunctionId),
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
+    SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
 }</code></pre>
       <p>
@@ -1026,8 +1027,21 @@ RootEntry(root)</code></pre>
           <code>SeedRoot(root)</code> waits until <code>Recursive(main)</code> and
           <code>InputDemand(main)</code> exist, then publishes the entry demand facts:
         </p>
-        <pre><code>Activation(root, main/0, []) = Inputs([])
+        <pre><code>Activation(root, main/0, [])
+ActivationInputs(root, main/0, []) = [[]]
 Executable(root, main/0, [], Value)</code></pre>
+        <p>
+          The two activation facts are co-outputs of <code>SeedRoot</code>, their
+          sole seed authority, and a demand for either maps back to that job.
+          A caller analysis may also publish the same key legitimately — for
+          example, when <code>main</code> calls itself — and that claim survives
+          the root seed's independent withdrawal.
+          The root remembers that ownership across incremental withdrawal and
+          re-keying, so a former entry key cannot later be mistaken for latent work.
+          <code>SeedActivation</code> is reserved for a latent non-root activation
+          reached only through runtime demand; it cannot reconstruct a root entry's
+          inputs or leave a competing seed claim behind after the root withdraws.
+        </p>
         <p>
           The artifact path does not rely on self-scheduled follow-up work. When the interpreter
           asks for <code>RootBackendProduct(root)</code>, the product driver waits on the exact facts

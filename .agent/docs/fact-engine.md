@@ -58,19 +58,23 @@ derivation* below.
 
 A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
-blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to its
-single producing job, and every path that discovers a blocked wait —
+blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to the
+one job authorized to seed or derive it from an ungrounded demand, and every
+path that discovers a blocked wait —
 `demand_blocked_wait_producers` at drain time, the standing activation
 frontier expansion, and the product pull driver's fact waits —
 demands that producer through the map. A fact with more than one possible
 producer (for example `ModuleInterface`, produced by either `DefineModule` or
 `DefineModuleInterface` depending on whether the module has source state) maps
 through the same runtime condition a demanding caller would otherwise inspect
-itself, so the map still names exactly one producer for the fact's current
-ground. That condition may also name NO producer: `Activation`/
-`ActivationInputs` map to `Job::SeedActivation` only while nothing else
-supplies the activation's inputs (`World::seed_activation_producer`), because
-a key a caller discovered is that caller's to publish and to withdraw. A fact
+itself, so the map still names exactly one demand producer for the fact's
+current ground. This is distinct from publisher multiplicity: a caller analysis
+may legitimately co-publish an activation it reaches. `Activation`/
+`ActivationInputs` map through
+`World::activation_existence_producer`: the canonical root entry maps to
+`SeedRoot`; a non-root key maps to `SeedActivation` only while nothing else
+supplies its inputs; and a key a caller discovered maps to no seed because it
+is that caller's to publish and to withdraw. A fact
 whose producer publishes it only as a co-output of a broader
 job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
 `ProtocolImplProviders`, `Executable`) has
@@ -259,14 +263,19 @@ mutually reachable with `f`, so "are these two functions mutually reachable"
 is an equality of two fact reads rather than a traversal at the asking site --
 and `Recursive(f)`, which that component decides. They stay two facts, not one
 value: a component merging and a body's keying moving wake different readers.
-`World::demand_fact_producer` maps both keys to the one job, exactly as
-`Activation`/`ActivationInputs` both map to `SeedActivation` when that job is
-their producer at all (see *One activation, one existence producer*).
+`World::demand_fact_producer` maps both keys to the one job, exactly as an
+entry's `Activation`/`ActivationInputs` both map to `SeedRoot`, while a latent
+non-root pair maps to `SeedActivation` (see *One activation, one seed
+authority*).
 
-## One activation, one existence producer
+## One activation, one seed authority
 
-An activation's existence facts have exactly one producer, and which job that
-is depends on how the key was reached. A root entry is `SeedRoot`'s: it
+An activation's existence facts have at most one job authorized to seed them
+from a demand, and which authority applies depends on how the key was reached.
+This does not exclude legitimate caller publishers: a self-recursive root's
+`AnalyzeActivation` publishes the identical entry key in addition to
+`SeedRoot`, and each publisher's withdrawal remains independent. A root entry's
+sole seed authority is `SeedRoot`: it
 publishes `Activation`/`ActivationInputs` for its entry from the root's own
 input. A callee reached over a call edge is its CALLER's: `analyze_activation`
 publishes `Activation(callee)` and contributes the callee's input row, and
@@ -276,13 +285,17 @@ frontier minted from a callable surface (`jobs::runtime_demand`), which no
 analysis ever walked and no caller ever claimed. It reconstructs the inputs
 from the key's own arrow, which is the truth only there.
 
-`World::seed_activation_producer` (`drive.rs`) is where the map states this:
-`SeedActivation` answers a demand for `Activation(k)`/`ActivationInputs(k)`
-only while `ActivationInputs(k)` has no publisher. Once something else
-supplies them, seeding could only overwrite another publisher's evidence with
-a reconstruction -- and, because the reconstruction is unconditional, undo
-that publisher's own withdrawal of the key, so no retraction of a
-caller-discovered activation could ever stick.
+`World::activation_existence_producer` (`drive.rs`) is where the map states
+this. When the canonical entry key is minted, its root slot records ownership;
+that identity remains recorded across fact withdrawal and later entry re-keying,
+so an old withdrawn entry can never become a latent activation. The producer
+map routes both existence-fact demands for every such key to `SeedRoot`. Only a
+non-root key whose `ActivationInputs(k)` has no publisher routes to
+`SeedActivation`. Once
+something else supplies those inputs, seeding could only overwrite another
+publisher's evidence with a reconstruction -- and, because the reconstruction
+is unconditional, undo that publisher's own withdrawal of the key, so no
+retraction of a caller-discovered activation could ever stick.
 
 The other half is `analyze_activation`'s own gate: an analysis whose
 `Activation` fact is absent CONCLUDES rather than waits. Nothing claims the

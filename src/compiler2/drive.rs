@@ -592,7 +592,7 @@ impl World {
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                self.seed_activation_producer(activation)
+                self.activation_existence_producer(activation)
             }
             FactKey::ActivationAnalyzed(activation)
             | FactKey::ReturnType(activation)
@@ -600,7 +600,7 @@ impl World {
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();
                 let mut pokes = 0;
-                if let Some(seed) = self.seed_activation_producer(&activation) {
+                if let Some(seed) = self.activation_existence_producer(&activation) {
                     pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
@@ -617,19 +617,26 @@ impl World {
             .unwrap_or(0)
     }
 
-    /// `Job::SeedActivation` as this activation's existence producer, or `None`
-    /// when the activation is not its to mint (fz-kdt.69.1).
+    /// The one job allowed to seed an activation's existence facts, or `None`
+    /// when a caller owns the activation and its withdrawal (fz-kdt.69.1,
+    /// fz-kdt.75).
     ///
-    /// Seeding reconstructs an activation's inputs from the key's own arrow
+    /// Every canonical key a root has owned as its entry maps back to
+    /// `SeedRoot`, the authority that carries the root's actual input evidence.
+    /// RootMap retains that ownership when keying facts withdraw or a later
+    /// revision replaces the entry key. For a non-root key, `SeedActivation`
+    /// reconstructs inputs from the key's own arrow
     /// (`jobs::root::seed_activation`). That is the truth only for a key the
     /// runtime-demand frontier minted from a callable surface no analysis ever
-    /// walked. `SeedRoot` owns root entries, and callers own the keys they
-    /// discover. Once
+    /// walked. Callers own the remaining keys they discover. Once
     /// `ActivationInputs(activation)` has a publisher, those inputs are that
     /// publisher's evidence -- a caller's call edge -- and re-minting them from
     /// the arrow would both fabricate the caller's contribution and undo the
     /// caller's own withdrawal of the key, so no retraction could ever stick.
-    fn seed_activation_producer(&self, activation: &ActivationKey) -> Option<Job> {
+    fn activation_existence_producer(&mut self, activation: &ActivationKey) -> Option<Job> {
+        if self.root_owns_activation(activation.root, activation) {
+            return Some(Job::SeedRoot(activation.root));
+        }
         (!self.has_fact(&FactKey::ActivationInputs(activation.clone())))
             .then(|| Job::SeedActivation(activation.clone()))
     }

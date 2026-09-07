@@ -4,6 +4,7 @@ use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, Ty
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobDerivation, JobEffects};
 use crate::compiler2::facts::DerivationId;
+use crate::compiler2::scheduler::WorkStartReason;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
@@ -1373,6 +1374,310 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
             .iter()
             .any(|facts| facts.contains(&FactKey::Activation(key_a.clone()))),
         "demand_on_stall should name the blocked fact it poked a producer for",
+    );
+}
+
+/// `SeedRoot` is the sole seed authority for a root entry's activation facts.
+/// Demanding either fact before the root seed has run must route back to it,
+/// never reconstruct the same facts through `SeedActivation`. Otherwise that
+/// reconstruction becomes a competing publisher and survives the root seed's
+/// later withdrawal.
+#[test]
+fn root_activation_facts_have_seed_root_as_their_only_seed_authority() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let root = world.submit_root(None, "main".to_string(), 1, super::ExecutableNeed::Value);
+    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+
+    world.submit_code(Some("root_owner.fz".to_string()), "fn main(a), do: a\n".to_string());
+    let function = world.root_entry(root).function;
+    for job in [
+        Job::DefineFunction(function),
+        Job::LowerFunction(function),
+        Job::PlanEntryDispatch(function),
+        Job::DeriveCallGraphComponent(function),
+        Job::DeriveInputDemand(function),
+    ] {
+        world.demand(job);
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+        "the entry's definition and keying facts should settle before the isolated producer demand",
+    );
+
+    let root_input = world.root_entry(root).input;
+    let activation = world.activation_key(root, function, &root_input);
+    let facts = [
+        FactKey::Activation(activation.clone()),
+        FactKey::ActivationInputs(activation.clone()),
+    ];
+
+    // Ownership is identity, not current fact availability. Drop one of the
+    // keying facts after the canonical entry key exists, demand the entry
+    // during that incremental window, then restore the prerequisite before
+    // running the demanded owner.
+    world.complete_job(Job::DeriveInputDemand(function), JobEffects::default());
+    assert!(!world.has_fact(&FactKey::InputDemand(function)));
+    for fact in &facts {
+        world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion);
+    }
+    assert_eq!(
+        world.work_graph.pending_jobs(),
+        1,
+        "the two co-output demands should enqueue their one seed authority once",
+    );
+    world.complete_job(
+        Job::DeriveInputDemand(function),
+        JobEffects {
+            outputs: vec![FactKey::InputDemand(function)],
+            ..JobEffects::default()
+        },
+    );
+
+    assert_eq!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+        "the demanded root activation facts should resolve through their owner",
+    );
+    let root_outputs = world.job_outputs(&Job::SeedRoot(root));
+    assert!(
+        facts.iter().all(|fact| root_outputs.contains(fact)),
+        "SeedRoot must seed both root activation facts: {root_outputs:?}",
+    );
+    assert!(
+        !world.work_graph.has_run(&Job::SeedActivation(activation.clone())),
+        "SeedActivation must not reconstruct facts owned by SeedRoot",
+    );
+
+    let latent_input = world.types_mut().atom_lit("latent");
+    let latent = world.activation_key(root, function, &[latent_input]);
+    assert_ne!(latent, activation, "the fixture needs a distinct non-entry key");
+    let latent_facts = [
+        FactKey::Activation(latent.clone()),
+        FactKey::ActivationInputs(latent.clone()),
+    ];
+    for fact in &latent_facts {
+        world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion);
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+        "a publisherless non-entry activation should retain the latent seed path",
+    );
+    let latent_outputs = world.job_outputs(&Job::SeedActivation(latent));
+    assert!(
+        latent_facts.iter().all(|fact| latent_outputs.contains(fact)),
+        "SeedActivation must remain the producer for a latent non-entry key of the root function",
+    );
+
+    world.complete_job(Job::SeedRoot(root), JobEffects::default());
+    assert!(
+        facts.iter().all(|fact| !world.has_fact(fact)),
+        "with no caller publisher, withdrawing SeedRoot must withdraw both facts; no reconstruction may survive",
+    );
+}
+
+#[test]
+fn root_seed_authority_survives_rekeying_and_world_reconciled_caller_withdrawal() {
+    let mut world = World::new();
+    let function = world.reference_function(ModuleId::GLOBAL, "main", 1);
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true,
+        },
+    ));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore]),));
+    let int = world.types_mut().int();
+    let input = world.types_mut().list(int);
+    let root = world.define_root_with_input_for_test(function, vec![input]);
+    let old = world.activation_key(root, function, &[input]);
+
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole]),));
+    let new = world.activation_key(root, function, &[input]);
+    assert_ne!(old, new, "the fixture must produce a real entry re-key");
+
+    for activation in [old.clone(), new] {
+        for fact in [
+            FactKey::Activation(activation.clone()),
+            FactKey::ActivationInputs(activation.clone()),
+        ] {
+            world.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion);
+            assert_eq!(
+                world.work_graph.pop(),
+                Some(Job::SeedRoot(root)),
+                "every current or former entry key must retain SeedRoot as its seed authority",
+            );
+            assert!(
+                !world.work_graph.has_run(&Job::SeedActivation(activation.clone())),
+                "entry re-keying must never turn an old root key into latent seed work",
+            );
+        }
+    }
+
+    // Under the original ignored-slot keying, two distinct evidence rows map
+    // to the same activation. Publish the root row and a caller-analysis row
+    // through World so contribution reconciliation remains authoritative.
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore]),));
+    let caller_atom = world.types_mut().atom_lit("caller");
+    let caller_input = world.types_mut().list(caller_atom);
+    assert_eq!(
+        world.activation_key(root, function, &[caller_input]),
+        old,
+        "the distinct caller evidence must share the old ignored-slot key",
+    );
+    let facts = [FactKey::Activation(old.clone()), FactKey::ActivationInputs(old.clone())];
+    let ground = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "RootCallerGround".to_string(),
+        arity: 0,
+    };
+    world.complete_job(
+        Job::DeriveTypeDef(ground.clone()),
+        JobEffects {
+            outputs: vec![FactKey::TypeDefined(ground.clone())],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            outputs: facts.to_vec(),
+            activation_input_contributions: vec![(old.clone(), vec![input])],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::AnalyzeActivation(old.clone()),
+        JobEffects {
+            reads: vec![FactUse::current(FactKey::TypeDefined(ground.clone()))],
+            outputs: facts.to_vec(),
+            activation_input_contributions: vec![(old.clone(), vec![caller_input])],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world
+            .activation_input_alternatives(&old)
+            .expect("both publishers make the inputs visible")
+            .rows()
+            .len(),
+        2,
+        "the caller evidence must be observably distinct from SeedRoot's row",
+    );
+    let before_root_withdrawal = world
+        .fact_revision(&FactKey::ActivationInputs(old.clone()))
+        .expect("the joined evidence fact must be present");
+
+    world.complete_job(Job::SeedRoot(root), JobEffects::default());
+    assert!(facts.iter().all(|fact| world.has_fact(fact)));
+    let caller_rows = world
+        .activation_input_alternatives(&old)
+        .expect("the caller keeps its evidence visible after root withdrawal")
+        .rows();
+    assert_eq!(caller_rows.len(), 1);
+    assert_eq!(caller_rows[0].columns(), &[caller_input]);
+    assert!(
+        world
+            .fact_revision(&FactKey::ActivationInputs(old.clone()))
+            .expect("the caller still publishes the input fact")
+            > before_root_withdrawal,
+        "withdrawing SeedRoot must revise the aggregate to the caller's surviving evidence",
+    );
+
+    world.complete_job(Job::DeriveTypeDef(ground), JobEffects::default());
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(Job::AnalyzeActivation(old.clone())),
+        "the real read-fact retraction must rebase and enqueue the caller analysis",
+    );
+    world.complete_job(Job::AnalyzeActivation(old.clone()), JobEffects::default());
+    assert!(
+        !world.has_fact(&FactKey::Activation(old.clone())),
+        "the rebased caller conclusion must withdraw its activation claim",
+    );
+    assert!(
+        world.has_fact(&FactKey::ActivationInputs(old.clone())),
+        "analysis input evidence retains its explicitly grow-only frontier across rebase",
+    );
+    let preserved_rows = world
+        .activation_input_alternatives(&old)
+        .expect("the preserved input fact keeps the caller evidence visible")
+        .rows();
+    assert_eq!(preserved_rows.len(), 1);
+    assert_eq!(preserved_rows[0].columns(), &[caller_input]);
+    for fact in &facts {
+        assert_eq!(
+            world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion),
+            0,
+            "a withdrawn root key must not acquire a competing seed authority",
+        );
+    }
+    assert!(
+        !world.work_graph.has_run(&Job::SeedActivation(old)),
+        "neither an absent Activation nor preserved caller inputs may route a former root key to SeedActivation",
+    );
+}
+
+#[test]
+fn recursive_root_activation_keeps_its_analysis_publisher_without_a_second_seed() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+
+    world.submit_code(
+        Some("recursive_root_owner.fz".to_string()),
+        "fn main(), do: main()\n".to_string(),
+    );
+    let function = world.root_entry(root).function;
+    for job in [
+        Job::DefineFunction(function),
+        Job::LowerFunction(function),
+        Job::PlanEntryDispatch(function),
+        Job::DeriveCallGraphComponent(function),
+        Job::DeriveInputDemand(function),
+    ] {
+        world.demand(job);
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+    );
+
+    let activation = world.activation_key(root, function, &[]);
+    let facts = [
+        FactKey::Activation(activation.clone()),
+        FactKey::ActivationInputs(activation.clone()),
+    ];
+    for fact in &facts {
+        world.demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion);
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved,
+    );
+    assert!(
+        facts
+            .iter()
+            .all(|fact| world.job_outputs(&Job::SeedRoot(root)).contains(fact)),
+    );
+    assert!(
+        facts.iter().all(|fact| world
+            .job_outputs(&Job::AnalyzeActivation(activation.clone()))
+            .contains(fact)),
+        "the recursive call legitimately republishes the identical activation key",
+    );
+    assert!(!world.work_graph.has_run(&Job::SeedActivation(activation)));
+
+    world.complete_job(Job::SeedRoot(root), JobEffects::default());
+    assert!(
+        facts.iter().all(|fact| world.has_fact(fact)),
+        "withdrawing SeedRoot must preserve the recursive analysis publisher",
     );
 }
 

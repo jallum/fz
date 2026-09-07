@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -801,7 +801,16 @@ impl TypeRefMap {
 
 #[derive(Debug, Default)]
 pub struct RootMap {
-    slots: Vec<RootEntry>,
+    slots: Vec<RootSlot>,
+}
+
+#[derive(Debug)]
+struct RootSlot {
+    entry: RootEntry,
+    /// Every canonical key this root has owned as its entry across keying
+    /// revisions. A withdrawn old key stays root-owned so latent seeding can
+    /// never resurrect it.
+    activations: HashSet<ActivationKey>,
 }
 
 impl RootMap {
@@ -811,15 +820,42 @@ impl RootMap {
 
     pub fn define(&mut self, entry: RootEntry) -> RootId {
         let id = RootId(self.slots.len() as u32);
-        self.slots.push(entry);
+        self.slots.push(RootSlot {
+            entry,
+            activations: HashSet::new(),
+        });
         id
     }
 
     pub fn get(&self, id: RootId) -> &RootEntry {
-        self.slots
+        &self
+            .slots
             .get(id.0 as usize)
             .expect("root ids should be known before reading root slots")
+            .entry
     }
+
+    pub(crate) fn owns_activation(&self, id: RootId, activation: &ActivationKey) -> bool {
+        self.slots
+            .get(id.0 as usize)
+            .expect("root ids should be known before reading root activations")
+            .activations
+            .contains(activation)
+    }
+
+    pub(crate) fn define_activation(&mut self, id: RootId, activation: ActivationKey) {
+        let slot = self
+            .slots
+            .get_mut(id.0 as usize)
+            .expect("root ids should be known before defining root activations");
+        assert_eq!(activation.root, id, "a root may own only its rooted activations");
+        assert_eq!(
+            activation.function, slot.entry.function,
+            "a root may own only entry-function activations"
+        );
+        slot.activations.insert(activation);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
