@@ -4,7 +4,6 @@
     "fz-tfn.40"
   ],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.60"
   ],
   "created": "2026-09-03T08:01:25Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Retire superseded source snapshots after exact ownership lands",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:43Z"
+  "updated_at": "2026-09-07T18:56:58Z"
 }
