@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T13:47:20Z",
+  "description": "Hit while adding fz-5xp.17's allocation golden.\n\nA fixture with no per-door goldens compares every door against expected.txt, and\nBLESS writes every door TO expected.txt. When the doors disagree -- which any\nallocation golden does, because interp and the native doors allocate\ndifferently -- each door overwrites the last, and the file ends up holding\nwhichever door blessed last.\n\n    BLESS=1 cargo test --test fixture_matrix json_decode_cost\n      interp ... ok      \u003c- wrote its numbers to expected.txt\n      run    ... ok      \u003c- overwrote them with its own\n      build  ... ok\n      3 passed\n\n    cargo test --test fixture_matrix json_decode_cost\n      interp ... FAILED\n\nBLESS reports ok because it is writing, not comparing, so the run that creates\nthe problem looks like the run that solves it. The fix is by hand: create\n\u003cname\u003e.expected.\u003cdoor\u003e.txt for the door that differs, after which bless targets\nthe per-door file correctly (check_success picks path_expected_path when it\nEXISTS).\n\nWHAT IT SHOULD DO: when a bless would overwrite an expected.txt that another\ndoor in the same run already wrote with different content, write the per-door\nfile instead -- the harness knows both facts at that moment. Failing that, it\nmust at least refuse rather than report ok.\n\nCheap and worth it: the failure mode is a fixture that passes when blessed and\nfails in CI, which is the most expensive kind.",
+  "id": "fz-5xp.62",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "BLESS on a fixture whose doors disagree writes goldens that then fail",
+  "type": "bug",
+  "updated_at": "2026-09-07T13:47:20Z"
+}
