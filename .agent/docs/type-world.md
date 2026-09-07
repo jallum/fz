@@ -79,8 +79,6 @@ The keying and join logic lean on a few `Types` methods, each with a distinct jo
   (`InputDemand::forwarded_dispatch`, fz-kdt.183). A demanded list keeps its
   element instead, at every depth — see
   [`type-specialization`](type-specialization.md).
-- **`widen_for_recursive_spec_key(a)`** — the per-slot transform for a recursive
-  call key on slots that are *not* collapsed.
 - **`alpha_normalize_vars(a)`** — canonicalizes type-variable ids. Interning
   canonicalizes structure, not variable names, so inputs are alpha-normalized before
   they are stored, and alpha-equivalent shapes land on one id.

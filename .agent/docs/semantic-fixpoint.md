@@ -337,7 +337,8 @@ edges for its local calls, positioned callable targets, and reachable schemas.
 The retained memo updates rooted membership from those committed edges, including
 withdrawal when a recursive component loses its last root path. Value reads
 and membership have separate roles: a caller can retain its unchanged body
-while a changed callee remains part of the root artifact.
+while a changed callee remains part of the root artifact. Those exact
+dependencies grow artifact membership; no root-wide scan decides it.
 
 `DeriveRuntimeDemand(E)` owns the ordinary `RuntimeDemand(E)` World
 fact. It waits for `ExecutableFacts(E)` to appear settled and thereafter reads

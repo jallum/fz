@@ -1,8 +1,7 @@
-//! Compiler2's root-scoped semantic facts.
+//! Compiler2's activation-local semantic facts.
 //!
-//! This module stores activation-local summaries and closed-root frontiers that
-//! the work graph owns: observed input shapes, reachable callsites, settled
-//! return types, and the semantic closure each root has reached.
+//! This module stores the keyed values the work graph owns: observed input
+//! shapes, reachable callsites, settled return types, and runtime demand.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -10,7 +9,7 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::facts::FactUse;
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,7 +66,7 @@ pub struct CallTargetSummary {
     ///
     /// This is not the same thing as the bounded recursive activation key.
     /// Materialization follows `activation`; diagnostics, fixture contracts,
-    /// and semantic closure reasoning describe the externally visible surface.
+    /// and settled boundary facts describe the externally visible surface.
     pub surface_inputs: Vec<Ty>,
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
@@ -141,11 +140,6 @@ impl CallSiteSummary {
                     &mut observed_target.surface_inputs,
                     &current_target.surface_inputs,
                 );
-                merge_callsite_activation(
-                    types,
-                    &mut observed_target.activation,
-                    current_target.activation.clone(),
-                );
                 merge_callsite_optional_input_vec(
                     types,
                     &mut observed_target.activation_inputs,
@@ -161,10 +155,9 @@ impl CallSiteSummary {
 
     fn coalesce_targets(&mut self, types: &mut Types) {
         let mut coalesced = Vec::<CallTargetSummary>::new();
-        for mut target in self.targets.drain(..) {
+        for target in self.targets.drain(..) {
             if let Some(current) = coalesced.iter_mut().find(|current| same_call_target(current, &target)) {
                 merge_callsite_input_vec(types, &mut current.surface_inputs, &target.surface_inputs);
-                merge_callsite_activation(types, &mut current.activation, target.activation.take());
                 merge_callsite_optional_input_vec(
                     types,
                     &mut current.activation_inputs,
@@ -229,16 +222,6 @@ fn merge_callsite_optional_input_vec(types: &mut Types, current: &mut Option<Vec
     match (current, observed) {
         (Some(current), Some(observed)) => merge_callsite_input_vec(types, current, observed),
         (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
-        _ => {}
-    }
-}
-
-fn merge_callsite_activation(_types: &mut Types, current: &mut Option<ActivationKey>, observed: Option<ActivationKey>) {
-    match (current.as_mut(), observed) {
-        (Some(current), Some(observed)) if current.root == observed.root && current.function == observed.function => {}
-        (None, Some(observed)) => {
-            *current = Some(observed);
-        }
         _ => {}
     }
 }
@@ -764,15 +747,7 @@ pub struct ActivationAnalysis {
     pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
-    pub latent_executables: Vec<ExecutableKey>,
     pub value_types: HashMap<ValueId, Ty>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticClosure {
-    pub entry: ExecutableKey,
-    pub activations: HashSet<ActivationKey>,
-    pub executables: HashSet<ExecutableKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -1124,16 +1099,6 @@ pub struct CallSiteMap {
 #[derive(Debug, Default)]
 pub struct CallSiteTargetsMap {
     slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SemanticClosureSlot {
-    closure: SemanticClosure,
-}
-
-#[derive(Debug, Default)]
-pub struct SemanticClosureMap {
-    slots: Vec<Option<SemanticClosureSlot>>,
 }
 
 impl ActivationMap {
@@ -1512,32 +1477,6 @@ impl CallSiteSummary {
     }
 }
 
-impl SemanticClosureMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let changed = !matches!(slot, Some(existing) if existing.closure == closure);
-        *slot = Some(SemanticClosureSlot { closure });
-        changed
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&SemanticClosure> {
-        self.slots
-            .get(root.as_u32() as usize)
-            .and_then(|slot| slot.as_ref().map(|slot| &slot.closure))
-    }
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || None);
-        }
-    }
-}
-
 /// Install one publisher's contribution into a key's contributor table. `join`
 /// widens the publisher's prior entry (the within-epoch ascent); without it the
 /// entry replaces (the rebase path).
@@ -1630,7 +1569,7 @@ mod tests {
 
     use super::*;
     use crate::compiler2::drive::JobEffects;
-    use crate::compiler2::{ExecutableNeed, FactKey, Job, World};
+    use crate::compiler2::{ExecutableNeed, FactKey, Job, RootId, World};
     use crate::telemetry::ConfiguredTelemetry;
     use crate::types::{ClosureTarget, Sigma};
 

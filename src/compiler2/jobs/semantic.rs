@@ -46,7 +46,6 @@ struct CallEmission {
     key: CallSiteKey,
     resolution: CallSiteResolution<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
-    latent_executables: Vec<super::super::identity::ExecutableKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,7 +231,6 @@ pub(super) fn analyze_activation(
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_activation_inputs = HashSet::new();
-    let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
         // EVERY reached callsite publishes its edge, resolved or not: the
@@ -271,11 +269,6 @@ pub(super) fn analyze_activation(
             // into `activation_frontier`, and `demand_activation_frontier_analyses`
             // ignites the callee's first analysis when the agenda drains.
         }
-        for executable in &call.latent_executables {
-            if emitted_executables.insert(executable.clone()) {
-                outputs.push(FactKey::Executable(executable.clone()));
-            }
-        }
     }
 
     // Revision-0 precondition (fz-kdt.84): a cumulative fact's STORE must be
@@ -313,10 +306,6 @@ pub(super) fn analyze_activation(
             callsites: analysis_calls
                 .iter()
                 .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
-                .collect(),
-            latent_executables: analysis_calls
-                .iter()
-                .flat_map(|call| call.latent_executables.iter().cloned())
                 .collect(),
             value_types,
         },
@@ -1001,7 +990,6 @@ fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> C
         },
         resolution: CallSiteResolution::Unresolved,
         activations: Vec::new(),
-        latent_executables: Vec::new(),
     }
 }
 
@@ -1033,7 +1021,6 @@ fn resolve_direct_call(
                 callsite,
             },
             resolution,
-            latent_executables: Vec::new(),
             activations,
         }),
         return_ty,
@@ -1125,7 +1112,6 @@ fn merge_call_emission(
         (_, CallSiteResolution::Unresolved) => {}
     }
     current.activations.extend(observed.activations);
-    current.latent_executables.extend(observed.latent_executables);
     Ok(())
 }
 
@@ -1143,7 +1129,6 @@ fn rebuild_coalesced_call_emission(
     let mut rebuilt_targets = Vec::new();
     let mut rebuilt_return = None;
     let mut rebuilt_activations = Vec::new();
-    let mut rebuilt_latent = Vec::new();
 
     for target in &summary.targets {
         match target.callee.clone() {
@@ -1206,7 +1191,6 @@ fn rebuild_coalesced_call_emission(
                     merge_call_targets(world, &mut rebuilt_targets, vec![rebuilt_target])?;
                 }
                 rebuilt_activations.extend(rebuilt.activations);
-                rebuilt_latent.extend(rebuilt.latent_executables);
             }
             SelectedCallee::ProviderBoundary(_) => {
                 rebuilt_return = join_evidence(world, rebuilt_return, target.return_ty);
@@ -1216,7 +1200,6 @@ fn rebuild_coalesced_call_emission(
     }
 
     rebuilt_activations.extend(call.activations);
-    rebuilt_latent.extend(call.latent_executables);
     Ok(CallEmission {
         key: call.key,
         resolution: CallSiteResolution::Resolved(CallSiteSummary {
@@ -1224,7 +1207,6 @@ fn rebuild_coalesced_call_emission(
             return_ty: rebuilt_return,
         }),
         activations: rebuilt_activations,
-        latent_executables: rebuilt_latent,
     })
 }
 
@@ -1260,7 +1242,6 @@ fn call_emission_for_function(
                 return_ty,
             }),
             activations: Vec::new(),
-            latent_executables: Vec::new(),
         }));
     }
     let (activation, return_ty) = prepare_function_call(world, caller, function, &input_types, reads);
@@ -1283,7 +1264,6 @@ fn call_emission_for_function(
             return_ty,
         }),
         activations,
-        latent_executables: Vec::new(),
     }))
 }
 
@@ -1575,7 +1555,6 @@ fn resolve_closure_call(
             Some(CallEmission {
                 key: key.clone(),
                 resolution: CallSiteResolution::Unresolved,
-                latent_executables: Vec::new(),
                 activations: Vec::new(),
             }),
             return_ty,
@@ -1589,7 +1568,6 @@ fn resolve_closure_call(
     };
     let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
-    let latent_executables = Vec::new();
     let mut return_ty = None;
 
     // A closure-shaped clause whose arity matches names a concrete target. Its
@@ -1670,7 +1648,6 @@ fn resolve_closure_call(
                 targets: selected_targets,
                 return_ty,
             }),
-            latent_executables,
             activations,
         }),
         return_ty,
@@ -2012,8 +1989,6 @@ fn merge_call_targets(
                 &mut current_target.activation_inputs,
                 observed_target.activation_inputs.as_deref(),
             );
-            current_target.activation =
-                merge_target_activation(world, current_target.activation.take(), observed_target.activation)?;
             current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
             continue;
         }
@@ -2027,23 +2002,6 @@ fn merge_call_targets(
 
 fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
     left.callee == right.callee && left.activation == right.activation
-}
-
-fn merge_target_activation(
-    _world: &mut World,
-    current: Option<ActivationKey>,
-    observed: Option<ActivationKey>,
-) -> Result<Option<ActivationKey>, FatalError> {
-    match (current, observed) {
-        (Some(current), Some(observed)) => {
-            if current.root != observed.root || current.function != observed.function {
-                return Err(FatalError);
-            }
-            Ok(Some(current))
-        }
-        (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(FatalError),
-    }
 }
 
 /// Published call-edge summaries live on the semantic/artifact plane, not the

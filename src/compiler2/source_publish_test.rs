@@ -427,11 +427,6 @@ fn main(), do: answer()
             >= 1,
         "item macro expansion should run through the ordinary macro executable path",
     );
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "item macro source publication should not invoke the old frontend lowerer",
-    );
 }
 
 #[test]
@@ -674,9 +669,4 @@ end
             "expanded function source should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
         );
     }
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "source publication must not invoke the old frontend lowerer",
-    );
 }

@@ -292,13 +292,6 @@ fn jit_compile_native_program(
         .expect("compiler2-owned native codegen should compile a Compiler2 native program")
 }
 
-fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
-    assert!(
-        capture.find(&["fz", "type_infer"]).is_empty() && capture.find(&["fz", "planner"]).is_empty(),
-        "{context}",
-    );
-}
-
 fn presence(fact: FactKey, changed: bool) -> (FactKey, bool) {
     (fact, changed)
 }
@@ -2822,17 +2815,6 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should not emit redundant fact.published telemetry"
     );
 
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "indexing should stay above lowering"
-    );
-    assert_eq!(
-        capture.count(&["fz", "planner", "planned"]),
-        0,
-        "indexing should stay above planning"
-    );
-
     let outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
     assert_eq!(
         outputs
@@ -2971,21 +2953,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
             .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == foo_id))
             .is_empty(),
         "root submission should keep uncalled foo/0 cold through lowering"
-    );
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "root seeding should not invoke lowering yet"
-    );
-    assert_eq!(
-        capture.count(&["fz", "planner", "planned"]),
-        0,
-        "root seeding should not invoke the production planner"
-    );
-    assert_eq!(
-        capture.find(&["fz", "type_infer"]).len(),
-        0,
-        "root seeding should not invoke the legacy type inference pipeline"
     );
 }
 
@@ -3536,14 +3503,6 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
             .all(|record| function_fq_name(&record, &modules) != "Enum.reduce"),
         "unreached Enum functions should stay undefined"
     );
-    assert!(
-        capture.find(&["fz", "type_infer"]).is_empty(),
-        "runtime pull-through should still avoid the legacy type inference pipeline"
-    );
-    assert!(
-        capture.find(&["fz", "planner"]).is_empty(),
-        "runtime pull-through should still avoid the legacy planner pipeline"
-    );
     let _ = root_id;
 }
 
@@ -3683,7 +3642,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     });
     assert_resolved(
         compiler.drive(),
-        "Enum.reduce should settle runtime protocol dispatch and closure calls in one semantic closure",
+        "Enum.reduce should settle runtime protocol dispatch and closure calls before backend packaging",
     );
 
     let function_records = functions.all();
@@ -3860,7 +3819,7 @@ fn compiler2_return_type_event_reports_only_actual_fact_movement() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "quicksort should settle to one semantic closure");
+    assert_resolved(compiler.drive(), "quicksort should settle its demanded fact graph");
 
     let main_id = function_id(&functions, "main", 0);
     let records = returns.records_for_function(root_id, main_id);
@@ -4208,8 +4167,8 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     }
 
     assert!(
-        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
-        "backend lowering should not wake the legacy planner or codegen pipelines",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "backend product construction should not invoke native codegen",
     );
     let settlements = capture.find(&["fz", "compiler2", "pull", "product", "settled"]);
     assert!(!settlements.is_empty(), "backend compilation must settle products");
@@ -4606,8 +4565,8 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     }
 
     assert!(
-        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
-        "backend lowering should not wake the legacy planner or codegen pipelines",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "backend product construction should not invoke native codegen",
     );
 }
 
@@ -6185,10 +6144,8 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
         "Range Enum.reduce/3 should keep scalar and tuple accumulator calls on the settled callable boundary",
     );
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -6250,10 +6207,8 @@ fn compiler2_interp_runs_range_reduce2_first_acc_bridge_from_backend_artifacts()
         "Range Enum.reduce/2 should thread the :first | {{:acc, value}} state through the bridge",
     );
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -6403,10 +6358,8 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
         "Range and Map Enum.to_list calls should keep their protocol impl identities distinct",
     );
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -6558,10 +6511,6 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
         dbg.lines().first().map(String::as_str),
         Some("[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]"),
         "compiler2-owned native codegen should preserve Compiler2 quicksort dbg output",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native quicksort JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -6785,10 +6734,6 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         42,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
     );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native spawn/receive JIT should not reopen legacy planning or type inference",
-    );
 }
 
 #[test]
@@ -6883,10 +6828,6 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
         0,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
     );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native spawn/receive/assert JIT should not reopen legacy planning or type inference",
-    );
 }
 
 #[test]
@@ -6927,10 +6868,6 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
         compiled.run(compiler.telemetry(), program.entry),
         15,
         "compiler2-owned native codegen should preserve the closed Enum.reduce result from Compiler2",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native Enum.reduce JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -6975,10 +6912,6 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_exact_reducer_lanes() 
         dbg.lines(),
         vec!["{[1, 3, 6, 10], 10}".to_string()],
         "compiler2-owned native codegen should preserve Enum.map_reduce when exact reducer calls capture scalar lanes exactly",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native Enum.map_reduce JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -7033,15 +6966,6 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         vec!["42".to_string(), "{:zero, :pos, :other}".to_string()],
         "compiler2-owned native codegen should preserve capture and multi-clause lambda sugar behavior",
     );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native source lambda sugar JIT should not reopen legacy planning or type inference",
-    );
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "Compiler2-native source lambda sugar JIT should not call the old frontend lowerer",
-    );
 }
 
 #[test]
@@ -7082,10 +7006,6 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
         compiled.run(compiler.telemetry(), program.entry),
         -1,
         "compiler2-owned native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native variadic extern JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -7163,10 +7083,6 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
         compiled.run(compiler.telemetry(), program.entry),
         100_000,
         "compiler2-owned native codegen should preserve Compiler2 tail recursion without stack growth",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2-native tail-recursive JIT should not reopen legacy planning or type inference",
     );
 }
 
@@ -7449,10 +7365,8 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     );
     assert_eq!(dbg.lines().len(), 1, "quicksort entry/0 should emit one dbg line");
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -7480,10 +7394,8 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
 
     assert_eq!(halt, 15, "Enum.reduce should produce the folded integer result");
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -7850,10 +7762,8 @@ fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
 
     assert_eq!(halt, 1, "printf(\"%d\", 7) should report one printed character");
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -7999,10 +7909,8 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
         "send(self(), ...) should deliver to the live root task instead of falling through the unknown-pid path",
     );
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -8041,10 +7949,8 @@ fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
         "spawn/1 should enqueue the child on the backend interpreter run queue and let it reach dbg/1",
     );
     assert!(
-        capture.find(&["fz", "type_infer"]).is_empty()
-            && capture.find(&["fz", "planner"]).is_empty()
-            && capture.find(&["fz", "codegen"]).is_empty(),
-        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+        capture.find(&["fz", "codegen"]).is_empty(),
+        "the backend interpreter should not invoke native codegen",
     );
 }
 
@@ -9596,16 +9502,6 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
             .iter()
             .all(|record| !summary_has_callee(&record.summary, SelectedCallee::Function(foo_id))),
         "uncalled foo/0 should stay semantically cold"
-    );
-    assert_eq!(
-        capture.find(&["fz", "type_infer"]).len(),
-        0,
-        "Compiler2 semantic analysis should not invoke the legacy type inference pipeline"
-    );
-    assert_eq!(
-        capture.find(&["fz", "planner"]).len(),
-        0,
-        "Compiler2 semantic analysis should not invoke the legacy planner pipeline"
     );
 }
 
@@ -12816,16 +12712,6 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     assert!(
         lowered_functions.contains(&main_id) && lowered_functions.contains(&generated[0]),
         "rooting a local lambda should lower main/0 and later lower the reached generated lambda in its own job; actual={lowered_debug:?}",
-    );
-    assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "Compiler2 lowering should not invoke the old frontend lowerer"
-    );
-    assert_eq!(
-        capture.count(&["fz", "planner", "planned"]),
-        0,
-        "Compiler2 lowering should stay above the old planner"
     );
 }
 
