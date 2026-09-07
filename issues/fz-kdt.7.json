@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.30"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Absorbed into fz-kdt.46",
   "type": "bug",
-  "updated_at": "2026-09-07T18:53:57Z"
+  "updated_at": "2026-09-07T18:55:40Z"
 }
