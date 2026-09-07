@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T18:53:55Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-kdt.48; all valid acceptance criteria moved into that description.",
   "created": "2026-09-02T23:04:19Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-kdt.48, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nAnonymous callable literals and bare callable surfaces remain distinct; an anonymous alternative cannot disappear beside branded alternatives.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-kdt.48 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-kdt.173",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-kdt.48",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:54Z"
+  "updated_at": "2026-09-07T18:53:55Z"
 }
