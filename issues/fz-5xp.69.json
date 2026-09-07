@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T16:05:49Z",
+  "description": "Split out of fz-5xp.16 with authorization (user, 2026-09-07: 'we can skip them\nfor the moment'), so that ticket can close on what it set out to do.\n\nfz has NO random number generator at all -- not a weak one, none. These three\nEnum functions are the only callers the library has for one, which is why they\nwere grouped separately in fz-5xp.16's own breakdown from the start.\n\n    random/1  shuffle/1  take_random/2\n\nWHAT IT ACTUALLY NEEDS is a decision about the runtime, not library work:\n\n  * where the seed lives. Erlang keeps per-process seed state in the process\n    dictionary, so two processes that seed identically produce identical\n    sequences and a process is reproducible on its own. fz has per-process\n    heaps and no process dictionary.\n  * which algorithm, and whether it is specified. Erlang's  names its\n    algorithms (exsss, exro928ss) and documents that the default may change.\n  * whether a fixture can pin anything. Every other fixture in this epic is\n    oracle-checked against Elixir; a random one cannot be, so it has to pin\n    DISTRIBUTION or REPRODUCIBILITY-from-a-seed instead, which is a different\n    kind of test than the suite has today.\n\nThat last one is the reason this is not simply 'add a primitive'.",
+  "id": "fz-5xp.69",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Enum: random/1, shuffle/1 and take_random/2 need an RNG fz does not have",
+  "type": "task",
+  "updated_at": "2026-09-07T16:05:49Z"
+}
