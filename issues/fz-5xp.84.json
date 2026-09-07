@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.79"
+  ],
   "blocks": [],
   "created": "2026-09-07T20:04:57Z",
   "description": "## The gap\n\n`lib/enum.fz` has no `@moduledoc`, and 34 of its 63 public functions have no `@doc`: `map`, `filter`, `reduce`, `sort`, `take`, `drop`, `each`, `split`, `all?`, `any?`, `count`, `member?`, `find`, `scan`, `with_index` and the rest. The 33 docs that do exist all landed in the module's later half, and each is a single sentence.\n\n## What the docs should be\n\nElixir's shape: a summary line, a paragraph on the behaviour that matters, and an `## Examples` section. That needs heredocs to attach to `@doc`, which is why this waits on that work.\n\nWrite for the reader who has the function in front of them and needs to know what it answers at the edges -- what an empty enumerable gives, what a negative count means, which end a duplicate survives at, whether order is encounter order or term order.\n\n## Acceptance\n\n- Every public function carries a `@doc`, and the module carries a `@moduledoc`.\n- Each doc states the result for the empty enumerable where that is not obvious.\n- No ticket numbers, no capitals for emphasis, no re-justification against Elixir beyond the one note in the `@moduledoc`.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Enum: document every public function",
   "type": "task",
-  "updated_at": "2026-09-07T20:04:57Z"
+  "updated_at": "2026-09-07T20:05:02Z"
 }
