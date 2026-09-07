@@ -9,9 +9,15 @@
   "id": "fz-5xp.31",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Confirmed at b275722a8 by hand, both doors:\n\n    extern \"C\" fn libc::sqrt(float) :: float\n    libc::sqrt(9.0)   # answer is 3.0\n\n  interp -\u003e 9.0   (echoes its input; no error)\n  run    -\u003e Cranelift verifier failure\n\nMarked as blocking fz-5xp.15: `fz_float_to_binary(float) :: binary` is a float\nPARAMETER lane, so Float formatting cannot be built until this is fixed. Doing\n.15's atom/integer half alone would be a silent deferral of its float half.",
+      "timestamp": "2026-09-07T07:51:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] A float-lane extern is broken differently in each door",
   "type": "bug",
-  "updated_at": "2026-09-07T07:51:07Z"
+  "updated_at": "2026-09-07T07:51:08Z"
 }
