@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T03:15:53Z",
   "created": "2026-09-07T03:15:52Z",
   "description": "FOUND AND FIXED under fz-5xp.22, by the coverage audit rather than by accident.\n\nInterpreted ENTRY dispatch never matched a map pattern whose key is a binary.\n\n  fnp lookup(%{\"name\" =\u003e name}), do: {:named, name}\n  fnp lookup(%{}), do: :anonymous\n\n  lookup(%{\"name\" =\u003e \"ada\"})     run: {:named, \"ada\"}   interp: :anonymous\n                                 elixir: {:named, \"ada\"}\n\nA three-door divergence, silent: the clause was simply skipped and the next one\nmatched, so the program produced a plausible wrong answer rather than failing.\n\nMECHANISM. A map pattern keyed by a binary is decided through a PREPARED key.\n`dispatch_const_key_value` (ir_interp/dispatch_exec.rs:585) finds the key's index\nin `plan.prepared_keys` and reads the materialised value out of the pinned map;\nInt/Float/Atom/Bool/Nil keys are decoded from the constant directly and never\nconsult it. The receive path fills that map from its bindings\n(`local_dispatch_pinned`, ir_interp/backend.rs:1878) and native entry dispatch\npushes them itself (jobs/native.rs:2631, `prepared_key_name`), but interpreted\nentry dispatch called `select_dispatch_match(..., \u0026HashMap::new())` -- an EMPTY\nmap. The lookup found nothing, the region answered \"key absent\", and the clause\nwas skipped.\n\nFIX: `prepared_dispatch_keys` materialises each Utf8Binary prepared key through\n`fz_alloc_bitstring_const` before entry dispatch runs, which is what the other\ntwo doors already had.\n\nWHY IT SURVIVED: no behavioural fixture exercised `map_key`/`map_kind` on entry\ndispatch. Both regions had exactly two covering fixtures and BOTH were\n`receive_*`, so the regions were gated only on the receive matcher. Coverage of\na region is not coverage of a region AT A DISPATCH SITE. Pinned now by\nfixtures2/behavior/map_clause_dispatch.fz against an Elixir twin.\n\nSame class as fz-5xp.18 (one question answered per-door, drifting) and fz-5xp.1\n(a stub arm that compiled because exhaustive matching forces an arm to exist,\nnot to be correct).",
   "id": "fz-5xp.23",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Interpreted entry dispatch never matched a binary-keyed map pattern",
   "type": "bug",
-  "updated_at": "2026-09-07T03:15:52Z"
+  "updated_at": "2026-09-07T03:15:53Z"
 }
