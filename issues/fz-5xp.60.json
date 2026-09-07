@@ -11,9 +11,15 @@
   "id": "fz-5xp.60",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "ROOT CAUSE FOUND, and it is not about static binaries at all -- they were only\nthe first thing to trip it.\n\n    pub const TAG_MASK: u64 = 0b1111;   // FOUR bits\n    pub const TAG_FWD:  u64 = 0x8;\n\n    fn is_forwarded_procbin(addr) -\u003e Option\u003c*const u8\u003e {\n        let marker = read(addr);\n        if marker \u0026 TAG_MASK == TAG_FWD \u0026\u0026 marker \u0026 !TAG_MASK != 0 { Some(..) }\n    }\n\nWord 0 of a live ProcBin is its `shared_ptr`. A SharedBin is a 40-byte Box, so\nit is 8-aligned -- and ROUGHLY HALF OF ALL SharedBin ADDRESSES END IN 0x8. For\nthose, a perfectly live ProcBin reads as FORWARDED.\n\nWhat then happens in mso_sweep:\n\n    to_p     = shared_ptr \u0026 !0xF          // the SharedBin, rounded DOWN by 8\n    new_head = to_p | TAG_PROCBIN         // chain head is now 8 bytes BEFORE a SharedBin\n    ProcBin::from_raw(to_p).mso_next_set(new_head)   // writes into the SharedBin\n\n-- so the chain head becomes a pointer into the middle of an unrelated object,\nthe SharedBin gets a word overwritten, and the release edge is lost.\n\nTHE OBSERVED CRASH MATCHES EXACTLY. The two static SharedBins were emitted\nadjacent, 40 bytes apart, at 0x...000 and 0x...028. The first is 16-aligned\n(nibble 0, safe); the SECOND ends in 8. Sweeping a stub that pointed at it gave\nhead = 0x...020 = first_sb + 32 = the first SharedBin's DESTRUCTOR field -- which\nis why the teardown dump showed `sb == shared_bin_destructor_noop` and why the\nrefcount fetch_sub faulted writing into executable memory.\n\nIt also explains the trigger precisely: ONE static binary is 16-aligned and\nsafe; TWO puts the second at +40, ending in 8. Nothing to do with literals as\nsuch, and heap-allocated SharedBins are a coin flip on every run.\n\nTHE FIX, and it is an invariant the codebase already relies on everywhere else:\nheap objects are 16-ALIGNED so the low four bits are free for tags. SharedBin and\nResource are the two things a heap stub points at that were left out of it. Give\nboth `#[repr(C, align(16))]` and give the compiler-baked static `set_align(16)`,\nand a real off-heap pointer can never again be read as a tag.\n\nis_forwarded_resource is the same predicate on a Resource pointer and has the\nsame hole.",
+      "timestamp": "2026-09-07T12:52:07Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Two matched binary literals over 64 bytes corrupt a ProcBin and die at teardown on run",
   "type": "bug",
-  "updated_at": "2026-09-07T12:50:45Z"
+  "updated_at": "2026-09-07T12:52:07Z"
 }
