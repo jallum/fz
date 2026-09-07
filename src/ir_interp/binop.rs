@@ -39,8 +39,8 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
         BinOp::Ge => float_cmp!(>=),
-        BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
-        BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
+        BinOp::And => Ok(if !a.is_truthy() { a } else { b }),
+        BinOp::Or => Ok(if a.is_truthy() { a } else { b }),
     }
 }
 
@@ -51,7 +51,7 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
             AnyValue::Float(value) => Ok(AnyValue::Float(-value)),
             _ => Err(format!("`-` on {}", a.render(null_mut()))),
         },
-        UnOp::Not => Ok(interp_bool_value(!is_truthy(a))),
+        UnOp::Not => Ok(interp_bool_value(!a.is_truthy())),
     }
 }
 

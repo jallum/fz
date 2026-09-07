@@ -28,6 +28,7 @@ Read:
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
+- [semantic authorities](docs/semantic-authorities.md) — who owns each semantic question (truthiness, equality, ordering, arithmetic, runtime type tests, bitstring matching, map key identity, binary representation, storage choice, foreign symbol lookup), which per-door fast paths are allowed beside it, and the divergences that came from a second answer.
 - [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage (including the map's flat SORTED array and the order-agrees-with-equality invariant), codegen value lanes, and GC.
 - [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.

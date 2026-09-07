@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::mem;
@@ -328,11 +327,14 @@ impl QuotedSourceBuilder {
         AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).map_err(QuotedSourceError::from)
     }
 
+    /// The heap owns map key order. `alloc_map_refs` sorts and dedups with
+    /// `map_key_cmp_refs`, so a pre-sort here would be discarded — and the one
+    /// that used to be here ordered binary keys by ADDRESS, never having
+    /// received fz-5xp.48's content ordering. A second authority whose answer
+    /// is thrown away is still a second authority (fz-5xp.21).
     pub fn map(&self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, QuotedSourceError> {
-        let mut sorted = entries.to_vec();
-        sorted.sort_by(|(left, _), (right, _)| map_key_cmp(*left, *right));
         let mut proc = self.heap.process.borrow_mut();
-        proc.heap.alloc_map_refs(&sorted).map_err(QuotedSourceError::from)
+        proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
     }
 
     pub fn lexical_context(&self, context: &QuotedLexicalContext) -> Result<AnyValueRef, QuotedSourceError> {
@@ -939,31 +941,4 @@ fn any_value_from_ref(value: AnyValueRef) -> Result<AnyValue, QuotedSourceError>
 
 fn tuple_arity(name: &str) -> Option<usize> {
     name.strip_prefix("Tuple").and_then(|suffix| suffix.parse().ok())
-}
-
-fn map_key_cmp(left: AnyValueRef, right: AnyValueRef) -> Ordering {
-    map_key_category(left)
-        .cmp(&map_key_category(right))
-        .then_with(|| left.tag().tag().cmp(&right.tag().tag()))
-        .then_with(|| {
-            if left.tag() == ValueKind::INT {
-                left.load_int()
-                    .expect("int key")
-                    .cmp(&right.load_int().expect("int key"))
-            } else {
-                left.storage_raw()
-                    .expect("value ref sort payload")
-                    .cmp(&right.storage_raw().expect("value ref sort payload"))
-            }
-        })
-}
-
-fn map_key_category(value: AnyValueRef) -> u8 {
-    match value.tag() {
-        ValueKind::INT => 0,
-        ValueKind::ATOM => 1,
-        ValueKind::NULL => 2,
-        ValueKind::FLOAT => 4,
-        _ => 3,
-    }
 }

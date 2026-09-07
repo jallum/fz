@@ -226,10 +226,6 @@ fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
     }
 }
 
-fn is_truthy(v: AnyValue) -> bool {
-    !v.is_false() && !v.is_nil()
-}
-
 pub(crate) fn make_resource_in_current_process(
     proc: *mut Process,
     _module: &Module,
