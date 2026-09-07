@@ -50,8 +50,13 @@ fn independent_allocators_do_not_share_lifetime_observations() {
 }
 
 #[test]
-fn resource_is_24_bytes() {
-    assert_eq!(size_of::<Resource>(), 24);
+fn a_resource_is_16_aligned_so_its_address_is_never_a_forwarding_marker() {
+    // The stub holds this address in the word Cheney forwards through, so
+    // an address ending in TAG_FWD's 0x8 would read as forwarded.
+    assert_eq!(align_of::<Resource>(), 16);
+    assert_eq!(size_of::<Resource>(), RESOURCE_BYTES);
+    let (handle, _drops) = observed_resource();
+    assert_eq!(handle.as_raw() as usize % 16, 0);
 }
 
 #[test]

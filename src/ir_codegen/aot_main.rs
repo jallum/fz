@@ -4,6 +4,7 @@ use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use fz_runtime::procbin::SHARED_BIN_BYTES;
 
 fn fn_addr<M: ClModule>(jmod: &mut M, id: FuncId, b: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::Value {
     let fref = jmod.declare_func_in_func(id, b.func);
@@ -181,13 +182,20 @@ pub(crate) struct BsConstSyms {
     pub(crate) sharedbin_id: Option<DataId>,
 }
 
-/// Emit a 40-byte static `SharedBin` symbol in `.data`:
+/// Emit a static `SharedBin` symbol in `.data`, `SHARED_BIN_BYTES` wide:
 ///
 ///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
 ///   offset  8..16  bit_len (LE u64)
 ///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
 ///   offset 24..32  bytes_len (LE u64)
 ///   offset 32..40  destructor — function-address relocation to noop
+///   offset 40..48  padding to the type's 16-byte alignment
+///
+/// The alignment is not cosmetic and must match `SharedBin`'s: a ProcBin
+/// stub carries this address in the word Cheney forwards through, so an
+/// address ending in `TAG_FWD`'s 0x8 makes a live stub read as forwarded
+/// (fz-5xp.60). Two statics emitted back to back at 8-alignment put the
+/// second one exactly there.
 ///
 /// The destructor relocation is to `shared_bin_destructor_noop`, declared
 /// as `Linkage::Import` so the linker resolves it to the runtime export.
@@ -203,7 +211,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     let sb_id = jmod
         .declare_data(&sb_name, Linkage::Local, /*writable=*/ true, false)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", sb_name, e)))?;
-    let mut buf = vec![0u8; 40];
+    let mut buf = vec![0u8; SHARED_BIN_BYTES];
     buf[0..8].copy_from_slice(&1u64.to_le_bytes());
     buf[8..16].copy_from_slice(&bit_len.to_le_bytes());
     // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
@@ -211,7 +219,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     // destructor at 32..40 — zero placeholder; function-addr reloc patches.
     let mut desc = DataDescription::new();
     desc.define(buf.into_boxed_slice());
-    desc.set_align(8);
+    desc.set_align(16);
     let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
     desc.write_data_addr(16, bytes_gv, 0);
     let dtor_fref = jmod.declare_func_in_data(runtime.shared_bin_destructor_noop_id, &mut desc);

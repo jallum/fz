@@ -306,8 +306,14 @@ copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
 object) and rewrites the root to the copy — copied, not followed.
 
 Off-heap binaries and resources have their own atomic reference counts. A
-16-byte `ProcBin` stub owns one edge to a 40-byte `SharedBin`; a resource stub
-owns one edge to a 24-byte `Resource`. Copying a stub into another heap retains
+16-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
+edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
+the process heap keeps, and for the same reason: a stub holds the address in
+word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with
+`TAG_FWD` (`0x8`) in the low four bits. At 8-byte alignment half of those
+addresses end in 8 and a live stub reads as forwarded, which made the sweep
+write into the object it was supposed to be releasing (fz-5xp.60). Alignment is
+what keeps a real pointer and a tag distinguishable by construction. Copying a stub into another heap retains
 one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
 or dropping its heap releases it. An immediate last release invokes the
 allocation's destructor and reclaims its storage. Deferred resource release

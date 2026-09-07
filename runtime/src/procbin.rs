@@ -27,7 +27,7 @@ use crate::any_value::{
     bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_object_word,
 };
 use crate::sync::{AtomicUsize, Ordering, fence};
-use std::mem::{forget, size_of};
+use std::mem::{align_of, forget, size_of};
 use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 
 // ===== SharedBin layout =====================================================
@@ -35,7 +35,14 @@ use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 /// Off-heap refcounted binary. `refcount` controls lifetime; `destructor` is
 /// invoked exactly once when the refcount transitions to zero, with the
 /// SharedBin pointer as its argument.
-#[repr(C)]
+///
+/// 16-ALIGNED ON PURPOSE. A ProcBin stub holds this address in word 0, and
+/// that word is also where the Cheney collector writes its forwarding
+/// marker -- a pointer with `TAG_FWD` (0x8) in the low four bits. At 8-byte
+/// alignment half of all SharedBin addresses end in 8, and a live stub read
+/// as forwarded (fz-5xp.60). Sharing the heap's own 16-alignment invariant
+/// is what makes a real pointer and a tag distinguishable by construction.
+#[repr(C, align(16))]
 pub struct SharedBin {
     pub refcount: AtomicUsize,                            // offset 0..8
     pub bit_len: u64,                                     // offset 8..16
@@ -44,8 +51,14 @@ pub struct SharedBin {
     pub destructor: unsafe extern "C" fn(*mut SharedBin), // offset 32..40
 }
 
+/// 40 bytes of fields, rounded to the 16-byte alignment above. The field
+/// offsets are unchanged, and `define_static_sharedbin` emits this many
+/// bytes for the compiler-baked copies.
+pub const SHARED_BIN_BYTES: usize = 48;
+
 const _: () = {
-    assert!(size_of::<SharedBin>() == 40);
+    assert!(size_of::<SharedBin>() == SHARED_BIN_BYTES);
+    assert!(align_of::<SharedBin>() == 16);
 };
 
 // Safety: refcount is atomic; the byte buffer is either an owned Box<[u8]>
@@ -568,5 +581,28 @@ mod loom_tests {
             unsafe { shared_bin_release(p_addr as *mut SharedBin) };
             assert!(flag.load(LoomOrdering::SeqCst), "destructor must fire on last release");
         });
+    }
+}
+
+/// fz-5xp.60 — a ProcBin stub holds its SharedBin's address in word 0, and
+/// that is the word Cheney overwrites with a `TAG_FWD` (0x8) forwarding
+/// marker. At 8-byte alignment half of all SharedBin addresses end in 8 and
+/// a LIVE stub reads as forwarded, so the sweep treats the SharedBin itself
+/// as a to-space stub and writes into it. 16-alignment is what makes a real
+/// pointer and a tag distinguishable.
+#[cfg(test)]
+mod shared_bin_alignment_test {
+    use super::*;
+
+    #[test]
+    fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
+        assert_eq!(align_of::<SharedBin>(), 16);
+        // Many at once: at 8-alignment about half of these would end in 8.
+        let bins: Vec<SharedBinHandle> = (0..64u8).map(|i| SharedBinHandle::from_bytes(&[i; 8], 64)).collect();
+        for bin in &bins {
+            let addr = bin.as_raw() as u64;
+            assert_eq!(addr % 16, 0, "SharedBin at {addr:#x} is not 16-aligned");
+            assert_ne!(addr & TAG_MASK, TAG_FWD);
+        }
     }
 }

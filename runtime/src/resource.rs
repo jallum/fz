@@ -56,7 +56,7 @@ use crate::any_value::{AnyValue, TAG_MASK, ValueKind, heap_object_word};
 use crate::any_value::{TAG_RESOURCE, object_size, resource_addr_from_tagged};
 use crate::heap::{Heap, HeapAllocKind};
 use crate::sync::{AtomicUsize, Ordering, fence};
-use std::mem::{forget, size_of};
+use std::mem::{align_of, forget, size_of};
 #[cfg(test)]
 use std::ptr::null_mut;
 use std::ptr::{NonNull, addr_of, read, write};
@@ -68,15 +68,23 @@ pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 /// Off-heap refcounted resource. `refcount` controls lifetime; `destructor`
 /// is invoked exactly once with `payload` when the refcount transitions to
 /// zero. The runtime frees the wrapper itself after the dtor returns.
-#[repr(C)]
+/// 16-ALIGNED for the same reason as `SharedBin`: a ResourceStub holds this
+/// address in word 0, which is also where Cheney writes a `TAG_FWD` (0x8)
+/// forwarding marker. At 8-byte alignment half of all Resource addresses
+/// would read as forwarded (fz-5xp.60).
+#[repr(C, align(16))]
 pub struct Resource {
     pub refcount: AtomicUsize,                          // offset 0..8
     pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
     pub payload: u64,                                   // offset 16..24
 }
 
+/// 24 bytes of fields, rounded to the 16-byte alignment above.
+pub const RESOURCE_BYTES: usize = 32;
+
 const _: () = {
-    assert!(size_of::<Resource>() == 24);
+    assert!(size_of::<Resource>() == RESOURCE_BYTES);
+    assert!(align_of::<Resource>() == 16);
 };
 
 // Safety: refcount is atomic; payload is an opaque u64 chosen by the host

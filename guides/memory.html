@@ -700,7 +700,7 @@ destructor runs and the memory goes back to the system allocator.</p>
 <p>No central registry. No mutex. Each SharedBin is its own allocation:</p>
 
 <pre>
-  struct SharedBin {           <span class="note">// 40 bytes total</span>
+  struct SharedBin {           <span class="note">// 40 bytes of fields, 48 with alignment padding</span>
     refcount:   AtomicUsize,                    <span class="note">// 0..8</span>
     bit_len:    u64,                            <span class="note">// 8..16  (length in bits)</span>
     bytes_ptr:  *const u8,                      <span class="note">// 16..24 → separate Box&lt;[u8]&gt;</span>
@@ -708,6 +708,15 @@ destructor runs and the memory goes back to the system allocator.</p>
     destructor: fn(*mut SharedBin),             <span class="note">// 32..40</span>
   }
 </pre>
+
+<p>The struct is <strong>16-byte aligned</strong>, the same as everything on
+the process heap, and that is load-bearing rather than cosmetic. A ProcBin keeps
+this address in its first word, and the first word is also where the collector
+writes a forwarding marker — a pointer carrying the tag <code>0x8</code> in its
+low four bits. At 8-byte alignment about half of all SharedBin addresses end in
+8, so a perfectly live ProcBin would read as <em>already forwarded</em>: the
+sweep would take the SharedBin itself for a relocated stub and write into it.
+Aligning to 16 means no real address can ever be mistaken for a tag.</p>
 
 <p>The bytes live in a separate <code>Box&lt;[u8]&gt;</code> rather than
 inline, so the destructor can free the bytes and the SharedBin struct
