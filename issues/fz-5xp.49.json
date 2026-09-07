@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.12"
+  ],
   "created": "2026-09-07T10:27:26Z",
   "description": "Found while doing fz-5xp.12's first work item, which cannot land without this.\n\nThat item is \"binary search in Heap::read_map_addr_value_ref (the array is\nalready sorted)\". Two things had to be true and only one was.\n\nFIRST, the ORDER had to agree with the EQUALITY. It did not for binary keys --\nfixed in fz-5xp.48, which also turned out to be a silent wrong answer on the JIT\ndoor.\n\nSECOND, every map has to actually BE sorted. It is not. `Heap::alloc_map_slots`\n(runtime/src/heap/imp.rs) writes entries in the order given and sorts nothing;\nit is a raw writer that trusts its caller. Of its callers:\n\n  * imp.rs:464 and imp.rs:570 sort and dedup first -- correct;\n  * deep_copy.rs:100 preserves a sorted source's order -- correct for atom and\n    binary keys, which are the ones that work at all (see fz-5xp.27);\n  * ir_runtime.rs:1319 builds the empty map -- vacuous;\n  * ir_runtime.rs:212, `fz_process_heap_alloc_stats`, hands it INSERTION ORDER.\n\nThat last one is unsorted in practice: its atom ids do not ascend with insertion\nbecause most of those atoms were interned earlier by the compiler. Measured, a\nbinary search over it returns nil for `stats[:map_bytes]` while finding\n`stats[:allocs]`, and 25 fixtures lost a line of output because\n`stats[:list_cons_bytes] + ...` silently became nil.\n\nThe linear scan hides it: the scan uses the structural relation and never\nconsults the order, so an unsorted map works. That is why nothing noticed.\n\nDONE = every map is sorted by construction, so the array is searchable. Either\n`alloc_map_slots` sorts and dedups like its siblings -- one place, invariant\nheld by construction, at the cost of re-sorting already-sorted input on the hot\npaths -- or it keeps a debug assertion that its input is sorted and each caller\nis fixed. Prefer the first unless the hot-path cost measures.\n\nWATCH OUT: sorting the stats map changes its RENDER order from insertion order\nto key order, which ~25 fixtures print. That is a golden change of a different\nkind from the resource reductions this epic has been reblessing freely -- it\nreorders output rather than lowering a number, so it wants a deliberate look\nrather than a blanket rebless. The values are identical either way.\n\nThen fz-5xp.12's binary search is a two-line change, and it is worth having:\nthe search measurably cut the reductions the same program spent.",
   "id": "fz-5xp.49",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Not every map is sorted, so the flat array is not searchable",
   "type": "task",
-  "updated_at": "2026-09-07T10:27:26Z"
+  "updated_at": "2026-09-07T10:30:08Z"
 }

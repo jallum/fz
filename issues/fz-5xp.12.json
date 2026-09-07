@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-5xp.3",
-    "fz-5xp.4"
+    "fz-5xp.4",
+    "fz-5xp.49"
   ],
   "blocks": [
     "fz-5xp.16",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Map: binary-search lookup, delete primitive, and a bulk-first Map module",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:54Z"
+  "updated_at": "2026-09-07T10:30:08Z"
 }
