@@ -24,6 +24,9 @@
 #     collide;
 #   * fz-5xp.15 -- Integer/Float to_string, without which nothing could be
 #     encoded;
+#   * an exponent has to be applied as ONE multiply by an exact power of ten:
+#     scaling step by step turned `1.0e-7` into `1.0000000000000002e-7`, a
+#     different double and a different rendering;
 #   * Map.put as a typed clause family, since a scalar value cannot reach the
 #     heap through the ref writer.
 #
@@ -50,6 +53,22 @@ fn main() do
   dbg(Json.decode("{\"b\": 2, \"a\": [1, null]}"))
   dbg(Json.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
 
+  # exponents, on integers and fractions, both signs and both spellings
+  dbg(Json.decode("1e3"))
+  dbg(Json.decode("1.5e2"))
+  dbg(Json.decode("2E+3"))
+  dbg(Json.decode("1.0e-7"))
+  dbg(Json.decode("-1.5e2"))
+
+  # the full escape set, including \u for one, two and three byte UTF-8
+  dbg(Json.decode("\"a\\nb\""))
+  dbg(Json.decode("\"q\\\"q\""))
+  dbg(Json.decode("\"s\\\\s\""))
+  dbg(Json.decode("\"sl\\/sl\""))
+  dbg(Json.decode("\"\\u0041\""))
+  dbg(Json.decode("\"\\u00e9\""))
+  dbg(Json.decode("\"\\u65e5\""))
+
   dbg(Json.encode(true))
   dbg(Json.encode(nil))
   dbg(Json.encode(42))
@@ -60,6 +79,16 @@ fn main() do
   dbg(Json.encode([1, 2.5, nil]))
   dbg(Json.encode(%{}))
   dbg(Json.encode(%{"a" => [1, nil], "b" => 2}))
+
+  # malformed input is refused, including the trailing commas a permissive
+  # decoder accepts
+  dbg(ok?(Json.decode("[1] junk")))
+  dbg(ok?(Json.decode("[1,]")))
+  dbg(ok?(Json.decode("{\"a\": 1,}")))
+  dbg(ok?(Json.decode("{\"a\" 1}")))
+  dbg(ok?(Json.decode("")))
+  dbg(ok?(Json.decode("tru")))
+  dbg(ok?(Json.decode("[1 2]")))
 
   # round-trip: decode(encode(x)) == x
   dbg(roundtrip(true))
@@ -73,6 +102,9 @@ fn main() do
   dbg(roundtrip(%{}))
   dbg(roundtrip(%{"a" => [1, nil], "b" => 2}))
 end
+
+fnp ok?({:ok, _v}), do: true
+fnp ok?(_other), do: false
 
 fnp roundtrip(v), do: same(Json.decode(Json.encode(v)), v)
 fnp same({:ok, decoded}, original), do: decoded == original

@@ -14,6 +14,18 @@
 {:ok, %{"a" => 1}}
 {:ok, %{"a" => [1, nil], "b" => 2}}
 {:ok, %{"n" => %{"m" => %{"deep" => true}}}}
+{:ok, 1000.0}
+{:ok, 150.0}
+{:ok, 2000.0}
+{:ok, 1.0e-7}
+{:ok, -150.0}
+{:ok, "a\nb"}
+{:ok, "q\"q"}
+{:ok, "s\\s"}
+{:ok, "sl/sl"}
+{:ok, "A"}
+{:ok, "é"}
+{:ok, "日"}
 "true"
 "null"
 "42"
@@ -24,6 +36,13 @@
 "[1,2.5,null]"
 "{}"
 "{\"a\":[1,null],\"b\":2}"
+false
+false
+false
+false
+false
+false
+false
 true
 true
 true

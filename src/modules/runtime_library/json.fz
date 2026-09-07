@@ -81,31 +81,113 @@ defmodule Json do
   fnp digits(b, acc), do: {acc, b}
 
   fnp fraction({whole, <<".", r :: binary>>}), do: fraction_digits(r, whole, 0, 1)
-  fnp fraction({whole, b}), do: {:ok, whole, b}
+  fnp fraction({whole, b}), do: exponent(whole, b)
 
   fnp fraction_digits(<<c, r :: binary>>, whole, num, den) when c >= 48 and c <= 57 do
     fraction_digits(r, whole, num * 10 + (c - 48), den * 10)
   end
-  fnp fraction_digits(b, whole, num, den), do: {:ok, whole + num / den, b}
+  fnp fraction_digits(b, whole, num, den), do: exponent(whole + num / den, b)
 
+  # `1e3`, `1.5E-2`. JSON allows an exponent on an integer too, and the result is
+  # a float either way -- `1e3` is `1.0e3`, not `1000`, which is what Elixir's
+  # decoder reports.
+  fnp exponent(n, <<"e", r :: binary>>), do: exponent_sign(n, r)
+  fnp exponent(n, <<"E", r :: binary>>), do: exponent_sign(n, r)
+  fnp exponent(n, b), do: {:ok, n, b}
+
+  fnp exponent_sign(n, <<"-", r :: binary>>), do: exponent_digits(n, r, 0, -1)
+  fnp exponent_sign(n, <<"+", r :: binary>>), do: exponent_digits(n, r, 0, 1)
+  fnp exponent_sign(n, b), do: exponent_digits(n, b, 0, 1)
+
+  fnp exponent_digits(n, <<c, r :: binary>>, acc, sign) when c >= 48 and c <= 57 do
+    exponent_digits(n, r, acc * 10 + (c - 48), sign)
+  end
+  fnp exponent_digits(n, b, acc, sign), do: {:ok, scale(n * 1.0, acc, sign), b}
+
+  # ONE multiply or divide by an exact power of ten, not `e` of them. Scaling
+  # step by step accumulates rounding: seven divisions by 10.0 turned `1.0e-7`
+  # into `1.0000000000000002e-7`, which is a different double and a different
+  # rendering. Powers of ten up to 10^22 are exact in a float, so building the
+  # power first and applying it once is correctly rounded over the range JSON
+  # numbers actually use.
+  fnp scale(n, 0, _sign), do: n
+  fnp scale(n, e, sign), do: apply_scale(n, pow10(e, 1.0), sign)
+
+  fnp apply_scale(n, p, sign) when sign > 0, do: n * p
+  fnp apply_scale(n, p, _sign), do: n / p
+
+  fnp pow10(0, acc), do: acc
+  fnp pow10(e, acc), do: pow10(e - 1, acc * 10.0)
+
+  # Byte at a time, because a SLICE would not help: every `<<c, r :: binary>>`
+  # step copies the remainder, so the traversal is already quadratic and a
+  # second pass to measure a run costs more than the appends save (measured:
+  # 435 allocations either way). Once sub-binaries are cheap (fz-5xp.55),
+  # scan-then-slice becomes the right shape and this should change with it.
   fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
-  fnp string(<<"\\", <<"\"">>, r :: binary>>, acc), do: string(r, acc <> "\"")
+  fnp string(<<"\\", r :: binary>>, acc), do: escaped(r, acc)
   fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
   fnp string(b, _acc), do: {:error, b}
 
+  fnp escaped(<<"\"", r :: binary>>, acc), do: string(r, acc <> "\"")
+  fnp escaped(<<"\\", r :: binary>>, acc), do: string(r, acc <> "\\")
+  fnp escaped(<<"/", r :: binary>>, acc), do: string(r, acc <> "/")
+  fnp escaped(<<"n", r :: binary>>, acc), do: string(r, acc <> "\n")
+  fnp escaped(<<"t", r :: binary>>, acc), do: string(r, acc <> "\t")
+  fnp escaped(<<"r", r :: binary>>, acc), do: string(r, acc <> "\r")
+  fnp escaped(<<"b", r :: binary>>, acc), do: string(r, acc <> <<8>>)
+  fnp escaped(<<"f", r :: binary>>, acc), do: string(r, acc <> <<12>>)
+  fnp escaped(<<"u", a, b, c, d, r :: binary>>, acc), do: unicode(r, acc, hex4(a, b, c, d))
+  fnp escaped(b, _acc), do: {:error, b}
+
+  fnp unicode(_r, _acc, :error), do: {:error, :bad_unicode_escape}
+  fnp unicode(r, acc, cp), do: string(r, acc <> utf8(cp))
+
+  fnp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
+  fnp hex4_join(:error, _b, _c, _d), do: :error
+  fnp hex4_join(_a, :error, _c, _d), do: :error
+  fnp hex4_join(_a, _b, :error, _d), do: :error
+  fnp hex4_join(_a, _b, _c, :error), do: :error
+  fnp hex4_join(a, b, c, d), do: ((a * 16 + b) * 16 + c) * 16 + d
+
+  fnp hex(c) when c >= 48 and c <= 57, do: c - 48
+  fnp hex(c) when c >= 97 and c <= 102, do: c - 87
+  fnp hex(c) when c >= 65 and c <= 70, do: c - 55
+  fnp hex(_c), do: :error
+
+  # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined --
+  # a lone surrogate encodes as itself, which is what a decoder without pair
+  # handling does, and is the one place this is not yet Elixir.
+  fnp utf8(cp) when cp < 128, do: <<cp>>
+  fnp utf8(cp) when cp < 2048 do
+    <<192 + div(cp, 64), 128 + rem(cp, 64)>>
+  end
+  fnp utf8(cp) do
+    <<224 + div(cp, 4096), 128 + rem(div(cp, 64), 64), 128 + rem(cp, 64)>>
+  end
+
+  # `]` closes an EMPTY array only at the start. After a comma a value is
+  # required, so `[1,]` is an error -- accepting it was the one place this
+  # decoder was more permissive than the grammar and than Elixir.
   fnp array(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
-  fnp array(b, acc), do: array_item(value(b), acc)
+  fnp array(b, acc), do: array_element(b, acc)
+
+  fnp array_element(b, acc), do: array_item(value(b), acc)
 
   fnp array_item({:ok, v, r}, acc), do: array_next(skip_ws(r), [v | acc])
   fnp array_item(other, _acc), do: other
 
-  fnp array_next(<<",", r :: binary>>, acc), do: array(skip_ws(r), acc)
+  fnp array_next(<<",", r :: binary>>, acc), do: array_element(skip_ws(r), acc)
   fnp array_next(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
   fnp array_next(b, _acc), do: {:error, b}
 
+  # `}` closes an EMPTY object only at the start; after a comma a key is
+  # required, so `{"a": 1,}` is an error.
   fnp object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
-  fnp object(<<"\"", r :: binary>>, acc), do: object_key(string(r, ""), acc)
-  fnp object(b, _acc), do: {:error, b}
+  fnp object(b, acc), do: object_entry(b, acc)
+
+  fnp object_entry(<<"\"", r :: binary>>, acc), do: object_key(string(r, ""), acc)
+  fnp object_entry(b, _acc), do: {:error, b}
 
   fnp object_key({:ok, k, r}, acc), do: object_colon(skip_ws(r), k, acc)
   fnp object_key(other, _acc), do: other
@@ -116,11 +198,9 @@ defmodule Json do
   fnp object_value({:ok, v, r}, k, acc), do: object_next(skip_ws(r), Map.put(acc, k, v))
   fnp object_value(other, _k, _acc), do: other
 
-  fnp object_next(<<",", r :: binary>>, acc), do: object(skip_ws(acc_rest(r)), acc)
+  fnp object_next(<<",", r :: binary>>, acc), do: object_entry(skip_ws(r), acc)
   fnp object_next(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
   fnp object_next(b, _acc), do: {:error, b}
-
-  fnp acc_rest(r), do: r
 
   fnp reverse([], acc), do: acc
   fnp reverse([h | t], acc), do: reverse(t, [h | acc])
