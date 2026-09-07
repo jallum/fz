@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-tfn.30"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-06T19:41:09Z",
   "close_reason": "Completed in 67e09d37311bf147bf55b24ee124eeff1ca7268a. Original ticket-scoped cold review accepted the semantic cut; fresh ticket-scoped cold review accepted the exact CI remediation eb30f2c5bcfc579561fbce249163fa23a91e2b37aaf5fa6e14086f325cd96b71. All local semantic, causal, full CLI, library, matrix, docs, fmt and strict-clippy gates are green; push remains gated until the amended exact-head CI is green.",
   "created": "2026-09-03T04:10:56Z",
@@ -39,5 +37,5 @@
   "status": "closed",
   "title": "Absorb decidably subsumed list clauses at the Ty interning boundary",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:12Z"
+  "updated_at": "2026-09-07T18:56:50Z"
 }
