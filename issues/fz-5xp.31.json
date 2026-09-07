@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.15"
+  ],
   "created": "2026-09-07T07:03:35Z",
   "description": "Found by the cold review of fz-5xp.3. NOT caused by it -- pre-existing.\n\n    extern \"C\" fn libc::sqrt(float) :: float\n    sqrt(9.0)\n\n  fz2 interp -\u003e 9.0        SILENTLY WRONG\n  fz2 run    -\u003e Cranelift verifier: arg 0 (v2) has type f64, expected i64\n\nThe interp leg is the bad one. `marshal_arg` passes the f64 via `to_bits()` in an\nINTEGER register, because `dispatch_fn_returning` transmutes to\n`fn(u64, ...) -\u003e u64` per arity -- there is no float-lane dispatcher. The callee\nreads a garbage xmm register, and the integer return register still holds the\nargument's bits, which are read back as float bits. So it echoes its input, which\nlooks plausible and is not an error.\n\nThis is the same lane defect as fz-5xp.19 seen from the parameter side rather\nthan the return side; 19's repro is `(integer) :: float`, this one is\n`(float) :: float`. Almost certainly one fix: the extern wrapper picks argument\nlanes from the wrong place, and the interpreter's dispatchers have no float\nlane at all. Fold with fz-5xp.19 when either is worked.\n\nMATTERS BECAUSE fz-5xp.15 adds `fz_float_to_binary`, whose parameter is a float\nlane, and Float formatting is on the JSON goal program's critical path.\n\nDONE = a fixture declaring a float-lane extern that agrees on all three doors,\nand the interpreter refusing rather than echoing if a lane is unsupported.",
   "id": "fz-5xp.31",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A float-lane extern is broken differently in each door",
   "type": "bug",
-  "updated_at": "2026-09-07T07:03:35Z"
+  "updated_at": "2026-09-07T07:51:07Z"
 }
