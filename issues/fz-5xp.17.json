@@ -16,9 +16,15 @@
   "id": "fz-5xp.17",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "GOAL PROGRAM RUNS, landed at 71cab6c75.\n\n`Json.decode/1` and `Json.encode/1` in src/modules/runtime_library/json.fz,\noracled against Elixir's OWN `JSON` module -- 36 assertions across decode,\nencode and round-trip, byte-identical on interp, run and build, with\ndecode(encode(x)) == x for every value type.\n\nCovers: true/false/null, integers, negatives, fractional numbers, strings with\n\\\" \\\\ \\n \\t escapes, arrays, objects, arbitrary nesting, and an error result\nfor malformed input.\n\nNOT YET, so this stays open:\n  * exponent notation in JSON INPUT (1.0e-7). fz source can write it now\n    (fz-5xp.39) but the decoder's number grammar does not read it;\n  * unicode \\u escapes;\n  * rejecting trailing garbage inside containers -- the top level rejects it,\n    the containers are more permissive than the grammar;\n  * allocation goldens on a real workload, which the epic's SIGNAL asks for and\n    which fz-5xp.49's map sorting now makes worth measuring.\n\nEverything the plan predicted as a blocker turned out not to be, and everything\nthat actually blocked was found by writing the program: fz-5xp.52, .6, .48, .15,\nand Map.put's typed clause family. Recorded in the commit message.",
+      "timestamp": "2026-09-07T11:25:42Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Json.decode/1 and Json.encode/1 -- the goal program",
   "type": "task",
-  "updated_at": "2026-09-06T23:48:14Z"
+  "updated_at": "2026-09-07T11:25:42Z"
 }
