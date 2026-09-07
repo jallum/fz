@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T13:15:23Z",
   "created": "2026-09-07T12:30:21Z",
   "description": "CI RED on Linux; passes on macOS.\n\n    matrix::extern_float_lanes::interp  dlsym: symbol `sqrt` not found\n    matrix::extern_float_lanes::run     FAILED\n    matrix::extern_float_lanes::build   /usr/bin/ld: undefined reference to `pow\\'\n                                        /usr/bin/ld: undefined reference to `jn\\'\n\nOn macOS the math functions live inside libSystem, which is already loaded and\nalready linked, so declaring `extern \"C\" fn sqrt` just works. On Linux they\nlive in libm: dlsym over the default namespace does not find them for the interp\nand JIT doors, and the AOT link line has no -lm for the build door.\n\nTWO THINGS, and they should be separated:\n\n  * sqrt/pow are C99 and portable. The fixture is legitimate; what is missing is\n    that fz has no way to say which library an extern comes from, and no -lm on\n    the AOT link line.\n\n  * `jn` (Bessel of order n) is an XSI/BSD extension. It was chosen to exercise\n    a three-argument float shape (fz-5xp.37) and is not worth a portability\n    dependency; pick a C99 function of the same shape (fma) instead.\n\nThis is the same class as the sibling ticket about the JIT symbol table: a\nsymbol resolving by accident on the development platform.",
   "id": "fz-5xp.59",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "extern_float_lanes depends on libm symbols that only resolve on macOS",
   "type": "bug",
-  "updated_at": "2026-09-07T12:30:21Z"
+  "updated_at": "2026-09-07T13:15:23Z"
 }
