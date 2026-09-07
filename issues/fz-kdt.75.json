@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.200"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A root entry's Activation has two producers: SeedActivation reconstructs what SeedRoot owns",
   "type": "task",
-  "updated_at": "2026-09-07T05:46:45Z"
+  "updated_at": "2026-09-07T05:47:09Z"
 }
