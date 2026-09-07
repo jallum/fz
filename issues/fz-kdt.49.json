@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T18:54:15Z",
   "close_reason": "Current premise is false; final confluence/order audit moved into fz-kdt.48.",
   "created": "2026-08-26T14:36:53Z",
@@ -15,5 +13,5 @@
   "status": "closed",
   "title": "Obsolete: Debug-sorted product waits no longer exist",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:00Z"
+  "updated_at": "2026-09-07T18:56:01Z"
 }
