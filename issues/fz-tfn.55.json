@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.49"
   ],
   "closed_at": "2026-09-06T12:01:55Z",
@@ -16,5 +15,5 @@
   "status": "closed",
   "title": "Make runtime allocation lifetime tests owner-scoped under parallel execution",
   "type": "bug",
-  "updated_at": "2026-09-06T12:02:32Z"
+  "updated_at": "2026-09-07T18:57:08Z"
 }
