@@ -9,6 +9,7 @@
   "blocks": [
     "fz-5xp.17"
   ],
+  "closed_at": "2026-09-07T16:07:53Z",
   "created": "2026-09-06T23:44:37Z",
   "description": "fz has 45 name/arity; Elixir has 108 across 82 names. Missing: 63 pairs across 39 names.\n\n(a) pure list/reduce, no new primitives (24 pairs): at/2,3 chunk_by/2 chunk_every/2,3,4\n    chunk_while/4 concat/1,2 count_until/2,3 dedup/1 dedup_by/2 fetch/2 fetch!/2\n    flat_map_reduce/3 product/1 product_by/2 reverse_slice/3 slide/3 sum/1 sum_by/2\n    unzip/1 zip/1,2 zip_reduce/3,4 zip_with/2,3\n(b) needs term order -- BLOCKED on fz-5xp.8 (20 pairs): max/1,2,3 max_by/2,3,4\n    min/1,2,3 min_by/2,3,4 min_max/1,2 min_max_by/2,3,4 sort_by/2,3, plus REPAIRING\n    sort/1 and sort/2\n(c) needs RNG (3 pairs): random/1 shuffle/1 take_random/2 -- fz has no RNG at all\n(e) needs Map -- BLOCKED on fz-5xp.12 (10 pairs): frequencies/1 frequencies_by/2\n    group_by/2,3 uniq/1 uniq_by/2 into/2,3 (needs a Collectable protocol) slice/2,3\n(f) needs String.Chars -- BLOCKED on fz-5xp.15 (2 pairs): join/1,2\n\nAlso in scope, from the divergence audit:\n  - fz's Enumerable has a 5th callback Elixir does not have (reduce_while/3). Decide\n    whether that stays -- it is a real design fork, and every impl carries it.\n  - DELETE Enum.slice/1: a {:error, :unsupported} stub with no caller and no Elixir\n    counterpart. Elixir's API is slice/2 and slice/3.\n  - Enumerable.List.slice/1 should return {:ok, 0, fn _,_,_ -\u003e [] end} for [], not\n    {:error, :unsupported}.\n  - take/2 and drop/2 with negative amounts are two-pass (count then walk); Elixir uses\n    a single-pass circular buffer.\n  - list.fz member?/2 binds unused head/tail vars -- warnings are errors here.",
   "id": "fz-5xp.16",
@@ -25,8 +26,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Enum: close the gap to Elixir",
   "type": "task",
-  "updated_at": "2026-09-07T16:07:51Z"
+  "updated_at": "2026-09-07T16:07:53Z"
 }
