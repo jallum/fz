@@ -105,6 +105,23 @@ reached from every door. But the CLAUSE HEAD is lowered twice — once into a
 dispatch region to select the clause, once into body steps to bind — so each
 field is read twice: fz-5xp.56.
 
+**What a dispatch plan demands** — owner `required_dispatch_input_ordinals`
+(`compiler2/artifact.rs`). A plan names the inputs it must be handed to decide a
+clause; a backend may pass anything else as nil. Only one authority answers it,
+so this is not a second-answer entry — it is the other failure shape, where ONE
+wrong answer reaches two readers with different tolerance and only one of them
+complains. A guard helper is reified as a NESTED plan numbered in its own input
+space and fed only through the call's argument list, and the collector used to
+walk that nested plan against the caller, labelling the caller's ordinals with
+the helper's numbers. A 3-input helper called from a 1-input clause therefore
+demanded semantic input 2. Native dispatch iterates its own inputs and asks
+whether each is required, so it never looked at the impossible ordinal; the
+interpreter iterates the demands and indexes the arguments, so it refused the
+call. `run` and `build` answered `:low`, `interp` aborted (fz-5xp.74). The
+function now asserts every ordinal it returns is inside its own plan, which
+keeps a recurrence at the plan that produced it rather than at whichever door
+reads it first.
+
 **Map key identity and order** — owner `runtime/src/heap/key_cmp.rs`. Order must
 agree with equality, because a map is a flat sorted array: if two equal keys are
 not adjacent, a dedup driven by the order never sees them collide and a binary

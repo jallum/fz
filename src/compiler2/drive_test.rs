@@ -14762,6 +14762,56 @@ fn compiler2_guard_dispatch_rejects_cycles() {
 }
 
 #[test]
+fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider() {
+    // A guard helper is reified as a nested plan with its own input space. The
+    // caller's required-input set names the CALLER's semantic inputs, so a
+    // 3-input helper called from a 1-input clause must still leave the caller
+    // requiring only input 0. Merging the two spaces made `interp` demand an
+    // input `band/1` does not have while `run` and `build` answered `:low`
+    // (fz-5xp.74).
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let entry_defs = EntryDispatchCapture::new();
+    entry_defs.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_helper_wider_than_caller.fz".to_string()),
+        text: include_str!("../../fixtures2/00558_guard_helper_wider_than_caller.fz").to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the helper and its caller");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope the wider helper",
+    );
+    assert_resolved(compiler.drive(), "second drive should define the wider helper");
+
+    let band_id = function_id(&functions, "band", 1);
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(band_id)),
+        "band/1 should be demandable as entry dispatch",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry-dispatch planning should reify the wider helper",
+    );
+
+    let plan = entry_dispatch(&entry_defs, band_id);
+    assert_eq!(plan.input_count, 1, "band/1 has one semantic input");
+    assert!(
+        plan_has_nested_guard_dispatch(&plan),
+        "the guard should have been reified as a nested helper plan",
+    );
+    assert_eq!(
+        crate::compiler2::artifact::required_dispatch_input_ordinals(&plan),
+        HashSet::from([0]),
+        "the helper's own ordinals must not become demands on the caller",
+    );
+}
+
+#[test]
 fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

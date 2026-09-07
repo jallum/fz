@@ -1,0 +1,26 @@
+#---
+# purpose: "fz-5xp.74 — a guard helper with more inputs than the calling clause dispatches on every path"
+#---
+#
+# # guard_helper_wider_than_caller
+#
+# A guard helper is reified into the caller's dispatch plan as a nested plan
+# with its OWN input space. The caller's required-input set names the caller's
+# semantic inputs, so the callee's ordinals must never leak into it: a 3-input
+# helper called from a 1-input clause used to make `interp` demand a semantic
+# input the caller does not have, while `run` and `build` answered correctly.
+fn ordered?(a, b, c), do: a <= b and b <= c
+fn between?(lo, hi, v), do: v >= lo and v <= hi
+
+fn kind(x, y) when ordered?(0, x, y), do: :rising
+fn kind(_x, _y), do: :other
+
+fn band(v) when between?(1, 10, v), do: :low
+fn band(_v), do: :high
+
+fn main() do
+  assert(kind(2, 5) == :rising, "a 3-input helper decides a 2-input clause")
+  assert(kind(5, 2) == :other, "the wider helper can also miss")
+  assert(band(4) == :low, "a 3-input helper decides a 1-input clause")
+  assert(band(40) == :high, "the 1-input clause still falls through")
+end
