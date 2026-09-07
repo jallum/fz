@@ -7,7 +7,7 @@
     "fz-foq.4"
   ],
   "created": "2026-09-07T02:21:24Z",
-  "description": "src/telemetry/causal.rs parses and analyses the public telemetry trace. It has no production consumer: every causal:: reference outside the module is either in a #[cfg(test)] mod (pull.rs) or in an already-gated module (public_trace.rs), and no binary uses it. Its consumers are lib unit tests and tests/fz2_cli.rs.\n\nBecause tests/fz2_cli.rs compiles against fz as an external crate, cfg(test) gating is not available. So there are two honest answers and they are not interchangeable:\n\nA. It is test support. Extract to a dev-dependency crate the way fz-foq.1 moved fixture metadata. Coupling is one enum (handler::EventKind, 6 uses), so the crate depends on fz and cargo permits the cycle through the dev-dependency edge. 1960 lines leave the production lib and no test-only pub surface remains.\n\nB. It is unshipped production. Trace analysis is how this project sees excess work; if a user-facing report (an fz2 subcommand, say) should exist, causal belongs in the lib and the gap is that nothing calls it -- the same question as fz-foq.5's compile_root_jit.\n\nDo not pick A by default just because it makes the lint quiet. Decide what trace analysis is for, then act.\n\nBlocks fz-foq.4: the answer determines whether causal's methods are in scope for the cfg(test) sweep at all.",
+  "description": "src/telemetry/causal.rs (1960 lines) has no production consumer. Every causal:: reference outside the module is either inside a #[cfg(test)] mod (pull.rs, whose mod tests opens at 2559) or in an already-gated module (public_trace.rs). No binary uses it.\n\nIt is deliberately published -- src/lib.rs:29 does 'pub use telemetry::causal' -- so this is an intentionally exported analysis library that nothing ships against, not an accident.\n\nIt cannot simply be gated: tests/fz2_cli.rs consumes it as an external crate and cannot see cfg(test), the same constraint that drove fz-foq.1.\n\n## Blocked by fz-0am, and mostly dissolved by it\n\nThe earlier framing of this ticket -- 'extract 1960 lines to a dev-dependency crate, or declare trace analysis unshipped production' -- assumed the module keeps its current shape. fz-0am removes roughly 275-300 lines of inference and turns the rest into tallies over emitted events. Decide how much should EXIST before deciding where it lives.\n\n## What is left to decide afterwards\n\nWhatever survives is a stream reader: parse JSONL, translate raw ids through the log's own canon lines, tally. Then the same two answers apply to a much smaller thing:\n\nA. Test support -- extract to a dev-dependency crate as fz-foq.1 did. Coupling to the lib is one enum (handler::EventKind, 6 uses), so it is feasible; cargo permits the cycle through the dev-dependency edge.\nB. Unshipped production -- the CLI writes traces (fz2 --log-telemetry) but ships nothing that reads one. If fz2 should interpret its own trace, causal belongs in the lib and the gap is the missing subcommand.\n\nDo not pick A by default because it makes a lint quiet.",
   "id": "fz-foq.3",
   "labels": [],
   "parent": "fz-foq",
@@ -23,7 +23,7 @@
   ],
   "priority": 3,
   "status": "open",
-  "title": "Decide the home of causal trace analysis (1960 lines, no production consumer)",
+  "title": "Rehome or retire what remains of causal after fz-0am",
   "type": "task",
-  "updated_at": "2026-09-07T08:48:24Z"
+  "updated_at": "2026-09-07T09:16:55Z"
 }
