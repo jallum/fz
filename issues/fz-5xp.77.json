@@ -7,9 +7,15 @@
   "id": "fz-5xp.77",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in a3a47bf0c. Sixteen files moved with git mv (rename-detected, zero content change), sixteen include_str! paths repointed, seven prose references updated, and runtime_library.rs's module doc now says where the sources live. Gate green with no re-blessing: lib 1971/0, matrix 639/0, aot 30/0, cli 225/0, doc, clippy, fmt.",
+      "timestamp": "2026-09-07T19:48:13Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Move the fz standard library out of the Rust src/ tree into a top-level lib/",
   "type": "task",
-  "updated_at": "2026-09-07T19:45:16Z"
+  "updated_at": "2026-09-07T19:48:13Z"
 }
