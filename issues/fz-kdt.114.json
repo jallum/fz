@@ -7,7 +7,7 @@
     "fz-tfn.60"
   ],
   "created": "2026-09-01T17:23:28Z",
-  "description": "## Goal\n\nAfter blocked-wait producer discovery becomes edge-triggered, prove that no production scheduling path still orders FactKey values by Debug text. Delete this ticket as superseded if the cutover removes every affected path; otherwise repair only the surviving semantic ordering defect.\n\n## Current evidence\n\nThe pre-cutover DependencyIndex::unresolved path sorts waits by Debug-rendered FactKey. Several FactKey variants embed raw interned Ty identities, so that text is not a stable structural order. The same unresolved inventory currently feeds producer-poke scheduling, but fz-kdt.46 owns deletion of those normal-drive scans and poke loops. Building a general structural comparator before that deletion would invest in machinery for a path intended to disappear.\n\n## Strategy and proof\n\n1. Land fz-kdt.46.\n2. Search every remaining normal-drive consumer of unresolved waits and FactKey ordering.\n3. If only terminal diagnostic presentation remains, keep deterministic presentation isolated from execution order and close this ticket with the removal proof.\n4. If a live scheduling consumer remains, add opposite-Ty-mint-order and display-collision regressions, then use an injective structural order whose compare(a,b) == Equal iff a == b.\n5. Do not restore a global producer scan or sort.\n6. Prove byte-identical artifacts, order-independent causal work, complete diagnostics, full tests, fixture matrix, formatting, and strict clippy.\n\nThe expected outcome is deletion, not a comparator.",
+  "description": "## Goal\n\nAfter fz-kdt.46 removes scan-based blocked-wait discovery, prove no normal execution path orders FactKey values through Debug or display text and no obsolete unresolved inventory remains.\n\n## Expected outcome\n\nRepository and production-path inspection should close this ticket without implementation. Terminal diagnostic presentation may use a deterministic typed/rendered order because presentation is not execution. If a live scheduling consumer remains, update this description from the then-current code before implementing; do not add a general comparator or restore a scan.\n\n## Acceptance\n\nNo Debug/display-derived execution order, global unresolved producer discovery or dead ordering helper remains. Opposite type-mint orders preserve semantic answers, causal work and artifacts. Exact diagnostics, tests, docs, formatting and strict lint pass.",
   "id": "fz-kdt.114",
   "labels": [],
   "parent": "fz-tfn",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Audit residual blocked-wait ordering after edge-triggered cutover",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:49Z"
+  "updated_at": "2026-09-07T18:57:11Z"
 }
