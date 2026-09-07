@@ -6,8 +6,7 @@
   ],
   "blocks": [
     "fz-tfn.18",
-    "fz-tfn.39",
-    "fz-tfn.43"
+    "fz-tfn.39"
   ],
   "closed_at": "2026-09-05T20:50:26Z",
   "close_reason": "Committed 54f0162e3 after TDD, fresh ticket-scoped cold source/test/count/doc review, full applicable gates and focused reruns of justified reduced-work pins. Proven-unused artifact reductions explicitly approved; exact retained transitions and same-version artifact/causal reproducibility pass.",
@@ -26,5 +25,5 @@
   "status": "closed",
   "title": "Prove and prune unnecessary transport-shape and callable-construction products",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:54Z"
+  "updated_at": "2026-09-07T18:55:55Z"
 }
