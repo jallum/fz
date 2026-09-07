@@ -7,9 +7,15 @@
   "id": "fz-5xp.61",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "AGREED as the direction (user, 2026-09-07). The declaration should carry its\nlibrary, and both the runtime lookup and the AOT -lm should derive from that one\nfact rather than from the two hardcoded lists that stand in for it today.",
+      "timestamp": "2026-09-07T14:18:27Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A foreign extern declaration cannot say which library it comes from",
   "type": "task",
-  "updated_at": "2026-09-07T13:41:46Z"
+  "updated_at": "2026-09-07T14:18:27Z"
 }
