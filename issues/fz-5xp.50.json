@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T10:42:58Z",
+  "description": "Found while building the Map surface for fz-5xp.12. A LIMIT to record, not a\nbug to fix.\n\n    Map.keys(%{a: 1, b: 2, c: 3})\n      elixir  [:c, :a, :b]\n      fz      [:a, :b, :c]\n\nElixir's order here is stable across runs and independent of the literal's\norder -- `%{c: 3, b: 2, a: 1}` gives the same `[:c, :a, :b]` -- but it is\nneither alphabetical (`%{zz: 1, aa: 2}` gives `[:zz, :aa]`) nor creation order.\nIt is Erlang's internal atom identity, which fz cannot reproduce because fz\ninterns its own atoms with its own ids.\n\nBINARY keys are different and DO match: Elixir orders them by content, and\nfz-5xp.48 made fz do the same. `Map.keys(%{\"b\" =\u003e 1, \"a\" =\u003e 2})` is `[\"a\", \"b\"]`\nin both.\n\nCONSEQUENCE FOR ORACLES. A fixture whose twin prints an atom-keyed map's\niteration order will diverge, and no amount of work on fz's side fixes it.\nFixtures must either use binary keys where order is printed, or sort before\nprinting, or not print order.\n\nCONSEQUENCE FOR THE GOAL PROGRAM: none. JSON object keys are strings, so\n`Json.decode` builds BINARY-keyed maps, which are exactly the case that matches.\n\nRelated: fz renders `%{:a =\u003e 1}` where Elixir renders `%{a: 1}` -- the atom-key\nshorthand. That one IS fixable and is a separate ticket.",
+  "id": "fz-5xp.50",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Atom-keyed map iteration order cannot match Elixir",
+  "type": "task",
+  "updated_at": "2026-09-07T10:42:58Z"
+}
