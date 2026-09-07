@@ -7,9 +7,15 @@
   "id": "fz-5xp.97",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in 4d5285826. ~250 functions across 16 modules; 6 new moduledocs. Every example verified through fz2 interp. Gate green: lib 1978/0, matrix 642/0, aot 30/0, cli 225/0, doc, clippy, fmt. 13 diagnostics goldens re-blessed for line drift (stdout identical, diagnostics identical with digits stripped and gutters normalised). Findings filed along the way: .90 atom map ordering, .91 empty-pattern parity, .92 library warnings, .93 unreachable slice, .94 encode! keys, .95 Enum.sort ICE, .96 silent doc interpolation.",
+      "timestamp": "2026-09-07T22:22:51Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Give the runtime library Elixir-shaped documentation now that heredocs carry it",
   "type": "task",
-  "updated_at": "2026-09-07T22:22:15Z"
+  "updated_at": "2026-09-07T22:22:51Z"
 }
