@@ -7,9 +7,15 @@
   "id": "fz-5xp.76",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in 4e6f9dfcd. Seven modules cleaned (enum, kernel, map, keyword, range, string, string_chars) plus atom and float. 15 ticket refs and ~40 capitals-for-emphasis removed; three comments that disagreed with the code corrected. Six diagnostics goldens re-blessed for line drift (digits-stripped diff identical). Gate green: lib 1971/0, matrix 639/0, aot 30/0, cli 225/0, doc, clippy, fmt.",
+      "timestamp": "2026-09-07T19:39:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The runtime library's sibling modules still carry ticket numbers and shouty emphasis in their comments",
   "type": "task",
-  "updated_at": "2026-09-07T19:17:04Z"
+  "updated_at": "2026-09-07T19:39:11Z"
 }
