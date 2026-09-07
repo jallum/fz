@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:09:07Z",
+  "description": "The scheduler holds Wake{cause, job, disposition} at enqueue_step and discards the association once the job is queued. The job's own later completion records what it read and changed, but not why it ran.\n\nCarry it: hold the pending cause(s) per enqueued job, drained when the job is popped, and put (WorkStartReason, causes) on the completion record.\n\nThis is NOT the 'second dependency ledger' the module doc rejects. It is bounded by the agenda -- one entry per pending job, drained on pop -- not a history.\n\nRespect 34.3's coalescing semantics: a job woken by two facts before it runs has TWO causes and must keep both. Dedup here would reintroduce exactly what 34.3 deleted the coalesced_seen set to avoid.\n\nDo not force data into WorkStartReason: it is Copy and used as a tally map key. Keep the discriminant, carry causes alongside.\n\nProof: the existing Replay is the oracle. Emit, then assert the emitted answer equals the replayed answer on all three target fixtures BEFORE anything is deleted.",
+  "id": "fz-0am.1",
+  "labels": [],
+  "parent": "fz-0am",
+  "priority": 2,
+  "status": "open",
+  "title": "Carry each job's scheduling cause to the evaluation it causes",
+  "type": "task",
+  "updated_at": "2026-09-07T09:09:07Z"
+}
