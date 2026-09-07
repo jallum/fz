@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T05:55:45Z",
+  "description": "fz has no `Access` module, so `Access.get/2` written longhand is unresolved.\n\n  Access.get(%{a: 1}, :a)\n    elixir  1\n    fz      error[lower/unbound]: unresolved direct runtime callee `Access.get/2`\n\nUntil fz-5xp.4 this appeared to work, but only because the bracket-access decode\nswallowed ANY alias whose called field was `get` and turned it into an index --\nthe same bug that swallowed every user-defined `get/2`. With the decode now\nkeyed on a front-door marker rather than the alias, the sugar is sound and the\nmissing module is visible.\n\nA clean diagnostic is the right behaviour for a module that does not exist, so\nthis is not a regression. But Elixir code reaches for `Access` directly --\n`Access.get/2`, `Access.fetch/2`, `get_in/2`, `put_in/3`, `update_in/3` -- and\n`m[key]` is only the sugar over it.\n\nScope when taken: decide whether fz implements `Access` as a real module (an fz\nprotocol over map/keyword/struct, which is what Elixir does) or documents its\nabsence. Related: the bracket-index lowering itself assumes a map or struct\nreceiver and aborts on anything else -- see the bracket-access abort ticket.",
+  "id": "fz-5xp.28",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "fz has no Access module; Access.get/2 longhand is unresolved",
+  "type": "task",
+  "updated_at": "2026-09-07T05:55:45Z"
+}
