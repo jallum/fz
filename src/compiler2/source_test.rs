@@ -71,6 +71,7 @@ fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], name
 // so the helper just needs to vary the span by its `line` input.
 fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> QuotedSourceMetadata {
     QuotedSourceMetadata {
+        from_brackets: false,
         lexical_context: Some(context.clone()),
         span: Some(Span::new(SourceId(0), line, line.saturating_add(3))),
     }

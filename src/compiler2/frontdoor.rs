@@ -864,9 +864,17 @@ impl FrontDoorParser {
         self.expect(&Tok::RBrack, "`]`")?;
         let span = lhs.span.merge(self.prev_span());
         let meta = self.meta(module_path, scope, span)?;
+        // The callee carries a marker no source text can write. Recognising
+        // this access by its `Access` alias alone is not sound: decoding runs
+        // before alias resolution, so `alias Foo, as: Access` looks identical
+        // and a user's `get/2` was silently turned into an index.
+        let callee_meta = QuotedSourceMetadata {
+            from_brackets: true,
+            ..self.meta(module_path, scope, span)?
+        };
         let callee = self.builder.ast_node(
             self.builder.atom("."),
-            &meta,
+            &callee_meta,
             self.builder
                 .list(&[self.builder.alias(&meta, &["Access"])?, self.builder.atom("get")])?,
         )?;
@@ -2009,6 +2017,7 @@ impl FrontDoorParser {
         span: Span,
     ) -> Result<QuotedSourceMetadata, FrontDoorError> {
         Ok(QuotedSourceMetadata {
+            from_brackets: false,
             lexical_context: Some(QuotedLexicalContext::new(
                 QuotedLexicalContextKind::Source,
                 module_path.to_vec(),

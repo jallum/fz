@@ -274,7 +274,7 @@ fn decode_expr(cursor: &QuotedSourceCursor, fallback_span: Option<Span>) -> Resu
                     let call_args = decode_exprs(&args, Some(span))?;
                     return Ok(Spanned::new(Expr::ClosureCall(Box::new(callee), call_args), span));
                 }
-                if callee_parts.len() == 2 && is_access_get(&callee_parts[0], &callee_parts[1]) && args.len() == 2 {
+                if callee_parts.len() == 2 && is_bracket_access_callee(&head_node) && args.len() == 2 {
                     let base = decode_expr(&args[0], Some(span))?;
                     let key = decode_expr(&args[1], Some(span))?;
                     return Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(key)), span));
@@ -1655,8 +1655,22 @@ fn is_alias(cursor: &QuotedSourceCursor) -> bool {
         .unwrap_or(false)
 }
 
-fn is_access_get(base: &QuotedSourceCursor, field: &QuotedSourceCursor) -> bool {
-    is_alias(base) && field.atom_name().ok().as_deref() == Some("get")
+/// True for the callee the front door synthesises for `lhs[key]`, and for
+/// nothing a user can write.
+///
+/// Recognising the access by its `Access` alias is not sound: this decode runs
+/// BEFORE alias resolution, so `alias Foo, as: Access` and `alias Foo.Access`
+/// present the same segments as the real thing, and a user's `get/2` was
+/// silently replaced by a map index with no diagnostic. The front door stamps
+/// `__fz_from_brackets__` instead, which no source text can produce -- the same
+/// separation Elixir makes with `from_brackets: true`.
+fn is_bracket_access_callee(head_node: &QuotedAstNode) -> bool {
+    head_node
+        .meta
+        .map_value(crate::compiler2::source::META_FROM_BRACKETS_KEY)
+        .ok()
+        .flatten()
+        .is_some_and(|value| value.atom_name().is_ok_and(|name| name == "true"))
 }
 
 fn is_list_like(cursor: &QuotedSourceCursor) -> bool {

@@ -25,6 +25,13 @@ const FALSE_ATOM: &str = "false";
 const META_LEXICAL_KEY: &str = "__fz_lexical__";
 const META_NAMESPACE_ID_KEY: &str = "__fz_namespace_id__";
 const META_SPAN_KEY: &str = "__fz_span__";
+/// Stamped on the callee of a `lhs[key]` access so decoding can recognise the
+/// front door's own bracket sugar. The alias in that callee is NOT sufficient:
+/// decoding runs before alias resolution, so `alias Foo, as: Access` is
+/// indistinguishable from a real `Access` by segments alone, and a user's
+/// `get/2` was silently indexed. Elixir separates the two the same way, with
+/// `from_brackets: true` in meta. Source text cannot produce this key.
+pub(crate) const META_FROM_BRACKETS_KEY: &str = "__fz_from_brackets__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
@@ -140,6 +147,9 @@ impl QuotedLexicalContext {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuotedSourceMetadata {
     pub lexical_context: Option<QuotedLexicalContext>,
+    /// True only on the callee this front door synthesises for `lhs[key]`.
+    /// See [`META_FROM_BRACKETS_KEY`].
+    pub from_brackets: bool,
     /// The byte-offset source span, carried verbatim from the lexer. Positions
     /// are stored as a byte range — never line/column — so quoting and reading a
     /// span are free copies; line/column is derived only when a diagnostic is
@@ -366,6 +376,9 @@ impl QuotedSourceBuilder {
         }
         if let Some(span) = &meta.span {
             entries.push((self.atom(META_SPAN_KEY), self.span(span)?));
+        }
+        if meta.from_brackets {
+            entries.push((self.atom(META_FROM_BRACKETS_KEY), self.bool(true)));
         }
         self.map(&entries)
     }

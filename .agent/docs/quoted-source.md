@@ -51,8 +51,14 @@
   lexer tokens with kind, payload, span bounds, and `space_before`. Quoted
   readers decode those payloads directly; they never re-enter `Lexer` or
   reconstruct type tokens from quoted AST.
-- Postfix bracket access quotes through an Elixir-shaped `Access.get` remote
-  callee form.
+- Postfix bracket access quotes through an `Access.get` remote callee form whose
+  metadata carries `__fz_from_brackets__`. Decoding recognises the access by
+  THAT MARKER, never by the alias: decoding runs before alias resolution, so
+  `alias Foo, as: Access` and `alias Foo.Access` present exactly the segments a
+  real `Access` would, and matching on segments silently turned every
+  user-defined `get/2` into a map index. Elixir draws the same line, with a
+  resolved module atom plus `from_brackets: true` in meta. The marker is not
+  writable from source.
 - `cond do` quotes through ordinary `{:cond, meta, [[do: [{:->, ...}, ...]]]}`.
   structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as

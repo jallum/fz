@@ -1855,6 +1855,7 @@ impl World {
             return Ok(builder.nil());
         };
         let metadata = QuotedSourceMetadata {
+            from_brackets: false,
             lexical_context: Some(self.scope_lexical_context(scope, kind)),
             span: None,
         };

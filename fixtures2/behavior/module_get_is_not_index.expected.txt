@@ -1,0 +1,6 @@
+{1, 2, nil}
+{{:store_two, :a}, {:store_two, :missing}}
+{{:store_two, :a}, {:store_tag, 1}}
+{:store_two, :captured}
+{{:store_three, :a, :fallback}, {:store_three, :missing, :fallback}}
+{{:store_two, :a}, 1}
