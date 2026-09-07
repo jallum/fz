@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-tfn.59"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.57"
   ],
@@ -21,5 +19,5 @@
   "status": "in_progress",
   "title": "Ground recursive publications through the ordinary scheduler",
   "type": "task",
-  "updated_at": "2026-09-07T21:30:08Z"
+  "updated_at": "2026-09-07T21:30:55Z"
 }
