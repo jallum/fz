@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-tfn.15",
     "fz-tfn.30"
   ],
   "blocks": [
@@ -18,5 +17,5 @@
   "status": "closed",
   "title": "Absorbed into fz-tfn.15",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:59Z"
+  "updated_at": "2026-09-07T18:55:41Z"
 }
