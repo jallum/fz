@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-5xp.3",
-    "fz-5xp.31"
+    "fz-5xp.31",
+    "fz-5xp.40"
   ],
   "blocks": [
     "fz-5xp.16",
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "Atom/Integer/Float to-string, String.Chars, and Kernel.to_string",
   "type": "task",
-  "updated_at": "2026-09-07T07:51:07Z"
+  "updated_at": "2026-09-07T09:13:49Z"
 }
