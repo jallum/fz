@@ -24,11 +24,15 @@
     {
       "text": "ALLOCATION GOLDEN LANDED, which was the fourth and last gap.\n\nfixtures2/behavior/json_decode_cost.fz decodes the same document shape at two\nsizes -- 51 bytes and 135 -- and pins the RATIO rather than a number:\n\n    :shared_bin_bytes   0 and 0\n    :bitstring_allocs   312 and 622   (interp)\n                        489 and 1099  (run/build)\n\n2.6x the document, about 2x the allocations, nothing copied.\n\nRecording a single number would have been worse than nothing. The first attempt\nat this golden would have pinned 435 allocations for a 68-byte document as\ncorrect; what that number actually described was a quadratic scan, now fixed as\nfz-5xp.55. A ratio is the smallest thing that can be argued with.\n\nStatus of the four gaps recorded when the goal program landed:\n  * exponent notation in JSON input      -- DONE (99537f6d8)\n  * unicode \\u escapes                   -- DONE (99537f6d8)\n  * trailing garbage inside containers   -- DONE (99537f6d8)\n  * allocation goldens on a real workload -- DONE (this)\n\nThe ticket stays open only on its formal blockers (.13 Keyword, .14 String,\n.15 to-string's two unmet requirements, .16 Enum, .8 term ordering), which are\nlibrary completeness rather than anything the goal program needs to run. It has\nrun on all three doors since 71cab6c75.",
       "timestamp": "2026-09-07T13:50:08Z"
+    },
+    {
+      "text": "THE GOAL IS MET, and every blocker is closed.\n\nThe ticket's own example, verified on interp and run:\n\n    input = \"{\\\"users\\\":[{\\\"name\\\":\\\"ada\\\",\\\"age\\\":36}]}\"\n    {:ok, doc} = Json.decode(input)\n    Json.encode(doc)                                  -\u003e the document back\n    Enum.map(doc[\"users\"], fn u -\u003e u[\"name\"] end)     -\u003e [\"ada\"]\n    Enum.join(..., \", \")                              -\u003e \"ada\"\n    String.upcase(...)                                -\u003e \"ADA\"\n\nThe last two lines are the point of the epic rather than decoration: Json, Enum\nand String are three modules written in fz, composing, over a value the parser\nbuilt -- and String and half of that Enum surface did not exist when the goal\nprogram first ran.\n\nACCEPTANCE, as the ticket stated it:\n  * green on run + interp + build against ONE Elixir-owned golden --\n    json_roundtrip, 55 assertions oracled against Elixir's own JSON module;\n  * allocation goldens that are ARGUED, not merely recorded -- json_decode_cost\n    pins a RATIO across two document sizes rather than a number, because the\n    number that would have been pinned first described a quadratic scan\n    (fz-5xp.55).\n\nAll four gaps recorded when the program first ran are closed: exponents,\nunicode escapes, trailing garbage in containers, and the allocation golden.",
+      "timestamp": "2026-09-07T16:08:39Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Json.decode/1 and Json.encode/1 -- the goal program",
   "type": "task",
-  "updated_at": "2026-09-07T13:50:08Z"
+  "updated_at": "2026-09-07T16:08:39Z"
 }
