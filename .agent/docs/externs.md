@@ -78,6 +78,24 @@ fixed-arity C dispatcher, which has nowhere to put the implicit process
 argument. The combination is refused at the declaration rather than in each
 door's lowering.
 
+### A foreign symbol has to be in the process to be found
+
+The interp and JIT doors resolve a foreign extern with
+`dlsym(RTLD_DEFAULT, ..)`, which searches the loaded global scope — so the
+library has to actually be loaded. On macOS the C library and the math library
+are one thing (libSystem) and every process has it; elsewhere libm is separate,
+and nothing in the runtime referenced it, so `--as-needed` dropped the
+dependency and `extern "C" fn libc::sqrt(float) :: float` failed with
+`dlsym: symbol sqrt not found` on Linux while passing on macOS
+(fz-5xp.59). `runtime/src/lib.rs` keeps a `#[used]` static holding `sqrt`'s
+address for exactly that reason.
+
+The AOT door has the same split on the link line: `aot_link.rs` passes
+`-lm -rdynamic` off macOS, where the mac branch passes
+`-Wl,-undefined,dynamic_lookup` instead. A symbol that resolves only on the
+development platform is the recurring shape here — see the JIT symbol table
+above.
+
 ## The `fz` ABI is reserved to the runtime library
 
 A declaration outside the bootstrap may not name it. The reason is not

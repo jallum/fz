@@ -60,5 +60,26 @@ pub extern "C" fn fz_panic(process: *mut Process, msg_ref: u64) -> ! {
     abort();
 }
 
+/// fz-5xp.59 — a `float` extern names libm: `sqrt`, `pow`, `ldexp`, `jn`.
+///
+/// On macOS those live in libSystem, which every process has loaded and linked
+/// already, so declaring one just works. On Linux they live in libm, and the
+/// interp and JIT doors reach an extern through `dlsym(RTLD_DEFAULT, ..)`,
+/// which searches the global scope -- libm has to actually be in it. Nothing in
+/// the runtime referenced a libm symbol, so `--as-needed` dropped the
+/// dependency and `sqrt` was simply not there.
+///
+/// Taking one address, and keeping it in a `#[used]` static so the linker
+/// cannot decide otherwise, is what puts libm in the process. The AOT door is
+/// handled separately, on the link line (`aot_link.rs`).
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[used]
+static LIBM_IS_LOADED: unsafe extern "C" fn(f64) -> f64 = {
+    unsafe extern "C" {
+        fn sqrt(x: f64) -> f64;
+    }
+    sqrt
+};
+
 #[cfg(test)]
 mod export_test;
