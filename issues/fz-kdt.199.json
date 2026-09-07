@@ -4,7 +4,6 @@
     "fz-kdt.183"
   ],
   "blocks": [
-    "fz-kdt.214",
     "fz-kdt.217"
   ],
   "closed_at": "2026-09-03T19:44:36Z",
@@ -31,5 +30,5 @@
   "status": "closed",
   "title": "A returned tuple FIELD at a recursive key is freight: a {:done, acc} slot masked TupleFields({0: Whole}) keys only the tag while the return IS acc, so two users still share one joined return",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:03Z"
+  "updated_at": "2026-09-07T18:56:48Z"
 }
