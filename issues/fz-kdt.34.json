@@ -5,7 +5,6 @@
     "fz-kdt.13",
     "fz-kdt.44",
     "fz-kdt.45",
-    "fz-kdt.46",
     "fz-kdt.47",
     "fz-kdt.5"
   ],
@@ -19,5 +18,5 @@
   "status": "closed",
   "title": "Expose formula identity and revision causality for scheduler and product work",
   "type": "task",
-  "updated_at": "2026-08-28T17:03:59Z"
+  "updated_at": "2026-09-07T18:56:04Z"
 }
