@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:37:15Z",
+  "description": "Found by the cold review of fz-5xp.31. PRE-EXISTING.\n\n    fn main(), do: dbg(7.5 % 2.0)\n\n  interp -\u003e 1.5\n  run    -\u003e abort in fz_dynamic_float_arith_unsupported (runtime/src/ir_runtime.rs)\n  build  -\u003e the same\n\nCAUSE. `lower_arith_binop` (src/compiler2/native_codegen/prim.rs) excludes\n`BinOp::Mod` from BOTH float paths, and the tagged fallback has no float arm, so\nthe call reaches the runtime's \"unsupported\" trap.\n\nSHARPLY RELEVANT: the `fz_op_rem_ff` / `fz_op_rem_fi` / `fz_op_rem_if` shims\nthat fz-5xp.31 rewrote implement float `%` CORRECTLY. `Kernel` declares all\nthree. So the operator is fully specified and implemented on one door and\nmissing on two -- the interpreter is currently the only door that can evaluate\nit at all.\n\nRelated: fz-5xp.6 (Elixir division semantics) touches the same lowering, and\nElixir's own `rem/2` is integer-only while `%` here is not. Settle what fz's `%`\nmeans for floats as part of that, then make all three doors do it.\n\nDONE = float `%` agrees on all three doors, or is refused on all three with one\ndiagnostic. Not one door answering and two aborting.",
+  "id": "fz-5xp.34",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Float remainder aborts run and build",
+  "type": "bug",
+  "updated_at": "2026-09-07T08:37:15Z"
+}
