@@ -4,6 +4,7 @@
     "fz-tfn.53"
   ],
   "blocks": [
+    "fz-kdt.46",
     "fz-kdt.64"
   ],
   "created": "2026-09-06T00:38:28Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Complete every compiler attempt into the dependency ledger",
   "type": "bug",
-  "updated_at": "2026-09-07T22:06:31Z"
+  "updated_at": "2026-09-07T22:06:33Z"
 }
