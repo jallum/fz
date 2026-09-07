@@ -5,9 +5,7 @@
     "fz-kdt.185",
     "fz-tfn.30"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-06T17:13:59Z",
   "close_reason": "Landed measured retained capture-tuple law and oracle-fixture collapse in d3054abd3 after final ticket-scoped cold acceptance. Rejected the fourth InputDemand component because it added 3,173 applies for 89 fewer products; no production behavior logic or scaffolding landed.",
   "created": "2026-09-02T18:52:40Z",
@@ -25,5 +23,5 @@
   "status": "closed",
   "title": "Retain transported capture tuples after rejecting costlier flow-sensitive erasure",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:16Z"
+  "updated_at": "2026-09-07T18:56:50Z"
 }
