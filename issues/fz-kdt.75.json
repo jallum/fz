@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-kdt.200"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T06:38:26Z",
   "created": "2026-08-30T18:05:48Z",
   "description": "## Status\n\nThe ownership bug was real, but this implementation is transitional and will not land from invalid PR #123.\n\nRootSlot's grow-only history of every former entry ActivationKey exists only to stop SeedActivation from reconstructing input evidence from a quotient key. The final model in fz-kdt.200 deletes that reconstruction: SeedRoot and actual caller/latent evidence owners publish exact ActivationInputs rows, and removing an owner withdraws its normal claim.\n\nPreserve the root rekeying, temporary keying withdrawal, self-recursive copublisher and no-resurrection regressions in fz-kdt.200. Delete SeedActivation key-to-row reconstruction, the historical RootSlot key set and routing side effects together. Do not cherry-pick faeb9d669 as architecture.",
@@ -14,5 +12,5 @@
   "status": "closed",
   "title": "Superseded: delete activation-key evidence reconstruction",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:00Z"
+  "updated_at": "2026-09-07T18:56:12Z"
 }
