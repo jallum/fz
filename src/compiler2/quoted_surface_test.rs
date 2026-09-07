@@ -360,3 +360,25 @@ fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() 
         "one logical function form carries the attached attrs",
     );
 }
+
+#[test]
+fn compiler2_quoted_surface_carries_a_heredoc_moduledoc_whole() {
+    // `@moduledoc` decodes on its own path (`parse_scope_attr`) rather than
+    // the one `@doc` takes, so it gets its own pin: a heredoc reaching the
+    // scope surface with its paragraphs intact.
+    let tel = ConfiguredTelemetry::new();
+    let source = "@moduledoc \"\"\"\nText handling.\n\nEverything here is bytes.\n\"\"\"\nfn a(), do: 1\n";
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("mod_doc.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("mod_doc.fz", source, code_id, &tel).expect("quoted parse");
+
+    let surface = read_scope_surface(&root).expect("surface read");
+
+    match &surface.attrs[0] {
+        crate::ast::Attribute::ModuleDoc(doc) => assert_eq!(
+            doc, "Text handling.\n\nEverything here is bytes.\n",
+            "a module doc should keep the blank line between its paragraphs"
+        ),
+        other => panic!("expected @moduledoc attr, got {other:?}"),
+    }
+}
