@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.81"
+  ],
   "created": "2026-09-07T20:04:08Z",
   "description": "## What to remove\n\n**`take_positive_step/2`** (`lib/enum.fz`) is a two-clause family with a `@spec` that nothing calls. `take_positive/2` inlines the same decision as an `if` inside a closure. The clause family is the shape the rest of the module uses; the closure is what actually runs.\n\n**`Enum.slice/1`**, `fn slice(_enumerable), do: {:error, :unsupported}`, is a stray copy of the Enumerable protocol callback. That callback belongs to `Enumerable` and is implemented per type in `lib/enumerable.fz` -- List and Map answer it, Range answers it with a real slicing function. Nothing calls `Enum.slice/1`, and it occupies the name Elixir gives to `Enum.slice/2` and `Enum.slice/3`.\n\n**`concat_list`** names two unrelated functions: `concat_list/2` appends two lists, `concat_list/1` flattens one level of a list of lists. Rename so each says what it does.\n\n## Acceptance\n\n- Neither dead function remains, and no caller looked for them.\n- The two `concat_list` jobs have distinct names.\n- Gate green. Diagnostics goldens that quote `Enum.fz` line numbers re-blessed for drift; confirm digits-stripped equality before blessing.",
   "id": "fz-5xp.80",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Enum: delete the dead code and the duplicate helper name",
   "type": "task",
-  "updated_at": "2026-09-07T20:04:08Z"
+  "updated_at": "2026-09-07T20:04:59Z"
 }
