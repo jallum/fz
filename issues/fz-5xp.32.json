@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-5xp.29"
+    "fz-5xp.29",
+    "fz-5xp.30"
   ],
   "blocks": [],
   "created": "2026-09-07T07:45:11Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "[BUG] A foreign declaration of an fz-owned symbol is unchecked, and diverges across doors",
   "type": "bug",
-  "updated_at": "2026-09-07T07:45:12Z"
+  "updated_at": "2026-09-07T07:45:13Z"
 }
