@@ -7,9 +7,15 @@
   "id": "fz-5xp.22",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "MEASURED, and it is bigger than the ticket title says. All TEN region kinds are\nimplemented in all THREE files -- the sets are identical:\n\n  Bitstring  Cons  Empty  Equal  Guard  List  MapKeyPresent  MapKind  TupleArity  Type\n\n  native_codegen/receive.rs   all 10   (Cranelift, C-ABI leaf matcher fn)\n  compiler2/jobs/native.rs    all 10   (fz IR, inline control flow)\n  ir_interp/dispatch_exec.rs  all 10   (executes runtime values)\n\nThat is 30 implementations of 10 questions. It was never a bitstring problem.\nBitstring is simply the ONLY place the duplication was visible, because entry\ndispatch had a hole there and refused to lower; the other nine have had three\nreadings each all along, silently.\n\nThis is the same class fz-5xp.18 proved drifts. Comparison had three readings\nand two of them were wrong in different ways: `2 \u003e= 1.0` answered false on the\nJIT and true on interp, and guards answered a mixed comparison wrongly on BOTH\ndoors. Nothing structural stops any of these thirty from drifting the same way;\nwhat stopped it so far is that most regions are exercised by fixtures that\nhappen to run on every door.\n\nSo the ticket is: ONE EMITTER + ONE EXECUTOR + A GATE, across the whole Region\nenum -- not a bitstring fix. Sequencing suggestion: pick a region kind whose\nthree readings are simplest (Empty or TupleArity), fold those first to establish\nthe seam, then move the rest behind it.\n\nThe executor cannot join the fold -- an interpreter walking values and a backend\nemitting instructions cannot share a body -- so the gate is what keeps it\nhonest. Check what that gate currently is: a region only stays honest if some\nfixture exercises it on all three doors, and mixed int/float comparison survived\nfor as long as it did because no fixture compared an integer to a float.",
+      "timestamp": "2026-09-07T02:38:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fold the two native dispatch region emitters into one",
   "type": "task",
-  "updated_at": "2026-09-07T02:37:34Z"
+  "updated_at": "2026-09-07T02:38:08Z"
 }
