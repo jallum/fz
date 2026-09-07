@@ -4,9 +4,7 @@
     "fz-tfn.11",
     "fz-tfn.30"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-05T17:44:51Z",
   "close_reason": "Delivered as 82870f5bbe13a8cf40f3b33a06d39c3353addaff; exact staged diff SHA256 d6f4ba7fa69b266a07a438677751ab16dbe02b854e09e73aaad8f22f5d4d3b21. Fresh ticket-scoped cold review approved tracked diff ae8819cac94a27bc140e138fad15c0d09a9b721940df6a204caea2d4864be8f0 plus new macro test 7dea43e64a4c2af79523263ad28e172cea0449fb611c4b67cd537959a244a804 after RED/GREEN fixes for macro-kind replacement and never-produced retirement demand/queue coalescing. Final library1838 passed/6 preexisting ignores; full serial matrix531/531 and post-review macro matrix12/12; CLI30/30; runtime210/210; AOT variadic; doctests; all-workspace check, strict all-target clippy, fmt and diff checks. Pull48/48, macro3/3, scheduler52/52; exact unchanged/unrelated/equal/relevant/native-failure/retirement/canonical/causal proof gates green. Operator-reference formula363-\u003e361; take/drop4490-\u003e4489 with exact +1 wake attribution; bounded trace ceilings unchanged. No backend/macro artifact job/fact/map/projection/parking bridge remains. Diagnostic provenance separation tracked fz-tfn.40; edge-driven arbitration subsumes/deletes external-ground walk under fz-kdt.46. Both descriptions updated, not contradictory comments.",
   "created": "2026-09-03T08:00:23Z",
@@ -18,5 +16,5 @@
   "status": "closed",
   "title": "Delete the BackendProgram scheduler bridge after macro roots join persistent products",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:18Z"
+  "updated_at": "2026-09-07T18:56:54Z"
 }
