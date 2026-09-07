@@ -7,9 +7,15 @@
   "id": "fz-5xp.19",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "fz-5xp.31 is the same lane defect seen from the PARAMETER side (`(float) :: float` echoes its input on interp, fails Cranelift verification on run). Almost certainly one fix -- work them together.",
+      "timestamp": "2026-09-07T07:03:41Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "An extern declared (integer) :: float fails to lower on both native and interp",
   "type": "bug",
-  "updated_at": "2026-09-07T00:43:17Z"
+  "updated_at": "2026-09-07T07:03:41Z"
 }
