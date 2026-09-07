@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T18:44:55Z",
+  "description": "fz-5xp.17 aligned Json to Elixir's API for the functions fz can express. Three\nparts of lib/elixir/lib/json.ex are not followed yet, each needing something fz\ndoes not have:\n\n  * encode_to_iodata!/1,2 -- returns IODATA, a nested list of binaries written\n    without being flattened first. fz has no iodata concept, and adding one is a\n    decision about the value model rather than about JSON.\n\n  * protocol_encode/2 and the JSON.Encoder PROTOCOL. Elixir's is derivable, so a\n    struct opts in and names its encodable fields with :only or :except. fz has\n    protocols but no derivation, and those options are what make the protocol\n    safe to use on structs at all -- Elixir's own docs warn about leaking\n    private fields when neither is given.\n\n  * decode/3, which takes an accumulator and a keyword list of decoders\n    (array_start, array_push, array_finish, object_start, ...) so a caller can\n    build something other than lists and maps without a second pass. fz has\n    Keyword now, so the shape is expressible; what it needs is the decision\n    about whether the decoder is written to be customisable that way.\n\nThe first two are the interesting ones: both are about fz's protocol story\nrather than about JSON, and the Encoder protocol overlaps fz-5xp.70\n(Collectable) in asking what a derivable protocol looks like here.",
+  "id": "fz-5xp.73",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Json: the rest of Elixir's JSON surface -- Encoder protocol, iodata, custom decoders",
+  "type": "task",
+  "updated_at": "2026-09-07T18:44:55Z"
+}
