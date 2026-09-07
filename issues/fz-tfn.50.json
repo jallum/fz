@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-tfn.48"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-06T10:45:14Z",
   "close_reason": "Committed 21af71f13ff6f9b254cfadcecf2f37285c0fc274 after independent ticket-cold source and evidence acceptance. Genuine backing REDs now pass; 48 focused, compiler1953/6 existing ignores, runtime210, serial matrix537, CLI30, AOT1, docs/fmt/check/strict clippy pass. Immutable proof preserves all six outputs, backend/CLIF bytes, every work family and validation total against48. Shared batches remove diagnostic deep copies; new allocations explicitly accounted. No probes remain. Prior exact pushed e616 CI green; new-commit CI follows push.",
   "created": "2026-09-06T05:57:03Z",
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Eliminate diagnostic-only deep copies of product wait batches",
   "type": "bug",
-  "updated_at": "2026-09-06T11:10:53Z"
+  "updated_at": "2026-09-07T18:57:05Z"
 }
