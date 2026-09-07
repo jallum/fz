@@ -7,14 +7,16 @@
   "blocks": [
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:53:59Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-tfn.15; all valid acceptance criteria moved into that description.",
   "created": "2026-09-03T08:00:25Z",
   "description": "## Status\n\nThis ticket's former standalone plan is superseded. Its valid production contract has been moved into fz-tfn.15, where it can land atomically with the authority it depends on.\n\n## Preserved requirement\n\nAfter scan-era causes are deleted, remaining work-start counts live directly in the fixed WorkStartTally without per-enqueue hashing.\n\nNo implementation from this ticket is to be restored or landed separately. Consult fz-tfn.15 for the current goal, signal, strategy, TDD, deletion list and ordering. This description replaces the former plan; comments or parked candidates are historical evidence only.",
   "id": "fz-tfn.16",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-tfn.15",
   "type": "task",
-  "updated_at": "2026-09-07T18:53:58Z"
+  "updated_at": "2026-09-07T18:53:59Z"
 }
