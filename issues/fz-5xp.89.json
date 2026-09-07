@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T21:54:34Z",
+  "description": "## The gap\n\nElixir's `## Examples` blocks are doctests: `mix test` runs them, so an example that stops being true fails the build. fz has no equivalent. A doc example is prose, checked once by whoever wrote it and never again.\n\nThis session has already found three runtime-library comments that described code which no longer existed -- case mapping claimed to be ASCII-only when it was full Unicode, `String.Chars` claiming fz had no interpolation, `String`'s header miscounting its own primitives. Every one of them was written true and went stale silently. Doc examples are the same hazard with a sharper edge, because an example looks like evidence.\n\n## What exists to build on\n\n`fz2 test \u003csrc.fz\u003e` already discovers and runs `test(:name) do ... end`, one subprocess per test, with `--interp` to route through the backend interpreter. The oracle harness already proves fz output against an Elixir twin. Neither reads doc comments.\n\n## Shape\n\nExtract each `## Examples` block from a `@doc`, pair each indented call with the `#=\u003e` line under it, and emit a check that the call renders to that value. Two plausible homes:\n\n- A fixture the matrix already runs, generated from the library sources, so a stale example fails on every door.\n- A `fz2 doctest` subcommand over the same discovery `fz2 test` uses.\n\nThe first is cheaper and inherits the four-path guarantee for free.\n\n## Until then\n\nExamples are verified by hand at the time they are written, by running the call and copying the rendered value. That is a real check, but it is a check with no ratchet.",
+  "id": "fz-5xp.89",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Nothing executes the examples in runtime-library doc comments",
+  "type": "task",
+  "updated_at": "2026-09-07T21:54:34Z"
+}
