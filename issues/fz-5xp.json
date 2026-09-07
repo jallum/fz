@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T16:09:48Z",
   "created": "2026-09-06T23:42:05Z",
   "description": "GOAL: run a real program. `Json.decode/1` + `Json.encode/1` written in fz, with a\nhand-written Elixir twin as the oracle and pinned allocation goldens. Today the\nlargest program fz has ever run is ~22 executable lines (behavior/quicksort.fz);\nJSON is ~300-400 lines across 4-6 modules.\n\nSIGNAL:\n  - `oracle_goldens_match_elixir` -- real Elixir owns expected.txt, so `fz == Elixir`\n    holds transitively across run/interp/build.\n  - `Process.heap_alloc_stats()` goldens on a real workload, not an 11-element list.\n  - round-trip: decode(encode(x)) == x, independent of stdout.\n\nSTRATEGY: work backwards from the goal. JSON demands exactly the missing library --\nscanning demands String + native bitstring dispatch; objects demand a real Map;\narrays demand the Enum builders; numbers demand Integer/Float format; output demands\nIO. Each gap becomes a demand-driven ticket rather than a taste-driven port.\n\nWHY NOW -- the compiler is ahead of the library. TRMC + owned-cons reuse already hit\nthe hand-written floor (quicksort pins list_cons_bytes=176, struct_bytes=0,\nclosure_bytes=0, no annotations). The library squanders it. Measured at N=20,\ninput literal = 20 cells:\n\n  op                        HEAD   floor\n  Enum.to_list               60      20\n  Enum.map                   80      40\n  Enum.filter                60      20\n  Enum.map |\u003e Enum.filter   120      40\n\nCause: `fn to_list(enumerable), do: reverse(reverse(enumerable))` (enum.fz:46), and\nevery builder routes through it.\n\nRESEARCH CORRECTIONS (measured at 67e09d373, not assumed):\n  - fz does NOT need `is_*` guard BIFs. Type-annotated clause heads (`x :: integer`)\n    subsume them, statically AND dynamically -- verified dispatching on values that\n    arrive through a mailbox as `any`. List.flatten/1 was written and runs natively\n    matching Elixir. The only constraint: `::` binds at top-level param positions\n    only, so nested type dispatch needs a one-line helper.\n  - Native bitstring matching is NOT missing. native_codegen/receive.rs:654 -\u003e :1083\n    implements Region::Bitstring completely; jobs/native.rs:3092 errors on the same\n    region. One emitter, two callers -- a fold, not a build.\n  - Externs CAN return binaries (fz_binary_concat proves it). File/String primitives\n    are reachable; the cost is that each allocating extern is hand-special-cased in\n    ~4 places (31 rungs already in prim.rs).\n\nDECIDED (2026-09-06):\n  - `/` adopts Elixir semantics: always float; add div/2 and rem/2.\n  - `def`/`defp` added as aliases for `fn`/`fnp`.\n  - Inspect becomes a real protocol (requires fz-kdt.11 first).\n  - Goal program is JSON round-trip.\n\nOUT OF SCOPE, documented as divergence: charlists (.agent/docs/charlists.md),\nregex/sigils, Stream.\n\nBASELINE AT ARC START: cargo test --lib 1962/0/6ig; fixture_matrix 540/0\n(--test-threads=1). Both verified green at 67e09d373.",
   "id": "fz-5xp",
@@ -21,8 +22,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz stdlib: run a real program -- JSON round-trip on an Elixir-parity runtime library",
   "type": "epic",
-  "updated_at": "2026-09-07T16:09:47Z"
+  "updated_at": "2026-09-07T16:09:48Z"
 }
