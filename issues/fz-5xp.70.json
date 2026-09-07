@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T16:05:50Z",
+  "description": "Split out of fz-5xp.16 with authorization (user, 2026-09-07: 'we can skip them\nfor the moment').\n\n`Enum.into/2,3` is the only Enum function that needs to put elements INTO\nsomething without knowing what it is, and Elixir answers that with the\nCollectable protocol -- a `into/1` callback returning an accumulator and a\ncommand function that takes `{:cont, term}`, `:done` or `:halt`.\n\nfz has protocols (String.Chars and Enumerable are two), so this is not new\nmachinery -- it is one more protocol plus impls for the collectable things fz\nhas: List, Map, and eventually String/binary.\n\nWHY IT IS WORTH DOING BEYOND into/2: Collectable is the OTHER HALF of\nEnumerable, and fz has had only one half. Several Enum functions that currently\nreturn lists because that is all they can build -- group_by, frequencies,\nchunk_every -- would be able to build what the caller asked for.\n\nNote fz's Enumerable already forks from Elixir's by carrying a fifth callback\n(reduce_while/3). Adding Collectable is a good moment to decide whether that\nfork stays, since it is the same design question about which callbacks a\nprotocol owes.",
+  "id": "fz-5xp.70",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Enum.into/2,3 needs a Collectable protocol",
+  "type": "task",
+  "updated_at": "2026-09-07T16:05:50Z"
+}
