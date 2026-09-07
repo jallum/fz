@@ -12,9 +12,15 @@
   "id": "fz-5xp.14",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "SHIPPED at e73c306c6: class A + B + D, 26 functions, byte-identical to Elixir on\nall three doors.\n\nWHAT THE TICKET ASKED FOR AND WHAT LANDED:\n\n  A -- pure byte work: starts_with?/2 ends_with?/2 byte_slice/3\n       replace_prefix/3 replace_suffix/3 replace_leading/3 replace_trailing/3\n       trim/1 trim_leading/1 trim_trailing/1 upcase/1 downcase/1 (:ascii)\n  B -- codepoints/1 next_codepoint/1 valid?/1, plus length/1 reverse/1\n       first/1 last/1\n  D -- contains?/2 count/2 split/2 replace/3 duplicate/2 to_atom/1\n       index_of/2 join/2 to_byte_list/1\n\nTHE ONE PRIMITIVE THE TICKET PREDICTED WAS NOT NEEDED. It said multi-pattern\nbinary search (:binary.match/matches/split/compile_pattern) would unlock five\nfunctions. It is not there: fz-5xp.55 and fz-5xp.54 landed first, so a byte\nscanner is affordable in fz and split/contains?/count/replace/index_of are\nplain recursion. The module declares only byte_size/1 and to_atom/1.\n\nNOT LANDED, and each has its reason:\n  * printable?/2, replace_invalid/2, chunk/2 -- the remaining three of class B;\n  * splitter/3, to_integer/1,2, to_float/1 -- number parsing, which Json\n    already does and should be shared rather than written twice;\n  * the grapheme seam and the Unicode case/whitespace tables, which the ticket\n    itself stages behind next_grapheme_size/1 in its own module;\n  * to_charlist/1 -- charlists are deferred project-wide, so what shipped is\n    to_byte_list/1 under an honest name.\n\nFound while writing it: fz-5xp.66 (a closure call inside a bitstring segment\ndoes not compile), and a retracted false finding, fz-5xp.65 -- the runtime\nlibrary is include_str!'d, so testing a .fz change without cargo build\nexercises the previous library.",
+      "timestamp": "2026-09-07T15:41:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "String core, staged behind a grapheme seam",
   "type": "task",
-  "updated_at": "2026-09-06T23:44:55Z"
+  "updated_at": "2026-09-07T15:41:22Z"
 }
