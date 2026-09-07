@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.200"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Preserve correlated semantic call frames in InputFlowRelation",
   "type": "bug",
-  "updated_at": "2026-09-07T07:34:08Z"
+  "updated_at": "2026-09-07T07:34:58Z"
 }
