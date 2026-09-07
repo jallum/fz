@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T12:21:01Z",
+  "description": "Found while measuring fz-5xp.55.\n\nWalking 640 bytes with\n\n    fnp walk(\u003c\u003c_c, r :: binary\u003e\u003e, n), do: walk(r, n + 1)\n\nallocates 1151 ProcBin stubs. There are 576 shareable tails on that walk, so\nthe count is exactly 2x -- one stub per tail, twice.\n\nAn eprintln in fz_bs_read_field_bits confirms it directly: two identical\nextractions per step, same pos, same needed_bits, same source.\n\n    PROBE bs_read binary pos=8 needed=1272 bit_len=1280 tail=true\n    PROBE bs_read binary pos=8 needed=1272 bit_len=1280 tail=true\n    PROBE bs_read binary pos=8 needed=1264 bit_len=1272 tail=true\n    PROBE bs_read binary pos=8 needed=1264 bit_len=1272 tail=true\n\nWHERE TO LOOK: there are two callers of fz_bs_read_field_ref in the interp\nleg -- src/ir_interp/dispatch_exec.rs:646 and src/ir_interp/backend.rs:1591.\nThe shape fits: the dispatch plan reads the fields to decide whether the\nclause matches, throws the extracted values away, and then the body reads\nthem again to bind. Not verified which pair it is; that is the first step.\n\nWHY IT MATTERS NOW: before fz-5xp.55 this was invisible, because the copy\ncost dominated and the doubling was a constant factor on a quadratic. With\ntails shared, the two stubs per byte ARE the remaining cost of a scan, and\nhalving them halves it.\n\nThis is another instance of the epic's recurring pattern (fz-5xp.21): one\nquestion -- 'what is this field' -- answered twice, in two places, with the\nallocation happening in both.",
+  "id": "fz-5xp.56",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A bitstring field is extracted TWICE per clause match, so every scan step allocates two tails",
+  "type": "bug",
+  "updated_at": "2026-09-07T12:21:01Z"
+}
