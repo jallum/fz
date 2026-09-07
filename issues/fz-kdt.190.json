@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T22:07:15Z",
+  "close_reason": "Acceptance law transferred to fz-kdt.64; original reproducer is obsolete",
   "created": "2026-09-03T05:49:55Z",
   "description": "## Status\n\nAbsorbed into `fz-kdt.64`, the bounded consumer-owned `ReturnType`/`ActivationInputs` support cutover.\n\n## Preserved law\n\nContract refinement belongs to each correlated input alternative before the activation-wide return join. Source or row iteration order cannot choose the published `ReturnType`. An empty observed/contract intersection is an explicit diagnostic for that row, never a silent “keep the observed value” fallback.\n\nThe original swapped-`Enum.with_index` reproducer disappeared after `fz-kdt.183`, but the mechanism survived as measured empty-intersection keeps. `fz-kdt.64` must add a current production reproducer and prove order-independent supported alternatives while retaining the distinct `fz-kdt.210` ground-seed meet correction.\n\nNo standalone implementation remains; the obsolete original description and contradictory riders are historical evidence only.",
   "id": "fz-kdt.190",
@@ -22,7 +24,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed: refine return contracts per correlated alternative",
   "type": "task",
   "updated_at": "2026-09-07T22:07:15Z"
