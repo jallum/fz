@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-tfn.30"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "closed_at": "2026-09-07T04:25:33Z",
   "close_reason": "implemented and accepted in 9aa977b74",
