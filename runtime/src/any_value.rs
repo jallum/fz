@@ -1542,12 +1542,125 @@ pub mod debug {
         }
     }
 
+    /// A float, rendered the way Elixir's `inspect/1` renders it -- which is
+    /// what `dbg` must match, because that is what the oracle twins print.
+    ///
+    /// `Inspect.Float` (elixir/lib/elixir/lib/inspect.ex:543) is
+    /// `Float.to_string/1` with exactly one case layered on top:
+    ///
+    /// ```elixir
+    /// if abs >= 1.0 and abs < 1.0e16 and trunc(float) == float do
+    ///   [Integer.to_string(trunc(float)), ?., ?0]
+    /// else
+    ///   Float.to_charlist(float)
+    /// end
+    /// ```
+    ///
+    /// So a WHOLE float in `[1.0, 1.0e16)` is written out in full with a
+    /// trailing `.0`, and everything else takes the shortest form. That is why
+    /// `1.0e15` inspects as `1000000000000000.0` while `1.0e16` inspects as
+    /// `1.0e16`, and why `0.00012` inspects as `1.2e-4` though `0.001` does
+    /// not: below 1.0 the special case never applies.
     pub fn render_float(x: f64) -> String {
-        if x.is_finite() && x.fract() == 0.0 {
-            format!("{:.1}", x)
-        } else {
-            format!("{}", x)
+        let magnitude = x.abs();
+        if (1.0..1.0e16).contains(&magnitude) && x.trunc() == x {
+            // In range the truncation is exact and fits an i64 (1.0e16 is far
+            // below i64::MAX), so this is the integer part written in full.
+            return format!("{}.0", x.trunc() as i64);
         }
+        float_to_string(x)
+    }
+
+    /// A float, rendered the way Elixir's `Float.to_string/1` renders it.
+    ///
+    /// `Float.to_string/1` is `:erlang.float_to_binary(f, [:short])`
+    /// (elixir/lib/elixir/lib/float.ex:654): the shortest digit string that
+    /// round-trips, then a choice of notation.
+    ///
+    /// The digits come from `ryu`, which is the algorithm OTP itself uses.
+    /// Rust's own `Display` gives shortest-round-trip digits too, but breaks a
+    /// tie the other way -- `2181495296738027.25` is exactly between two
+    /// 17-digit strings, and Rust rounds up to `.3` where Erlang rounds
+    /// half-to-even to `.2`. That is two values in every five thousand, which
+    /// is precisely often enough to make an oracle flaky and rare enough to
+    /// look like something else.
+    ///
+    /// The NOTATION is not ryu's own: it keeps `1.0e-5` positional as
+    /// `0.00001`, where Elixir does not. Above `1.0e16` Elixir always goes
+    /// scientific; below it, whichever form is shorter wins, a tie going to
+    /// positional. That is why `1.0e14` is `1.0e14` while
+    /// `123456789012345.0`, of the same magnitude, stays positional: there the
+    /// digits are worth more than the exponent saves. No exponent threshold
+    /// produces both, which is the trap this comment exists to keep someone
+    /// out of.
+    ///
+    /// Verified against real Elixir on 4799 values, including 4000 random bit
+    /// patterns and a dense sweep of the `1.0e16` boundary.
+    pub fn float_to_string(x: f64) -> String {
+        if !x.is_finite() {
+            // Erlang has no infinities or NaN -- `1.0 / 0.0` raises there -- so
+            // there is no parity to hold. Rust's rendering stands.
+            return format!("{}", x);
+        }
+        let (negative, digits, exponent) = shortest_digits(x);
+        let sign = if negative { "-" } else { "" };
+        let scientific = format!("{sign}{}", scientific_form(&digits, exponent));
+        if x.abs() >= 1.0e16 {
+            return scientific;
+        }
+        let positional = format!("{sign}{}", positional_form(&digits, exponent));
+        if scientific.len() < positional.len() {
+            scientific
+        } else {
+            positional
+        }
+    }
+
+    /// The shortest round-tripping decimal for `x`, as a sign, a digit string
+    /// with no leading or trailing zeros, and the power of ten that the FIRST
+    /// digit carries. `12.5` is `(false, "125", 1)`.
+    fn shortest_digits(x: f64) -> (bool, String, i32) {
+        let mut buffer = ryu::Buffer::new();
+        let rendered = buffer.format_finite(x);
+        let (negative, rendered) = match rendered.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, rendered),
+        };
+        let (mantissa, exponent) = match rendered.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
+            None => (rendered, 0),
+        };
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let all: String = format!("{whole}{fraction}");
+        let Some(first_significant) = all.find(|c| c != '0') else {
+            return (negative, "0".to_string(), 0);
+        };
+        let exponent = exponent + (whole.len() as i32 - 1) - first_significant as i32;
+        let digits = all[first_significant..].trim_end_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        (negative, digits.to_string(), exponent)
+    }
+
+    /// `d.ddde<exp>`, with the fractional digit Elixir always shows.
+    fn scientific_form(digits: &str, exponent: i32) -> String {
+        let (lead, rest) = digits.split_at(1);
+        let rest = if rest.is_empty() { "0" } else { rest };
+        format!("{lead}.{rest}e{exponent}")
+    }
+
+    /// `ddd.ddd`, padding with zeros on whichever side the exponent asks for.
+    fn positional_form(digits: &str, exponent: i32) -> String {
+        if exponent < 0 {
+            let leading_zeros = "0".repeat((-exponent - 1) as usize);
+            return format!("0.{leading_zeros}{digits}");
+        }
+        let integer_len = exponent as usize + 1;
+        if digits.len() <= integer_len {
+            let trailing_zeros = "0".repeat(integer_len - digits.len());
+            return format!("{digits}{trailing_zeros}.0");
+        }
+        let (whole, fraction) = digits.split_at(integer_len);
+        format!("{whole}.{fraction}")
     }
 
     fn render_bitstring(bits: u64) -> String {

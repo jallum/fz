@@ -1,0 +1,60 @@
+#---
+# purpose: "a float renders the way Elixir renders it, including where positional and scientific notation trade places"
+# oracle: oracle.exs
+#---
+#
+# # float_rendering
+#
+# Elixir's `Float.to_string/1` -- and `inspect/1` under it -- pick the SHORTEST
+# representation that round-trips, choosing between positional and scientific
+# notation by which one is shorter, a tie going to positional.
+#
+# It is not a magnitude rule, which is the tempting wrong guess:
+#
+#     100000000000000.0   renders as  1.0e14
+#     123456789012345.0   renders as  123456789012345.0
+#
+# Same exponent, different form, because there the digits are worth more than
+# the exponent saves. No threshold on the exponent can produce both.
+#
+# fz used to render a whole float with one decimal place and everything else
+# with Rust's `Display`, which writes `1.0e20` as twenty-one digits and
+# `1.5e300` as three hundred and one. Every value below the first boundary
+# agreed with Elixir, so nothing noticed.
+#
+# ## What it covers
+#
+# Both sides of each boundary where the two forms trade places, at both ends of
+# the scale, plus the extremes and a few ordinary values. The oracle is real
+# Elixir, so this is parity by construction rather than by a table someone
+# typed.
+#
+# Not covered: values that need exponent notation in the SOURCE, such as
+# `1.0e-7` or `1.7976931348623157e308`. fz's parser does not accept an exponent
+# in a float literal (fz-5xp.39), so they cannot be written here yet. The
+# runtime unit tests pin those against Elixir by bit pattern instead.
+#
+# Not covered: infinity and NaN. Erlang has no such floats -- `1.0 / 0.0`
+# raises there and yields `inf` here -- so there is nothing to be in parity
+# with. That divergence belongs to the division-semantics ticket.
+fn main() do
+  dbg(1.0)
+  dbg(0.1)
+  dbg(2.5)
+  dbg(-0.0)
+  dbg(100.0)
+
+  # the upper boundary. `inspect` writes a WHOLE float below 1.0e16 out in
+  # full, so these stay positional; `Float.to_string` would give `1.0e14` for
+  # the first, which is what the two functions differ about.
+  dbg(100000000000000.0)
+  dbg(123456789012345.0)
+  dbg(1234567890123456.0)
+
+  # the lower boundary, including the tie that goes to positional
+  dbg(0.001)
+  dbg(0.0001)
+  dbg(0.00001)
+
+  dbg(0.3333333333333333)
+end
