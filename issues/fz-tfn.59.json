@@ -6,6 +6,7 @@
   ],
   "blocks": [
     "fz-kdt.188",
+    "fz-kdt.82",
     "fz-tfn.61"
   ],
   "closed_at": "2026-09-07T20:47:46Z",
@@ -19,5 +20,5 @@
   "status": "closed",
   "title": "Rebuild the stack on one publisher identity",
   "type": "task",
-  "updated_at": "2026-09-07T22:06:28Z"
+  "updated_at": "2026-09-07T22:06:29Z"
 }
