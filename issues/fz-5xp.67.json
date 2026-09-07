@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T15:43:03Z",
+  "description": "Verified on a FRESH build (the runtime library is include_str!'d, so this needs\na rebuild to test -- see the retracted fz-5xp.65).\n\nA clause in a runtime-library module that calls a function which does not exist:\n\n    fnp digits_value(_s, _acc, 0), do: Kernel.no_such_function(\"x\")\n\ncompiles, runs and exits 0 as long as nothing reaches that clause. No\ndiagnostic, no warning. Reach it and it resolves properly:\n\n    error[resolve/unknown-import]: module `Atom` does not export `from_binary/1`\n      --\u003e runtime:String.fz:298:22\n\nWHY IT IS ARGUABLY CORRECT: fz compiles what is DEMANDED. A function nothing\ncalls is never expanded, so it is never checked, and that is the same property\nthat makes compile work proportional to the program rather than to the library.\nChecking every runtime-library clause eagerly would undo it.\n\nWHY IT STILL COSTS SOMETHING: the runtime library is exactly the code most\nlikely to name a function that does not exist yet, because it is written\nalongside the primitives it needs. Two such calls shipped in this epic's own\nwork -- `Atom.from_binary/1` and `Kernel.raise/1` (it is `panic/1`) -- and\nboth were found by accident rather than by the compiler.\n\nWHAT WOULD SETTLE IT without giving up demand-driven compilation: a check that\nruns over the runtime library only, at build time, resolving every callee name\nin every clause. The library is fixed at compile time and small; user code keeps\nthe current behaviour.",
+  "id": "fz-5xp.67",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "A call to a function that does not exist is silently accepted when the clause is never reached",
+  "type": "task",
+  "updated_at": "2026-09-07T15:43:03Z"
+}
