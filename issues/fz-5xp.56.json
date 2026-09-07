@@ -7,9 +7,15 @@
   "id": "fz-5xp.56",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "MEASURED PRECISELY, and the description's 'twice' is right but undersells it.\n\nProbing both interp read sites on a 5-byte walk of `\u003c\u003c_c, rest :: binary\u003e\u003e`:\n\n    P DISPATCH read      \u003c- field 0, the integer\n    P DISPATCH read      \u003c- field 1, the binary tail\n    P BODY read          \u003c- field 0 again\n    P BODY read          \u003c- field 1 again        ... x5 steps\n\nFOUR reads per step for a two-field pattern. Each FIELD is read twice: once by\nthe dispatch plan deciding whether the clause matches, and once by the body\nbinding the variables. The tail is a field, so that is two tail allocations per\nstep, which is where the 2x stub count comes from.\n\nTHE MECHANISM TO AVOID IT ALREADY EXISTS AND IS ALREADY POPULATED. Dispatch\nstores what it extracted:\n\n    state.bitstring_fields.insert((subject, index), extracted);\n    apply_direct_bitstring_bindings(plan, field_subject, extracted, state);\n\nand the native emitter does the same in emit_bitstring_test. So the values the\nbody re-reads are already in hand at the moment it re-reads them. The body emits\nits own BitReadField prims regardless, because the lowering does not know the\ndispatch region covered the same pattern.\n\nSo this is not a runtime fix. It is the clause head being compiled TWICE -- once\ninto the dispatch matrix to decide the clause, once into the body to bind -- and\nthe second one is redundant exactly when the first one covered it. Related to\nfz-5xp.22 (fold the two native dispatch region emitters into one) and another\ninstance of fz-5xp.21.\n\nNEXT STEP: find where body lowering emits BitReadField for a clause-head pattern\nand whether it can see that the dispatch plan already projected that subject.\nNot attempted yet.",
+      "timestamp": "2026-09-07T13:51:31Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A bitstring field is extracted TWICE per clause match, so every scan step allocates two tails",
   "type": "bug",
-  "updated_at": "2026-09-07T12:21:01Z"
+  "updated_at": "2026-09-07T13:51:31Z"
 }
