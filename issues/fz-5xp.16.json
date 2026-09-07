@@ -14,9 +14,15 @@
   "id": "fz-5xp.16",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "26 of the 63 pairs landed at this commit -- the three groups that were blocked\non fz-5xp.8 (term order), fz-5xp.12 (Map) and fz-5xp.15 (String.Chars), plus the\npure list/reduce group.\n\nREMAINING, and each has a reason rather than a queue position:\n\n  * (c) RNG -- random/1 shuffle/1 take_random/2. fz has no RNG at all. That is\n    a runtime capability decision, not library work.\n  * into/2,3 -- needs a Collectable protocol, which fz does not have.\n  * slice/2,3 -- and DELETE the slice/1 stub, which returns\n    {:error, :unsupported}, has no caller and no Elixir counterpart.\n  * the remaining (a) pairs: chunk_every/3,4 chunk_while/4 flat_map_reduce/3\n    reverse_slice/3 slide/3 zip/1 zip_reduce/3,4 zip_with/2,3.\n  * the audit items: whether Enumerable's fifth callback (reduce_while/3, which\n    Elixir does not have) stays -- a real design fork that every impl carries;\n    Enumerable.List.slice/1 returning {:ok, 0, ...} for [] rather than\n    {:error, :unsupported}; take/2 and drop/2 with negative amounts being\n    two-pass where Elixir uses a single-pass circular buffer; and list.fz\n    member?/2 binding unused head/tail vars.",
+      "timestamp": "2026-09-07T16:00:42Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Enum: close the gap to Elixir",
   "type": "task",
-  "updated_at": "2026-09-06T23:48:12Z"
+  "updated_at": "2026-09-07T16:00:42Z"
 }
