@@ -904,10 +904,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             }
         }
         Prim::UnOp(op, x) => match op {
-            UnOp::Neg => {
-                let xi = body.as_raw_i64(var_env, x.0);
-                Ok(LowerOut::RawI64(body.b.ins().ineg(xi)))
-            }
+            UnOp::Neg => lower_neg(body, t, value_types, var_env, *x),
             UnOp::Not => {
                 let xv = *var_env.get(&x.0).expect("not operand");
                 let truthy = body.value_truthy(xv);
@@ -1468,6 +1465,35 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
 /// operands share the int or float lane, extract their raw values and
 /// run the matching op closure, bypassing tagged dispatch. Returns None
 /// when neither lane applies (caller falls back to runtime tag tests).
+/// Negation is PER-LANE. `ineg` on a float's bits is not negation of that
+/// float -- it is two's complement applied to an IEEE-754 encoding, which lands
+/// nowhere near the answer. The operand's lane is the same question
+/// `lower_arith_binop` asks of its operands, and for one operand the codegen
+/// value's repr IS the lane.
+///
+/// Before this, `-3.0` reached `as_raw_i64` and aborted with "cannot read raw
+/// i64 from non-integer value" on `run` and `build` while `interp` answered
+/// `-3.0` (fz-5xp.33). A negative float literal is not an exotic input.
+fn lower_neg<M, T>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    x: Var,
+) -> Result<LowerOut, CodegenError>
+where
+    M: cranelift_module::Module,
+    T: Types<Ty = Ty>,
+{
+    let repr = var_env.get(&x.0).expect("neg operand").repr();
+    if matches!(repr, ArgRepr::RawF64) || ty_is_float(t, value_types, x) {
+        let xf = body.as_raw_f64(var_env, x.0);
+        return Ok(LowerOut::RawF64(body.b.ins().fneg(xf)));
+    }
+    let xi = body.as_raw_i64(var_env, x.0);
+    Ok(LowerOut::RawI64(body.b.ins().ineg(xi)))
+}
+
 fn try_typed_binop_fast_path<T, F, I, M>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
