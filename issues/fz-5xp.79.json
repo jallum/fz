@@ -11,9 +11,15 @@
   "id": "fz-5xp.79",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Done in the commit above. No production change was required: the attribute parser already accepted a string token, so the heredoc fix in fz-5xp.78 was sufficient. Two tests pin it, one per decode path (@doc via quoted_function.rs, @moduledoc via quoted_surface.rs), asserting blank lines and example indentation survive.",
+      "timestamp": "2026-09-07T20:17:43Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Attach a heredoc to @doc and @moduledoc",
   "type": "task",
-  "updated_at": "2026-09-07T20:06:37Z"
+  "updated_at": "2026-09-07T20:17:43Z"
 }
