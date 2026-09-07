@@ -5,6 +5,8 @@
     "fz-5xp.79",
     "fz-tfn.59"
   ],
+  "closed_at": "2026-09-07T20:20:31Z",
+  "close_reason": "Completed in 5d7fa2ebb. Heredoc lexing, indentation, interpolation, five lexer tests and the all-door fixture are implemented; fz-5xp.79 owns the already-sufficient doc/moduledoc consumer proof.",
   "created": "2026-09-07T19:55:54Z",
   "description": "## What breaks\n\nA `\"\"\"` heredoc compiles and answers `\"\"`. The content is dropped with no diagnostic, on every door.\n\n```\nfn main() do\n  a = \"\"\"\nhello\n\"\"\"\n  dbg(a)\n  dbg(Kernel.byte_size(a))\nend\n```\n\n`interp`, `run` and `build` all print `\"\"` and `0`.\n\n## Why\n\nThe lexer has no heredoc concept. `src/parser/lexer.rs` dispatches on a single `b'\"'` into `read_quoted_binary_parts`, which reads to the next `\"`. Nothing anywhere looks ahead for a second or third quote.\n\nSo `\"\"\"` is not a delimiter -- it is an empty string followed by an opening quote. The program above lexes as `a = \"\"`, then a string holding `\"\\nhello\\n\"`, then another `\"\"`. `a` gets the empty one.\n\n`\"\"\"X\"\"\"` on a single line behaves identically to `\"\" \"X\" \"\"`, and both print `\"\"`. That is the proof: there is no heredoc, only three quote characters.\n\nThe silence comes from juxtaposition being legal (fz-5xp.86): the parser accepts the trailing expressions and discards them.\n\n## What to build\n\nHeredoc lexing, matching Elixir's rules:\n\n- `\"\"\"` opens a heredoc only when the rest of that line is blank; content starts on the next line.\n- The closing `\"\"\"` sits on its own line, and its indentation is stripped from every content line.\n- The result keeps each content line's newline and excludes the closing delimiter's line, so `\"\"\"\\nhello\\n\"\"\"` is `\"hello\\n\"`.\n- Escapes and `#{}` interpolation work inside, as they do in a single-quoted string -- the lexer already has `StringPart` and `read_interpolation_range` for that.\n\n## Acceptance\n\n- A heredoc lexes to one binary token carrying its content.\n- Indentation is stripped relative to the closing delimiter.\n- Interpolation inside a heredoc reaches `Kernel.to_string/1` the way it does in a regular string.\n- Focused lexer tests plus a fixture prove content and byte size on all four paths.\n\nfz-5xp.79 separately proves that the existing `@doc` and `@moduledoc` consumers receive the new one-token heredoc whole; no production consumer change was needed.",
   "id": "fz-5xp.78",
@@ -17,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] fz has no heredoc syntax, and `\"\"\"` silently lexes as adjacent string literals",
   "type": "task",
-  "updated_at": "2026-09-07T20:20:30Z"
+  "updated_at": "2026-09-07T20:20:31Z"
 }
