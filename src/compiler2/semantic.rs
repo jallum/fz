@@ -135,11 +135,6 @@ impl CallSiteSummary {
                     &mut observed_target.surface_inputs,
                     &current_target.surface_inputs,
                 );
-                merge_callsite_activation(
-                    types,
-                    &mut observed_target.activation,
-                    current_target.activation.clone(),
-                );
                 merge_callsite_optional_input_vec(
                     types,
                     &mut observed_target.activation_inputs,
@@ -155,10 +150,9 @@ impl CallSiteSummary {
 
     fn coalesce_targets(&mut self, types: &mut Types) {
         let mut coalesced = Vec::<CallTargetSummary>::new();
-        for mut target in self.targets.drain(..) {
+        for target in self.targets.drain(..) {
             if let Some(current) = coalesced.iter_mut().find(|current| same_call_target(current, &target)) {
                 merge_callsite_input_vec(types, &mut current.surface_inputs, &target.surface_inputs);
-                merge_callsite_activation(types, &mut current.activation, target.activation.take());
                 merge_callsite_optional_input_vec(
                     types,
                     &mut current.activation_inputs,
@@ -223,16 +217,6 @@ fn merge_callsite_optional_input_vec(types: &mut Types, current: &mut Option<Vec
     match (current, observed) {
         (Some(current), Some(observed)) => merge_callsite_input_vec(types, current, observed),
         (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
-        _ => {}
-    }
-}
-
-fn merge_callsite_activation(_types: &mut Types, current: &mut Option<ActivationKey>, observed: Option<ActivationKey>) {
-    match (current.as_mut(), observed) {
-        (Some(current), Some(observed)) if current.root == observed.root && current.function == observed.function => {}
-        (None, Some(observed)) => {
-            *current = Some(observed);
-        }
         _ => {}
     }
 }
