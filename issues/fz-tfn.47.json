@@ -4,7 +4,8 @@
     "fz-tfn.57"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.56"
   ],
   "created": "2026-09-06T01:30:25Z",
   "description": "## Goal\n\nGive each retained product request one exact demanded-address lifecycle and trigger. A blocked recursive product is reevaluated only because its recorded dependency moved or a new explicit request arrived. A failed root remains repairable without poisoning another root.\n\n## Authority\n\nThe ProductMemo entry, its accepted/pending observation, exact request identity and dependency movements are authoritative. A queue is transient delivery only, never standing demand or failure authority. Audit and collapse ProductSessions pending_requests, requested state, observed products and scheduler product consumers into that model.\n\n## TDD\n\nUse the smallest self/mutual waiting product graph and the production failed-macro scenario. Prove zero unexplained retries; failed root then fresh healthy root; unchanged healthy root; explicit relevant replacement; original failure still reports; exact repair; nested/shared roots; cancellation; displacement; cache hit; recursive publication; deterministic generations/artifacts.\n\n## Deletion and acceptance\n\nDelete unconditional retry, global first-failure return, drain-caused product evaluation, duplicate standing-demand bookkeeping, causality exceptions and temporary counters. The historical 3/5/13 unexplained evaluations must disappear or receive a real exact request/dependency cause; they are evidence, not a new baseline.\n\nThis ticket absorbs fz-tfn.32.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Give product requests one exact lifecycle and trigger",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:26Z"
+  "updated_at": "2026-09-07T18:56:33Z"
 }

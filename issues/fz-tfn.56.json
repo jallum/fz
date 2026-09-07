@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.46"
+    "fz-kdt.46",
+    "fz-tfn.47"
   ],
   "blocks": [
     "fz-tfn.39"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Maintain rooted support without repeated prefix walks",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:30Z"
+  "updated_at": "2026-09-07T18:56:33Z"
 }
