@@ -5,7 +5,8 @@
     "fz-tfn.47"
   ],
   "blocks": [
-    "fz-tfn.39"
+    "fz-tfn.39",
+    "fz-tfn.60"
   ],
   "created": "2026-09-06T13:58:23Z",
   "description": "## Goal\n\nMaintain rooted product support so many affected branches sharing an unchanged alternate prefix pay for that prefix once, not once per branch.\n\nWork on the final ProductMemo membership/witness model after exact product-request and fact-edge cutovers. Rooted support is derived routing evidence over the one committed membership graph, never a second ancestry graph, clearance cache, global scan or retained value authority.\n\nProve long nonleaf removed branches, one/two/alternating alternate branches, stale detach/reseed, back-edge rejection, exact wait admission and unchanged/unrelated zero work. Count all path construction, lookup, hashing, cloning, allocation and maintenance. Delete repeated prefix walks and probes; preserve values, generations and artifacts.",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Maintain rooted support without repeated prefix walks",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:33Z"
+  "updated_at": "2026-09-07T18:56:45Z"
 }
