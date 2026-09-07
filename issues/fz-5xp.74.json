@@ -7,9 +7,15 @@
   "id": "fz-5xp.74",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Fixed in 06f7c0ac8. collect_guard_expr_inputs collects the argument expressions only; required_dispatch_input_ordinals asserts its result stays inside the plan. Fixture guard_helper_wider_than_caller green on all four paths; unit test proven fail-at-HEAD ({2, 0, 1} vs {0}). Six-target gate green: lib 1971/0, matrix 639/0, aot 30/0, cli 225/0, doc, clippy, fmt.",
+      "timestamp": "2026-09-07T19:05:28Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] A guard helper wider than its caller leaks its own input ordinals into the caller's dispatch demands",
   "type": "task",
-  "updated_at": "2026-09-07T19:01:44Z"
+  "updated_at": "2026-09-07T19:05:28Z"
 }
