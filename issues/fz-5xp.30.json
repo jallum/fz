@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.29"
+  ],
   "created": "2026-09-07T07:03:34Z",
   "description": "Surfaced by the cold review of fz-5xp.3.\n\nfz-5xp.3 made the calling convention a DECLARED property: `extern \"fz\"` means the\nsymbol receives `*mut Process`. Three primitives were converted. Seven more take\nthe process in their Rust bodies but still declare `extern \"C\"`:\n\n    fz_panic, fz_self, fz_send, fz_spawn, fz_spawn_opt, fz_make_ref,\n    fz_make_resource       (src/modules/runtime_library/kernel.fz)\n\nThey work only because BOTH doors still intercept them by name before the extern\nlane is reached. So the declaration is now a provably wrong fact sitting in what\nfz-5xp.3 made the source of truth, and `.agent/docs/externs.md` tells the reader\nthere is \"no lowering function to write and no interpreter match arm to add\" --\nwhich is exactly the machinery these seven still depend on.\n\nSame shape for the four `fz_op_*_bb` comparisons, whose declared `binary` params\nnever become `*const u8`.\n\nWHY THEY WERE NOT CONVERTED. The fz-5xp.3 design comment splits the if-chain into\n(a) \"needs the process\" and (b) \"is an intrinsic\": the lowering emits something\nother than a call. These seven are all (b) -- `fz_send` retargets to\n`fz_send_ref`, `fz_spawn` wraps a closure, `fz_make_ref` calls a differently\nnamed raw symbol, `fz_panic` diverges. Folding them into the ABI would conflate\ntwo invariants, so fz-5xp.3 correctly left them alone.\n\nWHAT IS ACTUALLY MISSING is the third category the ABI cannot express. An\nintrinsic is not an extern: it names no callable symbol and honours no wire\ntype. Until the surface can say so, an intrinsic must wear a lie.\n\nThis is the same conclusion fz-5xp.29 reaches from the other direction (its\ndeclarations name symbols nothing backs). Do them together: one `intrinsic`\ndeclaration form makes both problems melt, and lets the generic extern path\nrefuse an intrinsic outright instead of silently mis-marshalling one.\n\nRelated: fz-5xp.29, fz-5xp.3, fz-5xp.21.",
   "id": "fz-5xp.30",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Seven process-taking primitives are still declared extern \"C\"",
   "type": "task",
-  "updated_at": "2026-09-07T07:03:34Z"
+  "updated_at": "2026-09-07T07:03:40Z"
 }
