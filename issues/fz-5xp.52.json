@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T10:55:56Z",
   "created": "2026-09-07T10:50:17Z",
   "description": "Found by writing the JSON scanner fz-5xp.17 needs, which is what surfaced it:\nthe natural Elixir spelling silently does nothing.\n\n    fnp lit(\u003c\u003c\"true\", rest :: binary\u003e\u003e), do: {:true_lit, rest}\n    fnp lit(bin), do: {:no, bin}\n\n    lit(\"true,x\")\n      elixir  {:true_lit, \",x\"}\n      fz      {:no, \"true,x\"}      on interp, run and build\n\nNo error and no warning -- the clause simply never matches, so control falls to\nthe next one. A scanner written this way looks right, compiles, runs, and is\nwrong.\n\nA BYTE VALUE in the same position works:\n\n    \u003c\u003c32, rest :: binary\u003e\u003e      matches a leading space\n    \u003c\u003c\" \", rest :: binary\u003e\u003e     does not\n    \u003c\u003c\" \" :: binary, rest :: binary\u003e\u003e   does not either\n\nSo the bitstring pattern machinery is fine; it is specifically a STRING LITERAL\nas a segment that fails, in both the bare and the `:: binary`-annotated forms.\n\nWHY IT IS P1. Every JSON token is a literal: `true`, `false`, `null`, `{`, `}`,\n`[`, `]`, `,`, `:`, `\"`. Writing the decoder with byte values instead\n(`\u003c\u003c34, rest :: binary\u003e\u003e` for a quote) is possible and is what the probe had to\ndo, but it turns a readable scanner into numeric soup and diverges from the\nElixir twin the oracle compares against -- the twin can use literals, so the\ntwo programs stop being the same program.\n\nDONE = a string literal segment in a bitstring pattern matches the bytes it\nspells, on all three doors, with a fixture whose oracle is the same scanner in\nElixir. Check the empty literal and a literal with escapes while in there.\n\nWATCH OUT: whatever decides this today does so SILENTLY. Whatever the fix, a\nsegment the matcher cannot honour should be a diagnostic rather than a clause\nthat never fires.",
   "id": "fz-5xp.52",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] A string literal in a bitstring pattern silently never matches",
   "type": "bug",
-  "updated_at": "2026-09-07T10:50:17Z"
+  "updated_at": "2026-09-07T10:55:56Z"
 }
