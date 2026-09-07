@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T16:03:30Z",
+  "description": "fz-5xp.14 asked for Elixir's two small self-owned tables in fz source, in their\nown module so demand-driven per-module loading pays for them. The whitespace\ntable (25 codepoints) landed that way. CASE MAPPING did not.\n\nMEASURED: 1,357 non-ASCII simple upcase pairs and 1,366 downcase, so 2,723\nclauses. As fz clauses they go through the DISPATCH MATRIX, which makes compile\nwork proportional to the TABLE rather than to the program -- the opposite of\nwhat fz is for, and the sort of thing the census pins exist to catch.\n\nThe fz-native alternative that avoids the clause count is a sorted table encoded\nas a literal BINARY, binary-searched. That keeps one clause, but every lookup\nallocates a stub for the literal, so it is one allocation per character cased.\n\nSo it is a runtime primitive: fz_binary_upcase / fz_binary_downcase over Rust's\nchar tables. FULL casing, matching Elixir's default mode, so \"straße\" upcases\nto \"STRASSE\".\n\nTHE TICKET'S DESIGN GOAL SURVIVES THE MOVE, which is why this is a placement\ndecision rather than a loss. It asked for ONE coherent Unicode version, and the\nreason it could ask is that Elixir cannot have one: its case mapping is Unicode\n17 while OTP's grapheme breaking is Unicode 16. Rust's char tables are one\nversion, and when fz owns grapheme breaking (the next_grapheme_size/1 seam) it\nwill be the same one.\n\nDONE = the table is fz data rather than either fz clauses or Rust. That needs\none of: a literal that can be read without allocating per lookup, or a table\nrepresentation the dispatch matrix does not expand.",
+  "id": "fz-5xp.68",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "The Unicode case table lives in the runtime because 2,723 fz clauses would not be proportional",
+  "type": "task",
+  "updated_at": "2026-09-07T16:03:30Z"
+}
