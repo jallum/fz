@@ -1,0 +1,54 @@
+#---
+# purpose: "a binary segment's size can be a variable from the enclosing scope, not only one the pattern binds"
+# oracle: oracle.exs
+#---
+#
+# # binary_variable_size
+#
+#     case bin do
+#       <<s :: binary-size(n), rest :: binary>> -> {:ok, s, rest}
+#       _ -> :error
+#     end
+#
+#     take("hello world", 5)
+#       Elixir  {:ok, "hello", " world"}
+#       fz      :error          on every door, silently
+#
+# A LITERAL size worked on the same input, and so did a size bound by an EARLIER
+# FIELD of the same bitstring. What did not work was a size from the enclosing
+# scope -- a function parameter, or anything bound before the `case`.
+#
+# The dispatch plan resolved a size name against the bindings the PATTERN
+# itself makes, and nothing else, so an outer name came back absent and the
+# clause failed with no error and no warning. Plain destructuring was fine,
+# because it goes through a different lowering that reads the environment.
+#
+# THE FIX IS THAT THIS IS THE SAME QUESTION AS PINNING. `^x` in a pattern is a
+# name the pattern USES but does not BIND, which is exactly what an outer-scope
+# size is, and pins already had the whole mechanism: a `PinnedValueId`, a pass
+# that binds one to its parameter index, and a resolver on every door. A size
+# name the pattern does not bind now becomes a pin, and
+# `BitstringFieldSize::BindingName` -- which no door could resolve -- is gone.
+#
+# WHY IT WAS P1: without it no library function can take a slice of a binary
+# whose length it computed, so every string-building routine has to accumulate
+# one byte at a time.
+fnp take(bin, n) do
+  case bin do
+    <<s :: binary-size(n), rest :: binary>> -> {:ok, s, rest}
+    _ -> :error
+  end
+end
+
+fnp head_tail(<<s :: binary-size(3), rest :: binary>>), do: {:ok, s, rest}
+fnp head_tail(_b), do: :error
+
+fnp inner(<<n, s :: binary-size(n), rest :: binary>>), do: {:ok, s, rest}
+fnp inner(_b), do: :error
+
+fn main() do
+  dbg(take("hello world", 5))
+  dbg(take("hi", 5))
+  dbg(head_tail("abcdef"))
+  dbg(inner(<<3, 97, 98, 99, 100>>))
+end

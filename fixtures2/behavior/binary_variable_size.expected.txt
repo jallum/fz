@@ -1,0 +1,4 @@
+{:ok, "hello", " world"}
+:error
+{:ok, "abc", "def"}
+{:ok, "abc", "d"}

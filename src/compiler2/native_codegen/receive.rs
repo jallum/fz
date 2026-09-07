@@ -1235,12 +1235,9 @@ fn emit_dispatch_bit_size(
                 .ok_or_else(|| CodegenError::new(format!("bitstring size subject {:?} not available", subject)))?;
             Ok((1, strict_int_i32(b, ctx, value)?))
         }
-        Some(BitstringFieldSize::BindingName(name)) => {
-            let value = state
-                .direct_bindings
-                .get(name)
-                .copied()
-                .ok_or_else(|| CodegenError::new(format!("bitstring size binding `{}` not available", name)))?;
+        // A size from the enclosing scope arrives as a PIN (fz-5xp.54).
+        Some(BitstringFieldSize::Pinned(pinned)) => {
+            let value = load_pinned_dispatch_value(b, ctx, *pinned)?;
             Ok((1, strict_int_i32(b, ctx, value)?))
         }
     }

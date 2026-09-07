@@ -712,13 +712,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             let size = match &field.spec.size {
                 None => None,
                 Some(BitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
-                Some(BitSize::Var(name)) => Some(
-                    binding_subjects
-                        .get(name)
-                        .copied()
-                        .map(BitstringFieldSize::Binding)
-                        .unwrap_or_else(|| BitstringFieldSize::BindingName(name.clone())),
-                ),
+                Some(BitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
+                    Some(subject) => BitstringFieldSize::Binding(subject),
+                    // Not bound by an earlier field, so it comes from the
+                    // enclosing scope. That is what a PIN is for, and the
+                    // existing pass that binds a pin to its parameter index
+                    // covers this one too (fz-5xp.54).
+                    None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
+                }),
             };
             let field_subject = PatternSubjectRef::BitstringField {
                 bitstring: Box::new(subject.clone()),
@@ -784,6 +785,25 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             span,
         });
         Ok(())
+    }
+
+    /// A pin for a name the pattern does not bind, created on first use.
+    ///
+    /// The pass that binds a pin to its parameter index runs after the whole
+    /// plan is produced, so a pin registered here is connected the same way a
+    /// guard capture's is.
+    fn pin_for_name(&mut self, name: &str, span: Span) -> PinnedValueId {
+        if let Some(id) = self.pinned_by_name.get(name) {
+            return *id;
+        }
+        let id = PinnedValueId(self.pinned.len() as u32);
+        self.pinned.push(PatternPinnedInput {
+            name: name.to_string(),
+            input: None,
+            span,
+        });
+        self.pinned_by_name.insert(name.to_string(), id);
+        id
     }
 
     fn subject_id(&mut self, subject: &PatternSubjectRef) -> Result<SubjectId, SourcePatternError> {

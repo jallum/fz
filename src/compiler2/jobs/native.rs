@@ -3371,12 +3371,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             Some(BitstringFieldSize::Binding(subject)) => {
                 Some(BitSizeIr::Var(self.dispatch_subject_var(ctx, plan, state, *subject)?))
             }
-            Some(BitstringFieldSize::BindingName(name)) => {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("bitstring dispatch size names an unresolved binding `{name}`"),
-                ));
+            // A size from the enclosing scope arrives as a PIN, the same way a
+            // pinned value does (fz-5xp.54).
+            Some(BitstringFieldSize::Pinned(pinned)) => {
+                Some(BitSizeIr::Var(self.dispatch_pinned_var(plan, state, *pinned)?))
             }
         })
     }

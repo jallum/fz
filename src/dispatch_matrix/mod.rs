@@ -238,8 +238,14 @@ pub(crate) enum BitstringFieldKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BitstringFieldSize {
     Literal(u32),
+    /// A size bound by an EARLIER FIELD of the same bitstring, which the
+    /// dispatch has already extracted: `<<n, s :: binary-size(n)>>`.
     Binding(SubjectId),
-    BindingName(String),
+    /// A size from the ENCLOSING SCOPE -- a function parameter, or anything
+    /// bound before the `case`. It reaches dispatch the same way a pinned
+    /// value does, because that is the same question: a name the pattern uses
+    /// but does not bind (fz-5xp.54).
+    Pinned(PinnedValueId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

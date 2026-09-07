@@ -319,10 +319,9 @@ where
             else {
                 return false;
             };
-            value
-                .value(runtime.cur_proc())
-                .ok()
-                .is_some_and(|value| dispatch_read_bitstring(runtime.cur_proc(), plan, subject, value, shape, state))
+            value.value(runtime.cur_proc()).ok().is_some_and(|value| {
+                dispatch_read_bitstring(runtime.cur_proc(), plan, subject, value, shape, inputs, pinned, state)
+            })
         }
         Region::Guard(guard) => plan
             .guards
@@ -608,12 +607,15 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_read_bitstring<TypeHandle>(
     proc: *mut Process,
     plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
     value: RuntimeAnyValue,
     shape: &BitstringShape,
+    inputs: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
 ) -> bool {
     let Some(value_bits) = value.heap_object_word() else {
@@ -627,7 +629,7 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
     }
     let mut reader = fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
     for (index, field) in shape.fields.iter().enumerate() {
-        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, state) else {
+        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, plan, inputs, pinned, state) else {
             return false;
         };
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring dispatch reader") else {
@@ -696,8 +698,11 @@ fn bitstring_field_subject<TypeHandle>(
     })
 }
 
-pub(super) fn dispatch_bit_size_value(
+pub(super) fn dispatch_bit_size_value<TypeHandle>(
     size: &Option<BitstringFieldSize>,
+    plan: &PatternDispatchPlan<TypeHandle>,
+    inputs: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
     state: &DispatchExecState,
 ) -> Option<(u32, u32)> {
     match size {
@@ -708,27 +713,13 @@ pub(super) fn dispatch_bit_size_value(
             .get(subject)
             .and_then(|v| v.as_i64())
             .map(|n| (1, n as u32)),
-        // A size named by a binding the PATTERN makes -- `<<n, s :: binary-size(n)>>`.
-        //
-        // A name from the ENCLOSING scope does not reach here: the plan resolves
-        // sizes against the pattern's own bindings only, so a function
-        // parameter or an outer variable is never found (fz-5xp.54). The native
-        // doors already refuse that at lowering, naming the binding. This one
-        // used to return `None`, which the caller reads as "the clause did not
-        // match" -- so `interp` silently took a different branch than `run` and
-        // `build` refused to compile at all.
-        //
-        // Refusing here keeps the three doors agreeing. It is not the fix: the
-        // fix is to resolve an outer name through the pin mechanism, which is
-        // what `Pattern::Pinned` already uses.
-        Some(BitstringFieldSize::BindingName(name)) => match state.direct_bindings.get(name) {
-            Some(value) => value.as_i64().map(|n| (1, n as u32)),
-            None => panic!(
-                "bitstring dispatch size names `{name}`, which the pattern does not bind; \
-                 a size from an enclosing scope is not supported in a clause head or `case` \
-                 (fz-5xp.54) -- destructure instead"
-            ),
-        },
+        // A size from the ENCLOSING SCOPE -- a function parameter, or anything
+        // bound before the `case`. It arrives as a PIN, which is the same
+        // mechanism `Pattern::Pinned` uses, because it is the same question: a
+        // name the pattern USES but does not BIND (fz-5xp.54).
+        Some(BitstringFieldSize::Pinned(pin_id)) => load_pinned_dispatch_value(plan, *pin_id, inputs, pinned)
+            .and_then(|value| value.as_i64())
+            .map(|n| (1, n as u32)),
     }
 }
 

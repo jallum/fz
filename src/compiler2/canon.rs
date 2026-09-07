@@ -1752,7 +1752,7 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
         None => "-".to_string(),
         Some(BitstringFieldSize::Literal(bits)) => bits.to_string(),
         Some(BitstringFieldSize::Binding(subject)) => format!("s{}", subject.0),
-        Some(BitstringFieldSize::BindingName(name)) => name.clone(),
+        Some(BitstringFieldSize::Pinned(pinned)) => format!("p{}", pinned.0),
     };
     format!(
         "{:?}/size={size}/{:?}/signed={}/unit={:?}",
