@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:37:38Z",
+  "description": "Found by the cold review of fz-5xp.31.\n\n`dispatch_shapes!` in src/ir_interp/extern_call.rs enumerates 31 argument shapes\n-- each arity up to MAX_INTERP_EXTERN_ARGS, times each assignment of its\nparameters to the integer and float register banks. `behavior/extern_float_lanes`\nexercises five of them. Arity 0, all eight arity-3 shapes and all sixteen\narity-4 shapes have no test at all.\n\nAn arm naming the wrong bank for a position is a SILENT WRONG ANSWER, not a\ncrash, which is precisely how the original defect behaved (`libc::sqrt(9.0)`\nreturned 9.0).\n\nThe review found a cheap way to reach any shape exactly: both SysV and AAPCS64\nignore argument registers the callee never reads, so a real libc function can be\ndeclared with extra trailing parameters to select an arm while keeping an exact\nexpected value -- e.g. `extern \"C\" fn libc::ldexp(float, integer, float, integer)`\nreaches shape (4, 0b0101). It verified all 30 arity-1..4 arms this way, 90/90\ncorrect across the three doors; the coverage that is missing is the STANDING\nkind, not a one-off.\n\nDONE = a fixture (or generated family) covering every shape on all three doors,\nso a future edit to the table cannot transpose two arms unnoticed.\n\nWATCH OUT: relies on the argument-register-ignoring property above. State it in\nthe fixture, since a reader will otherwise think the declarations are wrong.",
+  "id": "fz-5xp.37",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Only 5 of 31 extern argument shapes are exercised",
+  "type": "task",
+  "updated_at": "2026-09-07T08:37:38Z"
+}
