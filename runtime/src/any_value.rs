@@ -472,10 +472,13 @@ mod any_value_ref_tests {
         let map_bits = heap.alloc_map_slots(&[(AnyValue::atom(3), AnyValue::int(4))]);
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
-        let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
+        let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8).heap_addr().expect("bitstring addr");
         let closure_bits = heap.alloc_closure(0, 0, 0, 0xfeed, &[]);
         let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
-        let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
+        let procbin_addr = heap
+            .alloc_bitstring(&[0u8; 65], 65 * 8)
+            .heap_addr()
+            .expect("procbin addr");
         let resource_addr = alloc_resource(
             &mut heap,
             ResourceHandle::new(77, fz_resource_destructor_noop),

@@ -469,7 +469,7 @@ fn alloc_bitstring_inline_has_trailing_nul() {
     for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 24, 25] {
         let bytes: Vec<u8> = (0..n).map(|i| (i as u8) ^ 0xff).collect();
         let bit_len = (n as u64) * 8;
-        let p = h.alloc_bitstring(&bytes, bit_len);
+        let p = h.alloc_bitstring(&bytes, bit_len).heap_addr().expect("bitstring");
         unsafe {
             assert_eq!(crate::any_value::bitstring_bit_len(p), bit_len);
             assert_eq!(
@@ -1009,7 +1009,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
 
     let closure_bits = src.alloc_closure(0, 1, 0, 0x1234, &[heap_root(list_bits)]);
 
-    let bitstring_p = src.alloc_bitstring(b"abc", 24);
+    let bitstring_p = src.alloc_bitstring(b"abc", 24).heap_addr().expect("bitstring");
 
     let procbin = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32), 0);
 
@@ -1795,7 +1795,7 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
 fn alloc_bitstring_small_stays_inline() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let bytes: Vec<u8> = (0..32u8).collect();
-    let p = h.alloc_bitstring(&bytes, 256);
+    let p = h.alloc_bitstring(&bytes, 256).heap_addr().expect("bitstring");
     let tagged = heap_object_word(p, ValueKind::BITSTRING);
     unsafe {
         assert_eq!(tagged & TAG_MASK, TAG_BITSTRING);
@@ -1812,7 +1812,7 @@ fn alloc_bitstring_small_stays_inline() {
 fn alloc_bitstring_large_routes_to_shared_zone() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let bytes: Vec<u8> = (0..128u8).collect();
-    let p = h.alloc_bitstring(&bytes, 1024);
+    let p = h.alloc_bitstring(&bytes, 1024).heap_addr().expect("procbin");
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
     unsafe {
@@ -1836,7 +1836,7 @@ fn shared_heap_acceptance_spawn_and_share() {
     const N: usize = 4;
     let payload: Vec<u8> = (0..128u8).collect();
     let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
-    let bs_in_sender = sender.alloc_bitstring(&payload, 1024);
+    let bs_in_sender = sender.alloc_bitstring(&payload, 1024).heap_addr().expect("procbin");
     let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(bs_in_sender).shared_raw()) };
     assert_eq!(shared_refs(&witness), 2);
 
@@ -2079,7 +2079,7 @@ fn heap_drop_releases_fragments_without_leak() {
 fn procbin_round_trips_through_bitstring_dispatchers() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let bytes: Vec<u8> = (0..100u8).collect();
-    let p = h.alloc_bitstring(&bytes, 800);
+    let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("procbin");
     let tagged = heap_object_word(p, ValueKind::PROCBIN);
     let bl = unsafe { bitstring_bit_len(tagged as *const u8) };
     let bp = unsafe { bitstring_byte_ptr(tagged as *const u8) };

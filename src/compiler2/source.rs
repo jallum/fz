@@ -11,7 +11,7 @@ use fz_runtime::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
     map_value_kind, map_values_ptr, struct_schema_id,
 };
-use fz_runtime::heap::{SHARED_BIN_THRESHOLD_BYTES, Schema, SchemaRegistry};
+use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
@@ -288,13 +288,7 @@ impl QuotedSourceBuilder {
 
     pub fn bitstring(&self, bytes: &[u8], bit_len: u64) -> Result<AnyValueRef, QuotedSourceError> {
         let mut proc = self.heap.process.borrow_mut();
-        let ptr = proc.heap.alloc_bitstring(bytes, bit_len);
-        let kind = if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-            ValueKind::PROCBIN
-        } else {
-            ValueKind::BITSTRING
-        };
-        AnyValueRef::from_heap_object(kind, ptr).map_err(QuotedSourceError::from)
+        Ok(proc.heap.alloc_bitstring(bytes, bit_len).ref_word())
     }
 
     pub fn utf8_binary(&self, text: &str) -> Result<AnyValueRef, QuotedSourceError> {

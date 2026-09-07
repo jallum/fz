@@ -661,11 +661,17 @@ impl Heap {
     ///
     /// This always COPIES `bytes`. To view an existing shared buffer
     /// without copying it, use `alloc_bitstring_suffix`.
-    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut u8 {
+    ///
+    /// fz-5xp.45 — returns the VALUE, kind included. The storage choice is
+    /// made here and only here; four callers used to re-derive it from
+    /// `bytes.len()` against the same threshold, which meant the threshold was
+    /// a constant five places had to agree about and a caller could disagree
+    /// with what was actually allocated.
+    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> AnyValue {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
             self.alloc_stats.record_shared_bin(bytes.len() as u64);
-            return alloc_procbin(self, handle, 0).as_raw();
+            return AnyValue::heap_ptr(alloc_procbin(self, handle, 0).as_raw(), ValueKind::PROCBIN);
         }
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
@@ -683,7 +689,7 @@ impl Heap {
                 write_bytes(p.add(pad_start), 0, total - pad_start);
             }
         }
-        p
+        AnyValue::heap_ptr(p, ValueKind::BITSTRING)
     }
 
     /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
@@ -722,8 +728,7 @@ impl Heap {
         // Owned because `alloc_bitstring` takes `&mut self`; the buffer is
         // off-heap and immovable, so the read itself is safe.
         let owned = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) }.to_vec();
-        let p = self.alloc_bitstring(&owned, buf_bits - byte_offset * 8);
-        AnyValue::heap_ptr(p, ValueKind::BITSTRING)
+        self.alloc_bitstring(&owned, buf_bits - byte_offset * 8)
     }
 
     /// Closure layout: `schema_id`, header word, raw code pointer, then

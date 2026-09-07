@@ -74,10 +74,19 @@ fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.
 
-`fz_binary_concat` validates byte-aligned binary inputs, copies their bytes into
-the caller process heap through `Heap::alloc_bitstring`, and tags the result
-`ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64) or `Bitstring` below it — so
-large results land on the shared-binary path on their own.
+`fz_binary_concat` validates byte-aligned binary inputs and copies their bytes
+into the caller process heap through `Heap::alloc_bitstring`, which returns the
+VALUE — `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64), `Bitstring` below it.
+The storage choice is made there and only there. Four callers used to re-derive
+it from `bytes.len()` against the same threshold (fz-5xp.45), which made the
+threshold a constant five places had to agree about and let a caller disagree
+with what was actually allocated.
+
+Two questions still read the threshold, and they are different questions:
+`alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native
+codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
+symbol or a call to the inline allocator — which it must decide at compile time
+with no heap to ask.
 
 ### A ProcBin names a suffix
 

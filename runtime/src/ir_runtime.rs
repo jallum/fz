@@ -39,8 +39,7 @@ use crate::bitstr::{
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
 use crate::heap::{
-    AllocStat, FieldKind, HeapAllocKind, SHARED_BIN_THRESHOLD_BYTES, closure_capture_ref, list_head_ref, list_tail_ref,
-    map_entry_refs,
+    AllocStat, FieldKind, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs,
 };
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
@@ -895,12 +894,8 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
         .expect("fz_bs_finalize without fz_bs_begin");
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
-    let p = (unsafe { &mut *process }).heap.alloc_bitstring(&bytes, bit_len);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    let value = (unsafe { &mut *process }).heap.alloc_bitstring(&bytes, bit_len);
+    value.ref_word().raw_word()
 }
 
 /// `/` on two integers, which is a FLOAT in Elixir: `1 / 2` is `0.5`, not `0`.
@@ -965,14 +960,10 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
 /// bitstring and a shared procbin is made once rather than per primitive.
 fn alloc_text(process: *mut Process, text: &str) -> u64 {
     let bytes = text.as_bytes();
-    let p = (unsafe { &mut *process })
+    let value = (unsafe { &mut *process })
         .heap
         .alloc_bitstring(bytes, (bytes.len() * 8) as u64);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    value.ref_word().raw_word()
 }
 
 /// `Atom.to_string/1`: the atom's name, so `:foo` is `"foo"` and `nil` is
@@ -1016,14 +1007,10 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     bytes.extend_from_slice(left);
     bytes.extend_from_slice(right);
 
-    let p = (unsafe { &mut *process })
+    let value = (unsafe { &mut *process })
         .heap
         .alloc_bitstring(&bytes, ((left_len + right_len) * 8) as u64);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    value.ref_word().raw_word()
 }
 
 /// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
@@ -1039,12 +1026,8 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     // symbol). It outlives the call; we materialise a slice over it just long
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { from_raw_parts(ptr as *const u8, byte_len as usize) };
-    let p = (unsafe { &mut *process }).heap.alloc_bitstring(bytes, bit_len);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    let value = (unsafe { &mut *process }).heap.alloc_bitstring(bytes, bit_len);
+    value.ref_word().raw_word()
 }
 
 /// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
@@ -1297,12 +1280,7 @@ fn fz_bs_read_field_bits(
                 let new_bs = (unsafe { &mut *process })
                     .heap
                     .alloc_bitstring(&sub_bytes, needed_bits as u64);
-                let new_bs_kind = if sub_bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-                    ValueKind::PROCBIN
-                } else {
-                    ValueKind::BITSTRING
-                };
-                (AnyValue::heap_ptr(new_bs, new_bs_kind), needed_bits)
+                (new_bs, needed_bits)
             }
         }
         BitType::Float => {

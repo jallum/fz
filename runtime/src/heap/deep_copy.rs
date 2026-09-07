@@ -150,9 +150,12 @@ pub fn deep_copy_any_value(
             let bit_len = unsafe { bitstring_bit_len(sp as *const u8) };
             let bytes_len = (bit_len as usize).div_ceil(8);
             let bytes = unsafe { from_raw_parts(bitstring_bytes_ptr(sp as *const u8), bytes_len) };
-            let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
-            forwarding.insert(sp, new_p);
-            AnyValue::heap_ptr(new_p, ValueKind::BITSTRING)
+            // The copy classifies itself: an inline bitstring stays inline
+            // because it is under the threshold by construction, but nothing
+            // here has to know that.
+            let copied = dst_heap.alloc_bitstring(bytes, bit_len);
+            forwarding.insert(sp, copied.heap_addr().expect("copied bitstring"));
+            copied
         }
         ValueKind::PROCBIN => {
             if let Some(&dp) = forwarding.get(&sp) {
