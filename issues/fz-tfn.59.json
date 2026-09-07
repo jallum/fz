@@ -5,7 +5,8 @@
     "fz-5xp.78"
   ],
   "blocks": [
-    "fz-kdt.188"
+    "fz-kdt.188",
+    "fz-tfn.57"
   ],
   "closed_at": "2026-09-07T20:47:46Z",
   "close_reason": "Accepted in 55cec21ffc34c47aa52d6d50237f4cf696a358c0 and draft PR #125 on GitHub stack #126 after exact predecessor #122 head 5d7fa2eb passed CI run 34158780434; exact cold-reviewed patch removes the dormant per-derivation publisher substrate (net 834 lines) while preserving scheduler semantics.",
@@ -18,5 +19,5 @@
   "status": "closed",
   "title": "Rebuild the stack on one publisher identity",
   "type": "task",
-  "updated_at": "2026-09-07T21:30:55Z"
+  "updated_at": "2026-09-07T21:30:57Z"
 }
