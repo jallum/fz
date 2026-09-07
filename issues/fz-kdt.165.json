@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-tfn.13",
     "fz-tfn.39"
   ],
   "closed_at": "2026-09-07T18:53:52Z",
@@ -30,5 +29,5 @@
   "status": "closed",
   "title": "Absorbed into fz-kdt.200",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:33Z"
+  "updated_at": "2026-09-07T18:55:34Z"
 }
