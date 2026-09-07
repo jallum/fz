@@ -438,14 +438,26 @@ claims it, so it can never settle.
 `canonical_activation_key(function, raw_inputs)` still decides activation
 identity. For recursive functions it collapses UNDEMANDED inputs by
 `convergence_class`, using the `Recursive(fn)` and `InputDemand(fn)` facts to
-decide which slots may balloon. `InputDemand` is transitive: a slot this body
-hands unchanged to a callee carries that callee's demand too, because the value
-that arrives decides which callee activation is reached and therefore what this
-activation publishes (fz-kdt.183,
-[`type-specialization`](type-specialization.md)). It carries a second axis
-beside that one: a position the body RETURNS, and the recursion does not
-supply, is kept as well, because an activation publishes ONE return and two
-callers sharing a key would share it (fz-kdt.199).
+decide which slots may balloon. `InputDemand` is projected from one retained
+`InputFlowRelation` per function. That relation records typed input and exact
+callsite-result paths to function returns, direct/protocol inputs, and callable
+uses; projections and reconstructions are path transforms rather than opaque
+values. Structural transfers and whole-origin dependencies distinguish values
+that carry a selected subtree from values, such as dynamic map keys, whose
+whole value decides any selected result. `AssertSame` is a control-flow
+must-fact; delivery retains predecessor-resolved provenance before paths merge.
+A discarded result has no returned edge, and two calls to one callee keep
+separate routing.
+
+The current private query engine derives dispatch and returned axes from that
+same relation. Acyclic composition is exact. A recursive SCC can denote an
+infinite structural question that `DispatchDemand` cannot represent, so only
+recursive query states are normalized at a deterministic SCC condensation-DAG
+frontier. That normalization is a sound over-approximation, not retained flow
+identity or a claim of exact recursive precision. fz-kdt.200 replaces the
+question domain and deletes the frontier; fz-kdt.213 then deletes the private
+cone query in favor of reactive formulas. See
+[`type-specialization`](type-specialization.md).
 
 A NON-recursive body is keyed by precise evidence, with one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
@@ -515,7 +527,7 @@ The recurring read/join/transform cost is disproportionate, so that component
 was rejected and capture relevance remains implicit in the retained tuple.
 
 List-family convergence is coarse at the key exactly where the slot is
-FREIGHT. On a slot both `InputDemand::forwarded_dispatch` and
+FREIGHT. On a slot both relation-derived `InputDemand::forwarded_dispatch` and
 `InputDemand::returned` leave at `Ignore`,
 `Types::convergence_class_at` maps every list family reaching it to one
 addressed class, so `[]` and `list(t)` share one recursive identity there (and

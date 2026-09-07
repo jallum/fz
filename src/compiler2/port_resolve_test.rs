@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::drive_test::assert_resolved;
+use super::keying::DispatchDemand;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
     ModuleInterfaceCallable, RootSubmission,
@@ -387,69 +388,82 @@ fn import_except_wrong_arity_is_error() {
 
 // Ported from src/frontend/resolve_test.rs: import resolves against provider interface without source body
 #[test]
-fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
-    let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(tel);
-    let math = compiler.world_mut().reference_module("Math".to_string());
-    let add = compiler.world_mut().reference_function(math, "add".to_string(), 2);
-    let reference = compiler.world().function_ref(add).clone();
-    compiler.submit_module_interface(
-        "Math".to_string(),
-        ModuleInterface::new(vec![ModuleInterfaceCallable {
+fn external_interface_and_earlier_input_flow_demand_are_order_independent() {
+    for interface_first in [true, false] {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        let math = compiler.world_mut().reference_module("Math".to_string());
+        let add = compiler.world_mut().reference_function(math, "add".to_string(), 2);
+        let interface = ModuleInterface::new(vec![ModuleInterfaceCallable {
             function: add,
-            reference,
+            reference: compiler.world().function_ref(add).clone(),
             kind: InterfaceCallableKind::PublicFunction,
             variadic: false,
-        }]),
-    );
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
-        text: include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
-    });
-    let root = compiler.submit_root(RootSubmission {
-        module_name: Some("User".to_string()),
-        name: "run".to_string(),
-        arity: 2,
-        need: ExecutableNeed::Value,
-    });
-    let (_, native) = compiler
-        .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
-        .expect("interface-only provider call should settle");
-    assert!(
-        compiler.world().module_defined_revision(math).is_none(),
-        "external interface imports should not require a provider module body",
-    );
-    assert!(
-        compiler.world().module_interface_revision(math).is_some(),
-        "external interface imports should publish the provider interface fact",
-    );
-    let program = native.expect("native dump stage must return its native product");
-    let edges = program.module.external_call_edges();
-    assert_eq!(
-        edges.len(),
-        1,
-        "provider-boundary call should produce one derived import edge"
-    );
-    assert_eq!(edges[0].target.module.to_string(), "Math");
-    assert_eq!(edges[0].target.name, "add");
-    assert_eq!(edges[0].target.arity, 2);
-    assert!(
-        program.module.fns.iter().any(|function| {
-            function.blocks.iter().any(|block| {
-                matches!(
-                    &block.terminator,
-                    Term::Call {
-                        callee: DirectCallTarget::ProviderBoundary(target),
-                        ..
-                    } | Term::TailCall {
-                        callee: DirectCallTarget::ProviderBoundary(target),
-                        ..
-                    } if target.module.to_string() == "Math" && target.name == "add" && target.arity == 2
-                )
-            })
-        }),
-        "native program should carry provider-boundary call in the raw IR term"
-    );
+        }]);
+        if interface_first {
+            compiler.submit_module_interface("Math".to_string(), interface.clone());
+        }
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
+            text: include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: Some("User".to_string()),
+            name: "run".to_string(),
+            arity: 2,
+            need: ExecutableNeed::Value,
+        });
+        if !interface_first {
+            assert!(compiler.demand(super::Job::DeriveInputFlow(add)));
+            assert!(compiler.demand(super::Job::DeriveStaticCallees(add)));
+            let _ = compiler.drive();
+            assert!(
+                compiler.world().module_interface_revision(math).is_none(),
+                "the first drive must genuinely precede the external interface publication"
+            );
+            compiler.submit_module_interface("Math".to_string(), interface);
+        }
+
+        let (_, native) = compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
+            .expect("the interface-only provider call should settle in either source order");
+        assert!(
+            compiler.world().module_defined_revision(math).is_none(),
+            "an external interface must not invent a provider body",
+        );
+        assert!(compiler.world().module_interface_revision(math).is_some());
+        let relation = compiler.world().input_flow(add).expect("provider InputFlow relation");
+        assert_eq!(
+            relation.local_dispatch.as_ref(),
+            [DispatchDemand::Ignore, DispatchDemand::Ignore]
+        );
+        assert!(relation.direct_calls.is_empty());
+        assert!(relation.flows.is_empty());
+
+        let program = native.expect("native dump stage must return its native product");
+        let edges = program.module.external_call_edges();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target.module.to_string(), "Math");
+        assert_eq!(edges[0].target.name, "add");
+        assert_eq!(edges[0].target.arity, 2);
+        assert!(
+            program.module.fns.iter().any(|function| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        &block.terminator,
+                        Term::Call {
+                            callee: DirectCallTarget::ProviderBoundary(target),
+                            ..
+                        } | Term::TailCall {
+                            callee: DirectCallTarget::ProviderBoundary(target),
+                            ..
+                        } if target.module.to_string() == "Math" && target.name == "add" && target.arity == 2
+                    )
+                })
+            }),
+            "native IR must retain the provider-boundary call in either source order"
+        );
+    }
 }
 
 // Ported from src/frontend/resolve_test.rs: import from runtime stdlib resolves without explicit interface table entry

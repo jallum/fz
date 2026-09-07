@@ -39,7 +39,8 @@ use super::identity::{
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{
-    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
+    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, InputFlowRelation,
+    InputFlowRelationMap, StaticCalleeMap,
 };
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
@@ -131,6 +132,7 @@ pub struct World {
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
     body_keying: BodyKeyingMap,
+    input_flows: InputFlowRelationMap,
     input_demands: InputDemandMap,
     static_callees: StaticCalleeMap,
     call_graph_components: CallGraphComponentMap,
@@ -260,6 +262,7 @@ impl World {
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
             body_keying: BodyKeyingMap::new(),
+            input_flows: InputFlowRelationMap::new(),
             input_demands: InputDemandMap::new(),
             static_callees: StaticCalleeMap::new(),
             call_graph_components: CallGraphComponentMap::new(),
@@ -1402,6 +1405,17 @@ impl World {
         self.input_demands.define(function, demand)
     }
 
+    /// The single typed path relation extracted for `function`. It is a
+    /// replaceable ordinary fact: equal extraction preserves the revision and
+    /// source replacement withdraws the former owner's edges.
+    pub(crate) fn define_input_flow(&mut self, function: FunctionId, flow: InputFlowRelation) -> bool {
+        self.input_flows.define(function, flow)
+    }
+
+    pub(crate) fn input_flow(&self, function: FunctionId) -> Option<&InputFlowRelation> {
+        self.input_flows.get(function)
+    }
+
     /// What one function's inputs are demanded for, behind
     /// `FactKey::InputDemand`. `None` until `Job::DeriveInputDemand` has run.
     pub(crate) fn input_demand(&self, function: FunctionId) -> Option<&InputDemand> {
@@ -1451,6 +1465,12 @@ impl World {
             .expect("entry dispatch should only be read after its fact is defined")
     }
 
+    pub(crate) fn entry_dispatch_ref(&self, function: FunctionId) -> &PatternDispatchPlan<Ty> {
+        self.entry_dispatches
+            .get(function)
+            .expect("entry dispatch should only be read after its fact is defined")
+    }
+
     pub(crate) fn lowered_body(&self, function: FunctionId) -> LoweredBody {
         match self
             .bodies
@@ -1458,6 +1478,19 @@ impl World {
             .expect("body slots should exist before reading lowered bodies")
         {
             super::body::BodyState::Lowered(body) => body.clone(),
+            super::body::BodyState::Placeholder => {
+                panic!("lowered bodies should only be read after their fact is defined")
+            }
+        }
+    }
+
+    pub(crate) fn lowered_body_ref(&self, function: FunctionId) -> &LoweredBody {
+        match self
+            .bodies
+            .get(function)
+            .expect("body slots should exist before reading lowered bodies")
+        {
+            super::body::BodyState::Lowered(body) => body,
             super::body::BodyState::Placeholder => {
                 panic!("lowered bodies should only be read after their fact is defined")
             }
@@ -1675,21 +1708,33 @@ impl World {
         self.functions.try_reference_for(function)
     }
 
-    pub(crate) fn function_is_provider_boundary(&self, function: FunctionId) -> bool {
+    /// Classifies a function boundary while recording each mutable fact the
+    /// decision actually consults. Immutable global/source/runtime state can
+    /// stop the query; otherwise module definition, function definition, and
+    /// finally interface membership remain causal in that order.
+    pub(crate) fn function_is_provider_boundary(&self, function: FunctionId, reads: &mut Vec<FactKey>) -> bool {
         let function_ref = self.function_ref(function);
         if function_ref.module.is_global()
-            || self.module_defined_revision(function_ref.module).is_some()
             || self.module_has_source_state(function_ref.module)
             || self.is_runtime_module(function_ref.module)
-            || self.function_defined_revision(function).is_some()
-            || self.module_interface_revision(function_ref.module).is_none()
         {
             return false;
         }
-        self.module_interface(function_ref.module)
-            .callables()
-            .iter()
-            .any(|callable| callable.function == function)
+        reads.push(FactKey::ModuleDefined(function_ref.module));
+        if self.module_defined_revision(function_ref.module).is_some() {
+            return false;
+        }
+        reads.push(FactKey::FunctionDefined(function));
+        if self.function_defined_revision(function).is_some() {
+            return false;
+        }
+        reads.push(FactKey::ModuleInterface(function_ref.module));
+        self.module_interface_revision(function_ref.module).is_some()
+            && self
+                .module_interface(function_ref.module)
+                .callables()
+                .iter()
+                .any(|callable| callable.function == function)
     }
 
     pub(crate) fn function_mfa(&self, function: FunctionId) -> Mfa {

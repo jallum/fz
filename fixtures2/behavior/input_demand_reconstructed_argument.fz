@@ -1,0 +1,20 @@
+#---
+# purpose: "a returned input field stays distinct when an intermediate call reconstructs the tuple that carries it"
+#---
+defmodule M do
+  @spec strings([binary]) :: integer
+  fn strings(_xs), do: 1
+end
+
+defmodule G do
+  fnp outer({:go, acc}, n), do: mid({:go, acc}, n)
+  fnp mid(state, n), do: inner(state, n)
+  fnp inner({:go, acc}, 0), do: acc
+  fnp inner({:go, acc}, n), do: outer({:go, acc}, n - 1)
+  fnp inner(_state, _n), do: nil
+end
+
+fn main() do
+  dbg(M.strings(G.outer({:go, ["x"]}, 2)))
+  dbg(G.outer({:go, [9]}, 2))
+end

@@ -10519,8 +10519,10 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
 /// denominator is 7 either way and the zero above still speaks for exactly what
 /// it did.
+/// fz-kdt.214 adds five unreadable entry plans for exact returned recursive
+/// inputs (171/164 -> 176/169); the readable denominator remains seven.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 171, 164), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 176, 169), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -11070,20 +11072,23 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// fifteen content-caused analyses on this combined stack; eleven of those runs had
 /// reached a matched `Region::Type` question, so each affected row's
 /// observation denominator falls 373 -> 362 while escapes stay at zero.
+/// fz-kdt.214 changes the reachable activation inventory and removes another
+/// 100 matched Type-question observations on each take/drop row (362 -> 262),
+/// while escapes remain zero.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 362, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 262, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 262, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 262, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 262, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 262, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 262, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
     ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
@@ -12166,15 +12171,14 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .cloned()
         .collect::<Vec<_>>();
     partition_activations.sort_by_key(|activation| activation.inputs(types));
-    // Both qsort activations call partition with the same canonical
-    // (pivot, rest) — hd/tl of a non-empty and a general list coincide — so
-    // ONE partition activation is the tight answer. The historical second
-    // key was mid-oscillation garbage (absent evidence read as the empty
-    // type) that lingered as dead demand; honest paths self-collect it.
+    // Exact may-dependency retains the empty/grown state of both returned
+    // accumulators. The equal-return pairs below are deliberate transition
+    // debt: fz-kdt.213 removes cone replay and fz-kdt.13 shares equal native
+    // bodies/codegen.
     assert_eq!(
         partition_activations.len(),
-        1,
-        "root closure should settle on the single live partition/4 activation"
+        4,
+        "root closure should retain every returned partition/4 accumulator state"
     );
     assert!(
         partition_activations
@@ -12182,15 +12186,25 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 4),
         "partition/4 should stay keyed on its four inputs"
     );
-    let partition_inputs = partition_activations[0].inputs(types);
-    // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
-    // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
-    // whose element is a resolvable structural-address var, not the path-blind
-    // `list(any)`. They are distinct BY ADDRESS (param 2 vs param 3), which is
-    // correct: distinct parameter positions must not conflate. The win is that
-    // each slot folds to ONE key (no `[int] | []` over-spec survives).
-    assert_eq!(types.display(&partition_inputs[2]), "[a2_e]");
-    assert_eq!(types.display(&partition_inputs[3]), "[a3_e]");
+    let partition_returns = partition_activations
+        .iter()
+        .map(|activation| world.activation_return(activation).expect("settled partition return"))
+        .collect::<Vec<_>>();
+    let duplicate_returns = partition_returns
+        .iter()
+        .enumerate()
+        .map(|(index, left)| {
+            partition_returns
+                .iter()
+                .skip(index + 1)
+                .filter(|right| types.is_equivalent(left, right))
+                .count()
+        })
+        .sum::<usize>();
+    assert_eq!(
+        duplicate_returns, 6,
+        "all four exact input keys currently reproduce one equivalent return; .213/.13 own repayment"
+    );
     let append_activations = activations
         .iter()
         .filter(|activation| activation.function == append_id)
@@ -12207,7 +12221,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "append/2 should stay keyed on its two inputs"
     );
     assert!(
-        activations.len() <= 17,
+        activations.len() <= 20,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -17477,7 +17491,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
         assert!(!names.contains("foo"));
         assert!(
-            frontier.len() <= 17,
+            frontier.len() <= 20,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));
@@ -19018,32 +19032,25 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// each as the smallest program that states one: source, the function the law
 /// is about, and how many activations of it the program may key.
 ///
-/// The first four are the rules' LOWER bound -- a slot nothing demands and
+/// The first two are the rules' LOWER bound -- a slot nothing demands and
 /// nothing returns is freight and must not split, which is what makes this a
 /// demand rule rather than "keep every element" (measured: keeping every list
 /// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
 /// identical).
 ///
-/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
-/// rather than a precision one. `tag/3` returns its accumulator, so the return
-/// does depend on a slot the key erases -- but the recursion SUPPLIES that
-/// slot, so the seed activation is the one every caller passes through and its
-/// `[]` is the same `[]` for all of them. Keying it mints one activation per
-/// ascent state (measured: three) and the seed still publishes the join, so the
-/// split is cost with nothing bought.
-///
-/// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
-/// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
-/// `fwd/2` tests it, so two same-shape lambdas must key one activation. But
+/// `fwd/2` is fz-6gb's law, and it is why `InputDemand` keeps separate local
+/// and forwarded dispatch projections. `fwd/2` only TRANSPORTS its callable:
+/// no clause of `fwd/2` tests it, so two same-shape lambdas must key one
+/// activation. But
 /// `apply2/2` -- which `fwd/2` forwards both slots to -- tests slot 0 against
 /// `:none`, so the FORWARDED demand on that slot is `Whole`. Erasing brands
-/// against the forwarded half would un-share `fwd/2` into one activation per
-/// lambda; erasing against the LOCAL half keeps fz-6gb's law intact while the
+/// against the forwarded projection would un-share `fwd/2` into one activation per
+/// lambda; erasing against the LOCAL projection keeps fz-6gb's law intact while the
 /// key collapse still reads the forwarded demand.
 ///
 /// The last three are the rules' UPPER bound: a position the activation
-/// RETURNS and the recursion does NOT supply must key its users apart, or one
-/// activation answers for both with the join of their returns (fz-kdt.199).
+/// RETURNS must key its users apart, or one activation answers for both with
+/// the join of their returns (fz-kdt.199).
 /// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
 /// the key names the tag and the return IS the payload. `walk/2`'s four are two
 /// tags times two payload element types.
@@ -19059,65 +19066,51 @@ fn split_top_level(text: &str) -> Vec<&str> {
 /// that does NOT return the slot -- is the true freight statement and stays
 /// at 1.
 ///
-/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
-/// self-call hands a slot the value the caller held at the OTHER slot, so the
-/// recursion supplies neither and both stay carried. That is why the exclusion
-/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
-/// rather than the eager "not held at this same position" -- the eager test
-/// marks both slots supplied here and re-blends the two users into the base's
-/// wrong diagnostic.
+/// `go/3` proves exact call binding through a pure PERMUTATION: each self-call
+/// hands a slot the value the caller held at the OTHER slot. The returned
+/// question must follow that mapping rather than treating a locally rebuilt
+/// recursive argument as evidence that an independent base return is freight.
 ///
 /// What these rows prove, stated exactly: for every shape here the published
-/// return depends only on what the key names. They do NOT prove the invariant
-/// in general. The exclusion reads SELF calls only, so a position supplied
-/// across a mutual cycle or through a generated lambda is keyed anyway (cost,
-/// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
-/// edge set, which does not see a reconstructed or projected forwarding
-/// argument (a missed cure -- fz-kdt.214).
-const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
+/// return depends only on what the key names. The shared typed input-flow
+/// relation sees projected, reconstructed, delivered, and protocol-forwarded
+/// paths. No function-wide recursive-argument classification may subtract an
+/// independently returned input from that relation.
+type ActivationKeyingLaw = (
+    &'static str,
+    Option<&'static str>,
+    &'static str,
+    usize,
+    &'static str,
+    usize,
+);
+
+const ONE_ACTIVATION_KEYING_LAWS: &[ActivationKeyingLaw] = &[
+    (
+        "negative literal map keys preserve the same exact lookup identity as positive literals",
+        None,
+        "lookup",
+        3,
+        "fn lookup(0, a, b), do: %{-1 => a, -2 => b}[-1]\n\
+         fn lookup(n, a, b), do: lookup(n - 1, a, b)\n\
+         fn main() do\n  dbg(lookup(1, [1], [\"x\"]))\n  dbg(lookup(1, [1], [2]))\nend\n",
+        1,
+    ),
     (
         "a slot no callee reads and the body does not return is freight",
-        "carry/2",
+        None,
+        "carry",
+        2,
         "fn carry(0, junk), do: 0\n\
          fn carry(n, junk), do: carry(n - 1, junk)\n\
          fn main() do\n  dbg(carry(3, [1, 2]))\n  dbg(carry(3, [\"a\", \"b\"]))\nend\n",
         1,
     ),
     (
-        "an accumulator the recursion itself supplies stays collapsed",
-        "tag/3",
-        "fn tag(_f, [], acc), do: acc\n\
-         fn tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
-         fn main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
-         \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
-        1,
-    ),
-    (
-        "three accumulators built by consing are opaque, not forwarded",
-        "split3/5",
-        "fn split3(_, [], a, b, c), do: {a, b, c}\n\
-         fn split3(p, [h | t], a, b, c) when h < p, do: split3(p, t, [h | a], b, c)\n\
-         fn split3(p, [h | t], a, b, c) when h == p, do: split3(p, t, a, [h | b], c)\n\
-         fn split3(p, [h | t], a, b, c), do: split3(p, t, a, b, [h | c])\n\
-         fn main() do\n  {a, b, c} = split3(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [])\n\
-         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\nend\n",
-        1,
-    ),
-    (
-        "four accumulators do not become a product either",
-        "split4/6",
-        "fn split4(_, [], a, b, c, d), do: {a, b, c, d}\n\
-         fn split4(p, [h | t], a, b, c, d) when h < p, do: split4(p, t, [h | a], b, c, d)\n\
-         fn split4(p, [h | t], a, b, c, d) when h == p, do: split4(p, t, a, [h | b], c, d)\n\
-         fn split4(p, [h | t], a, b, c, d) when h > 6, do: split4(p, t, a, b, [h | c], d)\n\
-         fn split4(p, [h | t], a, b, c, d), do: split4(p, t, a, b, c, [h | d])\n\
-         fn main() do\n  {a, b, c, d} = split4(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [], [])\n\
-         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\n  dbg(d)\nend\n",
-        1,
-    ),
-    (
         "a transported callable is freight to its forwarder even when a callee tests it",
-        "fwd/2",
+        None,
+        "fwd",
+        2,
         "fn apply2(:none, x), do: x\n\
          fn apply2(f, x), do: f.(x)\n\
          fn fwd(f, x), do: apply2(f, x)\n\
@@ -19126,15 +19119,19 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     ),
     (
         "a slot the body RETURNS and the recursion carries keys its users apart",
-        "loop/2",
+        None,
+        "loop",
+        2,
         "fn loop(0, junk), do: junk\n\
          fn loop(n, junk), do: loop(n - 1, junk)\n\
          fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
         2,
     ),
     (
-        "a self-call that PERMUTES two carried slots supplies neither, so a returned one still keys",
-        "go/3",
+        "a self-call that PERMUTES two carried slots follows the crossed bindings",
+        None,
+        "go",
+        3,
         "fn go(0, a, _b), do: a\n\
          fn go(n, a, b), do: go(n - 1, b, a)\n\
          fn main() do\n  dbg(go(2, [\"x\"], [\"y\"]))\n  dbg(go(2, [9], [8]))\nend\n",
@@ -19142,7 +19139,9 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     ),
     (
         "a returned tuple FIELD keys its users apart while the key names the tag",
-        "walk/2",
+        None,
+        "walk",
+        2,
         "fn walk({:stop, acc}, _n), do: acc\n\
          fn walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
          fn walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
@@ -19154,13 +19153,13 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
 #[test]
 fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
     let mut moved = Vec::new();
-    for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
+    for (law, module, name, arity, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
         let tel = ConfiguredTelemetry::new();
         let backend = BackendProgramCapture::new();
         backend.install(&tel);
         let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
-            name: Some(format!("{label} keying law")),
+            name: Some(format!("{name}/{arity} keying law")),
             text: (*source).to_string(),
         });
         let root_id = compiler.submit_root(RootSubmission {
@@ -19176,25 +19175,191 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
         );
 
         let program = backend.last(root_id).program;
-        let world = compiler.world();
         let keyed = program
             .executables()
             .iter()
             .filter(|executable| {
-                crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label
+                let function = compiler.world().function_ref(executable.key.activation.function);
+                function.name == *name
+                    && function.arity == *arity
+                    && module.is_none_or(|module| compiler.world().module_name(function.module) == Some(module))
             })
             .count();
         if keyed != *expected {
             moved.push(format!(
-                "{law}: {label} keys {keyed} activations, the law says {expected}"
+                "{law}: {name}/{arity} keys {keyed} activations, the law says {expected}"
             ));
         }
     }
     assert!(
         moved.is_empty(),
-        "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
-         reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
-         supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
+        "a slot is keyed on DEMAND, not on structure: a dispatch question reaching it (fz-kdt.183) \
+         or the published return being built from it (fz-kdt.199). A slot NEITHER projection reaches \
+         stays collapsed, and brand erasure \
          keeps asking the local question: {moved:#?}",
+    );
+}
+
+/// fz-kdt.214: one path-aware flow relation is the authority for every way an
+/// input can reach a returned direct call. These are production backend
+/// boundaries rather than extractor-unit expectations: a path omitted here
+/// mints the wrong activation keys even if a private edge helper looks right.
+#[test]
+fn compiler2_input_demand_follows_exact_call_paths_and_destinations() {
+    let cases = [
+        (
+            "a delivered result that is discarded creates no return-dependence",
+            "fixtures2/behavior/input_demand_delivered_result.fz",
+            None,
+            "f",
+            2,
+            1,
+        ),
+        (
+            "a reconstructed tuple preserves the source field's dependence",
+            "fixtures2/behavior/input_demand_reconstructed_argument.fz",
+            Some("G"),
+            "outer",
+            2,
+            2,
+        ),
+        (
+            "a projected field forwarded through a protocol callback preserves its dependence",
+            "fixtures2/behavior/input_demand_protocol_projection.fz",
+            Some("G"),
+            "walk",
+            2,
+            2,
+        ),
+    ];
+
+    let mut mismatches = Vec::new();
+    for (law, fixture, module, name, arity, expected) in cases {
+        let (compiler, program) = driven_backend_program(fixture);
+        let world = compiler.world();
+        let actual = program
+            .executables()
+            .iter()
+            .filter(|executable| {
+                let function = world.function_ref(executable.key.activation.function);
+                function.name == name
+                    && function.arity == arity
+                    && module.is_none_or(|name| world.module_name(function.module) == Some(name))
+            })
+            .count();
+        if actual != expected {
+            let module = module.map_or(String::new(), |module| format!("{module}."));
+            mismatches.push(format!(
+                "{law}: {module}{name}/{arity} has {actual} keys, expected {expected}"
+            ));
+        }
+        if fixture.ends_with("input_demand_delivered_result.fz") && program.executables().len() != 7 {
+            mismatches.push(format!(
+                "{law}: discarded delivery produced {} total executables, expected 7",
+                program.executables().len()
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "activation keys must follow the exact typed input path to a call whose result reaches the return: \
+         {mismatches:#?}",
+    );
+}
+
+#[test]
+fn compiler2_input_flow_scopes_assert_same_to_its_control_arm() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("scoped_assert_same_flow.fz".to_string()),
+        text: "fn id(x), do: x\n\
+               fn pause(x), do: x\n\
+               fn choose(flag, pin, left, right) do\n\
+                 if flag do\n\
+                   ^pin = left\n\
+                   pause(:left)\n\
+                   if flag do\n\
+                     f = fn () -> left end\n\
+                     {id(left), f.()}\n\
+                   else\n\
+                     f = fn () -> left end\n\
+                     {id(left), f.()}\n\
+                   end\n\
+                 else\n\
+                   ^pin = right\n\
+                   pause(:right)\n\
+                   if flag do\n\
+                     f = fn () -> right end\n\
+                     {id(right), f.()}\n\
+                   else\n\
+                     f = fn () -> right end\n\
+                     {id(right), f.()}\n\
+                   end\n\
+                 end\n\
+               end\n\
+               fn main(), do: choose(true, 1, 1, 2)\n"
+            .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "scoped AssertSame flow must settle");
+
+    let choose = functions.id("choose", 4);
+    let id = functions.id("id", 1);
+    let relation = compiler.world().input_flow(choose).expect("choose InputFlow relation");
+    let mut origins_by_callsite = BTreeMap::<CallSiteId, BTreeSet<usize>>::new();
+    for (callsite, call) in &relation.direct_calls {
+        if call.callee == id {
+            for binding in call.inputs.first().into_iter().flatten() {
+                if let crate::compiler2::keying::InputFlowOrigin::Input(source) = &binding.origin {
+                    origins_by_callsite.entry(*callsite).or_default().insert(source.input);
+                }
+            }
+        }
+    }
+    let origin_counts =
+        origins_by_callsite
+            .into_values()
+            .fold(BTreeMap::<BTreeSet<usize>, usize>::new(), |mut counts, origins| {
+                *counts.entry(origins).or_default() += 1;
+                counts
+            });
+    assert_eq!(
+        origin_counts,
+        BTreeMap::from([(BTreeSet::from([1, 2]), 2), (BTreeSet::from([1, 3]), 2)]),
+        "all four nested callsites inherit only their own arm's pin equality"
+    );
+    let mut capture_origins = BTreeMap::<FunctionId, BTreeSet<usize>>::new();
+    for flow in &relation.flows {
+        if let (
+            crate::compiler2::keying::InputFlowOrigin::Input(source),
+            crate::compiler2::keying::InputFlowSink::CallableUse {
+                site: crate::compiler2::keying::CallableInputUse::LambdaCapture { function, capture: 0 },
+                ..
+            },
+        ) = (&flow.origin, &flow.sink)
+        {
+            capture_origins.entry(*function).or_default().insert(source.input);
+        }
+    }
+    let capture_counts =
+        capture_origins
+            .into_values()
+            .fold(BTreeMap::<BTreeSet<usize>, usize>::new(), |mut counts, origins| {
+                *counts.entry(origins).or_default() += 1;
+                counts
+            });
+    assert_eq!(
+        capture_counts,
+        BTreeMap::from([(BTreeSet::from([1, 2]), 2), (BTreeSet::from([1, 3]), 2)]),
+        "all four nested lambdas use the same arm-scoped alias relation",
     );
 }

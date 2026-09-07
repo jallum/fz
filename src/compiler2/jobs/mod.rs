@@ -53,6 +53,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
+        Job::DeriveInputFlow(function_id) => keying::derive_input_flow(world, tel, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),

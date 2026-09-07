@@ -27,6 +27,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
     LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
+    visit_control_transitions,
 };
 use super::super::code::CodeId;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -3440,9 +3441,9 @@ fn compute_entry_reusable_cons_captures(
     let mut entry_parents = vec![Vec::<ControlEntryId>::new(); entries.len()];
     for (index, entry) in entries.iter().enumerate() {
         let parent = ControlEntryId::from_u32(index as u32);
-        for child in child_entries(entry.tail.clone()) {
-            entry_parents[child.as_u32() as usize].push(parent);
-        }
+        visit_control_transitions(&entry.tail, |transition| {
+            entry_parents[transition.entry.as_u32() as usize].push(parent);
+        });
     }
 
     let local_caps = entries
@@ -3495,15 +3496,15 @@ fn compute_entry_reusable_cons_captures(
                     needed.insert(*head, source);
                 }
             }
-            for child in child_entries(entry.tail.clone()) {
-                for (head, source) in &captures[child.as_u32() as usize] {
+            visit_control_transitions(&entry.tail, |transition| {
+                for (head, source) in &captures[transition.entry.as_u32() as usize] {
                     if let Some(incoming_source) = available_in[index].get(head).copied()
                         && incoming_source == *source
                     {
                         needed.insert(*head, *source);
                     }
                 }
-            }
+            });
             if captures[index] != needed {
                 captures[index] = needed;
                 changed = true;
@@ -3580,13 +3581,13 @@ fn entry_captures(
     bound.extend(values_defined_by_steps(&entry.steps));
 
     let mut needed = used_values_in_entry(entry);
-    for child in child_entries(entry.tail.clone()) {
-        for capture in entry_captures(entries, clause_bounds, child, memo) {
+    visit_control_transitions(&entry.tail, |transition| {
+        for capture in entry_captures(entries, clause_bounds, transition.entry, memo) {
             if !bound.contains(&capture) {
                 needed.insert(capture);
             }
         }
-    }
+    });
     needed.retain(|value| !bound.contains(value));
     let mut ordered = needed.into_iter().collect::<Vec<_>>();
     ordered.sort_by_key(|value| value.as_u32());
@@ -3747,33 +3748,6 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
                 }
             }
         }
-    }
-}
-
-fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
-    match tail {
-        LoweredTail::Value { dest, .. }
-        | LoweredTail::DirectCall { dest, .. }
-        | LoweredTail::ClosureCall { dest, .. } => match dest {
-            ControlDestination::Return => Vec::new(),
-            ControlDestination::Deliver(entry) => vec![entry],
-        },
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => vec![then_entry, else_entry],
-        LoweredTail::Dispatch { dispatch, .. } => {
-            let mut children = dispatch.arm_entries.clone();
-            children.push(dispatch.miss_entry);
-            children
-        }
-        LoweredTail::Receive(receive) => {
-            let mut children = receive.clauses.iter().map(|clause| clause.entry).collect::<Vec<_>>();
-            if let Some(after) = &receive.after {
-                children.push(after.entry);
-            }
-            children
-        }
-        LoweredTail::Halt { .. } => Vec::new(),
     }
 }
 
@@ -4362,10 +4336,33 @@ fn expr_literal(expr: &Expr) -> Option<GroundValue> {
     match expr {
         Expr::Int(value) => Some(GroundValue::Int(*value)),
         Expr::Float(value) => Some(GroundValue::from_f64(*value)),
+        Expr::UnOp(crate::ast::UnOp::Neg, value) => match &value.node {
+            Expr::Int(value) => value.checked_neg().map(GroundValue::Int),
+            Expr::Float(value) => Some(GroundValue::from_f64(-*value)),
+            _ => None,
+        },
         Expr::Binary(value) => Some(GroundValue::Binary(value.clone())),
         Expr::Atom(value) => Some(GroundValue::Atom(value.clone())),
         Expr::Bool(value) => Some(GroundValue::Bool(*value)),
         Expr::Nil => Some(GroundValue::Nil),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod literal_tests {
+    use super::*;
+    use crate::ast::Spanned;
+    use crate::source::Span;
+
+    #[test]
+    fn signed_numeric_map_literals_are_folded_without_folding_expressions() {
+        let neg = |value| Expr::UnOp(crate::ast::UnOp::Neg, Box::new(Spanned::new(value, Span::DUMMY)));
+        assert_eq!(expr_literal(&neg(Expr::Int(7))), Some(GroundValue::Int(-7)));
+        assert_eq!(
+            expr_literal(&neg(Expr::Float(0.0))),
+            Some(GroundValue::Float((-0.0_f64).to_bits()))
+        );
+        assert_eq!(expr_literal(&neg(Expr::Atom("x".to_string()))), None);
     }
 }

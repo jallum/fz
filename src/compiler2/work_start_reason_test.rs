@@ -228,38 +228,38 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4153, 11, 21, 410),
-        "fz-kdt.182 removes 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities; scope and module work remain exact"
+        (4441, 11, 21, 412),
+        "fz-kdt.214's exact may-dependency retains the work caused by returned recursive inputs; scope and module work remain exact, and fz-kdt.213 must repay this temporary cone work"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1448,
-        "fz-kdt.182 removes twenty changed-revision wakes for redundant list-union executable identities; macro waits and product wakes remain exact",
+        1606,
+        "fz-kdt.214 retains the changed-revision wakes caused by exact returned recursive inputs; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1131,
-        "fz-kdt.182 removes seven blocked expansions with the absorbed executable identities; macro products require no separate readiness producer",
+        1248,
+        "fz-kdt.214 retains the blocked expansions caused by exact returned recursive inputs; macro products require no separate readiness producer",
     );
     assert_eq!(
-        *demand_completions, 1241,
-        "fz-kdt.182 removes 44 RuntimeDemand completions for absorbed list-union identities; the retained scheduler-completion multiset remains exact",
+        *demand_completions, 1244,
+        "the exact returned recursive inputs add three caused RuntimeDemand completions; the retained scheduler-completion multiset remains exact",
     );
     assert_eq!(
-        *demand_wake_starts, 1009,
-        "fz-kdt.182 removes 37 changed-revision RuntimeDemand wakes with absorbed list-union identities; the retained wake multiset remains exact",
+        *demand_wake_starts, 1011,
+        "exact returned recursive inputs add two caused RuntimeDemand wakes; the retained wake multiset remains exact",
     );
     assert_eq!(
         *demand_wake_causes.borrow(),
-        [58, 232, 147, 572],
-        "fz-kdt.182 removes list-union identity demand resumes from exact moved-input causes, never from readiness-only or unexplained work",
+        [58, 233, 145, 575],
+        "exact returned recursive inputs redistribute demand resumes among exact moved-input causes, never readiness-only or unexplained work",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        304,
-        "fz-kdt.182 removes seven absorbed identities from the RuntimeDemand and construction-target key frontier",
+        305,
+        "exact returned recursive inputs retain one additional RuntimeDemand key",
     );
     assert_eq!(
         (
@@ -269,8 +269,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 259, 0, 0, 0),
-        "fz-kdt.182 removes nine absorbed analyses while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path",
+        (2, 269, 0, 0, 0),
+        "exact returned recursive inputs retain ten additional frontier starts; no unsanctioned or scanning path appears",
     );
 
     let world = compiler.world();

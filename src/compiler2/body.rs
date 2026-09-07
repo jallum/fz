@@ -149,7 +149,7 @@ pub enum ControlEntryOrigin {
     DeliveredResume { value: ValueId },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum DeliveredValueSource {
     LocalValue(ValueId),
     CallsiteReturn(CallSiteId),
@@ -159,6 +159,12 @@ pub(crate) enum DeliveredValueSource {
 pub(crate) struct DeliveredValueJoin {
     pub value: ValueId,
     pub sources: Vec<DeliveredValueSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ControlTransition {
+    pub(crate) entry: ControlEntryId,
+    pub(crate) delivered: Option<DeliveredValueSource>,
 }
 
 impl ControlEntryOrigin {
@@ -182,33 +188,34 @@ pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryI
     }
     let mut sources = HashMap::<ControlEntryId, Vec<DeliveredValueSource>>::new();
     for entry in entries {
-        collect_tail_deliveries(&entry.tail, &delivered_values, &mut sources);
+        visit_control_transitions(&entry.tail, |transition| {
+            if let Some(source) = transition.delivered
+                && delivered_values.contains_key(&transition.entry)
+            {
+                sources.entry(transition.entry).or_default().push(source);
+            }
+        });
     }
     sources
         .into_iter()
         .filter_map(|(entry, mut sources)| {
             let value = delivered_values.get(&entry).copied()?;
-            sources.sort_by_key(delivered_value_source_sort_key);
+            sources.sort_unstable();
             sources.dedup();
             Some((entry, DeliveredValueJoin { value, sources }))
         })
         .collect()
 }
 
-fn collect_tail_deliveries(
-    tail: &LoweredTail,
-    delivered_values: &HashMap<ControlEntryId, ValueId>,
-    out: &mut HashMap<ControlEntryId, Vec<DeliveredValueSource>>,
-) {
+pub(crate) fn visit_control_transitions(tail: &LoweredTail, mut visit: impl FnMut(ControlTransition)) {
     match tail {
         LoweredTail::Value {
             value,
             dest: ControlDestination::Deliver(entry),
-        } if delivered_values.contains_key(entry) => {
-            out.entry(*entry)
-                .or_default()
-                .push(DeliveredValueSource::LocalValue(*value));
-        }
+        } => visit(ControlTransition {
+            entry: *entry,
+            delivered: Some(DeliveredValueSource::LocalValue(*value)),
+        }),
         LoweredTail::DirectCall {
             callsite,
             dest: ControlDestination::Deliver(entry),
@@ -218,17 +225,54 @@ fn collect_tail_deliveries(
             callsite,
             dest: ControlDestination::Deliver(entry),
             ..
-        } if delivered_values.contains_key(entry) => {
-            out.entry(*entry)
-                .or_default()
-                .push(DeliveredValueSource::CallsiteReturn(*callsite));
+        } => visit(ControlTransition {
+            entry: *entry,
+            delivered: Some(DeliveredValueSource::CallsiteReturn(*callsite)),
+        }),
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            visit(ControlTransition {
+                entry: *then_entry,
+                delivered: None,
+            });
+            visit(ControlTransition {
+                entry: *else_entry,
+                delivered: None,
+            });
         }
-        _ => {}
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for entry in dispatch.arm_entries.iter().chain(std::iter::once(&dispatch.miss_entry)) {
+                visit(ControlTransition {
+                    entry: *entry,
+                    delivered: None,
+                });
+            }
+        }
+        LoweredTail::Receive(receive) => {
+            for entry in receive
+                .clauses
+                .iter()
+                .map(|clause| clause.entry)
+                .chain(receive.after.iter().map(|after| after.entry))
+            {
+                visit(ControlTransition { entry, delivered: None });
+            }
+        }
+        LoweredTail::Value {
+            dest: ControlDestination::Return,
+            ..
+        }
+        | LoweredTail::DirectCall {
+            dest: ControlDestination::Return,
+            ..
+        }
+        | LoweredTail::ClosureCall {
+            dest: ControlDestination::Return,
+            ..
+        }
+        | LoweredTail::Halt { .. } => {}
     }
-}
-
-fn delivered_value_source_sort_key(source: &DeliveredValueSource) -> String {
-    format!("{source:?}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

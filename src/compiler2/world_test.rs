@@ -1,5 +1,5 @@
 use super::facts::FactUse;
-use super::keying::{BodyKeying, DispatchDemand, InputDemand};
+use super::keying::{BodyKeying, DispatchDemand, InputDemand, InputFlowRelation};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobDerivation, JobEffects};
@@ -20,6 +20,71 @@ fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
         local_dispatch: mask.clone(),
         forwarded_dispatch: mask,
     }
+}
+
+#[test]
+fn equal_input_flow_reproduction_retains_allocation_revision_and_readers() {
+    let mut world = World::new();
+    let function = world.reference_function(ModuleId::GLOBAL, "flow", 1);
+    let fact = FactKey::InputFlow(function);
+    let writer = Job::DeriveInputFlow(function);
+    let reader = Job::DeriveInputDemand(function);
+    let relation = InputFlowRelation {
+        local_dispatch: vec![DispatchDemand::Whole].into_boxed_slice(),
+        ..InputFlowRelation::default()
+    };
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(fact.clone())],
+            ..JobEffects::default()
+        },
+    );
+    assert!(world.define_input_flow(function, relation.clone()));
+    let first = world.complete_job(
+        writer.clone(),
+        JobEffects {
+            outputs: vec![fact.clone()],
+            changed: vec![fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    assert!(first.wakes.iter().any(|wake| wake.job == reader));
+    let retained = world
+        .input_flow(function)
+        .expect("first relation")
+        .local_dispatch
+        .as_ptr();
+    let revision = world.fact_revision(&fact).expect("first InputFlow revision");
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(fact.clone())],
+            ..JobEffects::default()
+        },
+    );
+    let pending_before = world.work_graph.pending_jobs();
+    assert!(!world.define_input_flow(function, relation));
+    let equal = world.complete_job(
+        writer,
+        JobEffects {
+            outputs: vec![fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    let reproduced = world
+        .input_flow(function)
+        .expect("retained equal relation")
+        .local_dispatch
+        .as_ptr();
+    assert_eq!(
+        retained, reproduced,
+        "equal reproduction must retain the existing fact allocation"
+    );
+    assert_eq!(world.fact_revision(&fact), Some(revision));
+    assert!(equal.changed.is_empty());
+    assert!(!equal.wakes.iter().any(|wake| wake.job == reader));
+    assert_eq!(world.work_graph.pending_jobs(), pending_before);
 }
 
 #[test]

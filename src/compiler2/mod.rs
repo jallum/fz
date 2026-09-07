@@ -19,6 +19,7 @@ mod fixture_metadata;
 mod frontdoor;
 mod identity;
 pub(crate) mod incoming_inputs;
+mod input_flow;
 mod jobs;
 mod keying;
 mod module_interface;

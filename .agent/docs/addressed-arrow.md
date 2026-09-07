@@ -146,12 +146,25 @@ an already-addressed arrow.
 `canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
 then — for recursive functions only — derives the dispatch key with
 `convergence_collapse(arrow, demand, returned)`, where `demand` is
-`InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
-what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
-`returned` is `InputDemand::returned`, the positions this activation's
-published return is built from and the recursion does not supply (fz-kdt.199).
-`demand` is a
-vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
+`InputDemand::forwarded_dispatch` and `returned` is `InputDemand::returned`.
+Both are projections of the same retained `InputFlowRelation`: typed function
+input and exact callsite-result paths map to return paths, direct/protocol input
+paths, and callable-use paths. Projection extends the source path,
+reconstruction extends the destination path, and a discarded delivery has no
+returned edge. Thus repeated calls to one callee share an answer only when the
+question is equal; their routing remains correlated by `CallSiteId`.
+Structural transfers preserve selected subtrees; typed whole-origin
+dependencies make any nonbottom use pull back to the entire deciding origin,
+as dynamic map keys require. `AssertSame` facts are control-flow must-facts,
+and delivery records predecessor-resolved provenance before branch merges.
+
+Composition is exact for acyclic calls. Recursive SCC query states alone use a
+deterministic structural frontier because the current `DispatchDemand` cannot
+represent an infinite regular question tree. The normalization is an
+extensive, monotone, idempotent over-approximation and never changes the
+retained relation. fz-kdt.200 owns replacing this coarse question domain and
+deleting the frontier; fz-kdt.213 then replaces the temporary cone query.
+`demand` is a vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
 collapse to their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key
 as one addressed list class), while demanded structure can keep only the part
 dispatch observes (for example a tuple tag) and collapse the payload. A

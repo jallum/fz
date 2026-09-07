@@ -2288,11 +2288,21 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     }
 
     let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
+    // Exact returned InputFlow removes three redundant native bodies from the
+    // reusable-cons inventory. `sort_list/2[non_empty_list]` disappears
+    // (-1 split); three `split_sort_list/3` bodies collapse to the exact
+    // empty-accumulator and list-accumulator states (-3 splits, -3 transported
+    // sources); and `reverse_list/2` distinguishes its empty seed from its
+    // recursive list state (+1 split, +1 transported source). Net: 14 -> 11
+    // births and 20 -> 18 transports across 27 -> 26 executables. Runtime
+    // attempts and successful in-place reuse stay exactly 132, while
+    // the fixture output remains pinned above, so this is removed static work,
+    // not a lost runtime reuse path.
     assert_eq!(
         stats,
         ReusableConsTelemetryStats {
-            birth_count: 14,
-            transport_count: 20,
+            birth_count: 11,
+            transport_count: 18,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,
         },

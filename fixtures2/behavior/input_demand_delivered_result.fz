@@ -1,0 +1,15 @@
+#---
+# purpose: "discarding a delivered call result does not make that call's argument part of the enclosing activation key"
+#---
+fn id(x), do: x
+
+fnp f(0, _a), do: 0
+fnp f(n, a) do
+  _discarded = id(a)
+  f(n - 1, a)
+end
+
+fn main() do
+  dbg(f(2, [1, 2]))
+  dbg(f(2, ["a", "b"]))
+end

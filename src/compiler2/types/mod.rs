@@ -1082,10 +1082,10 @@ impl Types {
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
     ///
-    /// The mask is `InputDemand::local_dispatch`, never the forwarded half: the
-    /// question is "does a clause of THIS body test this slot", and a body that
-    /// merely hands a callable to a callee that tests it still cannot tell two
-    /// same-shape lambdas apart itself (fz-kdt.183).
+    /// The mask is `InputDemand::local_dispatch`, never the forwarded
+    /// projection: the question is "does a clause of THIS body test this slot",
+    /// and a body that merely hands a callable to a callee that tests it still
+    /// cannot tell two same-shape lambdas apart itself (fz-kdt.183).
     ///
     /// Keeping the capture tuple is the conservative context-free rule
     /// (fz-kdt.169). Whole-tuple or arity-only erasure would also merge one

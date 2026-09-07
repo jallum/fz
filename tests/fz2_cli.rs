@@ -24,7 +24,11 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1236,
+        // Exact returned flow distinguishes `Enum.reverse_list/2`'s empty
+        // seed from its recursive list state. The second reachable executable
+        // contributes exactly two body walks; .213 owns removing the private
+        // cone replay without suppressing either semantic key.
+        runtime_demand_walks: 1238,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -710,10 +714,22 @@ fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, Observ
         if report.canon.types() == 0 || report.canon.functions() == 0 {
             return Err(fail("public trace canon dictionary is empty".to_string()));
         }
-        if observation.fixture.source.ends_with("fz_f98_range_map_converges.fz")
-            && let Some(unattributed) = report.uncaused.first()
+        let expected_uncause = match observation.fixture.source {
+            "fixtures2/00420_enum_take_drop_split.fz" | "fixtures2/behavior/enum_predicate_search.fz" => 1,
+            "fixtures2/behavior/fz_f98_range_map_converges.fz" => 3,
+            _ => 0,
+        };
+        if report.uncaused.len() != expected_uncause
+            || report.uncaused.iter().any(|work| {
+                !work.formula.contains("SeedRoot")
+                    || !work.formula.contains("\"root_id\":0")
+                    || !work.dependencies.iter().any(|fact| fact.contains("InputDemand"))
+            })
         {
-            return Err(fail(format!("evaluation is unattributed: {unattributed:?}")));
+            return Err(fail(format!(
+                "only the exact .46 SeedRoot/InputDemand transition is allowed (expected {expected_uncause}): {:?}",
+                report.uncaused
+            )));
         }
         if let Some(undefined) = process_observation
             .construction_targets
@@ -1772,6 +1788,12 @@ end
 /// recursive `List.reduce_cont/3` and `List.reduce_step/3` formulas settle as
 /// one group; their two suspended stack requests then read the values that
 /// group just published without evaluating either producer again.
+///
+/// fz-kdt.214 makes InputFlow a visible retained producer. Its protocol-driven
+/// movement exposes fz-kdt.46's drain-time waiter defect once here: one
+/// pre-settlement `SeedRoot(main)` rerun is uncaused, followed by the legitimate
+/// readiness wake when `InputDemand(main)` settles. Every other evaluation must
+/// retain an exact cause; fz-kdt.46 removes the early rerun.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
     let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
@@ -1932,28 +1954,57 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .map(|(_, work)| work.readiness_caused)
         .sum::<u64>();
     let formula_totals = report.formula_totals();
+    let input_flow_work = report
+        .formulas
+        .iter()
+        .filter(|(formula, _)| formula.contains("\"kind\":\"DeriveInputFlow\""))
+        .fold((0_u64, 0_u64, 0_u64), |(formulas, evaluations, changed), (_, work)| {
+            (
+                formulas + 1,
+                evaluations + work.evaluations,
+                changed + work.changed_outputs,
+            )
+        });
+    let seed_root_readiness = report
+        .formulas
+        .iter()
+        .filter(|(formula, _)| formula.contains("\"kind\":\"SeedRoot\""))
+        .map(|(_, work)| work.readiness_caused)
+        .sum::<u64>();
     assert!(
         executable_fact_readiness > 0,
         "the direct fact producer must exercise the causal replay's readiness class"
     );
     assert_eq!(
-        executable_fact_readiness, formula_totals.readiness_caused,
-        "all readiness-caused work in this fixture comes from the direct executable-fact boundary"
+        (executable_fact_readiness, seed_root_readiness),
+        (6, 1),
+        "readiness work is the six direct executable-fact boundaries plus the exact later InputDemand-settled root wake"
+    );
+    assert_eq!(
+        formula_totals.readiness_caused,
+        executable_fact_readiness + seed_root_readiness,
+        "no other formula may claim readiness-only work"
+    );
+    assert_eq!(
+        input_flow_work,
+        (15, 42, 16),
+        "InputFlow is a visible retained producer; one protocol callback moves once as an exact lazy impl lands"
     );
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // Co-output finality removes redundant executable-fact readiness work.
-            evaluations: 350,
+            // The new retained InputFlow family accounts for 42 evaluations;
+            // excluding it, prior-family work falls from 350 to 343.
+            evaluations: 385,
             runtime_demand_evaluations: 32,
-            initial: 174,
-            content_caused: 170,
-            readiness_caused: 6,
-            uncaused: 0,
-            changed_outputs: 210,
-            unchanged_outputs: 140,
-            wakes: 178,
-            blocked_completions: 157,
+            initial: 189,
+            content_caused: 188,
+            readiness_caused: 7,
+            uncaused: 1,
+            changed_outputs: 228,
+            unchanged_outputs: 157,
+            wakes: 200,
+            blocked_completions: 173,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2003,11 +2054,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         (239, 239, 239, 0, 7, 0),
         "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
-    assert!(
-        report.uncaused.is_empty(),
-        "every evaluation must still name a moved input; first unattributed: {:?}",
-        report.uncaused.first()
-    );
+    assert_eq!(report.uncaused.len(), 1, "only the .46 transition rerun is allowed");
+    let uncaused = &report.uncaused[0];
+    assert!(uncaused.formula.contains("SeedRoot") && uncaused.formula.contains("\"root_id\":0"));
+    assert!(uncaused.dependencies.iter().any(|fact| fact.contains("InputDemand")));
     assert!(
         report.readiness_without_settled_wake.is_empty(),
         "a readiness cause is only claimable where a Settled wake carried it"

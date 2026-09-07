@@ -2223,6 +2223,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::PlanEntryDispatch(function)
         | Job::DeriveStaticCallees(function)
         | Job::DeriveCallGraphComponent(function)
+        | Job::DeriveInputFlow(function)
         | Job::DeriveInputDemand(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) => write_root_id(out, *root),
@@ -2256,6 +2257,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::StaticCallees(function)
         | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
+        | FactKey::InputFlow(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
         FactKey::RootEntry(root) => write_root_id(out, *root),
@@ -2484,6 +2486,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
         FactKey::InputDemand(_) => "InputDemand",
+        FactKey::InputFlow(_) => "InputFlow",
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
         FactKey::ActivationInputs(_) => "ActivationInputs",
@@ -2520,6 +2523,7 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
+        Job::DeriveInputFlow(_) => "DeriveInputFlow",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
         Job::AnalyzeActivation(_) => "AnalyzeActivation",

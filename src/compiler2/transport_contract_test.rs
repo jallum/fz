@@ -3397,9 +3397,9 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
-    assert!(
-        no_dump_job_fires < LEGACY_00181_NO_DUMP_JOB_STARTS,
-        "product no-dump interp should reduce fixture 00181 compiler job starts below the legacy baseline; got {no_dump_job_fires}"
+    assert_eq!(
+        no_dump_job_fires, 385,
+        "exact returned may-dependency temporarily exceeds the {LEGACY_00181_NO_DUMP_JOB_STARTS}-start legacy baseline; fz-kdt.213 must repay the cone work"
     );
 
     let mut world = World::new();

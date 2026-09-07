@@ -486,12 +486,17 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
             // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
             // and the wrapper surfaces they ground stop sharing.
-            230,
+            // fz-kdt.214: exact returned may-flow removes the unsound
+            // recursive-argument subtraction. `Enum.reverse_list/2` therefore
+            // keeps its empty seed and `list(int)` ascent as two typed keys
+            // instead of one polymorphic `list(a1_e)` representative. No
+            // mutually-subtype duplicate is introduced.
+            231,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
+            231,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

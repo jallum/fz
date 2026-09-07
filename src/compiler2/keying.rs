@@ -1,7 +1,8 @@
 //! Stable facts used to canonicalize activation keys.
 //!
-//! `DispatchDemand` is the lattice both halves of [`InputDemand`] live in: what
-//! a body asks about one input, shaped like the type it asks about. `Ignore` is
+//! `DispatchDemand` is the lattice for each of [`InputDemand`]'s local,
+//! forwarded, and returned projections: what a body asks about one input,
+//! shaped like the type it asks about. `Ignore` is
 //! the bottom (nothing is asked), `Whole` the top (the value itself is the
 //! answer), and `ListShape`/`TupleFields` say the question descends into one
 //! structural position. It is a lattice because a slot can be asked about from
@@ -11,15 +12,188 @@
 
 use std::collections::BTreeMap;
 
+use super::body::CallSiteId;
 use super::identity::FunctionId;
+use crate::ground_value::GroundValue;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) enum DispatchDemand {
     #[default]
     Ignore,
     Whole,
     TupleFields(BTreeMap<u32, DispatchDemand>),
     ListShape(Box<DispatchDemand>),
+}
+
+/// One structural step from a semantic input root.
+///
+/// These are semantic positions, not rendered type fragments. A path is
+/// therefore stable across type-arena allocation order and can be compared,
+/// deduplicated, and retained without asking a `Ty` for display text.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InputPathStep {
+    TupleField(u32),
+    ListHead,
+    ListTail,
+    MapValue(MapSelector),
+    MapKey(MapSelector),
+    /// The base of a map update after the named fields have been replaced.
+    MapRemainder(Box<[InputMapKey]>),
+    BitstringField(BitstringSelector),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum MapSelector {
+    Known(InputMapKey),
+    Dynamic,
+    DynamicExcept(Box<[InputMapKey]>),
+}
+
+/// One literal runtime map key in the local flow relation.
+///
+/// Raw and UTF-8-branded binaries denote the same runtime key here; the brand
+/// is dispatch evidence, not map-key identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InputMapKey {
+    Int(i64),
+    Float(u64),
+    Atom(String),
+    Binary(Box<[u8]>),
+}
+
+impl InputMapKey {
+    pub(crate) fn from_ground(value: &GroundValue) -> Self {
+        match value {
+            GroundValue::Int(value) => Self::Int(*value),
+            GroundValue::Float(bits) => Self::Float(*bits),
+            GroundValue::Atom(value) => Self::Atom(value.clone()),
+            GroundValue::Bool(value) => Self::Atom(value.to_string()),
+            GroundValue::Nil => Self::Atom("nil".to_string()),
+            GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes) => {
+                Self::Binary(bytes.clone().into_boxed_slice())
+            }
+        }
+    }
+}
+
+impl MapSelector {
+    pub(crate) fn dynamic_excluding(mut excluded: Vec<InputMapKey>) -> Self {
+        excluded.sort_unstable();
+        excluded.dedup();
+        if excluded.is_empty() {
+            Self::Dynamic
+        } else {
+            Self::DynamicExcept(excluded.into_boxed_slice())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum BitstringSelector {
+    Known(u32),
+    Dynamic,
+}
+
+/// An exact position below one function input.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct InputPosition {
+    pub(crate) input: usize,
+    pub(crate) path: Box<[InputPathStep]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InputFlowOrigin {
+    Input(InputPosition),
+    CallResult {
+        callsite: CallSiteId,
+        path: Box<[InputPathStep]>,
+    },
+}
+
+impl InputPosition {
+    pub(crate) fn root(input: usize) -> Self {
+        Self {
+            input,
+            path: Box::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum CallableInputUse {
+    ClosureCall(CallSiteId),
+    LambdaCapture { function: FunctionId, capture: usize },
+}
+
+/// The normalized semantic destination of one value origin.
+///
+/// Projection and reconstruction are expressed only by the origin and sink
+/// paths. How many local SSA hops happened between them is deliberately not
+/// identity: direct and project/rebuild routes with the same endpoints are
+/// the same fact.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InputFlowSink {
+    FunctionReturn(Box<[InputPathStep]>),
+    ProtocolInput {
+        callee: FunctionId,
+        input: InputPosition,
+    },
+    CallableUse {
+        site: CallableInputUse,
+        path: Box<[InputPathStep]>,
+    },
+}
+
+/// How demand at a sink is pulled back through one retained provenance edge.
+///
+/// Most values transport structure, so a demanded sink path maps to the same
+/// subtree of the origin. Some values merely decide the result (for example a
+/// dynamic map key): any use of the selected result needs that entire origin,
+/// independently of which result subtree is later inspected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InputPullback {
+    Structural,
+    WholeOrigin,
+}
+
+/// One normalized terminal, protocol, or callable-use path transfer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct InputFlow {
+    pub(crate) origin: InputFlowOrigin,
+    pub(crate) sink: InputFlowSink,
+    pub(crate) pullback: InputPullback,
+}
+
+/// One semantic origin bound into a direct-call input path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct InputBinding {
+    pub(crate) origin: InputFlowOrigin,
+    pub(crate) path: Box<[InputPathStep]>,
+    pub(crate) pullback: InputPullback,
+}
+
+/// The complete input binding owned by one direct callsite.
+///
+/// The slice index is the callee input. An empty set means that input is
+/// supplied entirely locally; an empty slice is a zero-argument call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectCallFlow {
+    pub(crate) callee: FunctionId,
+    pub(crate) inputs: Box<[std::collections::BTreeSet<InputBinding>]>,
+}
+
+/// The immutable, deterministic input-flow extraction for one function.
+///
+/// `local_dispatch` is the body's own typed question. `direct_calls` owns every
+/// direct call and its complete input bindings; `flows` owns function returns,
+/// protocol inputs, and callable-use sites. Together they are the one
+/// extraction authority used by every InputDemand dimension; the fixpoint over
+/// functions remains a separate concern.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct InputFlowRelation {
+    pub(crate) local_dispatch: Box<[DispatchDemand]>,
+    pub(crate) direct_calls: BTreeMap<CallSiteId, DirectCallFlow>,
+    pub(crate) flows: std::collections::BTreeSet<InputFlow>,
 }
 
 impl DispatchDemand {
@@ -58,57 +232,32 @@ pub(crate) struct BodyKeying {
     pub(crate) consumes_callable_identity: bool,
 }
 
-/// What one function's inputs are DEMANDED for, as `Job::DeriveInputDemand`
-/// publishes it under `FactKey::InputDemand`: both halves live in one value so
-/// a consumer can never observe one without the other, exactly as
-/// [`BodyKeying`] carries two answers behind `FactKey::Recursive`.
-///
-/// The two halves answer two different questions and neither stands in for the
-/// other. `local_dispatch` is "does a clause of THIS body ask about this slot"
-/// -- the question closure-brand erasure has always asked (fz-6gb): a body that
-/// never tests a slot cannot tell two same-shape lambdas apart there.
-/// `forwarded_dispatch` is "does this activation's published RETURN depend on
-/// this slot" -- which includes everything the callees this body hands the slot
-/// to depend on, because the value that arrives decides which callee activation
-/// is reached and therefore what comes back (fz-kdt.183). `returned` is the
-/// other way a return depends on an input: not "which activation is reached"
-/// but "the returned value IS this input position" (fz-kdt.199).
+/// The three current activation-key projections of one retained
+/// [`InputFlowRelation`]. They are published together so consumers cannot see
+/// dimensions derived from different relation generations.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InputDemand {
     /// This body's own entry dispatch, one demand per semantic input.
     pub(crate) local_dispatch: Vec<DispatchDemand>,
-    /// `local_dispatch` joined with the demand of every callee this body
-    /// forwards each input to, transitively (fz-kdt.183). Always at least as
-    /// high as `local_dispatch` slot for slot.
+    /// Entry questions pulled back through exact local paths and exact
+    /// callsites, transitively. Callee-local questions apply at every site;
+    /// result-induced questions return only through the site whose result was
+    /// used.
     pub(crate) forwarded_dispatch: Vec<DispatchDemand>,
-    /// Where this activation's published RETURN is BUILT FROM: the input
-    /// positions the returned value is, contains, or is a projection of --
-    /// this body's own returns joined with the returns of every callee it
-    /// forwards an input to, transitively (fz-kdt.199), MINUS the positions
-    /// the recursion itself supplies (`recursion_supplied_positions`).
+    /// Return demand pulled backward through reconstruction, projection,
+    /// delivery, protocol forwarding, and exact callsite result/input pairs.
     ///
-    /// It is the DUAL of `forwarded_dispatch` and it lives on its own axis
-    /// because the two ask for different collapses. A dispatched position is
-    /// a QUESTION, and `Whole` there means "the value itself is the answer",
-    /// so the key keeps it verbatim. A returned position is an ANSWER, and
-    /// `Whole` here means "this value is the return", so the key keeps its
-    /// ground CLASS: list families normalise to `list(elem)` with the element
-    /// kept at every depth, and callable brands still erase.
-    /// `Types::convergence_class_at` caps depth at `ADDRESS_COLLAPSE_DEPTH`
-    /// for LIST families only -- the cap is checked inside its
-    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
-    /// returned position recurses uncapped and is bounded only by the type
-    /// that arrives. Every program built to exercise that (a self-nesting or
-    /// mutually nesting accumulator) already fails to terminate at base for
-    /// fz-kdt.177's reason, so the uncapped case is a reading of the code, not
-    /// a measured divergence. Joining the two axes into one mask would have to
-    /// raise a returned position to `Whole`, which has no collapse at all
-    /// (fz-kdt.200) -- so they stay two.
+    /// It remains separate from dispatch because an input used as an answer
+    /// and one used as a question require different key collapses. Local and
+    /// acyclic composition are exact; recursive SCC demand alone is widened
+    /// soundly below a fixed structural frontier in the current finite demand
+    /// lattice. fz-kdt.200 replaces that lattice and deletes the normalizer.
     pub(crate) returned: Vec<DispatchDemand>,
 }
 
 pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
 pub(crate) type InputDemandMap = FunctionFactMap<InputDemand>;
+pub(crate) type InputFlowRelationMap = FunctionFactMap<InputFlowRelation>;
 
 /// The call graph's edge store: the static callees `FactKey::StaticCallees`
 /// publishes for each function, ascending by function id.
@@ -126,7 +275,7 @@ pub(crate) type CallGraphComponentMap = FunctionFactMap<FunctionId>;
 
 impl<T> FunctionFactMap<T>
 where
-    T: Clone + PartialEq,
+    T: PartialEq,
 {
     pub(crate) fn new() -> Self {
         Self { slots: Vec::new() }
@@ -135,9 +284,11 @@ where
     pub(crate) fn define(&mut self, function: FunctionId, value: T) -> bool {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
-        let changed = slot.as_ref() != Some(&value);
+        if slot.as_ref() == Some(&value) {
+            return false;
+        }
         *slot = Some(value);
-        changed
+        true
     }
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<&T> {

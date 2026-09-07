@@ -1,0 +1,30 @@
+#---
+# purpose: "a protocol implementation return stays distinct when the callback receives a projected input field"
+#---
+defmodule M do
+  @spec strings([binary]) :: integer
+  fn strings(_xs), do: 1
+end
+
+defprotocol Walkable do
+  fn step(t, acc)
+end
+
+defmodule Wrap do
+  defstruct [:v]
+end
+
+defimpl Walkable, for: Wrap do
+  fn step(_w, acc), do: acc
+end
+
+defmodule G do
+  fnp walk({:go, acc}, 0), do: Walkable.step(%Wrap{v: 1}, acc)
+  fnp walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
+  fnp walk(_state, _n), do: nil
+end
+
+fn main() do
+  dbg(M.strings(G.walk({:go, ["x"]}, 2)))
+  dbg(G.walk({:go, [9]}, 2))
+end

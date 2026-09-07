@@ -1,14 +1,18 @@
 //! Jobs that derive the stable facts used for activation keying.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
-use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
+use super::super::body::{CallSiteId, LoweredBody, LoweredStep, LoweredTail};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
-use super::super::keying::{BodyKeying, DispatchDemand, InputDemand};
+use super::super::keying::{
+    BodyKeying, DispatchDemand, InputDemand, InputFlow, InputFlowOrigin, InputFlowRelation, InputFlowSink, InputMapKey,
+    InputPathStep, InputPosition, InputPullback, MapSelector,
+};
+use super::super::protocol::ProtocolDispatch;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -41,43 +45,25 @@ pub(super) fn derive_static_callees(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    if world.function_is_provider_boundary(function) {
+    let mut reads = Vec::new();
+    if world.function_is_provider_boundary(function, &mut reads) {
         // A provider boundary has an interface but no body in this program:
         // no edges. The boundary test is not monotone -- a definition landing
         // later dissolves it -- so the conclusion subscribes to the facts it
         // consulted rather than freezing the filter's answer.
-        let module = world.function_module(function);
-        return Ok(publish_static_callees(
-            world,
-            function,
-            Vec::new(),
-            vec![FactKey::FunctionDefined(function), FactKey::ModuleDefined(module)],
-        ));
+        return Ok(publish_static_callees(world, function, Vec::new(), reads));
     }
-    if world.function_defined_revision(function).is_none() {
-        if world.protocol_callback(function).is_some() {
-            // A protocol callback is dispatched through, never lowered: it is
-            // a leaf of the static graph, not a wait that would never resolve.
-            return Ok(publish_static_callees(
-                world,
-                function,
-                Vec::new(),
-                vec![FactKey::FunctionDefined(function)],
-            ));
+    if world.function_defined_revision(function).is_none() && world.protocol_callback(function).is_some() {
+        // A protocol callback is dispatched through, never lowered: it is
+        // a leaf of the static graph, not a wait that would never resolve.
+        let defined = FactKey::FunctionDefined(function);
+        if !reads.contains(&defined) {
+            reads.push(defined);
         }
-        let module = world.function_module(function);
-        if !module.is_global() && world.module_defined_revision(module).is_none() {
-            // Demand the scope that produces the `ModuleDefined` this site
-            // waits on, not the body (fz-f98.14.5): `ensure_runtime_module`
-            // mints a runtime module's code the first time the call graph
-            // reaches it, instead of leaving that submission to whenever
-            // `Job::DefineModule` happens to run. `ModuleDefined`'s sole
-            // producer arm is `Job::DefineModule`; `demand_function_scope`'s
-            // only other branch (`CodeScoped`, for `module.is_global()`) is
-            // ruled out by the guard above.
-            super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
-            return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(module)));
-        }
+        return Ok(publish_static_callees(world, function, Vec::new(), reads));
+    }
+    if let Some(wait) = wait_for_undefined_function_module(world, tel, function) {
+        return Ok(wait_after_reads(wait, reads));
     }
 
     let lowered = FactKey::LoweredBody(function);
@@ -88,11 +74,38 @@ pub(super) fn derive_static_callees(
         // is what scopes the code the body comes from. Waiting on
         // `FunctionDefined` first, as a separate rung, would buy nothing but
         // one more blocked evaluation per function.
-        return Ok(JobEffects::wait_on_current(lowered));
+        return Ok(wait_after_reads(JobEffects::wait_on_current(lowered), reads));
     }
-    let mut reads = vec![FactKey::FunctionDefined(function), lowered];
+    reads.extend([FactKey::FunctionDefined(function), lowered]);
     let callees = body_static_callees(world, function, &mut reads);
     Ok(publish_static_callees(world, function, callees, reads))
+}
+
+/// Demands the module scope shared by every body-derived function fact.
+///
+/// Provider and protocol boundaries are semantic exceptions handled by their
+/// callers. For an ordinary undefined non-global function, `ModuleDefined` is
+/// the first real prerequisite: ensuring its runtime module mints the code
+/// whose definition/lowering chain will eventually publish the body.
+fn wait_for_undefined_function_module(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Option<JobEffects> {
+    if world.function_defined_revision(function).is_some() {
+        return None;
+    }
+    let module = world.function_module(function);
+    if module.is_global() || world.module_defined_revision(module).is_some() {
+        return None;
+    }
+    super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
+    Some(JobEffects::wait_on_current(FactKey::ModuleDefined(module)))
+}
+
+fn wait_after_reads(mut wait: JobEffects, reads: Vec<FactKey>) -> JobEffects {
+    wait.reads = current_uses(reads);
+    wait
 }
 
 /// The callees one lowered body names, in the order `static_edges` yields
@@ -103,12 +116,11 @@ fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<Fact
     let mut callees: Vec<FunctionId> = Vec::new();
     for edge in static_edges(&world.lowered_body(function)) {
         let target = edge.function();
-        if world.function_is_provider_boundary(target) {
+        if world.function_is_provider_boundary(target, reads) {
             // The boundary test consults the target's definedness, and it is
             // not monotone: a module or function defined later dissolves the
             // boundary. Record the read so that definition grows this edge
             // set instead of leaving the filter frozen in a fact.
-            reads.push(FactKey::FunctionDefined(target));
             continue;
         }
         if matches!(edge, StaticEdge::Lambda(_)) {
@@ -116,7 +128,10 @@ fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<Fact
             // exists. The conclusion consulted that fact, so it is read
             // whether or not it was there -- a definition that lands later
             // must be able to grow this edge set.
-            reads.push(FactKey::FunctionDefined(target));
+            let defined = FactKey::FunctionDefined(target);
+            if !reads.contains(&defined) {
+                reads.push(defined);
+            }
             if world.function_defined_revision(target).is_none() {
                 continue;
             }
@@ -164,7 +179,8 @@ fn publish_static_callees(
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
 pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
-    if world.function_is_provider_boundary(function) {
+    let mut reads = Vec::new();
+    if world.function_is_provider_boundary(function, &mut reads) {
         // No body in this program: no edges, so the component is the function
         // alone and nothing it does can reach back to it.
         return Ok(publish_call_graph_node(
@@ -175,11 +191,10 @@ pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionI
                 recursive: false,
                 consumes_callable_identity: false,
             },
-            Vec::new(),
+            reads,
         ));
     }
 
-    let mut reads = Vec::new();
     let mut waits = HashSet::new();
     let mut graph = HashMap::new();
     let mut seen = HashSet::new();
@@ -281,60 +296,82 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
     }
 }
 
-/// One node of the input-demand graph: a body's OWN dispatch demand, and the
-/// parameters it hands on unchanged.
-#[derive(Debug, Clone, Default)]
-struct DemandNode {
-    local: Vec<DispatchDemand>,
-    /// The positions this body's OWN returns are built from (fz-kdt.199),
-    /// before any forwarding join.
-    local_result: Vec<DispatchDemand>,
-    forwards: Vec<ForwardEdge>,
+/// One node of the still-private InputDemand solver. fz-kdt.213 deletes this
+/// graph; its edges are projections of the independently retained
+/// [`InputFlowRelation`] rather than another body scan.
+#[derive(Debug, Clone)]
+struct DemandNode<'a> {
+    relation: &'a InputFlowRelation,
 }
 
-/// `slot` of this body is passed, UNCHANGED, as `callee`'s `callee_slot`th
-/// input. Nothing else counts: a projection (`[head | tail]`), a construction
-/// (`[head | acc]`) and a closure call are all opaque, so the value that
-/// arrives at the callee is not the value this slot names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ForwardEdge {
-    slot: usize,
-    callee: FunctionId,
-    callee_slot: usize,
+/// Extracts the one immutable path relation for a function. This job performs
+/// no inter-function solving: body/dispatch or protocol facts go in, one local
+/// relation comes out, and equality at the World boundary suppresses wakes.
+pub(super) fn derive_input_flow(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
+    let mut reads = Vec::new();
+
+    let relation = if let Some(callback) = world.protocol_callback(function) {
+        let module = FactKey::ModuleDefined(callback.protocol);
+        if world.module_defined_revision(callback.protocol).is_none() {
+            return Ok(JobEffects::wait_on_current(module));
+        }
+        reads.push(module);
+        let dispatch_fact = FactKey::ProtocolDispatch(callback.protocol);
+        let Some(dispatch) = world.protocol_dispatch(callback.protocol) else {
+            return Ok(wait_after_reads(JobEffects::wait_on_current(dispatch_fact), reads));
+        };
+        reads.push(dispatch_fact);
+        protocol_input_flow_relation(world, function, dispatch)
+    } else {
+        let provider_boundary = world.function_is_provider_boundary(function, &mut reads);
+        if !provider_boundary && let Some(wait) = wait_for_undefined_function_module(world, tel, function) {
+            return Ok(wait_after_reads(wait, reads));
+        }
+        let lowered = FactKey::LoweredBody(function);
+        if provider_boundary {
+            InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore; world.function_arity(function)].into_boxed_slice(),
+                ..InputFlowRelation::default()
+            }
+        } else if !world.has_fact(&lowered) {
+            return Ok(wait_after_reads(JobEffects::wait_on_current(lowered), reads));
+        } else {
+            reads.push(lowered);
+            let dispatch = FactKey::EntryDispatch(function);
+            if !world.has_fact(&dispatch) {
+                return Ok(wait_after_reads(JobEffects::wait_on_current(dispatch), reads));
+            }
+            reads.push(dispatch);
+            super::super::input_flow::extract_input_flow_relation(
+                world,
+                function,
+                local_dispatch_mask(world.entry_dispatch_ref(function)).into_boxed_slice(),
+            )
+        }
+    };
+
+    let changed = world.define_input_flow(function, relation);
+    Ok(JobEffects {
+        reads: current_uses(reads),
+        outputs: vec![FactKey::InputFlow(function)],
+        changed: changed.then_some(FactKey::InputFlow(function)).into_iter().collect(),
+        ..JobEffects::default()
+    })
 }
 
-/// Derives which function inputs are DEMANDED -- by this body's own entry
-/// dispatch, or by a callee this body forwards them to, transitively.
+/// Projects activation-key demand from the retained typed flow relations.
 ///
-/// Dispatch demand alone answers "what does this body ASK about its inputs",
-/// and that was never the question activation keying needs. The question is
-/// "what does this activation's published return DEPEND on", and a body that
-/// hands a parameter straight to a callee depends on everything that callee's
-/// KEY names at that position: the element decides which callee activation is
-/// reached, and therefore what comes back. `List.reduce_step/3` forwards its
-/// list to `List.reduce_cont/3`, whose key is ground in the element, so the
-/// element is part of `reduce_step/3`'s meaning even though `reduce_step/3`
-/// dispatches only on its accumulator tag -- and without it two `Enum.reduce/3`
-/// users share one activation and one JOINED return (fz-kdt.183, fz-kdt.122).
-///
-/// So the published demand is a JOIN over the `DispatchDemand` lattice
-/// (`Ignore` < `ListShape`/`TupleFields` < `Whole`, `DispatchDemand::join_assign`):
-/// the demand on slot `i` of `f` is `f`'s own local demand on `i` joined with
-/// the demand on every position `g@j` that `f` forwards `i` to.
-///
-/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
-/// least fixpoint, computed by Kleene iteration over the forwarding graph one walk
-/// discovers -- the same shape `derive_call_graph_component` uses for the
-/// strong component, and terminating for the same reason: the join is monotone
-/// and no join deepens a demand tree past the deepest local mask in the graph,
-/// which is a fixed finite depth once the graph is fixed.
-///
-/// A slot NOT reached this way is freight: the body neither asks about it nor
-/// hands it to anyone who does. It stays collapsed, which is what keeps one
-/// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
-///
-/// The LOCAL half publishes beside the forwarded one, because brand erasure
-/// asks the local question and only the local question (see [`InputDemand`]).
+/// Dispatch queries seed local entry questions and visit every callsite;
+/// returned queries seed the requested return path and visit only results that
+/// flow to it. Child answers are routed back through the exact `CallSiteId`, so
+/// equal callee questions may share computation without cross-connecting two
+/// calls. Acyclic composition is exact. Recursive SCC query states alone use a
+/// deterministic, sound structural over-approximation until fz-kdt.200 replaces
+/// the coarse `DispatchDemand` domain; fz-kdt.213 deletes this private solver.
 pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -352,10 +389,26 @@ pub(super) fn derive_input_demand(
         });
     }
 
+    let recursion = demand_recursion_plan(&graph, function);
     let demand = InputDemand {
-        local_dispatch: graph.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
-        forwarded_dispatch: solve_forwarded_demand(&graph, function, |node| &node.local),
-        returned: solve_forwarded_demand(&graph, function, |node| &node.local_result),
+        local_dispatch: graph
+            .get(&function)
+            .map(|node| node.relation.local_dispatch.to_vec())
+            .unwrap_or_default(),
+        forwarded_dispatch: solve_demand_query_graph_with_plan(
+            &graph,
+            function,
+            DemandMode::Dispatch,
+            DispatchDemand::Ignore,
+            &recursion,
+        ),
+        returned: solve_demand_query_graph_with_plan(
+            &graph,
+            function,
+            DemandMode::Returned,
+            DispatchDemand::Whole,
+            &recursion,
+        ),
     };
     emit_input_demand_derived(tel, &function, &demand);
     let changed = world.define_input_demand(function, demand);
@@ -367,573 +420,486 @@ pub(super) fn derive_input_demand(
     })
 }
 
-/// Walks the input FORWARDING graph from `function`: only a callee that receives
-/// one of this body's parameters unchanged is entered, so the graph is a fraction
-/// of the call graph and a body that forwards nothing reads exactly the facts
-/// the local mask always needed.
-fn collect_input_forwarding_graph(
-    world: &World,
+/// Walks the callees named by retained direct/protocol input-flow sinks.
+///
+/// This discovers the relations the query may compose without rescanning a
+/// lowered body. The graph borrows World-owned relations, so deriving demand
+/// neither copies nor republishes their normalized edge sets.
+fn collect_input_forwarding_graph<'a>(
+    world: &'a World,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    graph: &mut BTreeMap<FunctionId, DemandNode>,
+    graph: &mut BTreeMap<FunctionId, DemandNode<'a>>,
 ) {
     if graph.contains_key(&function) {
         return;
     }
-    // `StaticCallees` is the fact whose producer scopes a runtime module and
-    // settles the provider-boundary question; waiting on it first means this
-    // walk never has to re-derive either.
-    let callees = FactKey::StaticCallees(function);
-    if !world.has_fact(&callees) {
-        waits.insert(callees);
+    let flow_fact = FactKey::InputFlow(function);
+    if !world.has_fact(&flow_fact) {
+        waits.insert(flow_fact);
         return;
     }
-    reads.push(callees);
-    if let Some(callback) = world.protocol_callback(function) {
-        collect_protocol_callback_node(world, function, callback.protocol, reads, waits, graph);
-        return;
-    }
-    let lowered = FactKey::LoweredBody(function);
-    if world.function_is_provider_boundary(function) || !world.has_fact(&lowered) {
-        // No body in this program: it asks nothing and forwards nothing. Every
-        // fact that conclusion rests on is READ -- including the module whose
-        // definition dissolves the provider boundary -- so a definition landing
-        // later grows the forwarding graph instead of leaving this answer frozen.
-        reads.push(FactKey::FunctionDefined(function));
-        reads.push(FactKey::ModuleDefined(world.function_module(function)));
-        reads.push(lowered);
-        graph.insert(function, DemandNode::default());
-        return;
-    }
-    let dispatch = FactKey::EntryDispatch(function);
-    if !world.has_fact(&dispatch) {
-        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
-        // (`World::demand_fact_producer`).
-        waits.insert(dispatch);
-        return;
-    }
-    reads.push(dispatch);
-    reads.push(lowered);
-    let local = local_dispatch_mask(&world.entry_dispatch(function));
-    let local_result = return_flow_mask(world, function, local.len());
-    let forwards = forwarded_inputs(world, function, local.len());
-    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    graph.insert(
-        function,
-        DemandNode {
-            local,
-            local_result,
-            forwards,
-        },
-    );
+    reads.push(flow_fact);
+    let relation = world.input_flow(function).expect("present InputFlow fact");
+    let next = relation
+        .direct_calls
+        .values()
+        .map(|call| call.callee)
+        .chain(relation.flows.iter().filter_map(|flow| match &flow.sink {
+            InputFlowSink::ProtocolInput { callee, .. } => Some(*callee),
+            _ => None,
+        }))
+        .collect::<BTreeSet<_>>();
+    graph.insert(function, DemandNode { relation });
     for callee in next {
         collect_input_forwarding_graph(world, callee, reads, waits, graph);
     }
 }
 
-/// A protocol callback has no body: it is a NAME for the set of implementations
-/// dispatch can reach. Every input is handed to every implementation unchanged,
-/// so its demand is the join over them -- the same forwarding edge, one per
-/// implementation.
-///
-/// This is a STATIC OVER-APPROXIMATION of a runtime dispatch, and the cost is
-/// anti-monotone in the program: an unrelated `defimpl` that asks more about
-/// its argument raises the demand of every forwarder that reaches the callback,
-/// because the static arm set names it whether or not any value can reach it.
-/// `ProtocolDispatch` is READ, so an implementation landing later grows this
-/// demand rather than leaving the conclusion frozen.
-fn collect_protocol_callback_node(
-    world: &World,
-    function: FunctionId,
-    protocol: super::super::identity::ModuleId,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    graph: &mut BTreeMap<FunctionId, DemandNode>,
-) {
-    // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
-    // first, because it is the arm-covered wait that can actually be produced;
-    // `ProtocolDispatch` is a co-output of the same `Job::DefineModule` run
-    // (`source_publish::publish_protocol_surface` pushes both into one
-    // `JobEffects`), so it carries no arm of its own in
-    // `World::demand_fact_producer` -- its demand rides `ModuleDefined`'s. A
-    // waiter re-runs only when ALL of its waits are satisfied, so an arm-less
-    // wait must never be the first rung.
-    let protocol_fact = FactKey::ModuleDefined(protocol);
-    if world.module_defined_revision(protocol).is_none() {
-        waits.insert(protocol_fact);
-        return;
-    }
-    reads.push(protocol_fact);
-    let dispatch_fact = FactKey::ProtocolDispatch(protocol);
-    let Some(dispatch) = world.protocol_dispatch(protocol) else {
-        // `ModuleDefined(protocol)` is proven `Some` above, so the run that
-        // claims this fact has already happened; defensive rather than
-        // provably dead, exactly as the twin, and a bare wait rather than an
-        // assert.
-        waits.insert(dispatch_fact);
-        return;
-    };
-    reads.push(dispatch_fact);
+fn protocol_input_flow_relation(world: &World, function: FunctionId, dispatch: &ProtocolDispatch) -> InputFlowRelation {
     let arity = world.function_arity(function);
-    let mut forwards = Vec::new();
+    let mut flows = BTreeSet::new();
     for arm in &dispatch.arms {
-        let Some(implementation) = arm.callbacks.get(&function).map(|target| target.function) else {
+        let Some(callee) = arm.callbacks.get(&function).map(|target| target.function) else {
             continue;
         };
-        for slot in 0..arity.min(world.function_arity(implementation)) {
-            forwards.push(ForwardEdge {
-                slot,
-                callee: implementation,
-                callee_slot: slot,
+        for input in 0..arity.min(world.function_arity(callee)) {
+            flows.insert(InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition::root(input)),
+                sink: InputFlowSink::ProtocolInput {
+                    callee,
+                    input: InputPosition::root(input),
+                },
+                pullback: InputPullback::Structural,
             });
         }
     }
-    forwards.sort_unstable();
-    forwards.dedup();
-    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
-    graph.insert(
-        function,
-        DemandNode {
-            local: vec![DispatchDemand::Ignore; arity],
-            local_result: vec![DispatchDemand::Ignore; arity],
-            forwards,
-        },
-    );
-    for callee in next {
-        collect_input_forwarding_graph(world, callee, reads, waits, graph);
+    InputFlowRelation {
+        local_dispatch: vec![DispatchDemand::Ignore; arity].into_boxed_slice(),
+        flows,
+        ..InputFlowRelation::default()
     }
 }
 
-/// The parameters this body hands on unchanged, and where they land.
-///
-/// A clause binds each of the function's semantic inputs to one `ValueId`
-/// (`clause.params[i]`), and those ids are function-wide, so a direct call's
-/// argument IS a parameter exactly when its value is one of them. A direct
-/// call's args are its callee's inputs one-for-one (`CallInputMode::Direct`),
-/// which is why the callee slot is the argument index.
-fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &body else {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DemandPort {
+    Return,
+    Input(usize),
+    CallResult(CallSiteId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DemandQuery {
+    mode: DemandMode,
+    function: FunctionId,
+    result: DispatchDemand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DemandMode {
+    Dispatch,
+    Returned,
+}
+
+#[cfg(test)]
+fn solve_demand_query_graph(
+    graph: &BTreeMap<FunctionId, DemandNode<'_>>,
+    function: FunctionId,
+    mode: DemandMode,
+    result: DispatchDemand,
+) -> Vec<DispatchDemand> {
+    let recursion = demand_recursion_plan(graph, function);
+    solve_demand_query_graph_with_plan(graph, function, mode, result, &recursion)
+}
+
+fn solve_demand_query_graph_with_plan(
+    graph: &BTreeMap<FunctionId, DemandNode<'_>>,
+    function: FunctionId,
+    mode: DemandMode,
+    result: DispatchDemand,
+    recursion: &DemandRecursionPlan,
+) -> Vec<DispatchDemand> {
+    let recursive = &recursion.functions;
+    let depth_bound = recursion.depth_bound;
+    let root = DemandQuery { mode, function, result };
+    let mut answers = BTreeMap::from([(
+        root.clone(),
+        vec![
+            DispatchDemand::Ignore;
+            graph
+                .get(&function)
+                .map_or(0, |node| node.relation.local_dispatch.len())
+        ],
+    )]);
+    loop {
+        let queries = answers.keys().cloned().collect::<Vec<_>>();
+        let mut requested = BTreeSet::new();
+        let mut changed = false;
+        for query in &queries {
+            let next = evaluate_demand_query(graph, query, &answers, &mut requested, recursion);
+            let answer = answers
+                .get_mut(query)
+                .expect("every evaluated return query has a result slot");
+            for (slot, next) in answer.iter_mut().zip(next) {
+                let before = slot.clone();
+                slot.join_assign(next);
+                if recursive.contains(&query.function) {
+                    *slot = normalize_demand(slot.clone(), depth_bound);
+                }
+                changed |= *slot != before;
+            }
+        }
+        for query in requested {
+            if let std::collections::btree_map::Entry::Vacant(slot) = answers.entry(query) {
+                let inputs = graph
+                    .get(&slot.key().function)
+                    .map_or(0, |node| node.relation.local_dispatch.len());
+                slot.insert(vec![DispatchDemand::Ignore; inputs]);
+                changed = true;
+            }
+        }
+        if !changed {
+            return answers.remove(&root).unwrap_or_default();
+        }
+    }
+}
+
+fn evaluate_demand_query(
+    graph: &BTreeMap<FunctionId, DemandNode<'_>>,
+    query: &DemandQuery,
+    answers: &BTreeMap<DemandQuery, Vec<DispatchDemand>>,
+    requested: &mut BTreeSet<DemandQuery>,
+    recursion: &DemandRecursionPlan,
+) -> Vec<DispatchDemand> {
+    let Some(node) = graph.get(&query.function) else {
         return Vec::new();
     };
-    let mut slots_of: HashMap<ValueId, Vec<usize>> = HashMap::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate() {
-            if slot >= input_count {
-                continue;
-            }
-            let slots = slots_of.entry(value).or_default();
-            if !slots.contains(&slot) {
-                slots.push(slot);
-            }
+    let recursive = &recursion.functions;
+    let depth_bound = recursion.depth_bound;
+    let mut demands = BTreeMap::new();
+    if query.result != DispatchDemand::Ignore {
+        demands.insert(DemandPort::Return, query.result.clone());
+    }
+    if query.mode == DemandMode::Dispatch {
+        for (input, demand) in node.relation.local_dispatch.iter().cloned().enumerate() {
+            demands.insert(DemandPort::Input(input), demand);
         }
     }
-    let mut edges = Vec::new();
-    for entry in entries {
-        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
-            continue;
-        };
-        let callee_inputs = world.function_arity(*callee);
-        for (arg_index, arg) in args.iter().enumerate() {
-            let Some(callee_slot) = CallInputMode::Direct.semantic_index(callee_inputs, args.len(), arg_index) else {
+    loop {
+        let snapshot = demands.clone();
+        let mut changed = false;
+        for flow in &node.relation.flows {
+            let sink_demand = match &flow.sink {
+                InputFlowSink::FunctionReturn(path) => snapshot
+                    .get(&DemandPort::Return)
+                    .cloned()
+                    .map(|demand| demand_below_path(demand, path)),
+                InputFlowSink::ProtocolInput { callee, input } => {
+                    let result = snapshot.get(&DemandPort::Return).cloned().unwrap_or_default();
+                    if query.mode == DemandMode::Returned && result == DispatchDemand::Ignore {
+                        continue;
+                    }
+                    let child = DemandQuery {
+                        mode: query.mode,
+                        function: *callee,
+                        result: normalize_query_demand(*callee, result, depth_bound, recursive),
+                    };
+                    requested.insert(child.clone());
+                    answers
+                        .get(&child)
+                        .and_then(|inputs| inputs.get(input.input))
+                        .cloned()
+                        .map(|demand| demand_below_path(demand, &input.path))
+                }
+                InputFlowSink::CallableUse { .. } => None,
+            };
+            let Some(sink_demand) = sink_demand else {
                 continue;
             };
-            for slot in slots_of.get(&arg.value).into_iter().flatten().copied() {
-                edges.push(ForwardEdge {
-                    slot,
-                    callee: *callee,
-                    callee_slot,
-                });
-            }
-        }
-    }
-    edges.sort_unstable();
-    edges.dedup();
-    edges
-}
-
-/// The input positions this body's OWN returns are built from: the LOCAL half
-/// of the `returned` axis (fz-kdt.199), before any forwarding join.
-///
-/// fz-kdt.183 asked "does anything on the forwarding chain DISPATCH on this
-/// slot", and a slot nothing dispatches on is freight -- collapsed, so two
-/// callers key one activation. That is sound for a slot the activation only
-/// carries, and unsound the moment the activation RETURNS it: an activation
-/// publishes ONE return, so two callers that reach one activation read one
-/// JOINED return, and a returned position the key erased is a position on
-/// which two callers' answers blend. `loop(0, junk), do: junk` at `[1, 2]` and
-/// at `["a", "b"]` keys one activation whose published return is
-/// `non_empty_list(int) | non_empty_list(binary)`, and `walk({:done, acc}, n)`
-/// -- the tuple-field shape, where the key names the TAG and the return IS the
-/// payload -- does the same one field down.
-///
-/// So a position is on this axis when the returned value IS it, CONTAINS it,
-/// or is a PROJECTION of it:
-///
-/// ```text
-/// fnp f({:done, acc}, _n), do: acc          -- projection: slot 0, field 1
-/// fnp f([], acc, _r), do: {:done, acc}      -- containment: slot 1
-/// fn  loop(0, junk), do: junk               -- identity:    slot 1
-/// ```
-///
-/// Everything else is opaque and contributes nothing: a call result, a closure
-/// call, an arithmetic result, a constant, a constructed lambda's captures
-/// (that is fz-kdt.165's callable axis, not this one). A call whose result is
-/// returned needs no rule here -- the forwarding edge already joins the
-/// callee's whole demand into the caller's slot, and the callee's own returned
-/// axis rides that join.
-///
-/// That join rides `forwarded_inputs`, which is fz-kdt.183's DISPATCH edge
-/// set, and this axis inherits its three holes -- all measured, all cost or
-/// missed cure rather than unsoundness, and all owned by fz-kdt.214. It
-/// ignores a `LoweredTail::DirectCall`'s `dest`, so a slot handed to a call
-/// whose result is DELIVERED and discarded is keyed anyway (a body returning
-/// the constant `0` goes 7 -> 9 executables). A RECONSTRUCTED argument is not
-/// a forward edge, so `outer({:go, acc}, n), do: mid({:go, acc}, n)` splits
-/// `mid` and `inner` while `outer` stays collapsed and re-joins -- two keys
-/// that both publish the join. A PROJECTED argument is not one either, so a
-/// protocol callback handed `acc` rather than a whole parameter stays
-/// uncured.
-fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> Vec<DispatchDemand> {
-    let mut mask = vec![DispatchDemand::Ignore; input_count];
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &body else {
-        return mask;
-    };
-    let origins = input_positions(clauses, entries, input_count);
-    let rebuilt = recursion_supplied_positions(function, entries, &origins, input_count);
-    for (slot, path) in returned_values(&body, clauses, entries)
-        .iter()
-        .filter_map(|value| origins.get(value))
-        .flatten()
-        .filter(|position| !rebuilt.contains(*position))
-    {
-        if let Some(demand) = mask.get_mut(*slot) {
-            demand.join_assign(demand_at_path(path, DispatchDemand::Whole));
-        }
-    }
-    mask
-}
-
-/// The positions the RECURSION itself supplies, as a LEAST FIXPOINT: a
-/// position is supplied when a self-call hands it a value the caller held
-/// nowhere, or held only at positions that are themselves supplied.
-///
-/// The fixpoint is what makes the subtraction sound. An eager rule -- "the
-/// caller did not hold this value at this same position, so the position is
-/// rebuilt" -- misreads a PERMUTATION. `go(n - 1, b, a)` hands each slot a
-/// value the caller held at the OTHER slot, which supplies neither, and the
-/// eager rule marks both (and poisons both, since each is held elsewhere).
-/// Measured: `go(0, a, _b), do: a` at `["x"]` and at `[9]` then blends into
-/// one key publishing `non_empty_list(binary) | non_empty_list(int)`, the
-/// exact defect this axis exists to remove. Under the fixpoint the
-/// permutation's obligations never discharge, the set settles empty, and
-/// `go/3` keys its two users apart.
-///
-/// Keying a genuinely supplied position is a cost with no separation to buy,
-/// and both halves are measured. The cost: an accumulator visits `[]` and then
-/// `list(tau)` within ONE caller; those different denotations correctly intern
-/// apart, so keying it mints one activation per state and k accumulators mint
-/// their product --
-/// `split3/5` 1 -> 8 and `split4/6` 1 -> 16, every body identical. The absent
-/// payoff: the SEED activation is the one every caller passes through and its
-/// inputs are the same `[]` for all of them, so it stays shared and its
-/// published return stays the join no matter how finely the ascended states
-/// key. Measured on `tag(f, list, [])` at two reducers: keying the accumulator
-/// mints three activations and the seed still publishes
-/// `list(binary) | list(int)`.
-///
-/// A position the recursion does NOT supply is constant along the ascent, so
-/// two keys there ARE two callers -- `loop(n, junk)`'s junk, the two slots
-/// `go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
-/// reconstructed tuple hands on unchanged.
-///
-/// Only SELF calls are read, so the subtraction is INCOMPLETE by construction
-/// and the ticket's rule holds with a named exception: a position the
-/// recursion supplies ACROSS a cycle, or through a generated lambda, is not
-/// seen here and is keyed anyway. That is a cost, never an unsoundness -- the
-/// key names more than the return depends on. Measured corpus-wide (604
-/// fixtures, 475 backend dumps, added executables attributed to the function
-/// they key): 36 land on a function that gains a distinct published return and
-/// 91 do not, the 91 dominated by `List.reduce_cont/3` (21),
-/// `List.reduce_while_cont/3` (18), `Range.reduce_while_cont/6` (9) and
-/// `List.reduce_while_step/3` (6) minting `empty_list()`/`list(tau)`
-/// ascent rungs across the cont<->step cycle. Closing it wants the strong
-/// component (`FactKey::CallGraphComponent`, which `DeriveInputDemand` does
-/// not read today) and the reverse call edge, because the rebuild belongs to
-/// the CALLEE's position: fz-kdt.213 owns that removal.
-fn recursion_supplied_positions(
-    function: FunctionId,
-    entries: &[super::super::body::LoweredEntry],
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    input_count: usize,
-) -> HashSet<(usize, Vec<DemandPathStep>)> {
-    let mut rebuilt = HashSet::new();
-    let mut obligations: Vec<RebuildObligation> = Vec::new();
-    let mut constructions: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
-        if let LoweredStep::Tuple { value, items } = step {
-            constructions.insert(*value, items.clone());
-        }
-    }
-    for entry in entries {
-        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
-            continue;
-        };
-        if *callee != function {
-            continue;
-        }
-        for (arg_index, arg) in args.iter().enumerate() {
-            let Some(slot) = CallInputMode::Direct.semantic_index(input_count, args.len(), arg_index) else {
-                continue;
-            };
-            collect_rebuild_obligations(
-                arg.value,
-                slot,
-                &mut Vec::new(),
-                origins,
-                &constructions,
-                &mut obligations,
+            changed |= join_origin_demand(
+                &mut demands,
+                &flow.origin,
+                sink_demand,
+                flow.pullback,
+                recursive.contains(&query.function),
+                depth_bound,
             );
         }
-    }
-    // Least fixpoint: a position is SUPPLIED only when the value handed to it
-    // is not one the caller already held at a position the recursion itself
-    // leaves constant. A permutation (`go(n - 1, b, a)`) hands each slot a
-    // value the caller held elsewhere and supplies nothing, so it settles at
-    // the empty set; a rebuild (`go(n - 1, [h | a], a)`) supplies the built
-    // slot in the first round and drags the slot fed from it in the second.
-    loop {
-        let mut changed = false;
-        for (position, held) in &obligations {
-            if rebuilt.contains(position) {
+        for (callsite, call) in &node.relation.direct_calls {
+            let result = snapshot
+                .get(&DemandPort::CallResult(*callsite))
+                .cloned()
+                .unwrap_or_default();
+            if query.mode == DemandMode::Returned && result == DispatchDemand::Ignore {
                 continue;
             }
-            if held.is_empty() || held.iter().all(|source| rebuilt.contains(source)) {
-                rebuilt.insert(position.clone());
-                changed = true;
+            let child = DemandQuery {
+                mode: query.mode,
+                function: call.callee,
+                result: normalize_query_demand(call.callee, result, depth_bound, recursive),
+            };
+            requested.insert(child.clone());
+            let Some(child_inputs) = answers.get(&child) else {
+                continue;
+            };
+            for (input, bindings) in call.inputs.iter().enumerate() {
+                let Some(input_demand) = child_inputs.get(input).cloned() else {
+                    continue;
+                };
+                for binding in bindings {
+                    changed |= join_origin_demand(
+                        &mut demands,
+                        &binding.origin,
+                        demand_below_path(input_demand.clone(), &binding.path),
+                        binding.pullback,
+                        recursive.contains(&query.function),
+                        depth_bound,
+                    );
+                }
             }
         }
         if !changed {
             break;
         }
     }
-    rebuilt
+    (0..node.relation.local_dispatch.len())
+        .map(|input| demands.remove(&DemandPort::Input(input)).unwrap_or_default())
+        .collect()
 }
 
-/// One "this self-call hands POSITION a value the caller held at HELD" record.
-/// An empty `held` is a value built here, which supplies the position outright.
-type RebuildObligation = ((usize, Vec<DemandPathStep>), Vec<(usize, Vec<DemandPathStep>)>);
-
-fn collect_rebuild_obligations(
-    value: ValueId,
-    slot: usize,
-    path: &mut Vec<DemandPathStep>,
-    origins: &HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    constructions: &HashMap<ValueId, Vec<ValueId>>,
-    obligations: &mut Vec<RebuildObligation>,
-) {
-    let held = origins.get(&value).map(Vec::as_slice).unwrap_or_default();
-    if held
-        .iter()
-        .any(|(held_slot, held_path)| *held_slot == slot && held_path == path)
-    {
-        // The caller already held this exact position, so the recursion carries
-        // it rather than supplying it.
-        return;
-    }
-    obligations.push(((slot, path.clone()), held.to_vec()));
-    // A reconstructed tuple is rebuilt at its own position and no deeper: a
-    // field it hands on unchanged is still carried.
-    for (index, item) in constructions.get(&value).into_iter().flatten().copied().enumerate() {
-        path.push(DemandPathStep::TupleField(index as u32));
-        collect_rebuild_obligations(item, slot, path, origins, constructions, obligations);
-        path.pop();
-    }
-}
-
-/// Every value that names an input position, and which position(s) it names.
-///
-/// A clause parameter names its own slot at the empty path; a projection step
-/// names its source's position one step deeper. One value can name more than
-/// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
-/// `forwarded_inputs` records.
-fn input_positions(
-    clauses: &[super::super::body::LoweredClause],
-    entries: &[super::super::body::LoweredEntry],
-    input_count: usize,
-) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
-    let mut positions: HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> = HashMap::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate() {
-            if slot >= input_count {
-                continue;
-            }
-            let known = positions.entry(value).or_default();
-            let position = (slot, Vec::new());
-            if !known.contains(&position) {
-                known.push(position);
-            }
-        }
-    }
-    // A projection can only deepen a position that is already known, and a
-    // step never names a value defined after it, so one pass in step order is
-    // a fixpoint.
-    let steps = clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()));
-    for step in steps {
-        let (source, value, deeper) = match step {
-            LoweredStep::TupleField { value, source, index } => {
-                (*source, *value, Some(DemandPathStep::TupleField(*index as u32)))
-            }
-            LoweredStep::RequireMapValue { value, source, .. } => (*source, *value, Some(DemandPathStep::MapValue)),
-            LoweredStep::AssertSame { source, value } => (*source, *value, None),
-            LoweredStep::SplitList { source, head, tail } => {
-                extend_positions(&mut positions, *source, *head, Some(DemandPathStep::ListHead));
-                extend_positions(&mut positions, *source, *tail, Some(DemandPathStep::ListTail));
-                continue;
-            }
-            _ => continue,
-        };
-        extend_positions(&mut positions, source, value, deeper);
-    }
-    positions
-}
-
-fn extend_positions(
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    source: ValueId,
-    value: ValueId,
-    deeper: Option<DemandPathStep>,
-) {
-    let Some(source_positions) = positions.get(&source).cloned() else {
-        return;
+fn join_origin_demand(
+    demands: &mut BTreeMap<DemandPort, DispatchDemand>,
+    origin: &InputFlowOrigin,
+    sink_demand: DispatchDemand,
+    pullback: InputPullback,
+    normalize: bool,
+    depth_bound: usize,
+) -> bool {
+    let (port, path) = match origin {
+        InputFlowOrigin::Input(input) => (DemandPort::Input(input.input), input.path.as_ref()),
+        InputFlowOrigin::CallResult { callsite, path } => (DemandPort::CallResult(*callsite), path.as_ref()),
     };
-    let known = positions.entry(value).or_default();
-    for (slot, mut path) in source_positions {
-        if let Some(step) = deeper {
-            path.push(step);
-        }
-        let position = (slot, path);
-        if !known.contains(&position) {
-            known.push(position);
-        }
+    let slot = demands.entry(port).or_default();
+    let before = slot.clone();
+    let origin_demand = match pullback {
+        InputPullback::Structural => demand_at_path(path, sink_demand),
+        InputPullback::WholeOrigin if sink_demand == DispatchDemand::Ignore => DispatchDemand::Ignore,
+        InputPullback::WholeOrigin => demand_at_path(path, DispatchDemand::Whole),
+    };
+    slot.join_assign(origin_demand);
+    if normalize {
+        *slot = normalize_demand(slot.clone(), depth_bound);
     }
+    *slot != before
 }
 
-/// Every value this body can publish as its return, plus everything such a
-/// value is built from.
-///
-/// The roots are the tails that RETURN rather than deliver; a delivered value
-/// counts through its join, so a non-tail `if` whose branches deliver into a
-/// resume entry is followed one hop per join. Construction steps are opened --
-/// `{:done, acc}` returns `acc` -- because an activation's published return
-/// carries the field's type whether or not the tuple around it is new.
-fn returned_values(
-    body: &LoweredBody,
-    clauses: &[super::super::body::LoweredClause],
-    entries: &[super::super::body::LoweredEntry],
-) -> HashSet<ValueId> {
-    let mut returned = HashSet::new();
-    let mut frontier = Vec::new();
-    for entry in entries {
-        if let LoweredTail::Value {
-            value,
-            dest: super::super::body::ControlDestination::Return,
-        } = &entry.tail
-            && returned.insert(*value)
-        {
-            frontier.push(*value);
-        }
-    }
-    let mut built: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    for step in clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-    {
-        match step {
-            LoweredStep::Tuple { value, items } => {
-                built.insert(*value, items.clone());
-            }
-            LoweredStep::List { value, items, tail } => {
-                built.insert(*value, items.iter().copied().chain(*tail).collect());
-            }
-            LoweredStep::Map { value, entries } => {
-                built.insert(*value, entries.iter().map(|(_key, item)| *item).collect());
-            }
-            LoweredStep::MapUpdate { value, base, entries } => {
-                built.insert(
-                    *value,
-                    std::iter::once(*base)
-                        .chain(entries.iter().map(|(_key, item)| *item))
-                        .collect(),
-                );
-            }
-            LoweredStep::Struct { value, fields, .. } => {
-                built.insert(*value, fields.iter().map(|(_name, item)| *item).collect());
-            }
-            _ => {}
-        }
-    }
-    for join in super::super::body::delivered_value_joins(body).into_values() {
-        let sources = join
-            .sources
-            .iter()
-            .filter_map(|source| match source {
-                super::super::body::DeliveredValueSource::LocalValue(value) => Some(*value),
-                super::super::body::DeliveredValueSource::CallsiteReturn(_) => None,
-            })
-            .collect::<Vec<_>>();
-        built.entry(join.value).or_default().extend(sources);
-    }
-    while let Some(value) = frontier.pop() {
-        for source in built.get(&value).into_iter().flatten().copied() {
-            if returned.insert(source) {
-                frontier.push(source);
-            }
-        }
-    }
-    returned
-}
-
-/// The least fixpoint of the input-forwarding graph, projected onto `function`.
-/// Kleene iteration joins each edge's callee demand into its caller slot and
-/// stops when one pass changes nothing.
-fn solve_forwarded_demand(
-    graph: &BTreeMap<FunctionId, DemandNode>,
+fn normalize_query_demand(
     function: FunctionId,
-    axis: impl Fn(&DemandNode) -> &Vec<DispatchDemand>,
-) -> Vec<DispatchDemand> {
-    let mut demand = graph
+    demand: DispatchDemand,
+    depth_bound: usize,
+    recursive: &BTreeSet<FunctionId>,
+) -> DispatchDemand {
+    if recursive.contains(&function) {
+        normalize_demand(demand, depth_bound)
+    } else {
+        demand
+    }
+}
+
+fn normalize_demand(demand: DispatchDemand, depth: usize) -> DispatchDemand {
+    if demand == DispatchDemand::Ignore {
+        return DispatchDemand::Ignore;
+    }
+    if depth == 0 {
+        return DispatchDemand::Whole;
+    }
+    match demand {
+        DispatchDemand::Ignore | DispatchDemand::Whole => demand,
+        DispatchDemand::ListShape(element) => {
+            DispatchDemand::ListShape(Box::new(normalize_demand(*element, depth - 1)))
+        }
+        DispatchDemand::TupleFields(fields) => DispatchDemand::TupleFields(
+            fields
+                .into_iter()
+                .map(|(field, demand)| (field, normalize_demand(demand, depth - 1)))
+                .filter(|(_, demand)| *demand != DispatchDemand::Ignore)
+                .collect(),
+        ),
+    }
+}
+
+#[derive(Debug)]
+struct DemandRecursionPlan {
+    functions: BTreeSet<FunctionId>,
+    depth_bound: usize,
+}
+
+fn demand_recursion_plan(graph: &BTreeMap<FunctionId, DemandNode<'_>>, root: FunctionId) -> DemandRecursionPlan {
+    fn visit(
+        function: FunctionId,
+        edges: &BTreeMap<FunctionId, BTreeSet<FunctionId>>,
+        seen: &mut BTreeSet<FunctionId>,
+        order: &mut Vec<FunctionId>,
+    ) {
+        if !seen.insert(function) {
+            return;
+        }
+        for callee in edges.get(&function).into_iter().flatten() {
+            visit(*callee, edges, seen, order);
+        }
+        order.push(function);
+    }
+
+    fn component_bound(
+        component: usize,
+        weights: &[usize],
+        successors: &[BTreeSet<usize>],
+        memo: &mut [Option<usize>],
+    ) -> usize {
+        if let Some(bound) = memo[component] {
+            return bound;
+        }
+        let downstream = successors[component]
+            .iter()
+            .map(|next| component_bound(*next, weights, successors, memo))
+            .max()
+            .unwrap_or(0);
+        let bound = weights[component].saturating_add(downstream);
+        memo[component] = Some(bound);
+        bound
+    }
+
+    let edges: BTreeMap<FunctionId, BTreeSet<FunctionId>> = graph
         .iter()
-        .map(|(id, node)| (*id, axis(node).clone()))
+        .map(|(function, node)| {
+            (
+                *function,
+                demand_callees(node)
+                    .into_iter()
+                    .filter(|callee| graph.contains_key(callee))
+                    .collect(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
-    loop {
-        let mut changed = false;
-        for (id, node) in graph {
-            for edge in &node.forwards {
-                let Some(inherited) = demand
-                    .get(&edge.callee)
-                    .and_then(|callee| callee.get(edge.callee_slot))
-                    .cloned()
-                else {
-                    continue;
-                };
-                let Some(slot) = demand.get_mut(id).and_then(|mine| mine.get_mut(edge.slot)) else {
-                    continue;
-                };
-                let before = slot.clone();
-                slot.join_assign(inherited);
-                changed |= *slot != before;
+    let mut reverse = graph
+        .keys()
+        .copied()
+        .map(|function| (function, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    for (caller, callees) in &edges {
+        for callee in callees {
+            reverse.entry(*callee).or_default().insert(*caller);
+        }
+    }
+
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    for function in graph.keys().copied() {
+        visit(function, &edges, &mut seen, &mut order);
+    }
+    let mut components = Vec::<BTreeSet<FunctionId>>::new();
+    let mut assigned = BTreeSet::new();
+    for function in order.into_iter().rev() {
+        if assigned.contains(&function) {
+            continue;
+        }
+        let mut members = Vec::new();
+        visit(function, &reverse, &mut assigned, &mut members);
+        components.push(members.into_iter().collect());
+    }
+    let component_of = components
+        .iter()
+        .enumerate()
+        .flat_map(|(component, members)| members.iter().map(move |member| (*member, component)))
+        .collect::<BTreeMap<_, _>>();
+    let functions: BTreeSet<_> = components
+        .iter()
+        .filter(|members| {
+            members.len() > 1
+                || members
+                    .first()
+                    .is_some_and(|member| edges.get(member).is_some_and(|callees| callees.contains(member)))
+        })
+        .flat_map(|members| members.iter().copied())
+        .collect();
+    let mut weights = vec![0usize; components.len()];
+    let mut successors = vec![BTreeSet::new(); components.len()];
+    for (function, node) in graph {
+        let component = component_of[function];
+        weights[component] = weights[component].saturating_add(demand_local_cost(node));
+        for callee in &edges[function] {
+            let target = component_of[callee];
+            if target != component {
+                successors[component].insert(target);
             }
         }
-        if !changed {
-            return demand.remove(&function).unwrap_or_default();
-        }
+    }
+    let root_component = component_of.get(&root).copied();
+    let depth_bound = root_component
+        .map(|component| {
+            component_bound(component, &weights, &successors, &mut vec![None; components.len()]).saturating_add(1)
+        })
+        .unwrap_or(1);
+    DemandRecursionPlan { functions, depth_bound }
+}
+
+fn demand_local_cost(node: &DemandNode<'_>) -> usize {
+    let local_depth = node.relation.local_dispatch.iter().map(demand_depth).max().unwrap_or(0);
+    let flow_cost = node.relation.flows.iter().fold(local_depth, |cost, flow| {
+        cost.saturating_add(origin_path(&flow.origin).len())
+            .saturating_add(sink_path(&flow.sink).len())
+            .saturating_add(1)
+    });
+    node.relation
+        .direct_calls
+        .values()
+        .flat_map(|call| call.inputs.iter().flatten())
+        .fold(flow_cost, |cost, binding| {
+            cost.saturating_add(origin_path(&binding.origin).len())
+                .saturating_add(binding.path.len())
+                .saturating_add(1)
+        })
+}
+
+fn demand_callees(node: &DemandNode<'_>) -> BTreeSet<FunctionId> {
+    demand_call_targets(node)
+        .into_iter()
+        .map(|(_, callee)| callee)
+        .collect()
+}
+
+fn demand_call_targets(node: &DemandNode<'_>) -> BTreeSet<(Option<CallSiteId>, FunctionId)> {
+    node.relation
+        .direct_calls
+        .iter()
+        .map(|(callsite, call)| (Some(*callsite), call.callee))
+        .chain(node.relation.flows.iter().filter_map(|flow| match &flow.sink {
+            InputFlowSink::ProtocolInput { callee, .. } => Some((None, *callee)),
+            _ => None,
+        }))
+        .collect()
+}
+
+fn origin_path(origin: &InputFlowOrigin) -> &[InputPathStep] {
+    match origin {
+        InputFlowOrigin::Input(input) => &input.path,
+        InputFlowOrigin::CallResult { path, .. } => path,
+    }
+}
+
+fn sink_path(sink: &InputFlowSink) -> &[InputPathStep] {
+    match sink {
+        InputFlowSink::FunctionReturn(path) | InputFlowSink::CallableUse { path, .. } => path,
+        InputFlowSink::ProtocolInput { input, .. } => &input.path,
+    }
+}
+
+fn demand_depth(demand: &DispatchDemand) -> usize {
+    match demand {
+        DispatchDemand::Ignore | DispatchDemand::Whole => 0,
+        DispatchDemand::ListShape(element) => 1 + demand_depth(element),
+        DispatchDemand::TupleFields(fields) => 1 + fields.values().map(demand_depth).max().unwrap_or(0),
     }
 }
 
@@ -1066,17 +1032,8 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum DemandPathStep {
-    TupleField(u32),
-    ListHead,
-    ListTail,
-    MapValue,
-    BitstringField,
-}
-
 /// What THIS body's own entry dispatch asks about each of its inputs: the LOCAL
-/// half of `InputDemand`, before any forwarding join.
+/// projection of `InputDemand`, before any forwarding join.
 fn local_dispatch_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; plan.input_count];
     for arm in &plan.matrix.arms {
@@ -1119,36 +1076,66 @@ fn mark_subject_demand(subjects: &[Subject], subject: SubjectId, demand: Dispatc
     }
 }
 
-fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<DemandPathStep>)> {
+fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<InputPathStep>)> {
     let subject = subjects.get(subject.0 as usize)?;
     match &subject.source {
         SubjectSource::Input { ordinal } => Some((*ordinal, Vec::new())),
         SubjectSource::Projection(projection) => {
             let (ordinal, mut path) = subject_path(subjects, projection.source)?;
             match &projection.kind {
-                ProjectionKind::TupleField(field) => path.push(DemandPathStep::TupleField(*field)),
-                ProjectionKind::ListHead => path.push(DemandPathStep::ListHead),
-                ProjectionKind::ListTail => path.push(DemandPathStep::ListTail),
-                ProjectionKind::MapValue { .. } => path.push(DemandPathStep::MapValue),
-                ProjectionKind::BitstringField(_) => path.push(DemandPathStep::BitstringField),
+                ProjectionKind::TupleField(field) => path.push(InputPathStep::TupleField(*field)),
+                ProjectionKind::ListHead => path.push(InputPathStep::ListHead),
+                ProjectionKind::ListTail => path.push(InputPathStep::ListTail),
+                ProjectionKind::MapValue { key } => path.push(InputPathStep::MapValue(MapSelector::Known(
+                    InputMapKey::from_ground(key),
+                ))),
+                ProjectionKind::BitstringField(index) => path.push(InputPathStep::BitstringField(
+                    super::super::keying::BitstringSelector::Known(*index),
+                )),
             }
             Some((ordinal, path))
         }
     }
 }
 
-fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
+fn demand_at_path(path: &[InputPathStep], demand: DispatchDemand) -> DispatchDemand {
+    if demand == DispatchDemand::Ignore {
+        return DispatchDemand::Ignore;
+    }
     let Some((head, tail)) = path.split_first() else {
         return demand;
     };
     match head {
-        DemandPathStep::TupleField(field) => {
+        InputPathStep::TupleField(field) => {
             let mut fields = BTreeMap::new();
             fields.insert(*field, demand_at_path(tail, demand));
             DispatchDemand::TupleFields(fields)
         }
-        DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
-        DemandPathStep::ListTail | DemandPathStep::MapValue | DemandPathStep::BitstringField => DispatchDemand::Whole,
+        InputPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
+        InputPathStep::ListTail => demand_at_path(tail, demand),
+        InputPathStep::MapValue(_)
+        | InputPathStep::MapKey(_)
+        | InputPathStep::MapRemainder(_)
+        | InputPathStep::BitstringField(_) => DispatchDemand::Whole,
+    }
+}
+
+fn demand_below_path(demand: DispatchDemand, path: &[InputPathStep]) -> DispatchDemand {
+    let Some((head, tail)) = path.split_first() else {
+        return demand;
+    };
+    match (demand, head) {
+        (DispatchDemand::Ignore, _) => DispatchDemand::Ignore,
+        (DispatchDemand::Whole, _) => DispatchDemand::Whole,
+        (DispatchDemand::TupleFields(mut fields), InputPathStep::TupleField(field)) => fields
+            .remove(field)
+            .map(|field_demand| demand_below_path(field_demand, tail))
+            .unwrap_or(DispatchDemand::Ignore),
+        (DispatchDemand::ListShape(element), InputPathStep::ListHead) => demand_below_path(*element, tail),
+        (DispatchDemand::ListShape(element), InputPathStep::ListTail) => {
+            demand_below_path(DispatchDemand::ListShape(element), tail)
+        }
+        (DispatchDemand::TupleFields(_) | DispatchDemand::ListShape(_), _) => DispatchDemand::Ignore,
     }
 }
 
@@ -1169,6 +1156,1527 @@ fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty
             }
             for guard in &dispatch.plan.guards {
                 mark_guard_inputs(&dispatch.plan, guard, mask);
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod input_flow_tests {
+    use super::super::super::body::{
+        CallArg, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredMapKey,
+        ValueId,
+    };
+    use super::super::super::input_flow::{
+        ValueLineage, ValueTransfer, collect_value_transfers, compose_paths, embed_lineage, map_entry_transfers,
+    };
+    use super::super::super::keying::{DirectCallFlow, InputBinding};
+    use super::super::super::module_interface::{InterfaceCallableKind, ModuleInterface, ModuleInterfaceCallable};
+    use super::super::super::protocol::{ProtocolCallbackImpl, ProtocolDispatchArm};
+    use super::*;
+    use crate::compiler2::{FactUse, Job};
+    use crate::ground_value::GroundValue;
+    use crate::source::Span;
+
+    fn known(name: &str, value: u32) -> LoweredMapKey {
+        LoweredMapKey {
+            value: ValueId::from_u32(value),
+            literal: Some(GroundValue::Atom(name.to_string())),
+        }
+    }
+
+    fn dynamic(value: u32) -> LoweredMapKey {
+        LoweredMapKey {
+            value: ValueId::from_u32(value),
+            literal: None,
+        }
+    }
+
+    fn binding(origin: InputFlowOrigin, path: Box<[InputPathStep]>) -> InputBinding {
+        InputBinding {
+            origin,
+            path,
+            pullback: InputPullback::Structural,
+        }
+    }
+
+    fn dependency_binding(origin: InputFlowOrigin, path: Box<[InputPathStep]>) -> InputBinding {
+        InputBinding {
+            origin,
+            path,
+            pullback: InputPullback::WholeOrigin,
+        }
+    }
+
+    fn direct_call(callee: FunctionId, inputs: Vec<BTreeSet<InputBinding>>) -> DirectCallFlow {
+        DirectCallFlow {
+            callee,
+            inputs: inputs.into_boxed_slice(),
+        }
+    }
+
+    #[test]
+    fn path_composition_preserves_prefixes_typed_intersections_and_remainders() {
+        let a = InputMapKey::Atom("a".to_string());
+        let b = InputMapKey::Atom("b".to_string());
+        assert_eq!(
+            compose_paths(
+                &[InputPathStep::TupleField(1)],
+                &[InputPathStep::TupleField(1), InputPathStep::ListHead],
+            ),
+            Some((vec![InputPathStep::ListHead].into_boxed_slice(), Box::default())),
+        );
+        assert_eq!(
+            compose_paths(
+                &[InputPathStep::MapRemainder(vec![a.clone()].into_boxed_slice())],
+                &[InputPathStep::MapValue(MapSelector::Known(b.clone()))],
+            ),
+            Some((
+                vec![InputPathStep::MapValue(MapSelector::Known(b))].into_boxed_slice(),
+                Box::default(),
+            )),
+        );
+        assert_eq!(
+            compose_paths(
+                &[InputPathStep::MapRemainder(vec![a.clone()].into_boxed_slice())],
+                &[InputPathStep::MapValue(MapSelector::Known(a))],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn every_path_transform_preserves_bottom_demand() {
+        let key = InputMapKey::Atom("a".to_string());
+        let paths = [
+            InputPathStep::TupleField(0),
+            InputPathStep::ListHead,
+            InputPathStep::ListTail,
+            InputPathStep::MapValue(MapSelector::Known(key.clone())),
+            InputPathStep::MapKey(MapSelector::Dynamic),
+            InputPathStep::MapRemainder(vec![key].into_boxed_slice()),
+            InputPathStep::BitstringField(super::super::super::keying::BitstringSelector::Dynamic),
+        ];
+        for path in paths {
+            assert_eq!(demand_at_path(&[path], DispatchDemand::Ignore), DispatchDemand::Ignore);
+        }
+    }
+
+    #[test]
+    fn protocol_flow_publication_is_typed_staged_deduplicated_and_order_independent() {
+        let mut world = World::new();
+        let protocol = super::super::super::identity::ModuleId::GLOBAL;
+        let callback = world.reference_function(protocol, "run", 2);
+        let first_module = world.reference_module("A".to_string());
+        let second_module = world.reference_module("B".to_string());
+        let absent_module = world.reference_module("U".to_string());
+        let first = world.reference_function(first_module, "run", 2);
+        let second = world.reference_function(second_module, "run", 1);
+        let arm = |target, function| ProtocolDispatchArm {
+            target,
+            callbacks: HashMap::from([(
+                callback,
+                ProtocolCallbackImpl {
+                    function,
+                    owner_module: target,
+                },
+            )]),
+        };
+        let relation = |arms| protocol_input_flow_relation(&world, callback, &ProtocolDispatch { arms });
+        let expected = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                    sink: InputFlowSink::ProtocolInput {
+                        callee: first,
+                        input: InputPosition::root(0),
+                    },
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition::root(1)),
+                    sink: InputFlowSink::ProtocolInput {
+                        callee: first,
+                        input: InputPosition::root(1),
+                    },
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                    sink: InputFlowSink::ProtocolInput {
+                        callee: second,
+                        input: InputPosition::root(0),
+                    },
+                    pullback: InputPullback::Structural,
+                },
+            ]),
+            ..InputFlowRelation::default()
+        };
+        let first_stage = relation(vec![arm(first_module, first)]);
+        let second_stage = relation(vec![arm(first_module, first), arm(second_module, second)]);
+        let empty_stage = relation(Vec::new());
+        let duplicate_stage = relation(vec![
+            arm(second_module, second),
+            arm(first_module, first),
+            arm(first_module, first),
+        ]);
+        let absent_stage = relation(vec![
+            arm(second_module, second),
+            arm(first_module, first),
+            arm(first_module, first),
+            ProtocolDispatchArm {
+                target: absent_module,
+                callbacks: HashMap::new(),
+            },
+        ]);
+        assert_eq!(
+            first_stage,
+            InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+                flows: expected
+                    .flows
+                    .iter()
+                    .filter(|flow| {
+                        matches!(flow.sink, InputFlowSink::ProtocolInput { callee, .. } if callee == first)
+                    })
+                    .cloned()
+                    .collect(),
+                ..InputFlowRelation::default()
+            },
+        );
+        assert_ne!(
+            first_stage, second_stage,
+            "a newly reachable implementation adds exact typed edges"
+        );
+        assert!(
+            first_stage.flows.is_subset(&second_stage.flows),
+            "settled protocol dispatch grows monotonically as lazy implementations become reachable"
+        );
+        assert_eq!(second_stage, expected);
+        assert_eq!(duplicate_stage, expected);
+        assert_eq!(absent_stage, expected);
+        assert_eq!(
+            relation(vec![arm(second_module, second), arm(first_module, first)]),
+            expected,
+        );
+        assert_eq!(
+            relation(vec![ProtocolDispatchArm {
+                target: first_module,
+                callbacks: HashMap::new(),
+            }]),
+            InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+                ..InputFlowRelation::default()
+            },
+        );
+
+        let fact = FactKey::InputFlow(callback);
+        let writer = Job::DeriveInputFlow(callback);
+        let reader = Job::DeriveInputDemand(callback);
+        world.define_protocol_callback(&callback, &protocol);
+        let dispatch_fact = FactKey::ProtocolDispatch(protocol);
+        let module_fact = FactKey::ModuleDefined(protocol);
+        let module_job = Job::DefineModule(protocol);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let publish = |world: &mut World, dispatch: ProtocolDispatch, expected: &InputFlowRelation| {
+            let _ = world.complete_job(
+                reader.clone(),
+                JobEffects {
+                    reads: vec![FactUse::current(fact.clone())],
+                    ..JobEffects::default()
+                },
+            );
+            let first_module_publication = !world.has_fact(&module_fact);
+            let dispatch_changed = world.define_protocol_dispatch(protocol, dispatch);
+            let mut changed = dispatch_changed
+                .then_some(dispatch_fact.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
+            if first_module_publication {
+                changed.push(module_fact.clone());
+            }
+            let _ = world.complete_job(
+                module_job.clone(),
+                JobEffects {
+                    outputs: vec![module_fact.clone(), dispatch_fact.clone()],
+                    changed,
+                    ..JobEffects::default()
+                },
+            );
+            let effects = derive_input_flow(world, &tel, callback).expect("protocol InputFlow derivation");
+            let relation_changed = effects.changed == vec![fact.clone()];
+            assert_eq!(world.input_flow(callback), Some(expected));
+            let completion = world.complete_job(writer.clone(), effects);
+            (
+                relation_changed,
+                world.fact_revision(&fact).expect("published InputFlow revision"),
+                completion.wakes.iter().filter(|wake| wake.job == reader).count(),
+                world
+                    .input_flow(callback)
+                    .expect("published InputFlow")
+                    .local_dispatch
+                    .as_ptr(),
+            )
+        };
+        let (empty_changed, empty_revision, empty_wakes, _) =
+            publish(&mut world, ProtocolDispatch { arms: Vec::new() }, &empty_stage);
+        let (first_changed, first_revision, first_wakes, _) = publish(
+            &mut world,
+            ProtocolDispatch {
+                arms: vec![arm(first_module, first)],
+            },
+            &first_stage,
+        );
+        let (second_changed, second_revision, second_wakes, retained) = publish(
+            &mut world,
+            ProtocolDispatch {
+                arms: vec![arm(first_module, first), arm(second_module, second)],
+            },
+            &second_stage,
+        );
+        assert_eq!((empty_changed, first_changed, second_changed), (true, true, true));
+        assert_eq!((empty_wakes, first_wakes, second_wakes), (1, 1, 1));
+        assert!(empty_revision < first_revision && first_revision < second_revision);
+
+        let (duplicate_changed, duplicate_revision, duplicate_wakes, duplicate_allocation) = publish(
+            &mut world,
+            ProtocolDispatch {
+                arms: vec![
+                    arm(second_module, second),
+                    arm(first_module, first),
+                    arm(first_module, first),
+                ],
+            },
+            &duplicate_stage,
+        );
+        let pending_before = world.work_graph.pending_jobs();
+        let (absent_changed, absent_revision, absent_wakes, absent_allocation) = publish(
+            &mut world,
+            ProtocolDispatch {
+                arms: vec![
+                    arm(second_module, second),
+                    arm(first_module, first),
+                    arm(first_module, first),
+                    ProtocolDispatchArm {
+                        target: absent_module,
+                        callbacks: HashMap::new(),
+                    },
+                ],
+            },
+            &absent_stage,
+        );
+        assert_eq!((duplicate_changed, absent_changed), (false, false));
+        assert_eq!((duplicate_wakes, absent_wakes), (0, 0));
+        assert_eq!(
+            (duplicate_revision, absent_revision),
+            (second_revision, second_revision)
+        );
+        assert_eq!((duplicate_allocation, absent_allocation), (retained, retained));
+        assert_eq!(world.work_graph.pending_jobs(), pending_before);
+    }
+
+    #[test]
+    fn provider_boundary_relation_is_edge_empty_with_an_arity_sized_ignore_mask() {
+        let mut world = World::new();
+        let module = world.reference_module("External".to_string());
+        let function = world.reference_function(module, "call", 2);
+        let reference = world.function_ref(function).clone();
+        world.submit_module_interface(
+            "External".to_string(),
+            ModuleInterface::new(vec![ModuleInterfaceCallable {
+                function,
+                reference,
+                kind: InterfaceCallableKind::PublicFunction,
+                variadic: false,
+            }]),
+        );
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let _ = super::super::super::drive::ExecutionContext::new(&mut world, &tel).drive();
+        assert!(world.function_is_provider_boundary(function, &mut Vec::new()));
+
+        let effects = derive_input_flow(&mut world, &tel, function).expect("provider InputFlow derivation");
+
+        assert_eq!(effects.outputs, vec![FactKey::InputFlow(function)]);
+        assert_eq!(
+            world.input_flow(function),
+            Some(&InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+                ..InputFlowRelation::default()
+            }),
+        );
+    }
+
+    fn retained_provider_decisions() -> (
+        World,
+        super::super::super::identity::ModuleId,
+        FunctionId,
+        HashSet<super::super::super::drive::Job>,
+    ) {
+        let mut world = World::new();
+        let module = world.reference_module("External".to_string());
+        let function = world.reference_function(module, "call", 2);
+        let reference = world.function_ref(function).clone();
+        world.submit_module_interface(
+            "External".to_string(),
+            ModuleInterface::new(vec![ModuleInterfaceCallable {
+                function,
+                reference,
+                kind: InterfaceCallableKind::PublicFunction,
+                variadic: false,
+            }]),
+        );
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let _ = super::super::super::drive::ExecutionContext::new(&mut world, &tel).drive();
+        let provider_reads = [
+            FactKey::ModuleDefined(module),
+            FactKey::FunctionDefined(function),
+            FactKey::ModuleInterface(module),
+        ]
+        .map(super::super::super::facts::FactUse::current)
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+        let flow_producer = super::super::super::drive::Job::DeriveInputFlow(function);
+        let effects = derive_input_flow(&mut world, &tel, function).expect("provider InputFlow derivation");
+        assert_eq!(effects.reads.iter().cloned().collect::<HashSet<_>>(), provider_reads);
+        let _ = world.complete_job(flow_producer.clone(), effects);
+
+        let static_producer = super::super::super::drive::Job::DeriveStaticCallees(function);
+        let effects = derive_static_callees(&mut world, &tel, function).expect("provider static-edge derivation");
+        assert_eq!(effects.reads.iter().cloned().collect::<HashSet<_>>(), provider_reads);
+        let _ = world.complete_job(static_producer.clone(), effects);
+
+        let component_producer = super::super::super::drive::Job::DeriveCallGraphComponent(function);
+        let effects = derive_call_graph_component(&mut world, function).expect("provider component derivation");
+        assert_eq!(effects.reads.iter().cloned().collect::<HashSet<_>>(), provider_reads);
+        let _ = world.complete_job(component_producer.clone(), effects);
+
+        let caller = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "caller", 0);
+        world.define_lowered_body(
+            caller,
+            LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: vec![LoweredEntry {
+                    span: Span::DUMMY,
+                    origin: ControlEntryOrigin::Clause,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: Vec::new(),
+                    tail: LoweredTail::DirectCall {
+                        value: ValueId::from_u32(0),
+                        callsite: CallSiteId::from_u32(0),
+                        callee: function,
+                        args: Vec::new(),
+                        dest: ControlDestination::Return,
+                    },
+                }],
+                generated: Vec::new(),
+            },
+        );
+        let lowered = FactKey::LoweredBody(caller);
+        let _ = world.complete_job(
+            super::super::super::drive::Job::LowerFunction(caller),
+            JobEffects {
+                outputs: vec![lowered.clone()],
+                changed: vec![lowered],
+                ..JobEffects::default()
+            },
+        );
+        let target_producer = super::super::super::drive::Job::DeriveStaticCallees(caller);
+        let effects = derive_static_callees(&mut world, &tel, caller).expect("caller static-edge derivation");
+        assert!(provider_reads.iter().all(|read| effects.reads.contains(read)));
+        let _ = world.complete_job(target_producer.clone(), effects);
+
+        (
+            world,
+            module,
+            function,
+            HashSet::from([flow_producer, static_producer, component_producer, target_producer]),
+        )
+    }
+
+    #[test]
+    fn every_provider_classification_reacts_to_each_mutable_deciding_fact() {
+        for movement in ["module", "function", "interface"] {
+            let (mut world, module, function, producers) = retained_provider_decisions();
+            let (job, fact) = match movement {
+                "module" => (
+                    super::super::super::drive::Job::DefineModule(module),
+                    FactKey::ModuleDefined(module),
+                ),
+                "function" => (
+                    super::super::super::drive::Job::DefineFunction(function),
+                    FactKey::FunctionDefined(function),
+                ),
+                "interface" => {
+                    assert!(world.define_module_interface(module, ModuleInterface::default()));
+                    (
+                        super::super::super::drive::Job::DefineModuleInterface(module),
+                        FactKey::ModuleInterface(module),
+                    )
+                }
+                _ => unreachable!(),
+            };
+            let completion = world.complete_job(
+                job,
+                JobEffects {
+                    outputs: vec![fact.clone()],
+                    changed: vec![fact],
+                    ..JobEffects::default()
+                },
+            );
+            assert_eq!(
+                completion
+                    .wakes
+                    .iter()
+                    .map(|wake| wake.job.clone())
+                    .collect::<HashSet<_>>(),
+                producers,
+                "{movement} movement must invalidate every retained provider classification"
+            );
+        }
+    }
+
+    #[test]
+    fn global_source_and_runtime_functions_add_no_provider_classification_reads() {
+        let mut world = World::new();
+        let global = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "global", 0);
+        let runtime = world.reference_module("Utf8".to_string());
+        let runtime_function = world.reference_function(runtime, "valid?", 1);
+        let source = world.reference_module("Source".to_string());
+        let source_function = world.reference_function(source, "run", 0);
+        let code = world.submit_code(Some("source.fz".to_string()), String::new());
+        world.index_module_body(
+            source,
+            code,
+            super::super::super::identity::ModuleId::GLOBAL,
+            "Source".to_string(),
+            super::super::super::QuotedSourceRoot::empty(),
+            super::super::super::quoted_surface::ScopeSurface {
+                attrs: Vec::new(),
+                forms: Vec::new(),
+            },
+        );
+
+        for function in [global, source_function, runtime_function] {
+            let mut reads = Vec::new();
+            assert!(!world.function_is_provider_boundary(function, &mut reads));
+            assert!(reads.is_empty());
+        }
+    }
+
+    #[test]
+    fn pending_static_callees_retains_the_external_classification_reads() {
+        let mut world = World::new();
+        let module = world.reference_module("External".to_string());
+        let function = world.reference_function(module, "call", 1);
+        let reference = world.function_ref(function).clone();
+        world.submit_module_interface(
+            "External".to_string(),
+            ModuleInterface::new(vec![ModuleInterfaceCallable {
+                function,
+                reference,
+                kind: InterfaceCallableKind::PublicFunction,
+                variadic: false,
+            }]),
+        );
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+
+        let effects = derive_static_callees(&mut world, &tel, function).expect("pending static-edge derivation");
+
+        assert_eq!(
+            effects.reads,
+            [
+                FactKey::ModuleDefined(module),
+                FactKey::FunctionDefined(function),
+                FactKey::ModuleInterface(module),
+            ]
+            .map(super::super::super::facts::FactUse::current)
+        );
+        assert_eq!(
+            effects.waits,
+            vec![super::super::super::facts::FactUse::current(FactKey::ModuleDefined(
+                module
+            ))]
+        );
+        assert!(effects.outputs.is_empty());
+    }
+
+    #[test]
+    fn input_flow_next_rung_waits_retain_the_upstream_fact_they_observed() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+
+        let mut protocol_world = World::new();
+        let protocol = super::super::super::identity::ModuleId::GLOBAL;
+        let callback = protocol_world.reference_function(protocol, "call", 1);
+        protocol_world.define_protocol_callback(&callback, &protocol);
+        let module = FactKey::ModuleDefined(protocol);
+        let module_job = super::super::super::drive::Job::DefineModule(protocol);
+        let _ = protocol_world.complete_job(
+            module_job.clone(),
+            JobEffects {
+                outputs: vec![module.clone()],
+                changed: vec![module.clone()],
+                ..JobEffects::default()
+            },
+        );
+        let callback_job = super::super::super::drive::Job::DeriveInputFlow(callback);
+        let effects = derive_input_flow(&mut protocol_world, &tel, callback).expect("protocol InputFlow wait");
+        assert_eq!(
+            effects.reads,
+            vec![super::super::super::facts::FactUse::current(module)]
+        );
+        assert_eq!(
+            effects.waits,
+            vec![super::super::super::facts::FactUse::current(FactKey::ProtocolDispatch(
+                protocol
+            ))]
+        );
+        let _ = protocol_world.complete_job(callback_job.clone(), effects);
+        let retracted = protocol_world.complete_job(module_job, JobEffects::default());
+        assert!(retracted.wakes.iter().any(|wake| wake.job == callback_job));
+
+        let mut ordinary_world = World::new();
+        let function = ordinary_world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "body", 0);
+        ordinary_world.define_lowered_body(
+            function,
+            LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+        );
+        let lowered = FactKey::LoweredBody(function);
+        let lowered_job = super::super::super::drive::Job::LowerFunction(function);
+        let _ = ordinary_world.complete_job(
+            lowered_job.clone(),
+            JobEffects {
+                outputs: vec![lowered.clone()],
+                changed: vec![lowered.clone()],
+                ..JobEffects::default()
+            },
+        );
+        let flow_job = super::super::super::drive::Job::DeriveInputFlow(function);
+        let effects = derive_input_flow(&mut ordinary_world, &tel, function).expect("ordinary InputFlow wait");
+        assert_eq!(
+            effects.reads,
+            vec![super::super::super::facts::FactUse::current(lowered)]
+        );
+        assert_eq!(
+            effects.waits,
+            vec![super::super::super::facts::FactUse::current(FactKey::EntryDispatch(
+                function
+            ))]
+        );
+        let _ = ordinary_world.complete_job(flow_job.clone(), effects);
+        let retracted = ordinary_world.complete_job(lowered_job, JobEffects::default());
+        assert!(retracted.wakes.iter().any(|wake| wake.job == flow_job));
+    }
+
+    #[test]
+    fn ordinary_missing_body_waits_for_lowering_instead_of_publishing_empty_flow() {
+        let mut world = World::new();
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "pending", 1);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+
+        let effects = derive_input_flow(&mut world, &tel, function).expect("missing body InputFlow demand");
+
+        assert_eq!(
+            effects.waits,
+            vec![super::super::super::facts::FactUse::current(FactKey::LoweredBody(
+                function
+            ))]
+        );
+        assert!(effects.reads.is_empty());
+        assert!(effects.outputs.is_empty());
+        assert!(effects.changed.is_empty());
+        assert_eq!(world.input_flow(function), None);
+    }
+
+    #[test]
+    fn list_reconstruction_assigns_each_item_and_tail_one_exact_path() {
+        let mut definitions = HashMap::new();
+        let mut aliases = HashMap::new();
+        collect_value_transfers(
+            &LoweredStep::List {
+                value: ValueId::from_u32(9),
+                items: vec![ValueId::from_u32(1), ValueId::from_u32(2)],
+                tail: Some(ValueId::from_u32(3)),
+            },
+            &mut definitions,
+            &mut aliases,
+        );
+        let transfers = definitions.get(&ValueId::from_u32(9)).expect("list definition");
+        let paths = transfers
+            .iter()
+            .filter_map(|transfer| match transfer {
+                ValueTransfer::Embed { value, path } => Some((*value, path.clone())),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            paths,
+            BTreeSet::from([
+                (ValueId::from_u32(1), vec![InputPathStep::ListHead].into_boxed_slice()),
+                (
+                    ValueId::from_u32(2),
+                    vec![InputPathStep::ListTail, InputPathStep::ListHead].into_boxed_slice(),
+                ),
+                (
+                    ValueId::from_u32(3),
+                    vec![InputPathStep::ListTail, InputPathStep::ListTail].into_boxed_slice(),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn map_writes_are_last_writer_and_dynamic_edges_exclude_later_known_keys() {
+        let a = InputMapKey::Atom("a".to_string());
+        let transfers = map_entry_transfers(&[
+            (known("a", 1), ValueId::from_u32(11)),
+            (dynamic(2), ValueId::from_u32(12)),
+            (known("a", 3), ValueId::from_u32(13)),
+        ]);
+        assert!(!transfers.iter().any(|transfer| match transfer {
+            ValueTransfer::Embed { value, .. } => *value == ValueId::from_u32(11),
+            _ => false,
+        }));
+        assert!(transfers.iter().any(|transfer| match transfer {
+            ValueTransfer::Embed { value, path } if *value == ValueId::from_u32(12) => {
+                path.as_ref()
+                    == [InputPathStep::MapValue(MapSelector::DynamicExcept(
+                        vec![a.clone()].into_boxed_slice(),
+                    ))]
+            }
+            _ => false,
+        }));
+        assert!(transfers.iter().any(|transfer| match transfer {
+            ValueTransfer::EmbedWholeDependency { value, path } if *value == ValueId::from_u32(2) => {
+                path.as_ref()
+                    == [InputPathStep::MapKey(MapSelector::DynamicExcept(
+                        vec![a.clone()].into_boxed_slice(),
+                    ))]
+            }
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn nested_map_update_remainders_union_and_known_overwrites_disappear() {
+        let a = InputMapKey::Atom("a".to_string());
+        let b = InputMapKey::Atom("b".to_string());
+        let lineage = ValueLineage {
+            origin: InputFlowOrigin::Input(InputPosition::root(0)),
+            destination: vec![InputPathStep::MapRemainder(vec![a.clone()].into_boxed_slice())].into_boxed_slice(),
+            pullback: InputPullback::Structural,
+        };
+        let nested = embed_lineage(
+            lineage,
+            &[InputPathStep::MapRemainder(vec![b.clone()].into_boxed_slice())],
+        )
+        .expect("the retained base remainder survives");
+        assert_eq!(
+            nested.destination.as_ref(),
+            [InputPathStep::MapRemainder(vec![a.clone(), b].into_boxed_slice())]
+        );
+        let overwritten = ValueLineage {
+            origin: InputFlowOrigin::Input(InputPosition::root(0)),
+            destination: vec![InputPathStep::MapValue(MapSelector::Known(a.clone()))].into_boxed_slice(),
+            pullback: InputPullback::Structural,
+        };
+        assert!(embed_lineage(overwritten, &[InputPathStep::MapRemainder(vec![a].into_boxed_slice())]).is_none());
+    }
+
+    #[test]
+    fn demand_solver_absorbs_recursive_structural_growth_in_the_finite_lattice() {
+        let function = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let callsite = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+            direct_calls: BTreeMap::from([(
+                callsite,
+                direct_call(
+                    function,
+                    vec![BTreeSet::from([binding(
+                        InputFlowOrigin::Input(InputPosition {
+                            input: 0,
+                            path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                        }),
+                        Box::default(),
+                    )])],
+                ),
+            )]),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition {
+                        input: 0,
+                        path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                    }),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::CallResult {
+                        callsite,
+                        path: Box::default(),
+                    },
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+            ]),
+        };
+        let graph = BTreeMap::from([(function, DemandNode { relation: &relation })]);
+        assert_eq!(
+            solve_demand_query_graph(&graph, function, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::TupleFields(BTreeMap::from([(
+                0,
+                DispatchDemand::Whole,
+            )]))]
+        );
+    }
+
+    #[test]
+    fn a_recursive_reconstructed_child_preserves_its_exact_return_path() {
+        let function = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let callsite = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let field = vec![InputPathStep::TupleField(0)].into_boxed_slice();
+        let relation = InputFlowRelation {
+            local_dispatch: Box::from([DispatchDemand::Ignore]),
+            direct_calls: BTreeMap::from([(
+                callsite,
+                direct_call(
+                    function,
+                    vec![BTreeSet::from([binding(
+                        InputFlowOrigin::Input(InputPosition {
+                            input: 0,
+                            path: field.clone(),
+                        }),
+                        field,
+                    )])],
+                ),
+            )]),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition {
+                        input: 0,
+                        path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                    }),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::CallResult {
+                        callsite,
+                        path: Box::default(),
+                    },
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+            ]),
+        };
+        let graph = BTreeMap::from([(function, DemandNode { relation: &relation })]);
+
+        assert_eq!(
+            solve_demand_query_graph(&graph, function, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::TupleFields(BTreeMap::from([(
+                0,
+                DispatchDemand::Whole,
+            )]))]
+        );
+    }
+
+    #[test]
+    fn a_locally_supplied_recursive_argument_cannot_hide_a_whole_base_return() {
+        let function = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let callsite = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let relation = InputFlowRelation {
+            local_dispatch: Box::from([DispatchDemand::Ignore]),
+            direct_calls: BTreeMap::from([(callsite, direct_call(function, vec![BTreeSet::new()]))]),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::CallResult {
+                        callsite,
+                        path: Box::default(),
+                    },
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+            ]),
+        };
+        let graph = BTreeMap::from([(function, DemandNode { relation: &relation })]);
+
+        assert_eq!(
+            solve_demand_query_graph(&graph, function, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::Whole]
+        );
+    }
+
+    #[test]
+    fn a_local_recursive_call_cannot_hide_a_peer_call_that_carries_the_root() {
+        let function = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let local = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let carried = CallSiteId::new(1, crate::source::Span::DUMMY);
+        let result_flow = |callsite| InputFlow {
+            origin: InputFlowOrigin::CallResult {
+                callsite,
+                path: Box::default(),
+            },
+            sink: InputFlowSink::FunctionReturn(Box::default()),
+            pullback: InputPullback::Structural,
+        };
+        let relation = InputFlowRelation {
+            local_dispatch: Box::from([DispatchDemand::Ignore]),
+            direct_calls: BTreeMap::from([
+                (local, direct_call(function, vec![BTreeSet::new()])),
+                (
+                    carried,
+                    direct_call(
+                        function,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition::root(0)),
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+            ]),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+                result_flow(local),
+                result_flow(carried),
+            ]),
+        };
+        let graph = BTreeMap::from([(function, DemandNode { relation: &relation })]);
+
+        assert_eq!(
+            solve_demand_query_graph(&graph, function, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::Whole]
+        );
+    }
+
+    #[test]
+    fn returned_demand_keeps_two_calls_to_one_callee_isolated() {
+        let caller = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let callee = FunctionId::from_fn_id(crate::fz_ir::FnId(1));
+        let returned = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let discarded = CallSiteId::new(1, crate::source::Span::DUMMY);
+        let caller_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+            direct_calls: BTreeMap::from([
+                (
+                    returned,
+                    direct_call(
+                        callee,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition::root(0)),
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+                (
+                    discarded,
+                    direct_call(
+                        callee,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition::root(1)),
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+            ]),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::CallResult {
+                    callsite: returned,
+                    path: Box::default(),
+                },
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+        };
+        let callee_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+            ..InputFlowRelation::default()
+        };
+        let graph = BTreeMap::from([
+            (
+                caller,
+                DemandNode {
+                    relation: &caller_relation,
+                },
+            ),
+            (
+                callee,
+                DemandNode {
+                    relation: &callee_relation,
+                },
+            ),
+        ]);
+        assert_eq!(
+            solve_demand_query_graph(&graph, caller, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::Whole, DispatchDemand::Ignore]
+        );
+    }
+
+    #[test]
+    fn returned_demand_pulls_a_dynamic_key_as_one_whole_dependency() {
+        let caller = FunctionId::from_fn_id(crate::fz_ir::FnId(10));
+        let callee = FunctionId::from_fn_id(crate::fz_ir::FnId(11));
+        let callsite = CallSiteId::new(10, crate::source::Span::DUMMY);
+        let caller_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+            direct_calls: BTreeMap::from([(
+                callsite,
+                direct_call(
+                    callee,
+                    vec![BTreeSet::from([
+                        binding(
+                            InputFlowOrigin::Input(InputPosition {
+                                input: 0,
+                                path: vec![InputPathStep::MapValue(MapSelector::Dynamic)].into_boxed_slice(),
+                            }),
+                            Box::default(),
+                        ),
+                        dependency_binding(InputFlowOrigin::Input(InputPosition::root(1)), Box::default()),
+                    ])],
+                ),
+            )]),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::CallResult {
+                    callsite,
+                    path: Box::default(),
+                },
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+        };
+        let callee_relation = InputFlowRelation {
+            local_dispatch: Box::from([DispatchDemand::Ignore]),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition {
+                    input: 0,
+                    path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                }),
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+            ..InputFlowRelation::default()
+        };
+        let graph = BTreeMap::from([
+            (
+                caller,
+                DemandNode {
+                    relation: &caller_relation,
+                },
+            ),
+            (
+                callee,
+                DemandNode {
+                    relation: &callee_relation,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            solve_demand_query_graph(&graph, caller, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::Whole, DispatchDemand::Whole],
+        );
+    }
+
+    #[test]
+    fn returned_demand_pulls_every_origin_of_a_reconstructed_dynamic_key() {
+        let mut world = World::new();
+        let caller = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "caller", 3);
+        let callee = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "first", 1);
+        let callsite = CallSiteId::new(20, Span::DUMMY);
+        let key = ValueId::from_u32(10);
+        let indexed = ValueId::from_u32(11);
+        world.define_lowered_body(
+            caller,
+            LoweredBody::Clauses {
+                clauses: vec![LoweredClause {
+                    span: Span::DUMMY,
+                    params: (0..3).map(ValueId::from_u32).collect(),
+                    projections: Vec::new(),
+                    entry: ControlEntryId::from_u32(0),
+                }],
+                entries: vec![LoweredEntry {
+                    span: Span::DUMMY,
+                    origin: ControlEntryOrigin::Clause,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: vec![
+                        LoweredStep::Tuple {
+                            value: key,
+                            items: vec![ValueId::from_u32(0), ValueId::from_u32(1)],
+                        },
+                        LoweredStep::MapIndex {
+                            value: indexed,
+                            base: ValueId::from_u32(2),
+                            key: LoweredMapKey {
+                                value: key,
+                                literal: None,
+                            },
+                        },
+                    ],
+                    tail: LoweredTail::DirectCall {
+                        value: ValueId::from_u32(12),
+                        callsite,
+                        callee,
+                        args: vec![CallArg {
+                            value: indexed,
+                            ascription: None,
+                        }],
+                        dest: ControlDestination::Return,
+                    },
+                }],
+                generated: Vec::new(),
+            },
+        );
+        let caller_relation = super::super::super::input_flow::extract_input_flow_relation(
+            &world,
+            caller,
+            vec![DispatchDemand::Ignore; 3].into_boxed_slice(),
+        );
+        let callee_relation = InputFlowRelation {
+            local_dispatch: Box::from([DispatchDemand::Ignore]),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition {
+                    input: 0,
+                    path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                }),
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+            ..InputFlowRelation::default()
+        };
+        let graph = BTreeMap::from([
+            (
+                caller,
+                DemandNode {
+                    relation: &caller_relation,
+                },
+            ),
+            (
+                callee,
+                DemandNode {
+                    relation: &callee_relation,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            solve_demand_query_graph(&graph, caller, DemandMode::Returned, DispatchDemand::Whole),
+            vec![DispatchDemand::Whole, DispatchDemand::Whole, DispatchDemand::Whole],
+        );
+    }
+
+    #[test]
+    fn forwarded_result_demand_keeps_two_calls_to_one_callee_isolated() {
+        let caller = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let identity = FunctionId::from_fn_id(crate::fz_ir::FnId(1));
+        let tester = FunctionId::from_fn_id(crate::fz_ir::FnId(2));
+        let used = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let discarded = CallSiteId::new(1, crate::source::Span::DUMMY);
+        let test = CallSiteId::new(2, crate::source::Span::DUMMY);
+        let caller_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore; 2].into_boxed_slice(),
+            direct_calls: BTreeMap::from([
+                (
+                    used,
+                    direct_call(
+                        identity,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition::root(0)),
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+                (
+                    discarded,
+                    direct_call(
+                        identity,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition::root(1)),
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+                (
+                    test,
+                    direct_call(
+                        tester,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::CallResult {
+                                callsite: used,
+                                path: Box::default(),
+                            },
+                            Box::default(),
+                        )])],
+                    ),
+                ),
+            ]),
+            flows: BTreeSet::new(),
+        };
+        let discarded_intrinsic = DispatchDemand::TupleFields(BTreeMap::from([(2, DispatchDemand::Whole)]));
+        let identity_relation = InputFlowRelation {
+            local_dispatch: vec![discarded_intrinsic.clone()].into_boxed_slice(),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition::root(0)),
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+            ..InputFlowRelation::default()
+        };
+        let tester_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Whole].into_boxed_slice(),
+            ..InputFlowRelation::default()
+        };
+        let graph = BTreeMap::from([
+            (
+                caller,
+                DemandNode {
+                    relation: &caller_relation,
+                },
+            ),
+            (
+                identity,
+                DemandNode {
+                    relation: &identity_relation,
+                },
+            ),
+            (
+                tester,
+                DemandNode {
+                    relation: &tester_relation,
+                },
+            ),
+        ]);
+        assert_eq!(
+            solve_demand_query_graph(&graph, caller, DemandMode::Dispatch, DispatchDemand::Ignore),
+            vec![DispatchDemand::Whole, discarded_intrinsic]
+        );
+    }
+
+    #[test]
+    fn recursive_path_widening_preserves_unrelated_sibling_fields() {
+        let function = FunctionId::from_fn_id(crate::fz_ir::FnId(0));
+        let callsite = CallSiteId::new(0, crate::source::Span::DUMMY);
+        let relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+            direct_calls: BTreeMap::from([(
+                callsite,
+                direct_call(
+                    function,
+                    vec![BTreeSet::from([binding(
+                        InputFlowOrigin::Input(InputPosition {
+                            input: 0,
+                            path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                        }),
+                        Box::default(),
+                    )])],
+                ),
+            )]),
+            flows: BTreeSet::from([
+                InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition {
+                        input: 0,
+                        path: vec![InputPathStep::TupleField(1)].into_boxed_slice(),
+                    }),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+                InputFlow {
+                    origin: InputFlowOrigin::CallResult {
+                        callsite,
+                        path: Box::default(),
+                    },
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                },
+            ]),
+        };
+        let graph = BTreeMap::from([(function, DemandNode { relation: &relation })]);
+        fn expected_growth(depth: usize) -> DispatchDemand {
+            if depth == 0 {
+                return DispatchDemand::Whole;
+            }
+            DispatchDemand::TupleFields(BTreeMap::from([
+                (0, expected_growth(depth - 1)),
+                (1, DispatchDemand::Whole),
+            ]))
+        }
+        let depth = demand_recursion_plan(&graph, function).depth_bound;
+        assert_eq!(
+            solve_demand_query_graph(&graph, function, DemandMode::Returned, DispatchDemand::Whole),
+            vec![expected_growth(depth)]
+        );
+    }
+
+    #[test]
+    fn acyclic_deep_paths_stay_exact_and_mutual_growth_is_order_independent() {
+        fn nested_zero(depth: usize, leaf: DispatchDemand) -> DispatchDemand {
+            (0..depth).fold(leaf, |demand, _| {
+                DispatchDemand::TupleFields(BTreeMap::from([(0, demand)]))
+            })
+        }
+
+        let functions = (0..8)
+            .map(|raw| FunctionId::from_fn_id(crate::fz_ir::FnId(raw)))
+            .collect::<Vec<_>>();
+        let mut relations = BTreeMap::new();
+        for (index, function) in functions.iter().copied().enumerate().rev() {
+            let relation = if let Some(callee) = functions.get(index + 1).copied() {
+                let callsite = CallSiteId::new(index as u32, crate::source::Span::DUMMY);
+                InputFlowRelation {
+                    local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+                    direct_calls: BTreeMap::from([(
+                        callsite,
+                        direct_call(
+                            callee,
+                            vec![BTreeSet::from([binding(
+                                InputFlowOrigin::Input(InputPosition {
+                                    input: 0,
+                                    path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                                }),
+                                Box::default(),
+                            )])],
+                        ),
+                    )]),
+                    flows: BTreeSet::from([InputFlow {
+                        origin: InputFlowOrigin::CallResult {
+                            callsite,
+                            path: Box::default(),
+                        },
+                        sink: InputFlowSink::FunctionReturn(Box::default()),
+                        pullback: InputPullback::Structural,
+                    }]),
+                }
+            } else {
+                InputFlowRelation {
+                    local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+                    flows: BTreeSet::from([InputFlow {
+                        origin: InputFlowOrigin::Input(InputPosition {
+                            input: 0,
+                            path: vec![InputPathStep::TupleField(1)].into_boxed_slice(),
+                        }),
+                        sink: InputFlowSink::FunctionReturn(Box::default()),
+                        pullback: InputPullback::Structural,
+                    }]),
+                    ..InputFlowRelation::default()
+                }
+            };
+            relations.insert(function, relation);
+        }
+        let acyclic = relations
+            .iter()
+            .map(|(function, relation)| (*function, DemandNode { relation }))
+            .collect();
+        assert_eq!(
+            solve_demand_query_graph(&acyclic, functions[0], DemandMode::Returned, DispatchDemand::Whole,),
+            vec![nested_zero(
+                functions.len() - 1,
+                DispatchDemand::TupleFields(BTreeMap::from([(1, DispatchDemand::Whole)])),
+            )]
+        );
+
+        let project = FunctionId::from_fn_id(crate::fz_ir::FnId(20));
+        let twice = FunctionId::from_fn_id(crate::fz_ir::FnId(21));
+        let four = FunctionId::from_fn_id(crate::fz_ir::FnId(22));
+        let project_relation = InputFlowRelation {
+            local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+            flows: BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::Input(InputPosition {
+                    input: 0,
+                    path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                }),
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]),
+            ..InputFlowRelation::default()
+        };
+        let repeated_relation = |callee: FunctionId, first_raw: u32, second_raw: u32| {
+            let first = CallSiteId::new(first_raw, crate::source::Span::DUMMY);
+            let second = CallSiteId::new(second_raw, crate::source::Span::DUMMY);
+            InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+                direct_calls: BTreeMap::from([
+                    (
+                        first,
+                        direct_call(
+                            callee,
+                            vec![BTreeSet::from([binding(
+                                InputFlowOrigin::Input(InputPosition::root(0)),
+                                Box::default(),
+                            )])],
+                        ),
+                    ),
+                    (
+                        second,
+                        direct_call(
+                            callee,
+                            vec![BTreeSet::from([binding(
+                                InputFlowOrigin::CallResult {
+                                    callsite: first,
+                                    path: Box::default(),
+                                },
+                                Box::default(),
+                            )])],
+                        ),
+                    ),
+                ]),
+                flows: BTreeSet::from([InputFlow {
+                    origin: InputFlowOrigin::CallResult {
+                        callsite: second,
+                        path: Box::default(),
+                    },
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                }]),
+            }
+        };
+        let twice_relation = repeated_relation(project, 30, 31);
+        let four_relation = repeated_relation(twice, 32, 33);
+        let repeated = BTreeMap::from([
+            (
+                project,
+                DemandNode {
+                    relation: &project_relation,
+                },
+            ),
+            (
+                twice,
+                DemandNode {
+                    relation: &twice_relation,
+                },
+            ),
+            (
+                four,
+                DemandNode {
+                    relation: &four_relation,
+                },
+            ),
+        ]);
+        assert_eq!(
+            solve_demand_query_graph(&repeated, four, DemandMode::Returned, DispatchDemand::Whole),
+            vec![nested_zero(4, DispatchDemand::Whole)]
+        );
+
+        let mutual_relation = |callee: FunctionId, raw: u32, base: bool| {
+            let callsite = CallSiteId::new(raw, crate::source::Span::DUMMY);
+            let mut flows = BTreeSet::from([InputFlow {
+                origin: InputFlowOrigin::CallResult {
+                    callsite,
+                    path: Box::default(),
+                },
+                sink: InputFlowSink::FunctionReturn(Box::default()),
+                pullback: InputPullback::Structural,
+            }]);
+            if base {
+                flows.insert(InputFlow {
+                    origin: InputFlowOrigin::Input(InputPosition {
+                        input: 0,
+                        path: vec![InputPathStep::TupleField(1)].into_boxed_slice(),
+                    }),
+                    sink: InputFlowSink::FunctionReturn(Box::default()),
+                    pullback: InputPullback::Structural,
+                });
+            }
+            InputFlowRelation {
+                local_dispatch: vec![DispatchDemand::Ignore].into_boxed_slice(),
+                direct_calls: BTreeMap::from([(
+                    callsite,
+                    direct_call(
+                        callee,
+                        vec![BTreeSet::from([binding(
+                            InputFlowOrigin::Input(InputPosition {
+                                input: 0,
+                                path: vec![InputPathStep::TupleField(0)].into_boxed_slice(),
+                            }),
+                            Box::default(),
+                        )])],
+                    ),
+                )]),
+                flows,
+            }
+        };
+        let solve_mutual = |left_raw: u32, right_raw: u32, left_site: u32, right_site: u32| {
+            let left = FunctionId::from_fn_id(crate::fz_ir::FnId(left_raw));
+            let right = FunctionId::from_fn_id(crate::fz_ir::FnId(right_raw));
+            let left_relation = mutual_relation(right, left_site, true);
+            let right_relation = mutual_relation(left, right_site, false);
+            let graph = BTreeMap::from([
+                (
+                    left,
+                    DemandNode {
+                        relation: &left_relation,
+                    },
+                ),
+                (
+                    right,
+                    DemandNode {
+                        relation: &right_relation,
+                    },
+                ),
+            ]);
+            solve_demand_query_graph(&graph, left, DemandMode::Returned, DispatchDemand::Whole)
+        };
+        let answer = solve_mutual(0, 1, 20, 21);
+        assert_eq!(answer, solve_mutual(101, 17, 99, 3));
+        assert!(matches!(
+            answer.first(),
+            Some(DispatchDemand::TupleFields(fields))
+                if fields.get(&1) == Some(&DispatchDemand::Whole) && !fields.contains_key(&2)
+        ));
+    }
+
+    #[test]
+    fn recursive_normalization_is_extensive_monotone_and_idempotent() {
+        fn below(left: &DispatchDemand, right: &DispatchDemand) -> bool {
+            let mut joined = right.clone();
+            joined.join_assign(left.clone());
+            joined == *right
+        }
+
+        let samples = [
+            DispatchDemand::Ignore,
+            DispatchDemand::Whole,
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
+            DispatchDemand::TupleFields(BTreeMap::from([(
+                0,
+                DispatchDemand::TupleFields(BTreeMap::from([(1, DispatchDemand::Whole)])),
+            )])),
+        ];
+        for depth in 0..=3 {
+            for demand in &samples {
+                let normalized = normalize_demand(demand.clone(), depth);
+                assert!(below(demand, &normalized), "normalization must only add demand");
+                assert_eq!(normalize_demand(normalized.clone(), depth), normalized);
+            }
+            for left in &samples {
+                for right in &samples {
+                    if below(left, right) {
+                        assert!(below(
+                            &normalize_demand(left.clone(), depth),
+                            &normalize_demand(right.clone(), depth),
+                        ));
+                    }
+                }
             }
         }
     }

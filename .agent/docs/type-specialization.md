@@ -134,28 +134,86 @@ local mask alone, one `reduce_step/3` activation stood for every `Enum.reduce/3`
 user in a program and published the JOIN of their returns (fz-kdt.183,
 fz-kdt.122).
 
-So the fact is a least fixpoint over the `DispatchDemand` lattice:
+`Job::DeriveInputFlow` owns one retained fact per function. Each published
+`InputFlowRelation` is an immutable set of typed semantic mappings; normalized
+equal reproduction retains the existing allocation and generation. A settled
+`ProtocolDispatch` can later gain an exact implementation when lazy discovery
+makes it reachable, in which case the same fact moves to the new normalized
+relation. It never waits for an unknowable global future-implementation
+barrier.
 
 ```text
-demand(f, i) = local(f, i) ⊔ ⨆ { demand(g, j) : f forwards i to g@j }
+direct_calls[callsite] = (callee, [{ Origin -> input_path } per input])
+Origin::Input(input, source_path)        -pullback-> FunctionReturn(result_path)
+Origin::CallResult(callsite, source_path)-pullback-> FunctionReturn(result_path)
+Origin::Input(input, source_path)        -pullback-> ProtocolInput(callee, input, path)
+Origin::Input(input, source_path)        -pullback-> CallableUse(typed_site, path)
 ```
 
-A second axis rides the same walk. A dispatched position answers "which callee
-activation does this reach"; a RETURNED position answers "what does this
-activation publish", and an activation publishes ONE return, so two callers
-that share a key share one answer. `InputDemand::returned` names the positions
-the body's return IS, CONTAINS, or is a PROJECTION of, solved by the same Kleene
-iteration over the same cone:
+The callsite-owned record is complete: an empty binding set means a locally
+supplied input and an empty input slice means a zero-argument call. Callee and
+bindings therefore cannot disagree across parallel edge stores.
 
-```text
-returned(f, i) = ret(f, i) ⊔ ⨆ { returned(g, j) : f forwards i to g@j }
-```
+Projection extends the source path; reconstruction extends the destination
+path. The shared path algebra composes tuple fields, `Head`/`Tail`, typed map
+keys and remainders, and bitstring fields by prefix intersection with residual
+paths. Literal map keys retain their complete runtime denotation: integers and
+bit-exact floats, atoms with their boolean/`nil` spellings normalized, and
+binary bytes with raw/UTF-8 carriers folded to one key. Each edge's typed
+pullback is either structural transport or a
+whole-origin dependency. Dynamic lookup and construction keys use the latter:
+inspecting any subtree selected by a dynamic key requires the entire key, not
+the same-shaped subtree of that key. Resolving such a dependency preserves
+every exact source-origin path but collapses the deciding expression's
+destination to its root before any `MapKey` embedding, so a reconstructed key
+cannot lose one component when the selected result is projected. Map values
+remain structural. The retained
+identity contains no `ValueId`, control-entry id, route
+history, rendered type, or source spelling. `BTreeSet` is canonical storage,
+not a semantic ordering rule.
 
-`ret` reads the lowered body: every tail that RETURNS rather than delivers, the
-constructions its value is assembled from opened, and each leaf traced back
-through projection steps to an input position. A call result is opaque and
-needs no rule -- the forwarding edge above already carries the callee's whole
-demand, this axis included.
+`AssertSame` equality follows control flow as a must-fact: branches inherit
+their predecessor's equalities, and a merge retains only equalities true on
+every incoming path. A delivered local value is resolved with its producer's
+outgoing equality facts before the paths merge. Thus each arm contributes its
+real provenance without making two mutually exclusive arm values aliases.
+
+Delivery is correlated by `CallSiteId`: a direct-call result reaches only its
+own return or delivered resume, and then only the resume's real downstream
+uses. A discarded result contributes no returned flow. Two calls to the same
+callee therefore cannot borrow one another's result demand. Reconstruction and
+projection are ordinary mappings, not special forwarding cases.
+
+The relation also records callable-use sinks now, but callable identity remains
+the existing `BodyKeying` decision until fz-kdt.165 consumes those sinks.
+Protocol callbacks use the same relation shape: each callback input maps to the
+corresponding typed input of every implementation that provides that callback;
+missing callbacks contribute nothing.
+Interface-only provider boundaries publish no edges but retain one `Ignore`
+local slot per argument. For an external candidate, the classification retains
+the exact `ModuleDefined(module)`, `FunctionDefined(function)`, and
+`ModuleInterface(module)` observations that can change the answer; late
+definition, interface publication, or interface replacement then wakes every
+retained decision instead of leaving an edge-empty relation or body wait stale.
+Global functions and functions already owned by source or the runtime need no
+classification reads. Ordinary functions with no `LoweredBody` do not publish
+that boundary answer: `DeriveInputFlow` first demands an undefined non-global
+function's module scope, then waits for and thereby demands its lowered body.
+Extern bodies retain their arity-sized entry mask as well.
+
+`Job::DeriveInputDemand` is still the temporary cross-function consumer. One
+ephemeral query engine projects two questions from the relation:
+
+- dispatch mode seeds the function's local entry-dispatch masks and visits
+  every callsite, so even a discarded call retains the callee's intrinsic
+  dispatch demand;
+- returned mode seeds the requested function-return path and visits only call
+  results that flow to that exact question.
+
+A child answer is routed back through the exact callsite that asked it. Equal
+`(callee, question)` answers may share computation, but never caller routing.
+This makes acyclic composition exact, including repeated calls to one callee
+and multi-hop delivered-result chains.
 
 The two axes never join into one mask, because they ask for two collapses. On
 the dispatch axis `Whole` means a question reads the value itself and the key
@@ -172,45 +230,29 @@ reading of the code rather than a measured divergence. Folding the two axes
 would have to raise a returned position to `Whole`, which has no collapse at
 all.
 
-Positions the RECURSION supplies are subtracted, as a LEAST FIXPOINT: a
-position is supplied when a self-call hands it a value the caller held nowhere,
-or held only at positions that are themselves supplied. A supplied position
-ascends within ONE caller, so keying it mints one activation per ascent state
-(measured: `split3/5` 1 -> 8, `split4/6` 1 -> 16, every body identical) while
-the SEED activation -- the one every caller passes through with the same `[]`
--- stays shared and keeps publishing the join. Cost with nothing bought, so it
-is dropped.
+Recursive arguments do not authorize a function-wide subtraction from returned
+demand. A locally constructed self-call input says nothing about an independent
+base clause that returns the original input, and one locally supplied callsite
+must not hide a peer callsite that carries it. Returned questions therefore use
+the same exact callsite bindings and path pullback as every other call: a
+permutation such as `go(n - 1, b, a)` follows the crossed bindings, and a shallow
+reconstruction preserves only the child paths that actually reach the return.
 
-The fixpoint is what makes that subtraction sound, and the eager form is not.
-"The caller did not hold this value at this same position" misreads a
-PERMUTATION: `go(n - 1, b, a)` hands each slot the value held at the other, and
-the eager test marks both supplied, re-blending `go(0, a, _b), do: a`'s two
-users into one key publishing `non_empty_list(binary) | non_empty_list(int)`.
-Under the fixpoint the permutation's obligations never discharge and the set
-settles empty. A position the recursion only carries is constant along the
-ascent, and two keys there are two callers: `loop(n, junk)`'s junk, the slots
-`go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
-rebuilt tuple hands on unchanged (fz-kdt.199).
+Recursive structural questions can denote an infinite regular tree that the
+current `DispatchDemand` type cannot represent. Only query states owned by a
+recursive SCC are therefore normalized at a deterministic structural frontier
+`K`. SCCs are computed once; their local relation costs are summed, and a
+condensation-DAG longest-path calculation supplies the root frontier in
+`O(V+E)`. Normalization preserves constructors and bottom above the frontier
+and replaces only a non-bottom subtree at the frontier with `Whole`. It is
+extensive, monotone, and idempotent, so the result is a sound conservative
+over-approximation. It is NOT a claim that all finite recursive precision is
+preserved. Acyclic functions are never normalized.
 
-"Forwards" is narrow on purpose: a direct-call tail argument that IS a clause
-parameter. A projection (`[head | tail]`), a construction (`[head | acc]`), a
-closure call and a lambda capture are all opaque, because the value that arrives
-at the callee is not the value the slot names. That is why `partition/4`'s two
-consed accumulators stay ONE activation while `List.reduce_step/3` splits.
-The returned axis inherits this narrowness: a reconstructed or projected
-forwarding argument is not an edge for it either, and neither is a
-`LoweredTail::DirectCall`'s `dest` (fz-kdt.214 owns the edge set).
-A protocol callback forwards every input to
-every implementation — a STATIC over-approximation of a runtime dispatch, so an
-unrelated `defimpl` that asks more about its argument raises the demand of every
-forwarder that reaches the callback.
-
-One job (`Job::DeriveInputDemand`) walks the forwarding cone, reads every fact
-it consults, and runs the Kleene iteration from the cone's LOCAL masks — never
-from another function's published demand, so there is no wait cycle.
-`convergence_class_at` then keeps the element wherever demand reached the list's
-shape, at every depth; a list demand never reached is freight and collapses to
-one addressed class per position exactly as before.
+This frontier is temporary question-domain policy, not retained flow identity.
+fz-kdt.200 replaces `Whole` with exact finite-height semantic question axes and
+deletes the budget, normalizer, and their temporary recursive laws. fz-kdt.213
+then replaces the private cone query with ordinary reactive formulas.
 
 `InputDemand` carries all three. The forwarded demand and the returned axis
 shape the key collapse; the LOCAL mask is what closure-brand erasure reads
@@ -223,25 +265,19 @@ collapse, and forwarding can hand a `Whole` up from a callee that tests a
 literal, so fz-y6w's termination argument does not cover such a slot
 (measured: 344 rows over 174 functions gain a forwarding-introduced `Whole`).
 The returned axis does not widen that exposure: it never produces a verbatim
-slot, only an addressed class. The CALLABLE slot is still blind. And the
-recursion-supplied subtraction reads SELF calls only: a mutually recursive pair
-rebuilds across the cycle rather than inside one body, and a recursion routed
-through a generated lambda (`00032_lambda_recursion`) is not local either, so
-both still key their ascent -- one rung per function, never a product.
+slot, only an addressed class. The CALLABLE slot is still blind.
 
 So the rule "an activation's published return may depend only on what its key
-names" holds for every shape the keying laws state, and is NOT proven in
-general. Two named gaps remain, both cost or missed cure rather than
-unsoundness, because a key that names MORE than the return depends on is only
-wasteful. Measured corpus-wide at fz-kdt.199 (604 fixtures, 475 backend dumps):
+names" is conservative for recursive shapes while `Whole` remains: the typed
+relation and callsite routing are exact, but SCC normalization may name more
+than the return needs. Measured corpus-wide at fz-kdt.199 (604 fixtures, 475 backend dumps):
 of the executables the axis adds on functions whose key count grew, 36 land on
 a function that gains a distinct published return and 91 do not — the 91
 dominated by `List.reduce_cont/3` (21), `List.reduce_while_cont/3` (18),
 `Range.reduce_while_cont/6` (9) and `List.reduce_while_step/3` (6) minting
-`empty_list()`/`list(τ)` ascent rungs across a mutual cycle the self-only
-subtraction cannot see (fz-kdt.213). And the axis rides fz-kdt.183's dispatch
-edge set, so a reconstructed or projected forwarding argument still re-joins
-two keys onto one published return (fz-kdt.214).
+`empty_list()`/`list(τ)` ascent rungs on inputs the exact returned projection
+names. The former reconstructed, projected, and delivered-result holes are now
+represented by `InputFlowRelation`.
 
 Termination is a theorem, not a property of lucky inputs. Three facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —
@@ -254,14 +290,6 @@ it tops out at `any`. Every widening that coarsens the stored value emits
 `fz.compiler2.return_type.widened`, so widening on a real program is a
 visible regression, never silent precision loss. The key ops
 live in [`type-world`](type-world.md).
-
-```text
-fib(0,0,1), fib(1,0,1), fib(10,0,1), fib(20,0,1)
-  n is a dispatch slot (matched 0,1); a,b are accumulators
-  recursive -> a,b undemanded, keyed by convergence_class; n kept precise (already int —
-  numeric literals are not types)
-  one activation (root, fib, [int,int,int]); reachable clauses unioned -> int
-```
 
 ## Not-computed is not `none`, and `none` is not `any`
 
@@ -303,9 +331,8 @@ type body) but a BROADER relation: it asks the rung question of each slot
 independently, so it reads 23 rung/slot findings where the sweep's whole-key
 relation reads none on those five — up from the 8 fz-kdt.183 recorded, and the
 fifteen added are on positions the returned axis now names: the reduce
-families' accumulators key their seed apart from their ascent, a supplied
-position the SELF-only subtraction cannot see across the cont↔step cycle
-(fz-kdt.213). Zero of the 23 sit on freight, which is what the gate asserts.
+families' accumulators key their seed apart from their ascent. Zero of the 23
+sit on freight, which is what the gate asserts.
 The two populations differ by construction --
 162 slot findings over 16 fixtures against 58 whole-key rungs over the same 16 --
 so a number from one is not a number from the other.

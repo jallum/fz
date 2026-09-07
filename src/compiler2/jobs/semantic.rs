@@ -1718,7 +1718,7 @@ fn require_direct_call_prerequisites(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Option<CalleeShape> {
-    if world.function_is_provider_boundary(function) {
+    if world.function_is_provider_boundary(function, reads) {
         return require_function_contract(world, function, reads, waits).then_some(CalleeShape::Boundary);
     }
     require_callee_prerequisites(world, function, reads, waits).then_some(CalleeShape::Activation)
@@ -2305,6 +2305,46 @@ mod tests {
     use crate::compiler2::drive::ExecutionContext;
     use crate::compiler2::{DriveOutcome, ExecutableNeed};
     use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn provider_call_shape_retains_the_interface_fact_that_selected_it() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let module = world.reference_module("External".to_string());
+        let function = world.reference_function(module, "call", 1);
+        let reference = world.function_ref(function).clone();
+        world.submit_module_interface(
+            "External".to_string(),
+            super::super::super::module_interface::ModuleInterface::new(vec![
+                super::super::super::module_interface::ModuleInterfaceCallable {
+                    function,
+                    reference,
+                    kind: super::super::super::module_interface::InterfaceCallableKind::PublicFunction,
+                    variadic: false,
+                },
+            ]),
+        );
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+
+        let mut reads = Vec::new();
+        let mut waits = HashSet::new();
+        assert!(matches!(
+            require_direct_call_prerequisites(&mut world, function, &mut reads, &mut waits),
+            Some(CalleeShape::Boundary)
+        ));
+        assert_eq!(
+            reads,
+            vec![
+                FactKey::ModuleDefined(module),
+                FactKey::FunctionDefined(function),
+                FactKey::ModuleInterface(module),
+            ]
+        );
+        assert!(waits.is_empty());
+    }
 
     #[test]
     fn analyze_activation_emits_each_exact_callee_input_once_per_publisher() {

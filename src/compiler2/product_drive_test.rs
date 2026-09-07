@@ -271,7 +271,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             ignition: 0,
             changed_revision_wake: 20,
             activation_frontier: 2,
-            blocked_waiter_expansion: 24,
+            blocked_waiter_expansion: 26,
             unclassified: 0,
             root_scans: 0,
             drain_discovery_sweeps: 0,

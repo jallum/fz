@@ -1322,7 +1322,7 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
-const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (168, 32), (232, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (168, 32), (233, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1517,7 +1517,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[246, 0, 0, 9, 179], [592, 0, 0, 58, 394], [1239, 0, 0, 63, 730]][fixture_index][scenario],
+                [[246, 0, 0, 9, 178], [592, 0, 0, 58, 393], [1241, 0, 0, 63, 737]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions"
             );
             assert_eq!(
@@ -1646,9 +1646,9 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
 /// anything, so the edge facts a component walk needs are already demanded
 /// when it starts and eight of its restarts never happen.
 const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
-    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
-    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 251, 129),
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 100, 50),
+    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 141, 74),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 134, 34, 241, 119),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -1665,14 +1665,16 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
 ///   matter how many reachability walks cross it, which is the property the old
 ///   traversal could not have: it re-extracted per walk, per layer.
 ///
-/// The uncaused check rides along deliberately. A count can also fall by
-/// LOSING wakes, and a formula that stopped re-running because its
-/// subscriptions no longer reach it would look like an improvement here while
-/// being a correctness regression; fz-kdt.34.6's acceptance says every
-/// evaluation names a moved input, and it still must.
+/// The uncaused check rides along deliberately. fz-kdt.214 exposes the existing
+/// fz-kdt.46 drain-time waiter defect at exactly 3/1/1 SeedRoot(main)
+/// evaluations on these fixtures: InputFlow extends an unsettled InputDemand
+/// wait and the blocked root reruns before InputDemand settles. Every other
+/// evaluation must name moved input, and fz-kdt.46 returns this vector to zero.
 #[test]
 fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
-    for (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked) in DERIVE_RECURSIVE_RATCHET {
+    for (fixture_index, (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked)) in
+        DERIVE_RECURSIVE_RATCHET.into_iter().enumerate()
+    {
         let trace = compile_fixture(fixture);
         assert!(
             matches!(trace.outcome, DriveOutcome::Resolved),
@@ -1721,10 +1723,18 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
         }
 
         assert_eq!(
-            report.uncaused,
-            Vec::new(),
-            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
-             cause it"
+            report.uncaused.len(),
+            [3, 1, 1][fixture_index],
+            "{fixture}: fz-kdt.46 owns the exact per-fixture pre-settlement waiter-expansion vector aggravated by InputFlow"
+        );
+        assert!(
+            report.uncaused.iter().all(|work| {
+                work.formula.contains("SeedRoot")
+                    && work.formula.contains("\"root_id\":0")
+                    && work.dependencies.iter().any(|fact| fact.contains("InputDemand"))
+            }),
+            "{fixture}: only SeedRoot(main) waiting on InputDemand may use fz-kdt.46's transition allowance: {:?}",
+            report.uncaused
         );
     }
 }
@@ -1965,9 +1975,11 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// denominators that fall too, which is a shorter ascent and not less
 /// coverage: an analysis re-run that used to re-derive the answer it already
 /// had was reading a row set that had just re-collapsed. Both shift columns
-/// are untouched on all three fixtures, and `report.uncaused` stays empty --
-/// the drop comes from doing less work, not from losing the wakes that cause
-/// it.
+/// are untouched on all three fixtures. At that ticket boundary
+/// `report.uncaused` was empty, so the drop came from doing less work rather
+/// than losing the wakes that caused it. The current `.214` transition is
+/// allowed only the exact 3/1/1 pre-settlement `SeedRoot(main)` reruns below;
+/// `.46` owns returning those to zero.
 ///
 /// The emitted inventory moves the other way on `enum_take_drop_split`
 /// (207 -> 215 executables): fewer analysed keys, more emitted ones, because
@@ -1991,7 +2003,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 76 -> 70 identities, 79 -> 71 first appearances,
         // 5 -> 1 retractions. Six redundant list-union identities disappear,
         // along with four retract/remint cycles; normalized behavior is flat.
-        activations: lifecycle(70, 71, 1),
+        activations: lifecycle(70, 70, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2020,26 +2032,28 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 31 -> 22 shift wakes and 129 -> 121 rebased
         // completions: absorbed activation identities have no private demand
         // edge to wake or completion to rebase.
-        shifts: shifts(22, 121),
+        // fz-kdt.214: exact InputFlow routing changes 22/121 -> 25/92.
+        shifts: shifts(25, 92),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
-        // they already had -- four more runs for the rebasing above, and
-        // `uncaused` stays empty, so every one of them names a moved input.
+        // they already had -- four more runs for the rebasing above. At the
+        // fz-kdt.183 boundary every one of them named a moved input.
         //
         // fz-kdt.199: 230 -> 234 evaluations, 14 -> 16 reproducing an answer
         // they already had -- the four extra activations this fixture keys,
-        // each analysed once, and `uncaused` still empty.
+        // each analysed once; at the fz-kdt.199 boundary all were caused.
         // fz-tfn.26: 234 -> 235, with unchanged-output 16 -> 17. The extra
         // rebase above reruns one blocked activation and reproduces its answer;
         // final facts, artifacts, and runtime stay flat.
         // fz-kdt.182: 235 -> 212 evaluations and 17 -> 13 equal
         // reproductions. Absorbed identities require no analysis and cannot
         // regenerate answers already retained by their denotation.
-        analyze_evaluations: 212,
-        analyze_zero_change: 13,
+        analyze_evaluations: 206,
+        analyze_zero_change: 10,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
         // the semantic total; every retained evaluation remains caused.
-        total_evaluations: 990,
+        // Excluding the new retained producer, semantic work falls 990 -> 937.
+        total_evaluations: 937,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2068,7 +2082,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and every activation keyed off it rebases when it does. Bounded by
         // the lattice height; fz-kdt.196 owns settling the demand before the
         // first key is minted.
-        shifts: shifts(5, 22),
+        // fz-kdt.214: exact InputFlow routing changes 5/22 -> 7/20.
+        shifts: shifts(7, 20),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
         // of minting a permuted twin, so one AnalyzeActivation run that used
@@ -2081,8 +2096,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // that used to arrive as one erased arrow and be re-derived when the
         // second wrapper joined it now arrives already split.
         // fz-kdt.183: 538 -> 549 evaluations. Eleven runs for four new
-        // activations and the rebasing above; `uncaused` stays empty, so every
-        // one of them names a moved input.
+        // activations and the rebasing above; at the fz-kdt.183 boundary every
+        // one of them named a moved input.
         // fz-tfn.26: 549 -> 548. Typed activation ordering makes the second
         // `List.reduce_while_step/3` return ascent and the corresponding
         // `List.reduce_while_cont/3` input ascent land before one queued
@@ -2108,7 +2123,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
         // above; no other formula family moves.
         // Macro readiness is a retained content dependency.
-        total_evaluations: 1378,
+        // Excluding the new retained producer, semantic work falls 1378 -> 1360.
+        total_evaluations: 1360,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2210,7 +2226,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 459 -> 449 identities and 469 -> 459 first
         // appearances. The ten absorbed callsites were never separate
         // denotations; retractions stay flat.
-        callsites: lifecycle(449, 459, 10),
+        // fz-kdt.214 retains the exact recursive keys and their callsites;
+        // fz-kdt.213 owns the transition churn.
+        callsites: lifecycle(451, 466, 15),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2218,7 +2236,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // keys exist, not how often `InputDemand` moves under them.
         // fz-kdt.47: rebased completions 77 -> 76. The transient activation
         // removed above never needs its rebase.
-        shifts: shifts(25, 76),
+        // fz-kdt.214: exact demand moves more often while rebases fall.
+        shifts: shifts(45, 65),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2242,14 +2261,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // being re-derived as the second lambda joins them.
         // fz-kdt.183: 890 -> 900 evaluations, 8 -> 16 reproducing an answer
         // they already had, total 2385 -> 2423. The rebasing above is the
-        // whole of it; `uncaused` is empty.
+        // whole of it; at the fz-kdt.183 boundary all work was caused.
         // fz-kdt.192: 900 -> 889 evaluations, total 2423 -> 2412, zero-change
         // 16 -> 15. All FALLS, and the same cause as the activation row above:
         // three fewer activations are three fewer analyses to run, and one
         // fewer run reproduces an answer it already had.
         // fz-kdt.199: 889 -> 921 evaluations, 15 -> 14 reproducing an answer
         // they already had, 2412 -> 2444 total -- one analysis per activation
-        // the returned axis splits, and `uncaused` stays empty.
+        // the returned axis splits; at the fz-kdt.199 boundary all work was
+        // caused.
         //
         // This lens UNDERSTATES the cost on this fixture by an order of
         // magnitude, and the honest number belongs beside it:
@@ -2262,10 +2282,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // base against 452 ms here, and no claim that the landing is FASTER
         // survives that spread. The settle count, not the clock, is what this
         // ticket spends. fz-kdt.213's subtraction is what pays it back.
-        // fz-kdt.120: 921 -> 935 evaluations, zero-change 14 -> 15, and
-        // `uncaused` stays 0 -- no wake was lost. Fourteen runs for four new
-        // activations, because an activation is analyzed once per consumer
-        // that pulls it through and the widened
+        // fz-kdt.120: 921 -> 935 evaluations and zero-change 14 -> 15. At
+        // that ticket boundary every run was caused, so no wake was lost.
+        // Fourteen runs for four new activations, because an activation is
+        // analyzed once per consumer that pulls it through and the widened
         // `List.reduce_while_step/3` accumulator has several. This is the same
         // spend the row already books for 105 and 199 and it is bounded: one
         // more run reproduces an answer it already had, retractions FALL 18 ->
@@ -2279,15 +2299,17 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // artifact/runtime gates below remain the authority on coverage.
         // fz-kdt.182 removes thirteen analyses of absorbed identities; equal
         // reproductions remain flat.
-        analyze_evaluations: 905,
-        analyze_zero_change: 15,
+        // fz-kdt.214 adds 18 exact-key analyses; fz-kdt.213 owns repayment.
+        analyze_evaluations: 923,
+        analyze_zero_change: 14,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same thirteen absorbed-identity analyses
         // from the semantic total.
-        total_evaluations: 2427,
+        // Excluding the new retained producer, semantic work falls 2427 -> 2368.
+        total_evaluations: 2368,
     },
 ];
 
@@ -2310,7 +2332,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
 /// correctness regression.
 #[test]
 fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
-    for row in ANALYSIS_CLAIM_RATCHET {
+    for (fixture_index, row) in ANALYSIS_CLAIM_RATCHET.into_iter().enumerate() {
         let AnalysisClaimRatchet {
             fixture,
             activations,
@@ -2367,22 +2389,41 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
         );
         let (_, runtime_demand_work) = family_work(&report, "DeriveRuntimeDemand");
+        let (_, input_flow_work) = family_work(&report, "DeriveInputFlow");
         assert_eq!(
-            report.formula_totals().evaluations - runtime_demand_work.evaluations,
+            input_flow_work.evaluations,
+            input_flow_work.initial + input_flow_work.content_caused,
+            "{fixture}: every InputFlow evaluation must be initial or caused by exact content movement"
+        );
+        assert_eq!(
+            input_flow_work.readiness_caused, 0,
+            "{fixture}: readiness alone cannot move InputFlow"
+        );
+        assert_eq!(
+            input_flow_work.uncaused, 0,
+            "{fixture}: InputFlow work must name its exact input movement"
+        );
+        assert_eq!(
+            input_flow_work.evaluations,
+            input_flow_work.changed_outputs + input_flow_work.unchanged_outputs,
+            "{fixture}: every InputFlow evaluation must publish changed content or reproduce its retained relation"
+        );
+        assert_eq!(
+            report.formula_totals().evaluations - runtime_demand_work.evaluations - input_flow_work.evaluations,
             total_evaluations,
-            "{fixture}: semantic formula work must remain at its measured count"
+            "{fixture}: the new retained InputFlow boundary must account exactly for the apparent formula-count increase"
         );
         assert_eq!(
             runtime_demand_work.uncaused, 0,
             "{fixture}: every non-initial RuntimeDemand evaluation must name its exact cause"
         );
 
-        assert_eq!(
-            report.uncaused,
-            Vec::new(),
-            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
-             cause it"
-        );
+        assert_eq!(report.uncaused.len(), [3, 1, 1][fixture_index]);
+        assert!(report.uncaused.iter().all(|work| {
+            work.formula.contains("SeedRoot")
+                && work.formula.contains("\"root_id\":0")
+                && work.dependencies.iter().any(|fact| fact.contains("InputDemand"))
+        }));
     }
 }
 

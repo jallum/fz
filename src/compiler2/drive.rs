@@ -190,6 +190,7 @@ pub enum Job {
     PlanEntryDispatch(FunctionId),
     DeriveStaticCallees(FunctionId),
     DeriveCallGraphComponent(FunctionId),
+    DeriveInputFlow(FunctionId),
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
@@ -219,6 +220,7 @@ impl SemanticOrd<Types> for Job {
                 (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
                 (Job::DeriveStaticCallees(left), Job::DeriveStaticCallees(right)) => left.cmp(right),
                 (Job::DeriveCallGraphComponent(left), Job::DeriveCallGraphComponent(right)) => left.cmp(right),
+                (Job::DeriveInputFlow(left), Job::DeriveInputFlow(right)) => left.cmp(right),
                 (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
                 (Job::SeedActivation(left), Job::SeedActivation(right))
                 | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
@@ -255,6 +257,7 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::SeedRoot(_) => 20,
         Job::DeriveCallableConstructionTarget(_) => 21,
         Job::DeriveRuntimeDemand(_) => 22,
+        Job::DeriveInputFlow(_) => 23,
     }
 }
 
@@ -280,6 +283,7 @@ pub enum FactKey {
     StaticCallees(FunctionId),
     CallGraphComponent(FunctionId),
     Recursive(FunctionId),
+    InputFlow(FunctionId),
     InputDemand(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
@@ -326,6 +330,7 @@ impl FactKey {
             | (FactKey::EntryDispatch(left), FactKey::EntryDispatch(right))
             | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
             | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
+            | (FactKey::InputFlow(left), FactKey::InputFlow(right))
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
             (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
@@ -389,6 +394,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemandInput(_) => 33,
         FactKey::RuntimeDemandInputs(_) => 34,
         FactKey::IncomingInputSlot(_) => 37,
+        FactKey::InputFlow(_) => 38,
     }
 }
 
@@ -580,6 +586,7 @@ impl World {
             FactKey::CallGraphComponent(function) | FactKey::Recursive(function) => {
                 Some(Job::DeriveCallGraphComponent(*function))
             }
+            FactKey::InputFlow(function) => Some(Job::DeriveInputFlow(*function)),
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),

@@ -33,8 +33,14 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
 macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
-keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
+keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputFlow, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
+            one retained fact: body + EntryDispatch -> immutable typed InputFlow paths
+            (protocol callbacks react to exact ProtocolDispatch content;
+            provider boundaries publish
+            edge-empty, arity-sized all-Ignore relations and retain the module,
+            function, and interface facts that decide that classification;
+            ordinary missing bodies wait)
             stable per-function facts used to canonicalize activation keys:
             DeriveCallGraphComponent walks the StaticCallees facts ONCE and
             publishes two: CallGraphComponent(f), the smallest FunctionId
@@ -217,7 +223,8 @@ submit_root(main/0)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
-`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveInputDemand` run
+`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveInputFlow` /
+`DeriveInputDemand` run
 because a
 product asked for a fact that requires them. New artifact producers must not
 self-schedule or smuggle broad follow-up work into that path.
