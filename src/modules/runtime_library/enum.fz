@@ -42,14 +42,16 @@ defmodule Enum do
   @spec member?(Enumerable.t(a), a) :: bool
   fn member?(enumerable, value), do: member_result(Enumerable.member?(enumerable, value), enumerable, value)
 
+  @doc "Returns a list. A list is already one, so it is returned unchanged; any other enumerable is reduced onto a list and reversed back into order."
   @spec to_list(Enumerable.t(a)) :: [a]
+  fn to_list(list :: [a]), do: list
   fn to_list(enumerable), do: reverse(reverse(enumerable))
 
   @spec reverse(Enumerable.t(a)) :: [a]
   fn reverse(enumerable), do: reduce(enumerable, [], fn (entry, acc) -> [entry | acc] end)
 
   @spec reverse(Enumerable.t(a), [a]) :: [a]
-  fn reverse(enumerable, tail), do: reduce(enumerable, to_list(tail), fn (entry, acc) -> [entry | acc] end)
+  fn reverse(enumerable, tail), do: reduce(enumerable, tail, fn (entry, acc) -> [entry | acc] end)
 
   @spec map(Enumerable.t(a), (a) -> b) :: [b]
   fn map(enumerable, fun), do: map_list(to_list(enumerable), fun)

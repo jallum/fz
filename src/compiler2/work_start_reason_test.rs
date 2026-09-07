@@ -228,38 +228,38 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4153, 11, 21, 410),
-        "fz-kdt.182 removes 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities; scope and module work remain exact"
+        (4104, 11, 21, 401),
+        "fz-kdt.182 removed 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities, and fz-5xp.2 removes 49 more applies and 9 more runs by letting a list reach Enum.to_list/1 as itself; scope and module work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1448,
-        "fz-kdt.182 removes twenty changed-revision wakes for redundant list-union executable identities; macro waits and product wakes remain exact",
+        1437,
+        "fz-kdt.182 removed twenty changed-revision wakes for redundant list-union executable identities and fz-5xp.2 removes eleven more with the reduce-and-reverse activations Enum.to_list/1 no longer mints for a list; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1131,
-        "fz-kdt.182 removes seven blocked expansions with the absorbed executable identities; macro products require no separate readiness producer",
+        1127,
+        "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities and fz-5xp.2 removes four more with the unminted reduce-and-reverse activations; macro products require no separate readiness producer",
     );
     assert_eq!(
-        *demand_completions, 1241,
-        "fz-kdt.182 removes 44 RuntimeDemand completions for absorbed list-union identities; the retained scheduler-completion multiset remains exact",
+        *demand_completions, 1211,
+        "fz-kdt.182 removed 44 RuntimeDemand completions for absorbed list-union identities and fz-5xp.2 removes 30 more for the unminted reduce-and-reverse activations; the retained scheduler-completion multiset remains exact",
     );
     assert_eq!(
-        *demand_wake_starts, 1009,
-        "fz-kdt.182 removes 37 changed-revision RuntimeDemand wakes with absorbed list-union identities; the retained wake multiset remains exact",
+        *demand_wake_starts, 983,
+        "fz-kdt.182 removed 37 changed-revision RuntimeDemand wakes with absorbed list-union identities and fz-5xp.2 removes 26 more; the retained wake multiset remains exact",
     );
     assert_eq!(
         *demand_wake_causes.borrow(),
-        [58, 232, 147, 572],
-        "fz-kdt.182 removes list-union identity demand resumes from exact moved-input causes, never from readiness-only or unexplained work",
+        [58, 228, 145, 552],
+        "fz-kdt.182 and fz-5xp.2 both remove demand resumes from exact moved-input causes, never from readiness-only or unexplained work -- the readiness-only and unexplained columns stay zero",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        304,
-        "fz-kdt.182 removes seven absorbed identities from the RuntimeDemand and construction-target key frontier",
+        300,
+        "fz-kdt.182 removed seven absorbed identities from the RuntimeDemand and construction-target key frontier and fz-5xp.2 removes four more",
     );
     assert_eq!(
         (
@@ -269,8 +269,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 259, 0, 0, 0),
-        "fz-kdt.182 removes nine absorbed analyses while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path",
+        (2, 255, 0, 0, 0),
+        "fz-kdt.182 removed nine absorbed analyses and fz-5xp.2 removes four more, while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path -- the last three columns stay zero",
     );
 
     let world = compiler.world();

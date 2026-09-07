@@ -4674,10 +4674,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 115),
+                    (("metadata", false), 105),
                     (("metadata", true), 302)
                 ]),
-                "fz-kdt.182 removes ten metadata-only positions whose list-union executable identities were redundant; every retained owner preserves its obligation"
+                "fz-kdt.182 removed ten metadata-only positions whose list-union executable identities were redundant, and fz-5xp.2 removes ten more by letting a list reach Enum.to_list/1 as itself instead of through reverse(reverse(_)); every retained owner preserves its obligation"
             );
         }
     }

@@ -10519,8 +10519,16 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
 /// denominator is 7 either way and the zero above still speaks for exactly what
 /// it did.
+/// fz-5xp.2: `entry` 171 -> 156 plans, 164 -> 149 unreadable. `Enum.to_list/1`
+/// gains a clause typed `[a]`, so a list argument reaches it as itself rather
+/// than through `reverse(reverse(_))`, and the reduce-and-reverse activations
+/// that stood between every builder and its list argument stop being
+/// specialized. Fifteen entry plans go away with them; the READABLE denominator
+/// is 7 either way, and the escape populations this census actually ratchets --
+/// `reachable`, `SOURCE_ORDER_BLIND_ESCAPES`, and the permuted-arrival stresses
+/// -- are all unchanged. This moves the denominator, not the zero.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 171, 164), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 156, 149), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,

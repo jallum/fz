@@ -440,6 +440,15 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// backend diffs are display corroboration only. Normalized
 /// interp/run/build/AOT behavior is byte-identical, while work-graph applies
 /// fall by 352 and product evaluations by 786.
+///
+/// Re-pinned DOWNWARD again by fz-5xp.2, which gives `Enum.to_list/1` a clause
+/// typed `[a]` so a list reaches it as itself instead of through
+/// `reverse(reverse(_))`. Every builder is `builder_list(to_list(enumerable), fun)`,
+/// so the two reduce-and-reverse activations that used to stand between a list
+/// argument and its builder disappear along with the executables that were
+/// specialized for them. `enum_map_family` falls 149 -> 113; the other seven
+/// pins hold. Stdout is byte-identical on all three doors — the accompanying
+/// matrix goldens moved only in diagnostic line numbers.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -456,7 +465,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            149,
+            113,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
@@ -486,12 +495,16 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
             // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
             // and the wrapper surfaces they ground stop sharing.
-            230,
+            // fz-5xp.2 re-measured 230 -> 226: the take/drop/split families
+            // reach their list arguments through `Enum.to_list/1`'s `[a]`
+            // clause, so the reduce-and-reverse activations they used to mint
+            // on the way in are never specialized.
+            226,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
+            226,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
