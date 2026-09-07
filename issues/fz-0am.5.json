@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-0am.4"
+  ],
   "blocks": [],
   "created": "2026-09-07T09:09:10Z",
   "description": ".agent/docs/telemetry.md states 'Causality is DERIVED, never stored' as a standing principle. It was not one: it was fz-kdt.34's scope note -- 'without touching what emit sites pass or costing a telemetry-off run anything' -- which hardened into architecture when it reached the docs.\n\nReplace it with what is true after this arc: the deciding component records its decision, a telemetry-off run still costs nothing, and the report reads rather than infers. Present tense, no narrative of the change.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Retire 'causality is derived, never stored' from the telemetry doc",
   "type": "task",
-  "updated_at": "2026-09-07T09:09:10Z"
+  "updated_at": "2026-09-07T09:09:13Z"
 }
