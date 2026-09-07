@@ -7,8 +7,7 @@
     "fz-tfn.38"
   ],
   "blocks": [
-    "fz-tfn.12",
-    "fz-tfn.39"
+    "fz-tfn.12"
   ],
   "closed_at": "2026-09-05T15:39:54Z",
   "created": "2026-09-03T08:00:22Z",
@@ -20,5 +19,5 @@
   "status": "closed",
   "title": "Make NativeProgram a persistent exact root product",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:18Z"
+  "updated_at": "2026-09-07T18:56:54Z"
 }
