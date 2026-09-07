@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-tfn.59"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.64"
+  ],
   "created": "2026-08-30T20:02:56Z",
   "description": "## Goal\n\nPreserve a changed cumulative-contribution withdrawal's typed movement direction from the authoritative removal point through fact change and scheduler dispatch.\n\nA changed withdrawal is a ground shift even when other publishers keep the aggregate present. Equal withdrawal is no content movement and wakes no current reader.\n\n## Current defect\n\n`ContributionMap` can remove one publisher and narrow a still-present aggregate, but `FactTable` reports only the new revision. Scheduler dispatch then guesses direction from fact presence, the completing job's rebase flag, and cumulative/replacing kind, misclassifying this descent as an ascent. A reader joins new evidence instead of rebasing away evidence derived from the old wider ground.\n\nRevision topology cannot recover whether `Some(n) -\u003e Some(n+1)` came from an upsert or withdrawal. The point that performs the authoritative removal must carry that typed movement through completion.\n\n## Strategy and TDD\n\nExtend the existing fact-change path with the smallest typed movement distinction needed by dispatch. Do not introduce analysis withdrawal, a support store, a new queue, or a termination policy here.\n\nProve at scheduler and real `ActivationInputs` World altitude:\n\n- removing one of two unequal publishers leaves the fact present, advances its revision, wakes its current reader with `shift=true`, and rebases it;\n- cumulative insertion/widening remains an ascent;\n- equal withdrawal emits no content wake;\n- last contentful withdrawal remains a shift;\n- bottom presence/retraction preserves its existing non-content semantics;\n- telemetry reports the scheduler's authoritative classification.\n\nExisting cumulative, replacing, settlement, determinism, library, CLI, and fixture gates pass. Any metric change must be explained as correction of this already-reachable misclassification.\n\n## Boundary\n\nThis ticket repairs an existing classification bug only. It neither enables `AnalyzeActivation` narrowing nor supplies the termination proof for it. It is a prerequisite of the bounded `ReturnType`/`ActivationInputs` support cutover in `fz-kdt.64`.\n\nDelete direction inference made obsolete by the typed movement and correct fact-engine documentation. Fresh ticket-scoped cold adversarial review precedes one commit and close.",
   "id": "fz-kdt.82",
@@ -19,5 +21,5 @@
   "status": "open",
   "title": "Propagate cumulative withdrawals as typed ground shifts",
   "type": "bug",
-  "updated_at": "2026-09-07T22:06:29Z"
+  "updated_at": "2026-09-07T22:06:32Z"
 }

@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.82",
     "fz-tfn.46"
   ],
   "blocks": [],
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "Retain only supported ReturnType and ActivationInputs alternatives",
   "type": "bug",
-  "updated_at": "2026-09-07T22:06:31Z"
+  "updated_at": "2026-09-07T22:06:32Z"
 }
