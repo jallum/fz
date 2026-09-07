@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T03:55:02Z",
+  "description": "`==` means two different things depending on where it is written.\n\n  fnp same?(a, b) when a == b, do: :equal\n  fnp same?(_a, _b), do: :different\n\n  same?(1, 1.0)   fz both doors: :different     Elixir: :equal\n  1 == 1.0        fz both doors: true           Elixir: true\n\nThe same token widens in an expression and is strict in a guard. Pre-existing --\nit reproduces at 67e09d373, where interp_value_eq already had\n(Int, Float) =\u003e false -- but it was invisible until `==` started widening in\nexpressions, because before that both were strict and merely wrong together.\n\nWHY IT WAS NOT FIXED IN fz-5xp.22: native guards lower to\nPrim::BinOp(IrBinOp::Eq) (jobs/native.rs, lower_guard_binop), and PATTERN\nMATCHING emits the same prim from many sites -- Region::Equal, AssertLiteral,\nmap-miss checks, list tests. Matching must stay strict (`1.0` never matches a\nliteral `1`), so the two cannot both be served by one IR op. Widening only the\ninterpreter's guard path was tried and reverted: it would have traded a\nconsistent-but-wrong answer for a NEW three-door divergence, which is worse.\n\nWHAT THE FIX LOOKS LIKE: the IR needs to distinguish the `==` OPERATOR from\nstructural identity, the way the source now does since fz-5xp.22 added `===`.\nEither a second IrBinOp variant, or guards emitting the fz_op_eq extern rather\nthan Prim::BinOp. Then guards widen, matching stays strict, and\nlower_eq_binop's `widen_numerics` parameter -- which currently infers from the\ncall site what the source should have said -- can be deleted.\n\nRELIED-ON BY NOTHING NOW: the runtime library used to depend on this accident.\n`List.member?` and `delete_first` were written `when head == value` and got\nidentity semantics only because guards happen to be strict, which matched\nElixir (whose member?/2 and -- use `===`) by coincidence rather than by\nintent. fz-5xp.22 rewrote them to say `===` explicitly, so fixing the guard\nwill not change their behaviour.\n\nGATE: behavior/equality_widening_and_identity.fz covers the expression side.\nA guard case belongs there once this is fixed.",
+  "id": "fz-5xp.24",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": " is strict in a guard and widening in an expression",
+  "type": "bug",
+  "updated_at": "2026-09-07T03:55:02Z"
+}
