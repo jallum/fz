@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-0am"
+  ],
   "blocks": [],
   "created": "2026-09-07T13:43:52Z",
   "description": "CausalReport exposes five pieces of surface consumed by exactly one file each, all src/telemetry/public_trace_test.rs:\n\n  .product_publications   1 use\n  .final_population       4 uses\n  .lifecycles             3 uses\n  .shifts                 1 use\n  derive_requests()       5 uses\n\nCompare the load-bearing surface, which has two or three independent consumers: .uncaused (17 uses, the north-star invariant), formula_totals/product_totals (10/9, pinned per-fixture work counts), canonical_multiset (6, the cross-run comparand), .sessions (19), .formulas, .products.\n\nBeing one-consumer-deep is NOT automatically waste. .lifecycles carries the retract-and-remint signature (first_appearances \u003e distinct) and .undefined_first_uses proves the self-describing-stream contract; those are real invariants that happen to need one assertion each. The question is whether each field earns a record type, or whether the assertion could read what it needs from an existing one.\n\nFor each of the five: name the invariant it exists to prove, or delete it with its assertion. Record the answer next to the type so the next scan does not re-raise it.\n\nSequence after fz-0am and fz-foq.3: the arc changes which records exist and the move changes where they live. Judging the surface before both would judge a shape that is about to change.",
