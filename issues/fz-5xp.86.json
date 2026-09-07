@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-5xp.78"
-  ],
+  "blocks": [],
   "created": "2026-09-07T20:06:16Z",
   "description": "## What breaks\n\nTwo expressions written next to each other on one line parse, and everything after the first is dropped without a diagnostic.\n\n```\nfn main() do\n  a = 1 2\n  dbg(a)\nend\n```\n\nprints `1`. So does `a = \"p\" \"q\"` -- it prints `\"p\"`. Elixir rejects both as syntax errors.\n\n## Why it matters\n\nThis is the mechanism behind the heredoc failure. `\"\"\"` is three quote characters, which lex as an empty string followed by another string, so `a = \"\"\" ... \"\"\"` is a juxtaposition and `a` silently becomes `\"\"`. Fixing heredoc lexing removes that particular spelling, but any typo that lands two expressions on one line still compiles to something the author did not write.\n\nA parser that accepts a sequence of expressions where one is expected cannot tell the reader they made a mistake, and the value it picks -- the first -- is not obviously more correct than any other choice.\n\n## Acceptance\n\n- `a = 1 2` is a diagnostic naming the unexpected second expression, on every door.\n- Legitimate juxtapositions stay legal: a `do` block on the same line, keyword arguments, `fn (x) -\u003e x end` inline, and whatever else the suite already proves.\n- The fixture suite passes unchanged, or every change is a program that was silently wrong.",
   "id": "fz-5xp.86",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "[BUG] Juxtaposed expressions on one line are accepted and all but the first discarded",
   "type": "task",
-  "updated_at": "2026-09-07T20:06:17Z"
+  "updated_at": "2026-09-07T20:18:02Z"
 }

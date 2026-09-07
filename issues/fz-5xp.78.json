@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-5xp.86"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-5xp.79"
   ],
@@ -22,5 +20,5 @@
   "status": "closed",
   "title": "[BUG] fz has no heredoc syntax, and `\"\"\"` silently lexes as adjacent string literals",
   "type": "task",
-  "updated_at": "2026-09-07T20:15:01Z"
+  "updated_at": "2026-09-07T20:18:02Z"
 }
