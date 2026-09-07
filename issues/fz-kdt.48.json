@@ -5,8 +5,7 @@
   ],
   "blocks": [
     "fz-tfn.13",
-    "fz-tfn.14",
-    "fz-tfn.39"
+    "fz-tfn.14"
   ],
   "created": "2026-08-26T14:36:12Z",
   "description": "## Goal\n\nMake Ty identity denotational at the interning boundary and make paired activation evidence exact in the same cut. Mutually-subtype supported types intern to one immutable Ty; a correlated activation row is equal only when its complete denotational columns and aligned boundary evidence are equal.\n\n## Model\n\nTypes::intern is the sole normalization authority. Callable code identity, callable surface constraints, captures and observed boundary evidence remain distinct typed concepts. Normalization is bounded by explicit structural laws and memoizes typed comparisons in World by operation and interned operands. No canonical rendering, raw Ty order, arena sweep or second normalizer is authority.\n\nActivationInputRow carries exact denotational columns plus its aligned boundary evidence. Exact complete-row equality decides identity; one typed dominance relation decides strict containment. Arrival order cannot select or cross-pair evidence.\n\n## Absorbed laws\n\n- fz-0za: exact paired-row equality and confluence land with the paired representation, not afterward.\n- fz-kdt.173: anonymous callable literals and bare surfaces remain distinct; no anonymous alternative may disappear beside branded alternatives.\n- fz-kdt.182 remains the completed decidable list-clause predecessor.\n- fz-kdt.140 is a production lens: equivalent tuple carvings must not mint unused specializations.\n\n## TDD and acceptance\n\nProve supported equivalence in every construction order, template/ground and anonymous/branded callable controls, exact row antichains, subscriber no-wake on equal reproduction, cross-process identity/work/artifact determinism, and reduced type/executable/product population. No semantic distinction is dropped to improve counts.\n\nAudit execution-order sorts after confluence. Remove any sort whose only purpose was keep-first or raw interner-order sensitivity; retain deterministic presentation separately.",
@@ -23,5 +22,5 @@
   "status": "open",
   "title": "Intern one Ty per denotation with exact paired activation evidence",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:38Z"
+  "updated_at": "2026-09-07T18:56:52Z"
 }
