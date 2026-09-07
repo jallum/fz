@@ -11,9 +11,15 @@
   "id": "fz-5xp.18",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Design revised after measurement (user, 2026-09-07).\n\nVERIFIED ROOT SHAPE. Equality and ordering are built differently, and that is the bug class:\n  equality  interp interp_value_eq -\u003e fz_value_eq_ref   native calls fz_value_eq_ref   ONE shared fn, doors agree\n  ordering  interp its own float_cmp! macro             native its own both_int/brif/box/promote   TWO impls, doors diverged\nfz_value_eq_ref exists (runtime/src/ir_runtime.rs:2032); there is no fz_value_cmp counterpart. Ordering is the outlier.\n\nPLAN.\n  1. kernel.fz gives each of \u003c \u003c= \u003e \u003e= == != the four typed numeric clauses (ii, if, fi, ff) plus an any/any default, mirroring the arithmetic operators.\n  2. The typed clauses lower to inline comparisons on raw lanes: same-kind through the existing typed fast path, mixed through fcvt_from_sint + fcmp (new, prim.rs lower_mixed_numeric_cmp).\n  3. The any/any default calls a REAL runtime function for ordering, shaped like fz_value_eq_ref, called by BOTH doors.\n  4. DELETE lower_cmp_binop's fallback (both_int test, brif, box_float_for_any, fz_promote_f64 pair). It is what boxed a raw f64 and then read the pointer as a number.\n  5. fz-5xp.8 then implements Erlang term order in that one function instead of two.\n\nMEASURED ALONG THE WAY (do not re-derive):\n  - Three clauses (if/fi/any) fix mixed ordering on both doors but do NOT make the codegen fallback dead: the any/any body still correctly serves dynamic int/int and dynamic float/float, both verified against Elixir. Only the five-clause form makes it dead.\n  - == and != with clauses cost a real dispatch. Verified mechanism: NOT 'dispatch inside a guard' -- a homogeneous '2 in [1,2,3]' keeps 0 call-edge dispatches through the same when-head==value guard. The cause is a shared generic member? activation whose operands are a union (integer from list/range, tuple from map), so a multi-clause == has more than one candidate target there. membership_operator.fz goes 0 -\u003e 3 call-edge dispatches.\n  - compiler2_membership_operator_protocol_receivers_settle_to_direct_impls is misnamed for what it asserts: it scans EVERY executable for any DirectCall whose target is a CallEdge::Dispatch, not protocol receivers specifically (drive_test.rs:12196). Nothing about protocol settling regressed.\n  - Operators are ALREADY out-of-line today: fz_op_gte__e9 is its own executable with a call in the single-clause build. Clauses add selection, not a new call.\n  - Cost of the three-clause ordering form: work applies 4104 -\u003e 4144, evaluations 989 -\u003e 1049, entry plans 156 -\u003e 157.\n\nInlining these one-expression operator bodies would remove a call that exists today, for every operator, independent of this ticket -- filed separately.",
+      "timestamp": "2026-09-07T01:04:18Z"
+    }
+  ],
   "priority": 0,
   "status": "in_progress",
   "title": "Native mixed int/float comparison is wrong; interpreter is right",
   "type": "bug",
-  "updated_at": "2026-09-07T00:33:54Z"
+  "updated_at": "2026-09-07T01:04:18Z"
 }
