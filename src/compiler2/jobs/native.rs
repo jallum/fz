@@ -3085,13 +3085,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, pinned));
                 var
             }
-            Region::Bitstring(_) => {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    "native entry-dispatch lowering does not support bitstring tests yet",
-                ));
-            }
+            Region::Bitstring(shape) => self.lower_bitstring_region(ctx, plan, subject, shape, state)?,
         })
     }
 
@@ -3230,6 +3224,162 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
+    /// Clause selection on a bitstring pattern.
+    ///
+    /// The interpreter answers this in `dispatch_read_bitstring` and the
+    /// receive matcher answers it in `emit_bitstring_test`; this is the entry
+    /// dispatch's answer, and it is why `case <<len, rest :: binary>> -> ...`
+    /// used to run on the interpreter and refuse to lower natively.
+    ///
+    /// A region test yields a boolean, so unlike the irrefutable binding path —
+    /// which reads the same fields and calls `assert_truthy` on each — a failed
+    /// read has to fall through rather than abort. The reads cannot simply be
+    /// chained and their `ok` flags combined either: `fz_bs_read_field`
+    /// allocates a one-tuple `[false]` on failure, so projecting field 1 or 2
+    /// out of a failed read is out of bounds. Hence short-circuit control flow,
+    /// with every failure edge going to one block that answers false.
+    ///
+    /// Each extracted field is recorded in `state.values` under its own
+    /// subject. That is what lets a later field's `size(len)` read an earlier
+    /// one, and what lets `dispatch_subject_var` resolve a bitstring-field
+    /// projection instead of reporting it unsupported.
+    fn lower_bitstring_region(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        subject: SubjectId,
+        shape: &crate::dispatch_matrix::BitstringShape,
+        state: &mut DispatchState,
+    ) -> Result<Var, FatalError> {
+        let subject_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
+        let fail_b = ctx.builder.block(vec![]);
+
+        // `fz_bs_reader_init` panics on a non-bitstring, so the kind test comes
+        // first and is not optional.
+        let mut predicate = crate::runtime_type_predicate::RuntimeTypePredicate::none();
+        predicate.binaries = true;
+        let (is_bitstring, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject_var, Box::new(predicate)));
+        let read_b = ctx.builder.block(vec![]);
+        ctx.set_term(Term::If {
+            cond: is_bitstring,
+            then_b: read_b,
+            else_b: fail_b,
+            origin: BranchOrigin::ClauseDispatch,
+        });
+        ctx.current_block = read_b;
+
+        let (mut reader, _) = ctx.emit_let(Prim::BitReaderInit(subject_var));
+        let field_count = shape.fields.len();
+        let mut extracted = Vec::with_capacity(field_count);
+        for (index, field) in shape.fields.iter().enumerate() {
+            let size = self.lower_dispatch_bit_size(ctx, plan, state, field)?;
+            let (result, _) = ctx.emit_let(Prim::BitReadField {
+                reader,
+                ty: dispatch_bit_type(field.kind),
+                size,
+                endian: dispatch_endian(field.endian),
+                signed: field.signed,
+                unit: field.unit,
+                is_last: index + 1 == field_count,
+            });
+            let (ok, _) = ctx.emit_let(Prim::TupleField(result, 0));
+            let next_b = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond: ok,
+                then_b: next_b,
+                else_b: fail_b,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = next_b;
+            let (value, _) = ctx.emit_let(Prim::TupleField(result, 1));
+            let (next_reader, _) = ctx.emit_let(Prim::TupleField(result, 2));
+            reader = next_reader;
+            // A later field's `size(len)` reads this one, and the read happens
+            // in this block, so it is available for the rest of the loop.
+            if let Some(field_subject) = bitstring_field_subject(plan, subject, index as u32) {
+                state.values.insert(field_subject, value);
+            }
+            extracted.push((index as u32, value));
+        }
+
+        if shape.require_done {
+            let (exhausted, _) = ctx.emit_let(Prim::BitReaderDone(reader));
+            let matched_b = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond: exhausted,
+                then_b: matched_b,
+                else_b: fail_b,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = matched_b;
+        }
+
+        // The extracted values are defined inside the blocks above, which the
+        // failure edge does not pass through, so they cannot dominate uses
+        // after the join. They cross it as block parameters instead. The
+        // failure edge supplies placeholders that no reader can observe: the
+        // clause body only runs when the answer is true.
+        let answer = ctx.builder.fresh_var();
+        let mut params = Vec::with_capacity(extracted.len() + 1);
+        params.push(answer);
+        let carried = extracted
+            .iter()
+            .map(|(field_index, _)| (*field_index, ctx.builder.fresh_var()))
+            .collect::<Vec<_>>();
+        params.extend(carried.iter().map(|(_, var)| *var));
+        let done_b = ctx.builder.block(params);
+
+        let (matched, _) = ctx.emit_let(Prim::Const(Const::True));
+        let mut matched_args = Vec::with_capacity(extracted.len() + 1);
+        matched_args.push(matched);
+        matched_args.extend(extracted.iter().map(|(_, var)| *var));
+        ctx.set_term(Term::Goto(done_b, matched_args));
+
+        ctx.current_block = fail_b;
+        let (missed, _) = ctx.emit_let(Prim::Const(Const::False));
+        let mut missed_args = Vec::with_capacity(extracted.len() + 1);
+        missed_args.push(missed);
+        for _ in &extracted {
+            let (placeholder, _) = ctx.emit_let(Prim::Const(Const::Nil));
+            missed_args.push(placeholder);
+        }
+        ctx.set_term(Term::Goto(done_b, missed_args));
+
+        ctx.current_block = done_b;
+        for (field_index, var) in carried {
+            if let Some(field_subject) = bitstring_field_subject(plan, subject, field_index) {
+                state.values.insert(field_subject, var);
+            }
+        }
+        Ok(answer)
+    }
+
+    /// A field's size is a literal, or an earlier field this same test already
+    /// extracted — `<<len, payload :: binary-size(len)>>`.
+    fn lower_dispatch_bit_size(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        field: &crate::dispatch_matrix::BitstringFieldShape,
+    ) -> Result<Option<BitSizeIr>, FatalError> {
+        use crate::dispatch_matrix::BitstringFieldSize;
+        Ok(match &field.size {
+            None => None,
+            Some(BitstringFieldSize::Literal(bits)) => Some(BitSizeIr::Literal(*bits)),
+            Some(BitstringFieldSize::Binding(subject)) => {
+                Some(BitSizeIr::Var(self.dispatch_subject_var(ctx, plan, state, *subject)?))
+            }
+            Some(BitstringFieldSize::BindingName(name)) => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("bitstring dispatch size names an unresolved binding `{name}`"),
+                ));
+            }
+        })
+    }
+
     fn dispatch_subject_var(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3280,10 +3430,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     var
                 }
                 crate::dispatch_matrix::ProjectionKind::BitstringField(index) => {
+                    // `lower_bitstring_region` records every field it extracts
+                    // under its own subject, and the lookup at the top of this
+                    // function returns it. Arriving here means the projection
+                    // was asked for without the test that binds it having run.
                     return Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
-                        format!("native dispatch does not support bitstring field projection {}", index),
+                        format!("bitstring field projection {index} was read before its pattern test bound it"),
                     ));
                 }
             },
@@ -4805,6 +4959,44 @@ fn incomplete_native_program(
     );
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+/// The `SubjectId` a bitstring field is projected into, so an extracted value
+/// can be published under the name the rest of the plan reads it by.
+fn bitstring_field_subject(plan: &PatternDispatchPlan<Ty>, source: SubjectId, index: u32) -> Option<SubjectId> {
+    plan.matrix.subjects.iter().find_map(|subject| match &subject.source {
+        crate::dispatch_matrix::SubjectSource::Projection(projection)
+            if projection.source == source
+                && projection.kind == crate::dispatch_matrix::ProjectionKind::BitstringField(index) =>
+        {
+            Some(subject.id)
+        }
+        _ => None,
+    })
+}
+
+fn dispatch_bit_type(kind: crate::dispatch_matrix::BitstringFieldKind) -> crate::ast::BitType {
+    use crate::ast::BitType;
+    use crate::dispatch_matrix::BitstringFieldKind;
+    match kind {
+        BitstringFieldKind::Integer => BitType::Integer,
+        BitstringFieldKind::Float => BitType::Float,
+        BitstringFieldKind::Binary => BitType::Binary,
+        BitstringFieldKind::Bits => BitType::Bits,
+        BitstringFieldKind::Utf8 => BitType::Utf8,
+        BitstringFieldKind::Utf16 => BitType::Utf16,
+        BitstringFieldKind::Utf32 => BitType::Utf32,
+    }
+}
+
+fn dispatch_endian(endian: crate::dispatch_matrix::BitstringEndian) -> crate::ast::Endian {
+    use crate::ast::Endian;
+    use crate::dispatch_matrix::BitstringEndian;
+    match endian {
+        BitstringEndian::Big => Endian::Big,
+        BitstringEndian::Little => Endian::Little,
+        BitstringEndian::Native => Endian::Native,
+    }
 }
 
 #[cfg(test)]

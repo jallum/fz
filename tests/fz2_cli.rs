@@ -20,11 +20,16 @@ struct TargetFixture {
     mainline_runtime_demand_door: ObservationDoor,
 }
 
+// fz-5xp.2 and fz-5xp.18 both remove work these fixtures used to do:
+// `Enum.to_list/1` reaches a list through a clause typed `[a]` instead of
+// reducing and reversing it back, and the comparison operators widen a mixed
+// numeric pair in a typed clause instead of through a coercion codegen inlined
+// behind the operator. Every number here moved DOWN.
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1236,
+        runtime_demand_walks: 1203,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -38,7 +43,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 243,
+        runtime_demand_walks: 242,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
