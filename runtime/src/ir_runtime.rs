@@ -1255,14 +1255,27 @@ fn fz_bs_read_field_bits(
             if pos + needed_bits > bit_len {
                 return fail();
             }
-            // Build a fresh Bitstring from the slice. Always copy for v1
-            // (zero-copy slicing deferred — see ticket "Open").
-            let mut sub_bytes = Vec::with_capacity(needed_bits.div_ceil(8));
-            let mut w = BitWriter::new();
-            for _ in 0..needed_bits {
-                w.append_bit(r.read_bit().unwrap());
-            }
-            sub_bytes.extend_from_slice(&w.bytes);
+            // Build a fresh Bitstring from the slice. Always a COPY: zero-copy
+            // slicing is deferred by design, and it is what makes every byte
+            // scanner quadratic (fz-5xp.55).
+            //
+            // Byte-aligned is the overwhelmingly common case -- every
+            // `<<c, rest :: binary>>` step over a binary is one -- and it can
+            // be a slice copy rather than a walk over individual bits. The bit
+            // path remains for genuinely unaligned reads.
+            // The reader's own position is not consulted after this -- the
+            // caller advances by `needed_bits` -- so the aligned path does not
+            // have to walk it forward.
+            let sub_bytes: Vec<u8> = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
+                let start = pos / 8;
+                bytes[start..start + needed_bits / 8].to_vec()
+            } else {
+                let mut w = BitWriter::new();
+                for _ in 0..needed_bits {
+                    w.append_bit(r.read_bit().unwrap());
+                }
+                w.bytes
+            };
             let new_bs = (unsafe { &mut *process })
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
