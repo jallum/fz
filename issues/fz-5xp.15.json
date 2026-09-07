@@ -23,11 +23,15 @@
     {
       "text": "fz-5xp.40 is closed, so the no-fallback safety property now holds in both\nhalves and this ticket's last compiler blocker is gone.\n\nRemaining: String.Chars.List only (fz-5xp.41, blocked on charlists). Everything\nelse this ticket asked for is landed and oracle-verified on three doors.",
       "timestamp": "2026-09-07T09:57:02Z"
+    },
+    {
+      "text": "CLOSING. The last open item was String.Chars.List, which is fz-5xp.41, and that\ndeferral is now authorized (user, 2026-09-07: 'we're in a better position for\nnow'). Everything this ticket asked for is landed and oracle-verified on three\ndoors, and the no-fallback safety property holds in both halves since fz-5xp.40.\n\nThe absent impl keeps its own ticket rather than holding this one open, so what\nunblocks -- fz-5xp.5, .16 and .17 -- can proceed.",
+      "timestamp": "2026-09-07T15:04:53Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Atom/Integer/Float to-string, String.Chars, and Kernel.to_string",
   "type": "task",
-  "updated_at": "2026-09-07T09:57:02Z"
+  "updated_at": "2026-09-07T15:04:53Z"
 }
