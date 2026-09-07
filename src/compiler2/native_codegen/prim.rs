@@ -820,9 +820,13 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let raw = body.b.inst_results(inst)[0];
     match decl.ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
-        ExternTy::F64 => Ok(LowerOut::RawF64(raw)),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
-        ExternTy::Unit | ExternTy::Never => unreachable!(),
+        // `variadic_dispatcher` accepts only `I64`-returning shapes, so the
+        // dispatcher's result is an i64 whatever the declaration says. Tagging
+        // it `RawF64` would be the mislabelling this arm looks like it guards
+        // against, so the refusal stays upstream where it can be one message.
+        ExternTy::F64 => unreachable!("variadic_dispatcher refuses a non-I64 return"),
+        ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
     }
 }
 
@@ -2222,9 +2226,9 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 
-/// Generic extern fallback: marshals each arg per its declared
-/// `ExternTy`, looks up (or caches) the FuncRef, and packages the
-/// return as RawI64 / ValueRef / nil / DeadUnit per the decl shape.
+/// Generic extern fallback: marshals each arg per its declared `ExternTy`,
+/// looks up (or caches) the FuncRef, and packages the return as
+/// RawI64 / RawF64 / ValueRef / nil / DeadUnit per the decl shape.
 fn lower_extern_generic<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
@@ -2293,10 +2297,21 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     let inst = body.b.ins().call(fref, &call_args);
     if returns_value {
         let raw = body.b.inst_results(inst)[0];
-        if matches!(decl.ret, ExternTy::I64) {
-            return Ok(LowerOut::RawI64(raw));
-        }
-        return Ok(LowerOut::ValueRef(raw));
+        // The declared RETURN says what came back, and each wire type has its
+        // own lane. `F64` used to fall into the `ValueRef` arm, which told
+        // everything downstream that a raw f64 was a tagged value ref: the
+        // consumer then unboxed it, and the result was an unbox helper applied
+        // to an f64 that failed Cranelift verification.
+        return Ok(match decl.ret {
+            ExternTy::I64 => LowerOut::RawI64(raw),
+            ExternTy::F64 => LowerOut::RawF64(raw),
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
+            // Spelled out rather than defaulted: the defect above WAS a wire
+            // type falling into the `ValueRef` arm because nobody had listed
+            // it. A wildcard here would silently do it again to the next
+            // variant added; `returns_value` already excluded these two.
+            ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
+        });
     }
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));

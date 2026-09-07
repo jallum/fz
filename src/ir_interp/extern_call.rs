@@ -139,95 +139,106 @@ fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy])
 /// `fz_abi` selects what a declared parameter type MEANS, exactly as it does in
 /// the backend: a C function taking `binary` wants a `*const u8` into the
 /// bytes, an fz runtime helper wants the tagged value ref it works in.
-fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) -> Result<u64, String> {
+fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) -> Result<ArgWord, String> {
     Ok(match ty {
-        ExternTy::I64 => value
-            .as_i64()
-            .ok_or_else(|| "extern integer arg must be Int".to_string())? as u64,
-        ExternTy::F64 => value
-            .as_float()
-            .ok_or_else(|| "extern float arg must be Float".to_string())?
-            .to_bits(),
-        ExternTy::Binary | ExternTy::CString if fz_abi => value.extern_arg_ref_word(proc)?,
-        ExternTy::Binary => (unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64,
-        ExternTy::CString => (unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64,
-        ExternTy::Any => value.extern_arg_ref_word(proc)?,
+        ExternTy::I64 => ArgWord::Int(
+            value
+                .as_i64()
+                .ok_or_else(|| "extern integer arg must be Int".to_string())? as u64,
+        ),
+        ExternTy::F64 => ArgWord::Float(
+            value
+                .as_float()
+                .ok_or_else(|| "extern float arg must be Float".to_string())?,
+        ),
+        ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
+        ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),
+        ExternTy::CString => ArgWord::Int((unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64),
+        ExternTy::Any => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Unit | ExternTy::Never => {
             return Err(format!("{:?} is not a valid extern argument marshal class", ty));
         }
     })
 }
 
+// The typed arithmetic `Kernel` selects once it knows both operand kinds.
+//
+// Each one's Rust signature is EXACTLY its declared wire types, because that is
+// what the C ABI reads: a `float` parameter arrives in the float register bank.
+// These used to take and return `u64` and bit-pun the floats, which worked only
+// while the interpreter's dispatcher bit-punned them too -- two disagreements
+// that cancelled. Once the dispatcher started passing a float as a float, a
+// shim still reading the integer bank got garbage.
 unsafe extern "C" fn fz_op_add_ii(a: u64, b: u64) -> u64 {
     ((a as i64) + (b as i64)) as u64
 }
 
-unsafe extern "C" fn fz_op_add_if(a: u64, b: u64) -> u64 {
-    ((a as i64) as f64 + f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_add_if(a: u64, b: f64) -> f64 {
+    ((a as i64) as f64) + b
 }
 
-unsafe extern "C" fn fz_op_add_ff(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) + f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_add_ff(a: f64, b: f64) -> f64 {
+    a + b
 }
 
 unsafe extern "C" fn fz_op_sub_ii(a: u64, b: u64) -> u64 {
     ((a as i64) - (b as i64)) as u64
 }
 
-unsafe extern "C" fn fz_op_sub_if(a: u64, b: u64) -> u64 {
-    ((a as i64) as f64 - f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_sub_if(a: u64, b: f64) -> f64 {
+    ((a as i64) as f64) - b
 }
 
-unsafe extern "C" fn fz_op_sub_fi(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) - (b as i64) as f64).to_bits()
+unsafe extern "C" fn fz_op_sub_fi(a: f64, b: u64) -> f64 {
+    a - ((b as i64) as f64)
 }
 
-unsafe extern "C" fn fz_op_sub_ff(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) - f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_sub_ff(a: f64, b: f64) -> f64 {
+    a - b
 }
 
 unsafe extern "C" fn fz_op_mul_ii(a: u64, b: u64) -> u64 {
     ((a as i64) * (b as i64)) as u64
 }
 
-unsafe extern "C" fn fz_op_mul_if(a: u64, b: u64) -> u64 {
-    ((a as i64) as f64 * f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_mul_if(a: u64, b: f64) -> f64 {
+    ((a as i64) as f64) * b
 }
 
-unsafe extern "C" fn fz_op_mul_ff(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) * f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_mul_ff(a: f64, b: f64) -> f64 {
+    a * b
 }
 
 unsafe extern "C" fn fz_op_div_ii(a: u64, b: u64) -> u64 {
     ((a as i64) / (b as i64)) as u64
 }
 
-unsafe extern "C" fn fz_op_div_if(a: u64, b: u64) -> u64 {
-    ((a as i64) as f64 / f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_div_if(a: u64, b: f64) -> f64 {
+    ((a as i64) as f64) / b
 }
 
-unsafe extern "C" fn fz_op_div_fi(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) / (b as i64) as f64).to_bits()
+unsafe extern "C" fn fz_op_div_fi(a: f64, b: u64) -> f64 {
+    a / ((b as i64) as f64)
 }
 
-unsafe extern "C" fn fz_op_div_ff(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) / f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_div_ff(a: f64, b: f64) -> f64 {
+    a / b
 }
 
 unsafe extern "C" fn fz_op_rem_ii(a: u64, b: u64) -> u64 {
     ((a as i64) % (b as i64)) as u64
 }
 
-unsafe extern "C" fn fz_op_rem_if(a: u64, b: u64) -> u64 {
-    ((a as i64) as f64 % f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_rem_if(a: u64, b: f64) -> f64 {
+    ((a as i64) as f64) % b
 }
 
-unsafe extern "C" fn fz_op_rem_fi(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) % (b as i64) as f64).to_bits()
+unsafe extern "C" fn fz_op_rem_fi(a: f64, b: u64) -> f64 {
+    a % ((b as i64) as f64)
 }
 
-unsafe extern "C" fn fz_op_rem_ff(a: u64, b: u64) -> u64 {
-    (f64::from_bits(a) % f64::from_bits(b)).to_bits()
+unsafe extern "C" fn fz_op_rem_ff(a: f64, b: f64) -> f64 {
+    a % b
 }
 
 pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
@@ -352,10 +363,12 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
         if fp == 0 {
             return Err(format!("dlsym: symbol `{}` not found", signature.symbol));
         }
+        // Every dispatcher below is an all-integer shape (`cstring` and `i64`),
+        // which is what makes indexing these as words correct here.
         let raw_args: Vec<u64> = args
             .iter()
             .zip(arg_tys.iter().copied())
-            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false))
+            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::int))
             .collect::<Result<_, _>>()?;
         let ret = match (signature.ret, fixed, variadic) {
             (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => unsafe {
@@ -378,9 +391,17 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
         };
         return match signature.ret {
             ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
-            ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
             ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+            // Every dispatcher above returns `I64`; a float-returning variadic
+            // is refused as an unsupported shape before reaching here. Reading
+            // `ret` as float bits would be exactly the integer-bank mistake the
+            // fixed-arity path was just fixed for, so it is refused rather than
+            // written out and left to look correct.
+            ExternTy::F64 => Err(format!(
+                "variadic extern `{}` returns a float, which no dispatcher provides",
+                signature.symbol
+            )),
         };
     }
 
@@ -388,16 +409,16 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
     // An `extern "fz"` helper receives the current process as an implicit first
     // argument, declared rather than matched by name.
     let fz_abi = signature.abi.takes_process();
-    let mut raw_args: Vec<u64> = Vec::with_capacity(args.len() + 1);
+    let mut raw_args: Vec<ArgWord> = Vec::with_capacity(args.len() + 1);
     if fz_abi {
-        raw_args.push(runtime.cur_proc() as u64);
+        raw_args.push(ArgWord::Int(runtime.cur_proc() as u64));
     }
     for (value, ty) in args.iter().zip(signature.params.iter().copied()) {
         raw_args.push(marshal_arg(runtime.cur_proc(), *value, ty, fz_abi)?);
     }
-    // `dispatch_fn_*` transmute to a concrete fn type per arity, so the
-    // interpreter has a ceiling the backend does not. Reported here, where the
-    // declaration is still in hand, rather than panicking inside the dispatch:
+    // `dispatch_fn_*` transmute to a concrete fn type, so the interpreter has a
+    // ceiling the backend does not. Reported here, where the declaration is
+    // still in hand, rather than panicking inside the dispatch:
     // the process word spends one of the slots, so an `extern "fz"` reaches the
     // ceiling one declared parameter sooner and the count alone would mislead.
     if raw_args.len() > MAX_INTERP_EXTERN_ARGS {
@@ -409,25 +430,28 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
             MAX_INTERP_EXTERN_ARGS,
         ));
     }
-    let returns_value = !matches!(signature.ret, ExternTy::Unit | ExternTy::Never);
-    let ret = if returns_value {
-        unsafe { dispatch_fn_returning(fp, &raw_args) }
-    } else {
-        unsafe { dispatch_fn_void(fp, &raw_args) };
-        0
-    };
+    // The declared RETURN picks the lane the answer comes back in. A float is
+    // returned in the float bank, so reading the integer return register gave
+    // back whatever happened to be there -- for `libc::sqrt` that was the
+    // argument's own bits, which looked exactly like a plausible answer.
     match signature.ret {
-        ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
-        ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
-        ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
-        ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+        ExternTy::F64 => Ok(AnyValue::Float(unsafe { dispatch_fn_returning_float(fp, &raw_args) })),
+        ExternTy::Unit | ExternTy::Never => {
+            unsafe { dispatch_fn_void(fp, &raw_args) };
+            Ok(interp_nil_value())
+        }
+        ExternTy::I64 => Ok(AnyValue::Int(unsafe { dispatch_fn_returning_int(fp, &raw_args) } as i64)),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+            interp_value_from_extern_ref_word(unsafe { dispatch_fn_returning_int(fp, &raw_args) })
+        }
     }
 }
 
-/// How many machine words `dispatch_fn_returning` / `dispatch_fn_void` can
-/// forward. They transmute to a concrete `extern "C" fn` type per arity, so the
-/// list of arities is the limit. An `extern "fz"` spends one slot on the
-/// implicit process word.
+/// How many machine words the `dispatch_fn_*` family can forward. They
+/// transmute to a concrete `extern "C" fn` type, so the enumerated shapes are
+/// the limit -- and a shape is an arity TIMES an assignment of its parameters
+/// to the integer and float register banks. An `extern "fz"` spends one slot on
+/// the implicit process word.
 const MAX_INTERP_EXTERN_ARGS: usize = 4;
 
 fn abi_mismatch(name: &str, declared: ExternAbi, provided: ExternAbi) -> String {
@@ -601,56 +625,124 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
     Ok(ptr as *const ())
 }
 
-unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
-    match args.len() {
-        0 => unsafe {
-            let f: unsafe extern "C" fn() -> u64 = transmute(fp);
-            f()
-        },
-        1 => unsafe {
-            let f: unsafe extern "C" fn(u64) -> u64 = transmute(fp);
-            f(args[0])
-        },
-        2 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64) -> u64 = transmute(fp);
-            f(args[0], args[1])
-        },
-        3 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = transmute(fp);
-            f(args[0], args[1], args[2])
-        },
-        4 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = transmute(fp);
-            f(args[0], args[1], args[2], args[3])
-        },
-        n => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
+/// One extern argument, in the register bank the C ABI passes it in.
+///
+/// Integers and floats travel in DIFFERENT banks, so the fn type the address is
+/// transmuted to has to name each parameter's bank exactly. Handing an `f64`'s
+/// bits across as a `u64` puts them in the integer bank, where a callee reading
+/// `xmm0`/`d0` never looks -- which is why `libc::sqrt(9.0)` used to answer
+/// `9.0`: the argument never arrived, and the caller read its own bits back out
+/// of the integer return register.
+#[derive(Clone, Copy, Debug)]
+enum ArgWord {
+    Int(u64),
+    Float(f64),
+}
+
+impl ArgWord {
+    /// Total, though the cross cases cannot arise: the shape dispatched on is
+    /// derived from these same values by `lane_mask`.
+    fn int(self) -> u64 {
+        match self {
+            Self::Int(word) => word,
+            Self::Float(value) => value.to_bits(),
+        }
+    }
+
+    fn float(self) -> f64 {
+        match self {
+            Self::Float(value) => value,
+            Self::Int(word) => f64::from_bits(word),
+        }
     }
 }
 
-unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
-    match args.len() {
-        0 => unsafe {
-            let f: unsafe extern "C" fn() = transmute(fp);
-            f()
-        },
-        1 => unsafe {
-            let f: unsafe extern "C" fn(u64) = transmute(fp);
-            f(args[0])
-        },
-        2 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64) = transmute(fp);
-            f(args[0], args[1])
-        },
-        3 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64) = transmute(fp);
-            f(args[0], args[1], args[2])
-        },
-        4 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64, u64) = transmute(fp);
-            f(args[0], args[1], args[2], args[3])
-        },
-        n => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
-    }
+/// Bit `i` is set when argument `i` travels in the float bank.
+fn lane_mask(args: &[ArgWord]) -> u32 {
+    args.iter().enumerate().fold(0, |mask, (index, arg)| match arg {
+        ArgWord::Float(_) => mask | (1 << index),
+        ArgWord::Int(_) => mask,
+    })
+}
+
+macro_rules! lane_ty {
+    (I) => {
+        u64
+    };
+    (F) => {
+        f64
+    };
+}
+
+macro_rules! lane_get {
+    (I, $arg:expr) => {
+        $arg.int()
+    };
+    (F, $arg:expr) => {
+        $arg.float()
+    };
+}
+
+macro_rules! extern_call {
+    ($fp:expr, $args:expr, $ret:ty $(, $lane:ident @ $index:tt)*) => {{
+        let call: unsafe extern "C" fn($(lane_ty!($lane)),*) -> $ret = unsafe { transmute($fp) };
+        unsafe { call($(lane_get!($lane, $args[$index])),*) }
+    }};
+}
+
+/// Every argument shape the interpreter can forward: each arity up to
+/// `MAX_INTERP_EXTERN_ARGS`, times each assignment of its parameters to the two
+/// register banks. Written once and instantiated per return lane, so a return
+/// lane cannot be given a different set of argument shapes than another.
+macro_rules! dispatch_shapes {
+    ($fp:expr, $args:expr, $ret:ty) => {
+        match ($args.len(), lane_mask($args)) {
+            (0, _) => extern_call!($fp, $args, $ret),
+            (1, 0b0) => extern_call!($fp, $args, $ret, I @ 0),
+            (1, 0b1) => extern_call!($fp, $args, $ret, F @ 0),
+            (2, 0b00) => extern_call!($fp, $args, $ret, I @ 0, I @ 1),
+            (2, 0b01) => extern_call!($fp, $args, $ret, F @ 0, I @ 1),
+            (2, 0b10) => extern_call!($fp, $args, $ret, I @ 0, F @ 1),
+            (2, 0b11) => extern_call!($fp, $args, $ret, F @ 0, F @ 1),
+            (3, 0b000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2),
+            (3, 0b001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2),
+            (3, 0b010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2),
+            (3, 0b011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2),
+            (3, 0b100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2),
+            (3, 0b101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2),
+            (3, 0b110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2),
+            (3, 0b111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2),
+            (4, 0b0000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2, I @ 3),
+            (4, 0b0001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2, I @ 3),
+            (4, 0b0010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2, I @ 3),
+            (4, 0b0011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2, I @ 3),
+            (4, 0b0100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2, I @ 3),
+            (4, 0b0101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2, I @ 3),
+            (4, 0b0110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2, I @ 3),
+            (4, 0b0111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2, I @ 3),
+            (4, 0b1000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2, F @ 3),
+            (4, 0b1001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2, F @ 3),
+            (4, 0b1010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2, F @ 3),
+            (4, 0b1011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2, F @ 3),
+            (4, 0b1100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2, F @ 3),
+            (4, 0b1101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2, F @ 3),
+            (4, 0b1110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2, F @ 3),
+            (4, 0b1111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2, F @ 3),
+            (n, _) => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
+        }
+    };
+}
+
+unsafe fn dispatch_fn_returning_int(fp: *const (), args: &[ArgWord]) -> u64 {
+    dispatch_shapes!(fp, args, u64)
+}
+
+unsafe fn dispatch_fn_returning_float(fp: *const (), args: &[ArgWord]) -> f64 {
+    dispatch_shapes!(fp, args, f64)
+}
+
+unsafe fn dispatch_fn_void(fp: *const (), args: &[ArgWord]) {
+    dispatch_shapes!(fp, args, ())
 }
 
 // ===== Test-only symbol registry (fz-swt.7) ================================

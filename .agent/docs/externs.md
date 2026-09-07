@@ -46,7 +46,8 @@ An fz runtime helper taking either wants the tagged value ref it works in,
 because it operates in fz's own representation and may allocate a new value.
 Same declared types, two conventions — which is why the ABI has to reach the
 marshalling code rather than being consumed at the front door. `integer` and
-`float` are unaffected: they are raw scalars under both.
+`float` are unaffected BY THE ABI: they are raw scalars under both. They are
+not interchangeable, though — see the register banks below.
 
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
@@ -121,6 +122,45 @@ Never     diverges
 Compiler2 maps each declared `extern_params` name to its `ExternTy` (an unknown
 name defaults to `Any`) and lowers the declared return to `ret` plus the
 fz-visible return type.
+
+## Integers and floats ride different register banks
+
+The C ABI passes integers in one register bank and floats in another, on both
+SysV and AAPCS64. So a wire type is not just a width: it names WHICH BANK a
+position travels in, and caller and callee must agree per position. This is the
+subsystem's load-bearing invariant, and every door used to break it:
+
+```fz
+extern "C" fn libc::sqrt(float) :: float
+libc::sqrt(9.0)        # 3.0
+```
+
+The interpreter handed the argument over as its BITS in the integer bank, where
+`sqrt` never looks, then read the answer out of the integer return register,
+which still held those same bits — so it returned `9.0`, its own input. Native
+labelled the returned f64 a tagged value ref and the consumer unboxed it, which
+failed Cranelift verification (fz-5xp.31, fz-5xp.19).
+
+What follows from the invariant:
+
+- `lower_extern_generic` gives `F64` its own `LowerOut::RawF64` lane, and the
+  return match is exhaustive on purpose. A wildcard there is what let `F64`
+  default into the `ValueRef` arm in the first place.
+- The interpreter cannot transmute an address by arity alone. `ArgWord` tags
+  each argument with its bank, and `dispatch_shapes!` enumerates every SHAPE —
+  an arity times an assignment of its parameters to the two banks, 31 in all —
+  instantiated once per return lane.
+- `MAX_INTERP_EXTERN_ARGS` (4) is a ceiling the backend does not have, so a
+  5-parameter extern is refused under `interp` and runs under `run`/`build`
+  (fz-5xp.32). An `extern "fz"` spends one slot on the implicit process word.
+- A helper's Rust signature must be its declared wire types. The `fz_op_*`
+  arithmetic shims took `u64` and bit-punned floats, which was correct only
+  while the dispatcher bit-punned them too; fixing one half broke six fixtures
+  until the other half was fixed.
+
+`behavior/extern_float_lanes` pins the bank assignments on all three doors,
+including both mixed orders — one alone cannot distinguish a correct table from
+one with the two mixed shapes transposed.
 
 ## Marshal classes resolve per call site
 
@@ -233,4 +273,5 @@ cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
 cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
 cargo test --lib compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi
 cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic
+cargo test --test fixture_matrix extern_float_lanes   # register banks, 3 doors
 ```
