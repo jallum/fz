@@ -113,7 +113,7 @@ Compiler2 owns the active contract path:
   freight, so joined evidence has not gone away; the
   element axis of it has.
 - Kernel arithmetic (`+ - * / %`) is fully specced in
-  `src/modules/runtime_library/kernel.fz`, so provably non-numeric operands at
+  `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
   every path. `send/2` is specced `(pid | integer, t)`: the runtime addresses
   processes by raw integer index (`fz_send_ref` takes `receiver_pid_bits`) and

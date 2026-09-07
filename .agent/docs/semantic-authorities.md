@@ -154,7 +154,7 @@ fz-5xp.61.
 rather than by construction, because an address table has to exist somewhere:
 see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
 
-**Text** — `String` (`src/modules/runtime_library/string.fz`) is plain fz over
+**Text** — `String` (`lib/string.fz`) is plain fz over
 binaries, and declares three primitives of its own: `to_atom/1`, which reaches
 the node's atom table, and `fz_binary_upcase`/`fz_binary_downcase`. It does not
 declare `byte_size/1`; that comes from `Kernel`. Everything else is recursion

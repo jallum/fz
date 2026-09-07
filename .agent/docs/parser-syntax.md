@@ -7,7 +7,7 @@ spans, spacing metadata, and lexer telemetry. The old AST-building
 Compiler2 parses source in `src/compiler2/frontdoor.rs`. That front door consumes
 the shared lexer tokens and produces `QuotedSourceRoot` values directly, rather
 than first building old `ast::Program` / `ast::Item` trees. Runtime bootstrap
-sources in `src/modules/runtime_library/*.fz` also enter compiler2 through this
+sources in `lib/*.fz` also enter compiler2 through this
 quoted-source path.
 
 Keep this boundary crisp:

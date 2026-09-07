@@ -294,8 +294,8 @@ assertions never auto-bless.
 
 Behavioural fixtures call the same runtime library that user programs do
 (`Kernel.assert`/`refute`/`panic`, `Enum`, `Enumerable`, `Process`), so the
-assertion machinery a fixture uses is itself fz source under
-`src/modules/runtime_library/`. `assert`/`refute` route a failure through
+assertion machinery a fixture uses is itself fz source under `lib/`.
+`assert`/`refute` route a failure through
 `Kernel.panic`, which calls the `fz_panic` extern; that is why a failed assertion
 is a nonzero exit on every path. A fixture that exercises a runtime-library
 function both proves the function and (via budgets and allocation goldens) pins

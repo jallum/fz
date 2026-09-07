@@ -6,7 +6,7 @@
 #
 # Sorts the same eleven-element list as [[quicksort]] — `[3, 1, 4, 1, 5, 9, 2,
 # 6, 5, 3, 5]` — but through the runtime library's `Enum.sort/1` (a merge sort
-# in `src/modules/runtime_library/enum.fz`) instead of a hand-written quicksort.
+# in `lib/enum.fz`) instead of a hand-written quicksort.
 # Same input, same `dbg(stats)` shape, so the two fixtures are a direct
 # allocation contrast between a general-purpose stdlib sort and code the
 # destination planner fully optimizes.

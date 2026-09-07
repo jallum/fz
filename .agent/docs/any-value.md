@@ -69,7 +69,7 @@ fz_binary_concat(process, left, right)
 `fz_struct_get_field_ref` build a ref over the slot already living in the
 container. For a scalar slot the returned ref points straight at that payload
 word (`any_value_ref_from_storage`); for a heap slot it carries the slot's
-heap pointer. `Enumerable.Map` (`src/modules/runtime_library/map.fz`) is plain
+heap pointer. `Enumerable.Map` (`lib/map.fz`) is plain
 fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.

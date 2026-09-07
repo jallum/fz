@@ -1,10 +1,14 @@
 //! Built-in runtime library modules as separate-compilation inputs.
 //!
+//! The sources themselves are fz, and live in `lib/` at the repository root
+//! rather than under `src/`. This is the Rust that embeds them, and so it is
+//! where they are named and ordered.
+//!
 //! Compiler2 consumes these sources through its quoted front door, the same
 //! path as user modules. This module intentionally exposes source text only;
 //! the retired AST parser no longer builds runtime `Program` values here.
 
-const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
+const RUNTIME_PRELUDE_FZ: &str = include_str!("../../lib/runtime.fz");
 
 struct RuntimeModuleSource {
     name: &'static str,
@@ -14,63 +18,63 @@ struct RuntimeModuleSource {
 const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "Kernel",
-        source: include_str!("runtime_library/kernel.fz"),
+        source: include_str!("../../lib/kernel.fz"),
     },
     RuntimeModuleSource {
         name: "Enumerable",
-        source: include_str!("runtime_library/enumerable.fz"),
+        source: include_str!("../../lib/enumerable.fz"),
     },
     RuntimeModuleSource {
         name: "Range",
-        source: include_str!("runtime_library/range.fz"),
+        source: include_str!("../../lib/range.fz"),
     },
     RuntimeModuleSource {
         name: "Process",
-        source: include_str!("runtime_library/process.fz"),
+        source: include_str!("../../lib/process.fz"),
     },
     RuntimeModuleSource {
         name: "List",
-        source: include_str!("runtime_library/list.fz"),
+        source: include_str!("../../lib/list.fz"),
     },
     RuntimeModuleSource {
         name: "Map",
-        source: include_str!("runtime_library/map.fz"),
+        source: include_str!("../../lib/map.fz"),
     },
     RuntimeModuleSource {
         name: "Keyword",
-        source: include_str!("runtime_library/keyword.fz"),
+        source: include_str!("../../lib/keyword.fz"),
     },
     RuntimeModuleSource {
         name: "String",
-        source: include_str!("runtime_library/string.fz"),
+        source: include_str!("../../lib/string.fz"),
     },
     RuntimeModuleSource {
         name: "Enum",
-        source: include_str!("runtime_library/enum.fz"),
+        source: include_str!("../../lib/enum.fz"),
     },
     RuntimeModuleSource {
         name: "Atom",
-        source: include_str!("runtime_library/atom.fz"),
+        source: include_str!("../../lib/atom.fz"),
     },
     RuntimeModuleSource {
         name: "Integer",
-        source: include_str!("runtime_library/integer.fz"),
+        source: include_str!("../../lib/integer.fz"),
     },
     RuntimeModuleSource {
         name: "Float",
-        source: include_str!("runtime_library/float.fz"),
+        source: include_str!("../../lib/float.fz"),
     },
     RuntimeModuleSource {
         name: "StringChars",
-        source: include_str!("runtime_library/string_chars.fz"),
+        source: include_str!("../../lib/string_chars.fz"),
     },
     RuntimeModuleSource {
         name: "Json",
-        source: include_str!("runtime_library/json.fz"),
+        source: include_str!("../../lib/json.fz"),
     },
     RuntimeModuleSource {
         name: "Utf8",
-        source: include_str!("runtime_library/utf8.fz"),
+        source: include_str!("../../lib/utf8.fz"),
     },
 ];
 

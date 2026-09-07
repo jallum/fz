@@ -4,7 +4,7 @@
 schema-backed Struct, not a dedicated heap tag, so it rides the same struct
 machinery as tuples and other `defstruct` types. The pieces that matter:
 
-- **Source** (`src/modules/runtime_library/range.fz`): the `defstruct`, the
+- **Source** (`lib/range.fz`): the `defstruct`, the
   `@type` record, `Range.new/3`, the scalar arithmetic helpers, and the
   `Enumerable` implementation.
 - **Schema** (`runtime/src/heap/schema.rs`): the named `Range` struct layout
