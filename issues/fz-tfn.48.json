@@ -3,7 +3,6 @@
   "blocked_by": [],
   "blocks": [
     "fz-tfn.39",
-    "fz-tfn.46",
     "fz-tfn.50",
     "fz-tfn.51"
   ],
@@ -18,5 +17,5 @@
   "status": "closed",
   "title": "Preserve formula-owned dependencies during retained product validation",
   "type": "bug",
-  "updated_at": "2026-09-06T10:23:28Z"
+  "updated_at": "2026-09-07T18:55:52Z"
 }
