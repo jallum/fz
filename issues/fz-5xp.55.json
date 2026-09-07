@@ -11,11 +11,15 @@
     {
       "text": "PARTIAL, and deliberately not the fix.\n\nExtracting a binary field walked the source ONE BIT AT A TIME through a\nBitWriter, even when the position and length were both byte-aligned -- which\nevery `\u003c\u003cc, rest :: binary\u003e\u003e` step over a binary is. That is now a slice copy:\n8x less work per tail match, on the hottest path in any parser.\n\nIT DOES NOT REDUCE ALLOCATIONS, and the counters confirm it: 21 allocations for\na 10-byte walk and 81 for 40, unchanged either way. The copy is smaller, not\nabsent.\n\nThe actual fix is still zero-copy slicing, which `fz_bs_read_field_bits` has\nalways deferred in a comment:\n\n    // Build a fresh Bitstring from the slice. Always copy for v1\n    // (zero-copy slicing deferred)\n\nThat needs a sub-binary object the GC understands -- it has to keep the parent\nalive -- and a policy for when to flatten one back into a copy, which is the\nusual space-leak trade in that design. `procbin` already carries some of the\nmachinery for a binary that points at bytes it does not own.\n\nRecording the split because a change that moves no counter is exactly the kind\nthat gets mistaken later for having fixed the thing.",
       "timestamp": "2026-09-07T11:59:13Z"
+    },
+    {
+      "text": "MEASUREMENT REFINED, and one claim in the description corrected.\n\nWalking n bytes with `\u003c\u003c_c, r :: binary\u003e\u003e`:\n\n     bytes | bitstring_allocs | bitstring_bytes | procbin_allocs\n    -------|------------------|-----------------|---------------\n        10 |               21 |             416 |             0\n        40 |               81 |           2,880 |             0\n       160 |              130 |           6,304 |           191\n       320 |              130 |           6,304 |           511\n\nThe ALLOCATION COUNT is roughly LINEAR -- about two per byte, one for the\nreader and one for the tail. My original description led with '435 allocations'\nas though the count were the problem; it is not, and that framing was wrong.\n\nWhat is quadratic is the BYTES COPIED: four times the input gives about seven\ntimes the bitstring bytes, because each step copies the whole remainder.\n\nAnd above SHARED_BIN_THRESHOLD_BYTES (64) the tails become PROCBINs, whose\nshared bytes are allocated outside the process heap and do not appear in these\ncounters at all -- note bitstring_bytes flat at 6,304 from 160 to 320 while\nprocbin_allocs goes 191 to 511. So the copying cost at realistic input sizes is\nWORSE than the process-heap counters suggest, not better, and a JSON document of\nany size is entirely in that regime.\n\nThat also points at where the fix is cheapest: a sub-binary of a PROCBIN can\nshare the existing handle with a different offset and length, and the refcount\nand MSO machinery for 'a binary that points at bytes it does not own' is already\nthere. Small inline bitstrings can keep copying -- under 64 bytes it does not\nmatter.",
+      "timestamp": "2026-09-07T12:02:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Matching a binary tail COPIES it, so every byte scanner is quadratic",
   "type": "task",
-  "updated_at": "2026-09-07T11:59:13Z"
+  "updated_at": "2026-09-07T12:02:49Z"
 }
