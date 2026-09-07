@@ -27,7 +27,7 @@ defmodule Map do
   extern "fz" fn fz_map_put_ref(any, any, any) :: any
   extern "fz" fn fz_map_put_int(any, any, integer) :: any
   extern "fz" fn fz_map_put_float(any, any, float) :: any
-  extern "fz" fn fz_map_put_atom(any, any, atom) :: any
+  extern "fz" fn fz_map_put_atom_ref(any, any, atom) :: any
 
   @doc "The map with `key` set. Copies the whole array; do not use in a loop."
   #
@@ -38,7 +38,7 @@ defmodule Map do
   @spec put(any, any, any) :: any
   fn put(map, key, value :: integer), do: fz_map_put_int(map, key, value)
   fn put(map, key, value :: float), do: fz_map_put_float(map, key, value)
-  fn put(map, key, value :: atom), do: fz_map_put_atom(map, key, value)
+  fn put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
   fn put(map, key, value), do: fz_map_put_ref(map, key, value)
 
   @doc "The value for `key`, or nil."

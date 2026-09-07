@@ -48,6 +48,7 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     ("fz_map_put_int", ExternAbi::Fz),
     ("fz_map_put_float", ExternAbi::Fz),
     ("fz_map_put_atom", ExternAbi::Fz),
+    ("fz_map_put_atom_ref", ExternAbi::Fz),
     ("fz_map_count", ExternAbi::C),
     ("fz_map_entry_key", ExternAbi::C),
     ("fz_map_entry_value", ExternAbi::C),

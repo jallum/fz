@@ -1,0 +1,36 @@
+{:ok, true}
+{:ok, false}
+{:ok, nil}
+{:ok, 0}
+{:ok, 42}
+{:ok, -45}
+{:ok, 3.5}
+{:ok, -0.25}
+{:ok, "hi"}
+{:ok, []}
+{:ok, [1, 2.5, true, nil]}
+{:ok, [[1], [2, [3]]]}
+{:ok, %{}}
+{:ok, %{"a" => 1}}
+{:ok, %{"a" => [1, nil], "b" => 2}}
+{:ok, %{"n" => %{"m" => %{"deep" => true}}}}
+"true"
+"null"
+"42"
+"-45"
+"2.5"
+"\"hi\""
+"[]"
+"[1,2.5,null]"
+"{}"
+"{\"a\":[1,null],\"b\":2}"
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true

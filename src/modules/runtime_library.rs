@@ -57,6 +57,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("runtime_library/string_chars.fz"),
     },
     RuntimeModuleSource {
+        name: "Json",
+        source: include_str!("runtime_library/json.fz"),
+    },
+    RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
     },

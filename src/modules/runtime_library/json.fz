@@ -1,0 +1,127 @@
+defmodule Json do
+  @moduledoc "JSON decode/1 and encode/1 over fz values."
+
+  # The goal program of the fz-5xp epic: a real program, written in fz, whose
+  # behaviour is checked against an Elixir twin.
+  #
+  # Values map as Elixir's json libraries map them:
+  #
+  #   true / false / null   ->  true / false / nil
+  #   number                ->  integer when it has no fraction, else float
+  #   string                ->  binary
+  #   array                 ->  list
+  #   object                ->  map with BINARY keys
+  #
+  # Binary keys matter: fz orders them by content, exactly as Elixir does, so a
+  # decoded object prints the same in both. Atom keys could not do that
+  # (fz-5xp.50).
+
+  @doc "Decodes a JSON binary. {:ok, value} or {:error, rest}."
+  @spec decode(binary) :: {:ok, any} | {:error, any}
+  fn decode(input), do: decode_done(value(input))
+
+  fnp decode_done({:ok, v, rest}), do: decode_trailing(skip_ws(rest), v)
+  fnp decode_done(other), do: other
+
+  fnp decode_trailing("", v), do: {:ok, v}
+  fnp decode_trailing(rest, _v), do: {:error, rest}
+
+  @doc "Encodes an fz value as a JSON binary."
+  @spec encode(any) :: binary
+  fn encode(true), do: "true"
+  fn encode(false), do: "false"
+  fn encode(nil), do: "null"
+  fn encode(v :: integer), do: Integer.to_string(v)
+  fn encode(v :: float), do: Float.to_string(v)
+  fn encode(v :: binary), do: "\"" <> escape(v, "") <> "\""
+  fn encode(v :: [any]), do: "[" <> elements(v, "") <> "]"
+  fn encode(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+
+  fnp escape("", acc), do: acc
+  fnp escape(<<"\"", r :: binary>>, acc), do: escape(r, acc <> "\\\"")
+  fnp escape(<<"\\", r :: binary>>, acc), do: escape(r, acc <> "\\\\")
+  fnp escape(<<"\n", r :: binary>>, acc), do: escape(r, acc <> "\\n")
+  fnp escape(<<"\t", r :: binary>>, acc), do: escape(r, acc <> "\\t")
+  fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
+
+  fnp elements([], acc), do: acc
+  fnp elements([h], acc), do: acc <> encode(h)
+  fnp elements([h | t], acc), do: elements(t, acc <> encode(h) <> ",")
+
+  fnp pairs([], acc), do: acc
+  fnp pairs([{k, v}], acc), do: acc <> encode(k) <> ":" <> encode(v)
+  fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode(k) <> ":" <> encode(v) <> ",")
+
+  fnp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)
+  fnp skip_ws(<<"\n", r :: binary>>), do: skip_ws(r)
+  fnp skip_ws(<<"\t", r :: binary>>), do: skip_ws(r)
+  fnp skip_ws(<<"\r", r :: binary>>), do: skip_ws(r)
+  fnp skip_ws(b), do: b
+
+  fnp value(b), do: val(skip_ws(b))
+
+  fnp val(<<"true", r :: binary>>), do: {:ok, true, r}
+  fnp val(<<"false", r :: binary>>), do: {:ok, false, r}
+  fnp val(<<"null", r :: binary>>), do: {:ok, nil, r}
+  fnp val(<<"\"", r :: binary>>), do: string(r, "")
+  fnp val(<<"[", r :: binary>>), do: array(skip_ws(r), [])
+  fnp val(<<"{", r :: binary>>), do: object(skip_ws(r), %{})
+  fnp val(<<"-", r :: binary>>), do: negate(number(r))
+  fnp val(b = <<c, _ :: binary>>) when c >= 48 and c <= 57, do: number(b)
+  fnp val(b), do: {:error, b}
+
+  fnp negate({:ok, n, r}), do: {:ok, -n, r}
+  fnp negate(other), do: other
+
+  # An integer unless a fraction follows, which is how JSON distinguishes them
+  # and how Elixir's decoders report them.
+  fnp number(b), do: fraction(digits(b, 0))
+
+  fnp digits(<<c, r :: binary>>, acc) when c >= 48 and c <= 57, do: digits(r, acc * 10 + (c - 48))
+  fnp digits(b, acc), do: {acc, b}
+
+  fnp fraction({whole, <<".", r :: binary>>}), do: fraction_digits(r, whole, 0, 1)
+  fnp fraction({whole, b}), do: {:ok, whole, b}
+
+  fnp fraction_digits(<<c, r :: binary>>, whole, num, den) when c >= 48 and c <= 57 do
+    fraction_digits(r, whole, num * 10 + (c - 48), den * 10)
+  end
+  fnp fraction_digits(b, whole, num, den), do: {:ok, whole + num / den, b}
+
+  fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
+  fnp string(<<"\\", <<"\"">>, r :: binary>>, acc), do: string(r, acc <> "\"")
+  fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
+  fnp string(b, _acc), do: {:error, b}
+
+  fnp array(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
+  fnp array(b, acc), do: array_item(value(b), acc)
+
+  fnp array_item({:ok, v, r}, acc), do: array_next(skip_ws(r), [v | acc])
+  fnp array_item(other, _acc), do: other
+
+  fnp array_next(<<",", r :: binary>>, acc), do: array(skip_ws(r), acc)
+  fnp array_next(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
+  fnp array_next(b, _acc), do: {:error, b}
+
+  fnp object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
+  fnp object(<<"\"", r :: binary>>, acc), do: object_key(string(r, ""), acc)
+  fnp object(b, _acc), do: {:error, b}
+
+  fnp object_key({:ok, k, r}, acc), do: object_colon(skip_ws(r), k, acc)
+  fnp object_key(other, _acc), do: other
+
+  fnp object_colon(<<":", r :: binary>>, k, acc), do: object_value(value(r), k, acc)
+  fnp object_colon(b, _k, _acc), do: {:error, b}
+
+  fnp object_value({:ok, v, r}, k, acc), do: object_next(skip_ws(r), Map.put(acc, k, v))
+  fnp object_value(other, _k, _acc), do: other
+
+  fnp object_next(<<",", r :: binary>>, acc), do: object(skip_ws(acc_rest(r)), acc)
+  fnp object_next(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
+  fnp object_next(b, _acc), do: {:error, b}
+
+  fnp acc_rest(r), do: r
+
+  fnp reverse([], acc), do: acc
+  fnp reverse([h | t], acc), do: reverse(t, [h | acc])
+end

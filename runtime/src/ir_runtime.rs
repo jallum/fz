@@ -1563,6 +1563,25 @@ pub extern "C" fn fz_map_put_float(process: *mut Process, map_ref_word: u64, key
     )
 }
 
+/// `Map.put` with an ATOM value, taking the atom as a tagged ref.
+///
+/// The sibling below takes a raw atom ID, which is what the interpreter's
+/// map-literal construction already has in hand. fz source does not: an `atom`
+/// parameter marshals as a tagged ref, so calling that one from fz put the ref
+/// WORD where an id belonged and stored a garbage atom -- `{"deep": true}`
+/// decoded to `:atom_847002048`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_atom_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    atom_ref_word: u64,
+) -> u64 {
+    let atom = any_value_ref_from_word(atom_ref_word, "fz_map_put_atom_ref value");
+    let atom_id = atom.load_atom().expect("fz_map_put_atom_ref expects an atom");
+    fz_map_put_atom(process, map_ref_word, key_ref_word, atom_id)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_put_atom(process: *mut Process, map_ref_word: u64, key_ref_word: u64, atom_id: u64) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom key");

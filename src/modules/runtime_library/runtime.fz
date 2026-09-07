@@ -6,6 +6,7 @@ alias Enum
 alias Enumerable
 alias Float
 alias Integer
+alias Json
 alias Kernel
 alias List
 alias Map
