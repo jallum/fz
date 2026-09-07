@@ -4,6 +4,7 @@
     "fz-kdt.46"
   ],
   "blocks": [
+    "fz-tfn.15",
     "fz-tfn.39"
   ],
   "created": "2026-09-03T08:00:19Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Ignite activation analysis from exact activation-appearance edges",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:28Z"
+  "updated_at": "2026-09-07T18:56:32Z"
 }
