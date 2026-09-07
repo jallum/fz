@@ -2,6 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T21:31:22Z",
+  "close_reason": "Absorbed into fz-tfn.57 with no production commit. Two independent Astra xhigh code audits plus a red ordinary-scheduler witness proved that read/output-key reachability cannot distinguish unsupported content in a surviving aggregate. .57 now owns atomic source-grounded publication and typed-store withdrawal; .200 owns the real InputDemand algebra and historical cost obligation. The DAG now points .59 directly to .57.",
   "created": "2026-09-03T18:54:13Z",
   "description": "## Status\n\nAbsorbed into `fz-tfn.57`. The recursive retraction defect is real, but this ticket's former scheduler-metadata-only source model was false.\n\nExact job read/output ownership records invalidation and claim ownership. It does not record which independently justified parts of an aggregate a read supports. A surviving key path cannot distinguish:\n\n```text\nA = seed union B\nB = A\n```\n\nafter `seed` changes `{x, y}` to `{y}`: every key and an external ground remain present while stale `x` must disappear. A producer that also owns a local constant can present the same read/output transcript while legitimately retaining `x`, so the scheduler cannot infer the answer.\n\n`fz-tfn.57` now owns the atomic boundary that makes this answer knowable: immutable source ownership, accepted replacement, content-specific independent justification, typed-store withdrawal, and blocked/failed attempt completion. The existing World store remains the value authority. Producers retain exact justification for particular contributions before joins erase it; the scheduler routes authoritative movements and never treats reachability, finality, a source-body read, or product retention as semantic support.\n\n`fz-kdt.200` owns the real InputDemand consumer and its final source-owned semantic-question/binding algebra. `LoweredBody` remains the sole operation/value/control denotation. Do not add another flow body, private solver, graph reconstruction, aggregate rollback, or retained generic support authority.\n\nNo standalone implementation of the old plan is to land. Its acceptance laws transfer to `.57`: self/mutual cycles; seed remove/replace; independent and shared support; equal publishers; forwarding-edge removal; blocked/failed attempts; typed-store retraction/reappearance; FIFO/LIFO/permuted admission; exact wake causes; and unchanged/unrelated zero work. Its InputDemand cost and private-cone obligations transfer to `.200`.\n\nThe falsifying scheduler witness is preserved as recoverable research and becomes a red seed for `.57`; it is not proof that a generic scheduler reachability layer can solve the problem.",
   "id": "fz-kdt.213",
@@ -14,8 +16,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Ground recursive publications through the ordinary scheduler",
   "type": "task",
-  "updated_at": "2026-09-07T21:30:56Z"
+  "updated_at": "2026-09-07T21:31:22Z"
 }
