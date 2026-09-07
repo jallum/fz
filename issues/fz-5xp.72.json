@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T16:07:52Z",
+  "description": "The tail of fz-5xp.16, split off so that ticket closes on the groups it\nunblocked. Nothing here is blocked; it is library work.\n\nREMAINING (a) PAIRS, all pure list/reduce with no new primitives:\n    chunk_every/3,4  chunk_while/4  flat_map_reduce/3  reverse_slice/3\n    slide/3  zip/1  zip_reduce/3,4  zip_with/2,3  slice/2,3\n\nFROM THE DIVERGENCE AUDIT:\n\n  * fz's Enumerable carries a FIFTH callback Elixir does not have,\n    reduce_while/3, and every impl carries it. That is a real design fork and\n    wants a decision rather than drift -- and it bears on fz-5xp.70\n    (Collectable) and fz-5xp.71 (Stream), which both have to say which\n    callbacks a protocol owes.\n  * DELETE Enum.slice/1: an {:error, :unsupported} stub with no caller and no\n    Elixir counterpart. Elixir's API is slice/2 and slice/3.\n  * Enumerable.List.slice/1 should answer {:ok, 0, fn _,_,_ -\u003e [] end} for [],\n    not {:error, :unsupported}.\n  * take/2 and drop/2 with NEGATIVE amounts are two-pass (count, then walk);\n    Elixir uses a single-pass circular buffer.\n  * list.fz member?/2 binds unused head/tail vars, and warnings are errors.",
+  "id": "fz-5xp.72",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Enum: the remaining pure list/reduce pairs and the divergence-audit items",
+  "type": "task",
+  "updated_at": "2026-09-07T16:07:52Z"
+}
