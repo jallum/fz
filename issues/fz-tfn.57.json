@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-tfn.59"
   ],
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Atomically own source replacement, support, and failed derivations",
   "type": "bug",
-  "updated_at": "2026-09-07T21:30:57Z"
+  "updated_at": "2026-09-07T21:31:23Z"
 }
