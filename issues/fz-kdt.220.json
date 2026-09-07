@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-kdt.200"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T18:53:50Z",
   "close_reason": "Superseded by the atomic implementation boundary fz-kdt.200; all valid acceptance criteria moved into that description.",
   "created": "2026-09-07T07:32:47Z",
@@ -15,5 +13,5 @@
   "status": "closed",
   "title": "Absorbed into fz-kdt.200",
   "type": "bug",
-  "updated_at": "2026-09-07T18:53:50Z"
+  "updated_at": "2026-09-07T18:55:31Z"
 }
