@@ -5,9 +5,7 @@
     "fz-kdt.47",
     "fz-tfn.30"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-05T21:01:05Z",
   "close_reason": "Committed 167faceaa after partition-oracle RED/GREEN, fresh scoped cold review, final library1850/CLI30/matrix531/recursive7 and docs/fmt/check/strictclippy green. Existing reactive graph satisfies exact partition reproducibility; no compiler scheduling changes. Push gated on prior .58 CI.",
   "created": "2026-09-03T01:53:56Z",
@@ -33,5 +31,5 @@
   "status": "closed",
   "title": "Make recursive-group publication membership reproducible after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-05T21:41:54Z"
+  "updated_at": "2026-09-07T18:56:58Z"
 }
