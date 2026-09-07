@@ -80,12 +80,14 @@ door's lowering.
 
 ### A foreign symbol has to be in the process to be found
 
-`fz_extern_symbol_addr` is the ONE resolver for a foreign symbol, and both
-runtime doors go through it: the interpreter calls it directly, and the JIT is
-built with it as its `symbol_lookup_fn` rather than cranelift's own `dlsym`.
-That matters because the question has one answer and used to have two —
-cranelift's searched only what the process had already loaded, so the JIT door
-failed where the interp door succeeded.
+`fz_extern_symbol_addr` is the ONE resolver for a foreign symbol, and every
+runtime door goes through it: the interpreter's `resolve_symbol` fallback and
+its variadic path call it, and the JIT is built with it as its
+`symbol_lookup_fn` rather than cranelift's own `dlsym`. That matters because
+the question had THREE answers, each a separate `dlsym(RTLD_DEFAULT, ..)`, and
+they disagreed one at a time: teaching the resolver to open libm fixed the
+variadic path, routing the JIT through it fixed `run`, and `resolve_symbol`'s
+own raw dlsym kept `interp` failing after both.
 
 It tries `dlsym(RTLD_DEFAULT, ..)` first, which searches the loaded global
 scope, and then a fixed list of standard C libraries it opens itself

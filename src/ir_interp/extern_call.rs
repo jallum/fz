@@ -631,15 +631,17 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
             name
         ));
     }
+    // Through `fz_extern_symbol_addr`, not a raw dlsym: it is the ONE place
+    // that knows where a foreign symbol can live, including the standard C
+    // libraries it opens when the loaded scope does not already have them.
+    // A raw `dlsym(RTLD_DEFAULT, ..)` here made this door the odd one out --
+    // `libc::sqrt` resolved on the JIT and failed on interp (fz-5xp.59).
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
-    #[cfg(unix)]
-    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
-    #[cfg(not(unix))]
-    let ptr: *mut c_void = null_mut();
-    if ptr.is_null() {
+    let addr = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
+    if addr == 0 {
         return Err(format!("dlsym: symbol `{}` not found", name));
     }
-    Ok(ptr as *const ())
+    Ok(addr as *const ())
 }
 
 /// One extern argument, in the register bank the C ABI passes it in.
