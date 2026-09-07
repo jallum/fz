@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-tfn.13",
     "fz-tfn.14",
     "fz-tfn.15",
     "fz-tfn.18",
@@ -35,5 +34,5 @@
   "status": "open",
   "title": "Remove the CI upload-artifact Node 20 deprecation",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:54Z"
+  "updated_at": "2026-09-07T18:56:55Z"
 }

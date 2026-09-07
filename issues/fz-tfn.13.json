@@ -6,7 +6,6 @@
     "fz-tfn.40"
   ],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.60"
   ],
   "created": "2026-09-03T08:00:23Z",
@@ -18,5 +17,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-07T18:56:42Z"
+  "updated_at": "2026-09-07T18:56:55Z"
 }
