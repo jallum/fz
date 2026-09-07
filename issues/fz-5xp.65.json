@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T15:35:47Z",
   "created": "2026-09-07T15:29:55Z",
   "description": "WRONG, AND WITHDRAWN. Both claims in the original description were artifacts of\ntesting a STALE BINARY.\n\nThe runtime library is `include_str!`'d into the compiler, so editing a\n`.fz` module and re-running `./target/debug/fz2` without `cargo build`\nexercises the PREVIOUS library. Every 'obscure internal error' I attributed to\nthe two causes below came from that.\n\nRe-tested with a real rebuild:\n\n  * a call to a function that does not exist gives a proper diagnostic, with\n    the file and the line:\n\n        error[resolve/unknown-import]: module `Atom` does not export `from_binary/1`\n          --\u003e runtime:String.fz:298:22\n\n  * an extern declared `:: atom` works and returns an atom (`:hi`).\n\nfz-5xp.66 is a REAL instance of the contentless\n`internal/post-resolution-leftover` error and was re-verified on a fresh build\nwith user code, where staleness cannot apply. It stands on its own.\n\nKept rather than deleted as the record of a false finding: the lesson is that a\nruntime-library change needs a rebuild before it is tested, and that this error\nmessage is contentless enough to absorb any explanation offered for it.",
   "id": "fz-5xp.65",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "RETRACTED: was a stale binary, not a missing diagnostic",
   "type": "bug",
-  "updated_at": "2026-09-07T15:35:46Z"
+  "updated_at": "2026-09-07T15:35:47Z"
 }
