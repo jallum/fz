@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:05:15Z",
+  "description": "Found while writing the float-rendering oracle fixture for fz-5xp.15.\n\n    fn main(), do: dbg(1.0e14)\n\n  error[parse/expected-token]: expected `)`, got Ident(\"e14\")\n\nEvery spelling fails, on all three doors, because the lexer ends the number at\n`1.0` and hands `e14` on as an identifier:\n\n    1.0e14   -\u003e Ident(\"e14\")\n    1.0e-7   -\u003e Ident(\"e\")\n    1e10     -\u003e Ident(\"e10\")\n    1.5E3    -\u003e Upper(\"E3\")\n\nElixir accepts all of these (`1.0e14`, `1.0e-7`, `1_000.5e-3`), and they are\nordinary Elixir source, so this is a surface-parity gap rather than a missing\nfeature.\n\nWHY IT MATTERS NOW. A float outside roughly 1e-4 .. 1e16 CANNOT BE WRITTEN in\nfz source at all. `behavior/float_rendering` therefore cannot cover the values\nwhose rendering is most interesting -- `1.0e-7`, `1.7976931348623157e308`,\n`5.0e-324` -- and those are exactly the ones where the two notations trade\nplaces. They are pinned in the runtime's unit tests by BIT PATTERN instead,\nwhich works but cannot be exercised through the doors.\n\nfz-5xp.17's JSON decoder must also accept exponents in its INPUT\n(`{\"x\": 1.0e-7}` is valid JSON), and that is a separate scanner. But a decoder\nwhose own test data cannot be written as fz literals is awkward to build, and\n`Json.encode` will emit exponents that fz source cannot then read back.\n\nDONE = `1.0e14`, `1e10`, `1.0e-7` and `1.5E3` lex as float literals and agree on\nall three doors, with the fixture above extended to the values it currently has\nto omit. Check the underscore separator (`1_000.5`) while in there, since\nElixir allows it and it is the same lexer state.",
+  "id": "fz-5xp.39",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Float literals cannot have an exponent",
+  "type": "bug",
+  "updated_at": "2026-09-07T09:05:15Z"
+}
