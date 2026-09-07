@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:14:59Z",
+  "description": "The product side reconstructs causality exactly as the job side does. Replay::evaluate_product (113 lines, the largest method in the file) rebuilds triggers by scanning 'movement.position \u003e= previous \u0026\u0026 movement.position \u003c started' -- the same interval inference, over the pull session's movements.\n\nThe engine decides this too. pull.rs emits PRODUCT_EVALUATED with (key, request, outcome) and no cause, though it knows why it re-evaluated.\n\nPrecedent already exists in the same file: causal_product_events_enabled / emit_causal_products gate the causal product events on whether telemetry wants them. Extending that payload is the established mechanism, not a new one, and it keeps a telemetry-off run free.\n\nCarry the trigger onto the evaluated event so ProductEvaluationCause is read rather than derived, then evaluate_product and record_product_movement collapse to tallies.",
+  "id": "fz-0am.6",
+  "labels": [],
+  "parent": "fz-0am",
+  "priority": 2,
+  "status": "open",
+  "title": "Carry the product evaluation trigger the pull engine already decides",
+  "type": "task",
+  "updated_at": "2026-09-07T09:14:59Z"
+}
