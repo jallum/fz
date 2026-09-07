@@ -36,8 +36,7 @@ use crate::types::{
 use bits::BasicBits;
 
 pub use crate::types::{
-    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
-    TypeVarId,
+    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, TypeVarId,
 };
 
 pub use arrow_match::ArrowMatch;
@@ -295,10 +294,6 @@ impl Types {
 
     pub fn cpointer(&mut self) -> Ty {
         self.opaque_of("cpointer")
-    }
-
-    pub fn differs_only_nominally(&self, a: &Ty, b: &Ty) -> bool {
-        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b)
     }
 
     pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
@@ -726,13 +721,6 @@ impl Types {
 
     pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
         map_known_keys(self.descr(a))
-    }
-
-    /// Identity since numeric literal types left the lattice: there is
-    /// nothing to widen. Kept for the shared `Types` trait until the old
-    /// pipeline (which still carries literal types) retires.
-    pub fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
-        *a
     }
 
     pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
@@ -1979,10 +1967,6 @@ impl SharedTypes for Types {
         Types::map_known_keys(self, a)
     }
 
-    fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty {
-        Types::widen_for_recursive_spec_key(self, a)
-    }
-
     fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty {
         Types::refine_widen(self, a, b)
     }
@@ -2025,7 +2009,7 @@ impl SharedTypes for Types {
         Types::is_disjoint(self, a, b)
     }
 
-    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, _nominals: Nominals<'_, Self::Ty>) -> bool {
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
         Types::is_value_disjoint(self, a, b)
     }
 

@@ -105,8 +105,8 @@
   both use that same callable-surface model.
 - `DefineFunction` runs compiler2-owned source diagnostics over that expanded
   `FunctionSurface`. Partial `case` and `with else` surfaces emit
-  `type/no-matching-clause` warnings through the normal diagnostic telemetry bus
-  without reopening the old frontend pattern-check pass.
+  `type/no-matching-clause` warnings through the normal diagnostic telemetry
+  bus.
 - The front door renders those diagnostics through the shared `CodeMap` source
   index. Quoted macro errors must retain the originating call span; a generated
   span is reserved for diagnostics with no user construct to locate.

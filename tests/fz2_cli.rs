@@ -77,23 +77,11 @@ fn assert_successful_stdout(out: &Output, expected: &str, context: &str) {
     );
 }
 
-fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
+fn assert_compiler2_telemetry(path: &Path, context: &str) {
     let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
     assert!(
         log.contains("\"compiler2\""),
         "{context} should emit compiler2 telemetry; log=\n{log}",
-    );
-    assert!(
-        !log.contains("\"planner\""),
-        "{context} should not emit legacy planner telemetry; log=\n{log}",
-    );
-    assert!(
-        !log.contains("\"type_infer\""),
-        "{context} should not emit legacy type_infer telemetry; log=\n{log}",
-    );
-    assert!(
-        !log.contains("\"frontend\""),
-        "{context} should not invoke the old frontend path; log=\n{log}",
     );
 }
 
@@ -155,7 +143,7 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
 }
 
 fn assert_source_production_telemetry(path: &Path, context: &str) {
-    assert_compiler2_telemetry_only(path, context);
+    assert_compiler2_telemetry(path, context);
 }
 
 fn assert_native_backend_compile_telemetry(path: &Path, context: &str) {
@@ -289,7 +277,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_compiler2_telemetry_only(&telemetry_path, &format!("fz2 {command}"));
+        assert_compiler2_telemetry(&telemetry_path, &format!("fz2 {command}"));
         assert_lexer_passes_match_submitted_sources(
             &telemetry_path,
             &format!("fz2 {command}"),
@@ -551,7 +539,7 @@ fn quicksort_run_lexes_each_source_once() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_compiler2_telemetry_only(&telemetry_path, "fz2 run quicksort");
+    assert_compiler2_telemetry(&telemetry_path, "fz2 run quicksort");
     assert_lexer_passes_match_submitted_sources(&telemetry_path, "fz2 run quicksort", &expected_lexer_sources);
     assert_native_backend_compile_telemetry(&telemetry_path, "fz2 run quicksort");
 
@@ -584,7 +572,7 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
         String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr)
     );
-    assert_compiler2_telemetry_only(&telemetry_path, "fz2 build");
+    assert_compiler2_telemetry(&telemetry_path, "fz2 build");
     assert_aot_link_telemetry(&telemetry_path, "fz2 build");
     assert!(
         metadata(&out_bin).is_ok(),

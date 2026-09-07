@@ -155,12 +155,11 @@ so handles from two `Types` instances are never composed.
 The trait is the abstraction boundary for construction, projection, substitution,
 nominal disjointness, widening, and equivalence:
 
-- `Types` default methods compose existing hooks (`bool_lit`, `is_equivalent`,
-  `differs_only_nominally`).
+- `Types` default methods compose existing hooks (`bool_lit`, `is_equivalent`).
 - An implementation supplies the representation primitives: constructors, lattice
   operations, shape projections, subtype/disjointness decisions, and the
   widening/classification hooks.
-- Each implementation's own tests cover representation mechanics only — DNF
+- The implementation's own tests cover representation mechanics only — DNF
   normalization, axis views, interning — while implementation-agnostic semantics are
   asserted once through the shared conformance and smoke suites.
 
@@ -280,11 +279,6 @@ is_value_disjoint(utf8, binary)        = false    (overlap -> == runs)
 is_value_disjoint(utf8, int)           = true     (a binary is never an int)
 is_value_disjoint(:ok, :error)         = true     (distinct atom singletons)
 ```
-
-`differs_only_nominally(a, b)` is the in-between case: `a` and `b` are
-brand-aware-disjoint yet not value-disjoint, i.e. they look disjoint only because of
-an erased brand. That is exactly the set of comparisons a brand-aware fold would have
-broken, so consumers surface it rather than fold the comparison away.
 
 ## Which predicate, where
 

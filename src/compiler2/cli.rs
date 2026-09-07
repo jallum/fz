@@ -1,9 +1,7 @@
-//! Compiler2's side-by-side command-line front door.
+//! Compiler2's command-line front door.
 //!
 //! `fz2` stays narrow on purpose: it submits source text, seeds `main/0`,
-//! then drives Compiler2's native run/build/interp entry points directly.
-//! It does not reopen the old planner/module pipeline or emulate old-world
-//! diagnostics.
+//! then drives Compiler2's run/build/interp artifact entry points directly.
 
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
@@ -146,7 +144,7 @@ fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &Dia
 fn print_help() {
     print!(
         "\
-fz2 — Compiler2 side-by-side front door
+fz2 — incremental compiler
 
 Usage:
   fz2 <command> [options] <src.fz>
@@ -166,8 +164,6 @@ Global options (placed before the command):
   --emit=stats             print a stats summary on exit
 
 Compile options (run, build):
-  --lto, --whole-program   accepted for compatibility; Compiler2 already
-                           closes the root whole-program
   --dump <spec>            install one dump sink; spec is either <path>
                            (kind inferred from extension) or <kind>=<path>
 
@@ -182,7 +178,7 @@ fn run_command(
     args: &[String],
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_source_options("fz2 run [--lto] [--dump <spec>] <src.fz>", args)?;
+    let options = parse_source_options("fz2 run [--dump <spec>] <src.fz>", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
     compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
@@ -581,7 +577,6 @@ fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOp
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--lto" | "--whole-program" => {}
             "--dump" => {
                 index += 1;
                 let spec = args
@@ -605,30 +600,30 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--lto" | "--whole-program" => {}
             "--dump" => {
                 index += 1;
                 let spec = args.get(index).ok_or_else(|| {
-                    CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>\n--dump expects a spec")
+                    CliError::usage("fz2 build [--dump <spec>] <src.fz> -o <out>\n--dump expects a spec")
                 })?;
                 dumps.push(parse_dump_spec(spec).map_err(CliError::usage)?);
             }
             "-o" => {
                 index += 1;
-                output = Some(PathBuf::from(args.get(index).cloned().ok_or_else(|| {
-                    CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>")
-                })?));
+                output =
+                    Some(PathBuf::from(args.get(index).cloned().ok_or_else(|| {
+                        CliError::usage("fz2 build [--dump <spec>] <src.fz> -o <out>")
+                    })?));
             }
             other if !other.starts_with('-') && path.is_none() => path = Some(PathBuf::from(other)),
             other => {
                 return Err(CliError::usage(format!(
-                    "fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>\nunknown arg `{other}`"
+                    "fz2 build [--dump <spec>] <src.fz> -o <out>\nunknown arg `{other}`"
                 )));
             }
         }
         index += 1;
     }
-    let path = path.ok_or_else(|| CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>"))?;
+    let path = path.ok_or_else(|| CliError::usage("fz2 build [--dump <spec>] <src.fz> -o <out>"))?;
     let output = output.ok_or_else(|| CliError::usage("fz2 build: -o <out> is required"))?;
     Ok(BuildOptions { path, output, dumps })
 }
