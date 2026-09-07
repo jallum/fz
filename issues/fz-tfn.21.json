@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.30"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.39"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Delete the unused per-derivation scheduler substrate",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:58Z"
+  "updated_at": "2026-09-07T18:56:01Z"
 }

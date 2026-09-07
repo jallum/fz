@@ -23,7 +23,6 @@
     "fz-tfn.18",
     "fz-tfn.2",
     "fz-tfn.20",
-    "fz-tfn.21",
     "fz-tfn.24",
     "fz-tfn.27",
     "fz-tfn.28",
@@ -44,5 +43,5 @@
   "status": "closed",
   "title": "Stack recalculator work on semantic-correctness PR #110",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:00Z"
+  "updated_at": "2026-09-07T18:56:01Z"
 }
