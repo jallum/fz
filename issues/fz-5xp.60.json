@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.57"
+  ],
   "blocks": [
     "fz-5xp.55"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Two matched binary literals over 64 bytes corrupt a ProcBin and die at teardown on run",
   "type": "bug",
-  "updated_at": "2026-09-07T12:50:44Z"
+  "updated_at": "2026-09-07T12:50:45Z"
 }
