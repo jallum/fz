@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T15:32:29Z",
+  "description": "Found while writing fz-5xp.14's String module. MINIMAL:\n\n    fnp apply_byte(c, fun), do: \u003c\u003cfun.(c)\u003e\u003e\n    apply_byte(97, fn (c) -\u003e c - 32 end)\n\n    error[internal/post-resolution-leftover]: quoted function decode failed:\n      invalid any value ref: ExpectedTag { expected: ValueKind(15), found: ValueKind(3) }\n      --\u003e \u003cgenerated\u003e\n\nBinding the call first is FINE, and is the workaround:\n\n    fnp apply_byte(c, fun) do\n      b = fun.(c)\n      \u003c\u003cb\u003e\u003e            # \"A\"\n    end\n\nSo the segment expression is where it breaks: a closure CALL is not accepted\nwhere the same value from a variable is. A direct call is not affected --\n`\u003c\u003cupcase_byte(c)\u003e\u003e` compiles -- so it is specifically the closure-call form\ninside a segment.\n\nThe error is the same contentless one as fz-5xp.65: no module, no function, no\nline, and a ValueKind mismatch that names nothing a reader can act on. Three\ndifferent mistakes now produce it.\n\nIMPACT: it forces a `map_bytes(s, fun)` helper -- the natural way to write\nupcase/downcase/replace_invalid over bytes -- to be written as a direct\nrecursion per operation instead.",
+  "id": "fz-5xp.66",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A closure call inside a bitstring segment fails to compile, with no diagnostic",
+  "type": "bug",
+  "updated_at": "2026-09-07T15:32:29Z"
+}
