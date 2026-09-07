@@ -163,7 +163,7 @@ impl RuntimeTestAxis {
             RuntimeAnyValue::HeapRef(value_ref) => match value_ref.tag() {
                 ValueKind::LIST => &[Self::Lists],
                 ValueKind::MAP => &[Self::Maps],
-                ValueKind::BITSTRING => &[Self::Binaries],
+                kind if kind.is_binary_repr() => &[Self::Binaries],
                 ValueKind::CLOSURE => &[Self::Callables],
                 ValueKind::RESOURCE => &[Self::Resources],
                 ValueKind::STRUCT => &[Self::Tuples, Self::NamedStructs, Self::OtherStructs],
@@ -1129,7 +1129,7 @@ fn axis_admits(
             None => false,
         },
         RuntimeTestAxis::Maps => predicate.maps && has_kind(value, ValueKind::MAP),
-        RuntimeTestAxis::Binaries => predicate.binaries && has_kind(value, ValueKind::BITSTRING),
+        RuntimeTestAxis::Binaries => predicate.binaries && is_binary_value(value),
         RuntimeTestAxis::Resources => predicate.resources && has_kind(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => {
             has_kind(value, ValueKind::CLOSURE) && matches_runtime_callable(predicate, value, reader.callables)
@@ -1142,6 +1142,11 @@ fn axis_admits(
 
 fn has_kind(value: RuntimeAnyValue, kind: ValueKind) -> bool {
     matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == kind)
+}
+
+/// A binary in either of its representations. See `ValueKind::BINARY_REPRS`.
+fn is_binary_value(value: RuntimeAnyValue) -> bool {
+    matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag().is_binary_repr())
 }
 
 fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {

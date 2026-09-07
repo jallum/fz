@@ -150,7 +150,19 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
         }
         RuntimeTestAxis::Lists => emit_list_axis(e, value, &predicate.lists),
         RuntimeTestAxis::Maps => e.kind_flag(value, ValueKind::MAP),
-        RuntimeTestAxis::Binaries => e.kind_flag(value, ValueKind::BITSTRING),
+        RuntimeTestAxis::Binaries => {
+            // Every representation a binary is held in, so a shared-buffer
+            // binary answers the same as an inline one.
+            let mut flag: Option<ir::Value> = None;
+            for kind in ValueKind::BINARY_REPRS {
+                let next = e.kind_flag(value, kind)?;
+                flag = Some(match flag {
+                    None => next,
+                    Some(prev) => e.builder().ins().bor(prev, next),
+                });
+            }
+            Ok(flag.expect("BINARY_REPRS is never empty"))
+        }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => emit_callable_axis(e, value, &predicate.callables),
         RuntimeTestAxis::Tuples | RuntimeTestAxis::NamedStructs | RuntimeTestAxis::OtherStructs => {

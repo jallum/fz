@@ -99,6 +99,18 @@ impl ValueKind {
         matches!(self, Self::INT | Self::FLOAT | Self::ATOM)
     }
 
+    /// The kinds a binary is held in. A binary is one language value with
+    /// two representations -- inline below `SHARED_BIN_THRESHOLD_BYTES`,
+    /// a shared-buffer view above it -- and every question of the form
+    /// "is this a binary" is a question about both. Asking about
+    /// `BITSTRING` alone made every binary over 64 bytes answer NO
+    /// (fz-5xp.57).
+    pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::PROCBIN];
+
+    pub const fn is_binary_repr(self) -> bool {
+        matches!(self, Self::BITSTRING | Self::PROCBIN)
+    }
+
     pub const fn from_heap_tag(tag: u64) -> Option<Self> {
         if tag >= TAG_LIST && tag <= TAG_RESOURCE {
             Some(Self(tag as u8))

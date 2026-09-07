@@ -364,6 +364,16 @@ door and the receive door go through — each decide the axes by matching the
 table exhaustively, so an axis cannot join the lattice without every lowering
 refusing to compile until it is taught to test it.
 
+An axis is a question about a language value, not about a storage kind, and
+those are not one-to-one. A binary is held two ways — an inline `Bitstring`
+below `SHARED_BIN_THRESHOLD_BYTES` and a shared-buffer `ProcBin` above it — so
+the binaries axis is reached by both, and `ValueKind::BINARY_REPRS` is where
+that is said once for every lowering to read. Asking the axis about `BITSTRING`
+alone meant a `ProcBin` reached no axis at all and therefore answered NO to
+every runtime test: on the native doors a binary over 64 bytes matched no
+bitstring pattern and no `case` clause, silently, with control falling to the
+next clause (fz-5xp.57).
+
 Each axis carries an `AxisPrecision`, which is what a SEAT may read from
 deciding it:
 
