@@ -6,7 +6,7 @@
     "fz-0am.6"
   ],
   "created": "2026-09-07T09:09:07Z",
-  "description": "The scheduler holds Wake{cause, job, disposition} at enqueue_step and discards the association once the job is queued. The job's own later completion records what it read and changed, but not why it ran.\n\nCarry it: hold the pending cause(s) per enqueued job, drained when the job is popped, and put (WorkStartReason, causes) on the completion record.\n\nThis is NOT the 'second dependency ledger' the module doc rejects. It is bounded by the agenda -- one entry per pending job, drained on pop -- not a history.\n\nRespect 34.3's coalescing semantics: a job woken by two facts before it runs has TWO causes and must keep both. Dedup here would reintroduce exactly what 34.3 deleted the coalesced_seen set to avoid.\n\nDo not force data into WorkStartReason: it is Copy and used as a tally map key. Keep the discriminant, carry causes alongside.\n\nProof: the existing Replay is the oracle. Emit, then assert the emitted answer equals the replayed answer on all three target fixtures BEFORE anything is deleted.",
+  "description": "The scheduler holds Wake{cause, job, disposition} at enqueue_step and discards the association once the job is queued. The job's own later completion records what it read and changed, but not why it ran.\n\nCarry it: hold the pending cause(s) per enqueued job, drained when the job is popped, and put (WorkStartReason, causes) on the completion record.\n\nThis is NOT the 'second dependency ledger' the module doc rejects, and the ticket should say so explicitly when it lands. It is bounded by the agenda -- one entry per pending job, drained on pop -- not a history. 34.3 measured ~1.4k transient Wake records per real compile against a 660ms compile and called the cost negligible.\n\nRespect 34.3's coalescing semantics: a job woken by two facts before it runs has TWO causes and must keep both. Dedup here would reintroduce exactly what 34.3 deleted the coalesced_seen set to avoid.\n\nDo not force data into WorkStartReason: it is Copy and used as a tally map key. Keep the discriminant, carry causes alongside. The cause is a FactUse, whose Current/Settled discriminant already distinguishes content from readiness -- no extra classification is needed.\n\n## Proof\n\nThe existing Replay is the oracle. Emit, then assert the emitted answer equals the replayed answer on all three target fixtures BEFORE anything is deleted.\n\nA slice of this proof already ships green: woken_by_settled corroborates every derived Readiness against an actual Settled-use wake, and readiness_without_settled_wake.is_empty() holds in three places over a non-vacuous population (readiness_caused: 6 pinned, with executable_fact_readiness \u003e 0 asserted so it cannot go empty). Extend that pattern to the content and initial classes.",
   "id": "fz-0am.1",
   "labels": [],
   "parent": "fz-0am",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "Carry each job's scheduling cause to the evaluation it causes",
   "type": "task",
-  "updated_at": "2026-09-07T09:15:00Z"
+  "updated_at": "2026-09-07T09:16:04Z"
 }
