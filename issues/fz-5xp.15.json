@@ -10,6 +10,7 @@
     "fz-5xp.17",
     "fz-5xp.5"
   ],
+  "closed_at": "2026-09-07T15:04:53Z",
   "created": "2026-09-06T23:44:36Z",
   "description": "Three allocating externs unlock interpolation and Enum.join.\n\n  fz_atom_to_binary     -- runtime already owns the table (process.node.atom_name)\n  fz_integer_to_binary\n  fz_float_to_binary    -- must be shortest-round-trippable (Ryu/Grisu). Do NOT hand-roll.\n\nThen String.Chars as a protocol with Elixir's 5 builtin impls: Atom (nil -\u003e \"\"),\nBitString (identity for binary, panic otherwise), List, Integer, Float.\n\nElixir deliberately has NO @fallback_to_any here -- interpolating a map or tuple\nraises. Preserve that; it is the design's main safety property. In fz it becomes panic.\n\nKernel.to_string/1 is a macro in Elixir (kernel.ex:3499) expanding to\nString.Chars.to_string/1.\n\nGates fz-5xp.5 (interpolation) and Enum.join/1,2.",
   "id": "fz-5xp.15",
@@ -30,7 +31,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Atom/Integer/Float to-string, String.Chars, and Kernel.to_string",
   "type": "task",
   "updated_at": "2026-09-07T15:04:53Z"
