@@ -13,11 +13,15 @@
     {
       "text": "fz-5xp.18 leaves you a deletion. Kernel now answers every integer/float pair through a typed clause, and runtime type dispatch selects those clauses even when the static type is a numeric union (verified: operands typed `integer | float` agree with Elixir on all six operators, all three doors). So `lower_cmp_binop`'s coercion slow path in native_codegen/prim.rs -- the both_int tag test, the brif, the box_float_for_any call and the fz_promote_f64 pair -- is no longer reachable for numbers.\n\nWhat still reaches it is exactly non-numeric operands, which is this ticket's subject and where it currently produces a wrong answer rather than an error (Enum.sort([\"pear\",\"apple\",\"fig\"]) returns [\"pear\",\"fig\",\"apple\"]). Whatever term ordering lands here should DELETE that path rather than sit beside it -- a comparison seat that silently promotes a binary to a float is the thing being replaced, not a fallback worth keeping.",
       "timestamp": "2026-09-07T00:45:54Z"
+    },
+    {
+      "text": "fz-5xp.18 advanced this and narrowed what is left.\n\nDONE by fz-5xp.18: numbers order by value across integer/float on all three doors, and BINARIES order byte-lexicographically with the shorter prefix first, so Enum.sort([\"pear\",\"apple\",\"fig\"]) now returns [\"apple\",\"fig\",\"pear\"] instead of [\"pear\",\"fig\",\"apple\"]. Both live in cmp_any_value (runtime/src/ir_runtime.rs), the single dynamic ordering that native codegen, the interpreter, guards and the bb intrinsic all call.\n\nWHAT IS LEFT is cross-type order only -- Erlang's number \u003c atom \u003c reference \u003c fun \u003c port \u003c pid \u003c tuple \u003c map \u003c list \u003c bitstring. Verified against Elixir: 1 \u003c \"a\" is true, :atom \u003c \"a\" is true, \"a\" \u003c :atom is false.\n\nIt is no longer a silent wrong answer. Kernel declares a clause per orderable pair and NO any/any default, so an unsupported combination is refused at compile time:\n    error[spec/violation]: call to  violates its @spec for arguments (:a, :b)\nImplementing term order means extending cmp_any_value and adding the Kernel clauses that admit the new pairs -- one place, not two, and the compile error tells you exactly which pair is missing.",
+      "timestamp": "2026-09-07T01:48:27Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "There is no term ordering: Enum.sort is silently wrong on non-numerics",
   "type": "bug",
-  "updated_at": "2026-09-07T00:45:54Z"
+  "updated_at": "2026-09-07T01:48:27Z"
 }
