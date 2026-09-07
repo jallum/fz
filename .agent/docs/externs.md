@@ -80,21 +80,36 @@ door's lowering.
 
 ### A foreign symbol has to be in the process to be found
 
-The interp and JIT doors resolve a foreign extern with
-`dlsym(RTLD_DEFAULT, ..)`, which searches the loaded global scope — so the
-library has to actually be loaded. On macOS the C library and the math library
-are one thing (libSystem) and every process has it; elsewhere libm is separate,
-and nothing in the runtime referenced it, so `--as-needed` dropped the
-dependency and `extern "C" fn libc::sqrt(float) :: float` failed with
-`dlsym: symbol sqrt not found` on Linux while passing on macOS
-(fz-5xp.59). `runtime/src/lib.rs` keeps a `#[used]` static holding `sqrt`'s
-address for exactly that reason.
+`fz_extern_symbol_addr` is the ONE resolver for a foreign symbol, and both
+runtime doors go through it: the interpreter calls it directly, and the JIT is
+built with it as its `symbol_lookup_fn` rather than cranelift's own `dlsym`.
+That matters because the question has one answer and used to have two —
+cranelift's searched only what the process had already loaded, so the JIT door
+failed where the interp door succeeded.
+
+It tries `dlsym(RTLD_DEFAULT, ..)` first, which searches the loaded global
+scope, and then a fixed list of standard C libraries it opens itself
+(`STANDARD_C_LIBRARIES`). The list exists because the scope is not enough: on
+macOS the C library and the math library are one thing (libSystem) that every
+process already has, while elsewhere libm is separate and nothing references
+it, so `--as-needed` drops it and `extern "C" fn libc::sqrt(float) :: float`
+fails with `dlsym: symbol sqrt not found` on Linux while passing on macOS
+(fz-5xp.59).
+
+Opening the libraries rather than arranging a link-time dependency is
+deliberate: it does not depend on whether the linker decided to keep one.
 
 The AOT door has the same split on the link line: `aot_link.rs` passes
 `-lm -rdynamic` off macOS, where the mac branch passes
-`-Wl,-undefined,dynamic_lookup` instead. A symbol that resolves only on the
-development platform is the recurring shape here — see the JIT symbol table
-above.
+`-Wl,-undefined,dynamic_lookup` instead.
+
+Both the library list and that `-lm` are stand-ins for something fz cannot say:
+which library a declaration comes from (fz-5xp.61). `libc::` is an fz module
+path, not a library name. It works only because every foreign symbol fz names
+today is in the C standard library.
+
+A symbol that resolves only on the development platform is the recurring shape
+here — see the JIT symbol table above.
 
 ## The `fz` ABI is reserved to the runtime library
 

@@ -82,6 +82,17 @@ impl JitBackend {
         // AOT will skip this entire block (linker resolves against the
         // fz_runtime staticlib instead).
         register_runtime_symbols(&mut builder);
+        // fz-5xp.59 — a FOREIGN symbol goes through the same resolver the
+        // interpreter uses, rather than cranelift's own `dlsym`. There is one
+        // question -- where does `libc::sqrt` live -- and it had two answers:
+        // cranelift's searched only what the process had already loaded, so the
+        // JIT door failed on Linux where libm is a separate library while the
+        // interp door, once taught to open it, did not.
+        builder.symbol_lookup_fn(Box::new(|name| {
+            let name = std::ffi::CString::new(name).ok()?;
+            let addr = unsafe { fz_runtime::extern_variadic::fz_extern_symbol_addr(name.as_ptr()) };
+            (addr != 0).then_some(addr as *const u8)
+        }));
         Self {
             jmod: JITModule::new(builder),
         }
