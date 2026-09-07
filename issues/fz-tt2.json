@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T19:17:08Z",
+  "description": "## Goal\n\nMake open PR #124's review and ticket provenance truthful without changing its accepted test-support simplification.\n\n## Current defect\n\nPR #124 is green and its two changes are concordant, but its title lacks the required \u003cticket\u003e: prefix and commits 9581df67 and 0803593f name deleted fz-foq.1 and fz-foq.2 tickets. The body admits the dangling identities; that does not satisfy one surviving ticket per commit or the PR title contract. No existing bw ticket covers this work.\n\n## Strategy\n\nRe-read the complete diff against the branch root and choose the smallest honest atomic shape. If both changes are one concept, squash them into this ticket's single commit; otherwise create one replacement ticket per genuinely atomic commit before rewriting. Do not recreate padding, compatibility history or documentation whose only purpose is to excuse deleted identities.\n\nRetitle the PR with the surviving ticket id and refresh its explanatory body from the final diff. Preserve the move of fixture metadata out of production and the removal of test-only code from the production-authority census.\n\n## Acceptance\n\nEvery PR #124 commit names one extant bw ticket with matching acceptance and close evidence. The PR title begins with the owning ticket id, the body explains the complete final diff, and no dangling fz-foq.1/.2 identity remains. Behavior, production surface reduction, focused tests, full library/matrix/CLI gates, formatting, strict lint and CI remain green.",
+  "id": "fz-tt2",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Restore truthful ticket and PR provenance for #124",
+  "type": "task",
+  "updated_at": "2026-09-07T19:17:08Z"
+}
