@@ -141,46 +141,54 @@ defmodule String do
 
   @doc "Removes leading whitespace."
   @spec trim_leading(binary) :: binary
-  fn trim_leading(<<c, rest :: binary>>) do
-    if whitespace?(c), do: trim_leading(rest), else: <<c, rest :: binary>>
+  fn trim_leading(s), do: trim_leading_step(s, next_codepoint(s))
+
+  @spec trim_leading_step(binary, {binary, binary} | nil) :: binary
+  fnp trim_leading_step(s, nil), do: s
+  fnp trim_leading_step(s, {cp, rest}) do
+    if whitespace?(cp), do: trim_leading(rest), else: s
   end
-  fn trim_leading(s), do: s
 
   @doc "Removes trailing whitespace."
   @spec trim_trailing(binary) :: binary
-  fn trim_trailing(s), do: trim_trailing_at(s, byte_size(s))
-
-  @spec trim_trailing_at(binary, integer) :: binary
-  fnp trim_trailing_at(_s, 0), do: ""
-  fnp trim_trailing_at(s, n) do
-    if whitespace?(byte_at(s, n - 1)) do
-      trim_trailing_at(s, n - 1)
-    else
-      take_bytes(s, n)
-    end
-  end
-
-  @spec byte_at(binary, integer) :: integer
-  fnp byte_at(s, index), do: first_byte(drop_bytes(s, index))
+  fn trim_trailing(s), do: reverse(trim_leading(reverse(s)))
 
   @spec first_byte(binary) :: integer
   fnp first_byte(<<c, _rest :: binary>>), do: c
   fnp first_byte(_s), do: 0
 
-  # Elixir trims the Unicode whitespace set; this is the ASCII part of it,
-  # which is what `:ascii` case handling elsewhere in this module matches.
-  @spec whitespace?(integer) :: bool
-  fnp whitespace?(32), do: true
-  fnp whitespace?(9), do: true
-  fnp whitespace?(10), do: true
-  fnp whitespace?(11), do: true
-  fnp whitespace?(12), do: true
-  fnp whitespace?(13), do: true
-  fnp whitespace?(_c), do: false
+  # Elixir trims the Unicode whitespace set, not the ASCII one, so this is a
+  # table -- the SMALL one the ticket calls out, 25 codepoints. The other table
+  # Elixir owns is case mapping, 2,989 codepoints generated from Unicode data,
+  # which is not here: see `upcase/1`.
+  @spec whitespace?(binary) :: bool
+  fnp whitespace?(" "), do: true
+  fnp whitespace?("\t"), do: true
+  fnp whitespace?("\n"), do: true
+  fnp whitespace?("\r"), do: true
+  fnp whitespace?(<<11>>), do: true
+  fnp whitespace?(<<12>>), do: true
+  fnp whitespace?(<<194, 133>>), do: true
+  fnp whitespace?(<<194, 160>>), do: true
+  fnp whitespace?(<<225, 154, 128>>), do: true
+  fnp whitespace?(<<226, 128, 128>>), do: true
+  fnp whitespace?(<<226, 128, 129>>), do: true
+  fnp whitespace?(<<226, 128, 130>>), do: true
+  fnp whitespace?(<<226, 128, 131>>), do: true
+  fnp whitespace?(<<226, 128, 132>>), do: true
+  fnp whitespace?(<<226, 128, 133>>), do: true
+  fnp whitespace?(<<226, 128, 134>>), do: true
+  fnp whitespace?(<<226, 128, 135>>), do: true
+  fnp whitespace?(<<226, 128, 136>>), do: true
+  fnp whitespace?(<<226, 128, 137>>), do: true
+  fnp whitespace?(<<226, 128, 138>>), do: true
+  fnp whitespace?(<<226, 128, 168>>), do: true
+  fnp whitespace?(<<226, 128, 169>>), do: true
+  fnp whitespace?(<<226, 128, 175>>), do: true
+  fnp whitespace?(<<226, 129, 159>>), do: true
+  fnp whitespace?(<<227, 128, 128>>), do: true
+  fnp whitespace?(_cp), do: false
 
-  # Two recursions rather than one `map_bytes(s, fun)`, because a closure CALL
-  # inside a bitstring segment does not compile (fz-5xp.66). `<<fun.(c)>>` is
-  # the natural way to write this and is exactly what fails.
   @doc "ASCII upper-casing."
   @spec upcase(binary) :: binary
   fn upcase(<<c, rest :: binary>>) when c >= 97 and c <= 122, do: <<c - 32>> <> upcase(rest)
@@ -275,6 +283,31 @@ defmodule String do
   fnp codepoint_size(c) when c < 224, do: 2
   fnp codepoint_size(c) when c < 240, do: 3
   fnp codepoint_size(_c), do: 4
+
+  # THE GRAPHEME SEAM (fz-5xp.14). UAX #29 grapheme breaking is what Elixir
+  # delegates to OTP's :unicode_util -- about 1 MB compiled, growing ~15% per
+  # OTP major. fz does not have it, and this is the single function that would
+  # have to learn it: every grapheme operation goes through here, so the table
+  # lands in one place or not at all.
+  #
+  # Until then a grapheme IS a codepoint, which is correct for everything
+  # outside combining marks, regional indicators and emoji sequences.
+  @doc "The byte length of the first grapheme."
+  @spec next_grapheme_size(binary) :: integer
+  fn next_grapheme_size(s), do: codepoint_size(first_byte(s))
+
+  @doc "{grapheme, rest} for the first grapheme, or nil when empty."
+  @spec next_grapheme(binary) :: {binary, binary} | nil
+  fn next_grapheme(""), do: nil
+  fn next_grapheme(s), do: split_codepoint(s, next_grapheme_size(s))
+
+  @doc "Every grapheme as its own binary."
+  @spec graphemes(binary) :: [binary]
+  fn graphemes(s), do: graphemes_step(next_grapheme(s))
+
+  @spec graphemes_step({binary, binary} | nil) :: [binary]
+  fnp graphemes_step(nil), do: []
+  fnp graphemes_step({g, rest}), do: [g | graphemes(rest)]
 
   @doc "Every codepoint as its own binary."
   @spec codepoints(binary) :: [binary]

@@ -72,4 +72,13 @@ fn main() do
   dbg(String.replace_invalid(<<104, 255, 105>>, "?"))
   dbg(String.chunk("hi"))
   dbg(String.chunk(<<104, 255, 105>>))
+
+  # trimming is over the UNICODE whitespace set, not the ASCII one -- the
+  # ideographic space below is U+3000, and it is the small table Elixir owns
+  dbg(String.trim("　hi　"))
+
+  # the grapheme seam: a grapheme IS a codepoint until UAX #29 lands, which is
+  # correct outside combining marks, regional indicators and emoji sequences
+  dbg(String.graphemes("héllo"))
+  dbg(String.next_grapheme("héllo"))
 end
