@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-5xp.16",
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "Native mixed int/float comparison is wrong; interpreter is right",
   "type": "bug",
-  "updated_at": "2026-09-06T23:48:14Z"
+  "updated_at": "2026-09-07T00:33:54Z"
 }
