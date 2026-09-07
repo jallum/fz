@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:45:02Z",
+  "description": "Found by cold review of fz-5xp.15. All three doors agree with each other and\ndiffer from Elixir.\n\n    dbg(:\"\")          fz  :atom_3      elixir  :\"\"\n    dbg(:\"foo bar\")   fz  :foo bar     elixir  :\"foo bar\"\n\n`any_value::debug::render_atom` prints the name bare, and for an EMPTY name\nfalls through to a synthesised `:atom_N` placeholder. Elixir quotes any atom\nwhose name is not a bare identifier, and prints an empty atom as `:\"\"`.\n\nMATTERS FOR THE ORACLE: an oracle twin printing such an atom diverges, so\nfixtures currently have to avoid them. `behavior/to_string` says so explicitly\nrather than depending on it.\n\nNote the placeholder is a SECOND answer to \"what is this atom called\" -- the\nother is `fz_atom_to_binary`, which consults the table and panics if the name\nis missing. They agreed only by luck; the empty-name case is where they\nvisibly disagreed, one printing `:atom_3` and the other aborting until the AOT\ntable bug behind it was fixed. Fold them.\n\nDONE = `dbg` quotes an atom exactly when Elixir does, with a fixture covering\nempty, spaced, punctuation, unicode and ordinary names, and one implementation\nof the name lookup.",
+  "id": "fz-5xp.44",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "dbg does not quote atoms that need quoting",
+  "type": "bug",
+  "updated_at": "2026-09-07T09:45:02Z"
+}
