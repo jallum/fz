@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5xp.86"
+  ],
   "blocks": [
     "fz-5xp.79"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "[BUG] A heredoc string silently evaluates to the empty binary",
   "type": "task",
-  "updated_at": "2026-09-07T20:04:58Z"
+  "updated_at": "2026-09-07T20:06:17Z"
 }
