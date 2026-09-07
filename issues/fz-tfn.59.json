@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.188",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "Rebuild the stack on one publisher identity",
   "type": "task",
-  "updated_at": "2026-09-07T19:17:59Z"
+  "updated_at": "2026-09-07T19:19:29Z"
 }
