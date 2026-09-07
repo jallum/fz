@@ -2,7 +2,8 @@ use super::facts::FactUse;
 use super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
-use crate::compiler2::drive::JobEffects;
+use crate::compiler2::drive::{DependencyKey, JobDerivation, JobEffects};
+use crate::compiler2::facts::DerivationId;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
@@ -167,7 +168,10 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
                 activation_sink.set(true);
             } else if name == ["fz", "compiler2", "work_graph", "applied"] {
                 for change in &completion.step.changed {
-                    assert_eq!(world.has_fact(&change.key), change.new_revision.is_some());
+                    let DependencyKey::Fact(fact) = &change.key else {
+                        panic!("World completion must publish only World facts");
+                    };
+                    assert_eq!(world.has_fact(fact), change.new_revision.is_some());
                 }
                 applied_sink.set(true);
             }
@@ -260,13 +264,14 @@ fn compiler2_world_scope_module_panics_for_unindexed_module() {
 fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("spec.fz".to_string()),
         include_str!("../../fixtures2/00049_resolve_spec.fz").to_string(),
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "indexing should resolve"
@@ -274,7 +279,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     assert!(world.demand(Job::ScopeCode(code)), "scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "scoping should resolve"
@@ -296,7 +301,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     assert!(world.demand(Job::DeriveTypeDef(boxed)));
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "the referenced types should resolve"
@@ -313,7 +318,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.pending_function_source(function).is_some(),
         "scoping should stash the grouped quoted function source before define",
     );
-    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
+    let outcome = super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
         "demanding the function should derive its function surface on demand",
@@ -387,10 +392,11 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
 fn compiler2_define_function_stages_expanded_source_before_definition() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code = world.submit_code(Some("staged_source.fz".to_string()), "fn main(), do: 42\n".to_string());
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "indexing should resolve"
@@ -398,7 +404,7 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     assert!(world.demand(Job::ScopeCode(code)), "scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "scoping should resolve"
@@ -422,7 +428,7 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "demanding the function should stage expanded source and then define it",
@@ -641,7 +647,7 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
     assert!(
         step.changed
             .iter()
-            .all(|change| change.key != FactKey::ActivationInputs(key.clone())),
+            .all(|change| change.key != DependencyKey::Fact(FactKey::ActivationInputs(key.clone()))),
         "equivalent activation-input evidence should not requeue semantic work",
     );
 }
@@ -706,7 +712,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     assert!(
         step.changed
             .iter()
-            .all(|change| change.key != FactKey::ActivationInputs(callee_key.clone())),
+            .all(|change| change.key != DependencyKey::Fact(FactKey::ActivationInputs(callee_key.clone()))),
         "preserving the semantic frontier should not requeue activation analysis",
     );
 }
@@ -782,7 +788,7 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
     assert!(
         step.changed.iter().any(|change| {
-            change.key == FactKey::ActivationInputs(key.clone())
+            change.key == DependencyKey::Fact(FactKey::ActivationInputs(key.clone()))
                 && change.old_revision.is_some()
                 && change.new_revision.is_some()
                 && change.new_revision > change.old_revision
@@ -1021,6 +1027,184 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     );
 }
 
+#[test]
+fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories() {
+    let inventory = |non_empty_first: bool| {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = super::RootId::for_test(0);
+        let function = world.reference_function(ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list, non_empty, list_activation, non_empty_activation) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_activation =
+                super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_activation = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list, non_empty, list_activation, non_empty_activation)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_activation = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_activation =
+                super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list, non_empty, list_activation, non_empty_activation)
+        };
+        assert_eq!(world.types().display(&list), world.types().display(&non_empty));
+        let raw_order = list_activation.arrow < non_empty_activation.arrow;
+        let list_fact = FactKey::Executable(super::ExecutableKey {
+            activation: list_activation,
+            need: super::ExecutableNeed::Value,
+        });
+        let non_empty_fact = FactKey::Executable(super::ExecutableKey {
+            activation: non_empty_activation,
+            need: super::ExecutableNeed::Value,
+        });
+        let registrations = if non_empty_first {
+            vec![
+                FactUse::settled(non_empty_fact.clone()),
+                FactUse::settled(list_fact.clone()),
+            ]
+        } else {
+            vec![
+                FactUse::settled(list_fact.clone()),
+                FactUse::settled(non_empty_fact.clone()),
+            ]
+        };
+        let completion = world.complete_job(
+            Job::DefineFunction(function),
+            JobEffects {
+                waits: registrations,
+                ..JobEffects::default()
+            },
+        );
+        let classify = |wait: &FactUse<DependencyKey>| {
+            if wait.fact() == &DependencyKey::Fact(list_fact.clone()) {
+                "list"
+            } else if wait.fact() == &DependencyKey::Fact(non_empty_fact.clone()) {
+                "non_empty_list"
+            } else {
+                panic!("unexpected unresolved fact: {wait:?}")
+            }
+        };
+        let completion_order = completion.blocked.iter().map(classify).collect::<Vec<_>>();
+
+        let DriveOutcome::Unresolved { waits } = super::drive::ExecutionContext::new(&mut world, &tel).drive() else {
+            panic!("unmapped executable facts must remain terminally unresolved");
+        };
+        let order = waits.iter().map(|wait| classify(&wait.fact)).collect::<Vec<_>>();
+        (raw_order, completion_order, order)
+    };
+
+    let list_first = inventory(false);
+    let non_empty_first = inventory(true);
+    assert_ne!(
+        list_first.0, non_empty_first.0,
+        "the fixture must reverse raw activation-arrow order"
+    );
+    assert_eq!(
+        (list_first.1, list_first.2),
+        (non_empty_first.1, non_empty_first.2),
+        "completion effects and terminal diagnostics must use canonical semantic fact order"
+    );
+}
+
+#[test]
+fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() {
+    let completion_order = |non_empty_first: bool| {
+        let mut world = World::new();
+        let root = super::RootId::for_test(0);
+        let function = world.reference_function(ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list_key, non_empty_key) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list_key, non_empty_key)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list_key, non_empty_key)
+        };
+        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let list_fact = FactKey::ReturnType(list_key);
+        let non_empty_fact = FactKey::ReturnType(non_empty_key);
+        world.complete_job(
+            Job::SeedRoot(root),
+            JobEffects {
+                waits: vec![
+                    FactUse::current(list_fact.clone()),
+                    FactUse::current(non_empty_fact.clone()),
+                ],
+                ..JobEffects::default()
+            },
+        );
+        let mut derivations = vec![
+            JobDerivation {
+                derivation: DerivationId(1),
+                reads: Vec::new(),
+                outputs: vec![list_fact.clone()],
+                changed: vec![list_fact.clone()],
+                concluded: true,
+            },
+            JobDerivation {
+                derivation: DerivationId(2),
+                reads: Vec::new(),
+                outputs: vec![non_empty_fact.clone()],
+                changed: vec![non_empty_fact.clone()],
+                concluded: true,
+            },
+        ];
+        if non_empty_first {
+            derivations.reverse();
+        }
+        let completion = world.complete_job(
+            Job::DeriveCallGraphComponent(function),
+            JobEffects {
+                derivations,
+                ..JobEffects::default()
+            },
+        );
+        let classify = |fact: &DependencyKey| {
+            if fact == &DependencyKey::Fact(list_fact.clone()) {
+                "list"
+            } else if fact == &DependencyKey::Fact(non_empty_fact.clone()) {
+                "non_empty_list"
+            } else {
+                panic!("unexpected completion fact: {fact:?}")
+            }
+        };
+        let changed = completion
+            .changed
+            .iter()
+            .map(|change| classify(&change.key))
+            .collect::<Vec<_>>();
+        let movements = completion
+            .movements
+            .iter()
+            .map(|movement| classify(&movement.key))
+            .collect::<Vec<_>>();
+        let wakes = completion
+            .wakes
+            .iter()
+            .map(|wake| classify(wake.cause.fact()))
+            .collect::<Vec<_>>();
+        (raw_order, changed, movements, wakes)
+    };
+
+    let list_first = completion_order(false);
+    let non_empty_first = completion_order(true);
+    assert_ne!(list_first.0, non_empty_first.0, "the fixture must reverse raw Ty order");
+    assert_eq!(
+        (&list_first.1, &list_first.2, &list_first.3),
+        (&non_empty_first.1, &non_empty_first.2, &non_empty_first.3),
+        "one typed order must own derivation application, movements, and wake publication"
+    );
+}
+
 /// The bare drive's demand-on-stall pass: a waiter blocked on a fact whose
 /// mapped producer has never run must not stall — the wait is the demand, the
 /// fact->producer map expands it, and the drive completes.
@@ -1029,16 +1213,17 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &["fz", "compiler2", "drive", "demand_on_stall"]);
-    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<std::collections::HashSet<FactKey>>>> =
+    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
-    tel.attach_raw_event2::<u64, std::collections::HashSet<FactKey>, _>(
+    tel.attach_raw_event2::<u64, Vec<FactKey>, _>(
         &["fz", "compiler2", "drive", "demand_on_stall"],
         move |_, _, _, _, facts| {
             demanded_facts_sink.borrow_mut().push(facts.clone());
         },
     );
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     // Take the submit-root ignition out of the agenda: this test isolates the
     // stall pass, so nothing may be ready when the drive starts.
@@ -1055,7 +1240,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::DeriveCallGraphComponent(function));
     world.demand(Job::DeriveInputDemand(function));
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "echoval/1's own facts should settle before the isolated stall-pass setup",
     );
@@ -1075,7 +1260,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     assert_eq!(world.work_graph.pending_jobs(), 0);
 
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "the stall pass should demand the blocked fact's mapped producer and complete the drive",
     );
@@ -1113,6 +1298,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
 fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     // The root's own seed is taken out of the agenda: this test isolates the
     // producer map, so nothing but the manipulation below drives the world.
@@ -1131,7 +1317,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
         world.demand(Job::DeriveInputDemand(function));
     }
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "both bodies' own facts should settle before the producer-map setup",
     );
@@ -1185,7 +1371,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
     );
 
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "the orphaned key must not stall the drive",
     );
@@ -1220,7 +1406,7 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
     assert!(
         waits
             .iter()
-            .any(|wait| *wait.fact.fact() == FactKey::GuardDispatch(function)),
+            .any(|wait| *wait.fact.fact() == DependencyKey::Fact(FactKey::GuardDispatch(function))),
         "the unresolved report should carry the unmapped blocked fact: {waits:?}",
     );
 }
@@ -1235,13 +1421,14 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
 fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     world.submit_code(
         Some("protocol.fz".to_string()),
         "defprotocol Integerish do\n  fn id(value)\nend\n\nfn main(), do: Integerish.id(41)\n".to_string(),
     );
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "the protocol and its callsite should settle even with zero impls indexed",
     );
@@ -1261,7 +1448,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
         "defimpl Integerish, for: Integer do\n  fn id(value), do: value + 1\nend\n".to_string(),
     );
     assert_eq!(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         DriveOutcome::Resolved,
         "indexing the later-discovered impl should settle without stalling",
     );
@@ -1284,6 +1471,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
 fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code_id = world.submit_code(
         Some("global_fn.fz".to_string()),
         "fn greet(name), do: name\n".to_string(),
@@ -1306,7 +1494,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     );
 
     super::drive_test::assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "indexing the sole code unit should settle",
     );
 
@@ -1330,7 +1518,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         "the prelude should be demandable"
     );
     super::drive_test::assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
         "indexing the prelude should settle",
     );
 
@@ -1573,7 +1761,11 @@ fn an_omitted_callsite_edge_is_withdrawn_while_an_omitted_activation_stands() {
          own revision",
     );
     assert!(
-        !paused.step.changed.iter().any(|change| change.key == activation_claim),
+        !paused
+            .step
+            .changed
+            .iter()
+            .any(|change| change.key == DependencyKey::Fact(activation_claim.clone())),
         "preserving a claim must move nothing: {:?}",
         paused.step.changed,
     );
@@ -1609,7 +1801,9 @@ fn an_omitted_callsite_edge_is_withdrawn_while_an_omitted_activation_stands() {
             .step
             .changed
             .iter()
-            .filter(|change| change.key == activation_claim && change.new_revision.is_none())
+            .filter(
+                |change| change.key == DependencyKey::Fact(activation_claim.clone()) && change.new_revision.is_none()
+            )
             .count(),
         1,
         "the withdrawn claim must be reported as a retraction: {:?}",
@@ -1676,6 +1870,7 @@ fn resolving_a_published_unresolved_edge_wakes_its_readers() {
             surface_inputs: Vec::new(),
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         }],
         return_ty: None,

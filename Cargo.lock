@@ -488,6 +488,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "fz-runtime",
+ "indexmap",
  "libc",
  "libtest-mimic",
  "object",

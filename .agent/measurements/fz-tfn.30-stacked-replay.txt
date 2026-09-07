@@ -1,0 +1,232 @@
+fz-tfn.30 PR #110 -> PR #118 replay and stack proof
+====================================================
+
+Scope
+-----
+
+This is the durable proof for replaying the fifteen delivered PR #118 ticket
+commits onto the live semantic-correctness PR #110 head. It records only the
+accepted v2 replay. A rejected first replay and intermediate cold-review
+snapshots remain recovery history outside this document and are not publishable
+stack state.
+
+Pre-publication authorities on 2026-09-04:
+
+- PR #110: draft, mergeable, green, `wt/kdt-close` at
+  `c2c723c63afdbda22078bb0a164cb313b8c7dfa8`, based on `main`.
+- PR #118: draft, mergeable, green, `fz-tfn/long-lived-recalculator` at
+  `63e55daa5836811bd44ee620247371bbbb1dbb73`, based on `main`.
+- Their exact common base is
+  `a3a9761d1209165e5230625b9347cf6b0ad09b83`.
+- Neither PR has a review, issue comment, or inline review comment.
+- Neither branch is registered in a local GitHub stack yet.
+
+Before any replay, the two exact remote heads were made immutable as:
+
+    refs/tags/fz-tfn.30-prestack-pr110-c2c723c63
+        c2c723c63afdbda22078bb0a164cb313b8c7dfa8
+    refs/tags/fz-tfn.30-prestack-pr118-63e55daa5
+        63e55daa5836811bd44ee620247371bbbb1dbb73
+
+Accepted linear replay
+----------------------
+
+The candidate branch starts at the exact live #110 head. Each row is one
+original #118 commit, its accepted replay commit, and the SHA-256 of the exact
+staged binary diff the ticket-scoped cold reviewer approved before commit.
+Author, author date, subject, and order are preserved from the original commit.
+
+ticket       original                                    replay                                      approved staged SHA-256
+fz-kdt.47    b533b965eba6eb962178c0f2ddc85d13d037afb5    07dd211edd4e0caa07cf585fb8e5bf627e172beb    a9a5ac81df4d9ba6707daec3bc769f984749b26ad1cd97841738891adc4495b0
+fz-tfn.3     8859a37f67cb69bac27749428f910b6787368049    982e561d299a88bf28867278565434f8b5ff50c5    6bdf900fa332a90145873623c91001da75e491f2d1ee8561e6d2760aaa37e38d
+fz-kdt.72    c7235335f2888efc750f51a63423a720d7ede547    62b942eff34b12178e9cc86237e3de6e1924fa91    da7dc7c465d3ae8adc2078833fa9b265557d59a48fa9b7ebf5b69f0edd233d0d
+fz-tfn.17    548dbd87b15d59c581bdb033c6e8ac655ccd494e    09019c2a17c8608f6303c4a8f173d57f64ebd575    36230b3bc505fef6a733ef92040e6e8aa172d444f43b23b822db33e6ee84b21c
+fz-kdt.45    44637402114b82615c6e53dc68003435efd8334c    9f2d785bf3c26765d16a05dc1e909a207b7c28ee    e6a804552971c361377a099d02bdfc5e4afa57134a84dea64fb26d19c715eab3
+fz-tfn.23    c5217c6d8acb4305136215fcde8d8ca04318e5e6    c95ab7c16ad36442656aebdb6476bada2e202e6c    52ddb111178626de5701627241b711517c007c56ecccafe10bae4b926765fcf0
+fz-kdt.175   beeedbb0b68f455de9183123b1769d8c0737def9    8c2d57a56daf0257959444044bacb8253e76f714    3000ed21f15fa53d1917e3122249612903b8a15ec25223aec23d150cc67e2dcd
+fz-tfn.25    3af40f715ca7e615b2e57d42d76b4930309d33d1    aa90ee708ed1fd690ab50c65e7108b8c446c0d4c    05f76afc47a5b9fdd42585da3d5f3d93b847131f3b05c0ad0df9f319979c1e9e
+fz-tfn.5     21711b335e674f7c774160a9f532b00c8d1c8498    27628affad6a07683b0d6c8a650675b5fb14c5e1    7bbd3e272c86ab1e232b226ccc4a819993d2d578a9382cec5e78850d7a51c159
+fz-tfn.22    322f8df07118744a7ec9c829afa90a7c56d5b40f    29e89d4ac4ab53c25af4d52023cb23eddc5bafd9    89ee22886517c9c3e8b04478593ca643179dc278609001ebabfd2065499cfdfe
+fz-kdt.163   a10a0e2d5a17efe524a32ed9b0506215bcf17c8b    49c148b21fcfbd5bd0f667f886cdb93d731e15fa    10e9a1691eb72ca70443d5be5cb77f4583dc2b28933d8f9f4be27a8cab8b2176
+fz-tfn.26    1ad48c3f90890571dc6495248efb415ea9f366a1    de058686124776ab6bcf8524d4bb1149aa19be19    92c03a1391444eb48010c996231b366ad8a5b16cfd6ad0ad27525573aa43af7d
+fz-kdt.5     aeb8eadb5e954512e7e802e2961935e29662646c    1d0ae3264dc26423fa70d266b6d0947dabc31e1b    b8b375d5c856f0152c00bff70020dfddeeb6de9cee5a5ed12325fdf3ae7e3f62
+fz-tfn.4     5b100746306c394ddf05e82526efac5d6d1c01c6    c5e1cd558a64f70211f5bc01dc54dfaa1de36c0c    069b7d04ed9c651306e9530febf57ec36a07ed2737e8350467a005df2e5df2bb
+fz-tfn.9     63e55daa5836811bd44ee620247371bbbb1dbb73    6bc6c6bc84eb324b4426a394c16f3bec20b5cd0b    7017d46ce50ad0798e458a110f04aa02f3f2b5b9d4ddf4001de170f4a6682aac
+
+Mechanical history checks at replay head `6bc6c6bc84eb324b4426a394c16f3bec20b5cd0b`:
+
+    git merge-base replay-head c2c723c63... = c2c723c63...
+    git merge-base --is-ancestor c2c723c63... replay-head = success
+    git rev-list --count c2c723c63...replay-head = 15
+    original/replay author + email + author-date + subject rows = 15 equal
+    git diff --shortstat c2c723c63...replay-head
+      77 files changed, 15044 insertions(+), 6759 deletions(-)
+
+The diff classification is +9,413/-3,338 production lines,
++4,796/-704 test/fixture lines, +835/-236 documentation/measurement lines,
+and -2,481 other lines (the two checked-in temporary logs). These are honest
+integration totals, not a claim that this transition is source-line negative.
+The final architecture still has deletion tickets; the work reductions below
+are directly measured at the seams already changed.
+
+Per-ticket verification
+-----------------------
+
+- fz-kdt.47: formula order/arena, callable-resolution authority, wrapper
+  reseating, cross-process causal/backend identity, and CLI order gates; it
+  owns the measured deletion of one transient activation/callsite/rebase and
+  two activation analyses.
+- fz-tfn.3: scheduler ledger and output-observation gates; repeated test-only
+  output-set reconstruction is gone.
+- fz-kdt.72: exact activation-input contribution ownership/join/frontier,
+  semantic-edge inventory, backend inventory, and all target doors.
+- fz-tfn.17: backend/native equality, schema-only movement, macro revision,
+  canonical output, and cross-process backend identity.
+- fz-kdt.45: direct World fact/readiness/dependency/invalidation, product
+  driver, RuntimeDemand, callable construction, transport, and causal gates.
+- fz-tfn.23: exact readiness cause/job identities, full causal census, bounded
+  public trace, and all CLI gates.
+- fz-kdt.175: timeout/error/diagnostic cleanup ownership, process lifecycle,
+  retired stopwatch residue, and the serial fixture matrix.
+- fz-tfn.25: deterministic SCC/search order, zero-work settled/missing reads,
+  exact dependency generation, artifact identity, and three target doors; the
+  per-read full dependency-map clone is gone.
+- fz-tfn.5: typed root/callee activation-frontier identity, root dependencies,
+  no standing-root scanner, causal attribution, redefinition/unreachable-root
+  paths, and target doors.
+- fz-tfn.22: retired Agenda/Scheduler introspection and stale vocabulary have
+  zero residue.
+- fz-kdt.163: semantic/native equivalence, captures/direct callees/ABI/effects,
+  structural negatives, schema movement, complete native census, CLI, and
+  serial matrix.
+- fz-tfn.26: typed binder-scoped order, comparison memoization, complete
+  same-producer transactions, cross-process causal/backend identity, CLI, and
+  target matrix.
+- fz-kdt.5: nonzero checked request/session identity, exact lifecycle and
+  movement causality, raw structured product identity, canonical reporting,
+  bounded traces, cross-process causal/backend identity, and no unreachable
+  reentry fallback.
+- fz-tfn.4: the unused SettledPresence mode, constructors, subscriptions,
+  tests, logs, and vocabulary are gone; Current and Settled remain exact.
+- fz-tfn.9: generation/pointer identity across producer, memo, typed inventory,
+  downstream products, World, direct result, cache, and fresh session; native
+  sharing census, lifecycle/causal gates, CLI, full library, and serial matrix.
+
+Combined work and ownership signal
+----------------------------------
+
+- The large 00420 ownership probe measured 17,840 large ProductValue
+  transfers, 13,581 typed RuntimeDemand reads, and 237 packaged-demand
+  transfers that formerly deep-copied payloads: an observed lower bound of
+  31,658 deep copies, now zero. The temporary probe is removed.
+- Backend lowering no longer builds 237 EmissionReadyExecutable aggregate
+  copies. The type is deleted.
+- The combined native census has 510 candidates = 474 resolved + 2 known
+  panics + 34 expected fatal paths, with 472 paired codegen successes. It
+  preserves 5,763 semantic entries while removing 55 physical roots, 146
+  continuations, 201 bodies, and 47,760 native bytes; MakeClosure stays 118.
+  Deterministic work is 206 passes, 18,569 indexed bodies, 17,769 owned graph
+  roles, 6,796 graph comparisons, and 6,107 body comparisons. Paired
+  12,796 -> 12,270 ms is corroborative, never a threshold.
+- Product reads no longer clone the complete dependency map before settled or
+  missing lookups. RuntimeDemand no longer has a standing root-entry ignition
+  scan. Exact movement/dependency edges are the surviving authorities.
+- Types owns one operation-tagged comparison-key -> typed-outcome map for
+  predicate and activation-order comparisons. Binary operations carry their
+  Ty pair; the unary emptiness operation carries its one Ty. It stores no
+  rendered or canonical Ty string, and reverse symmetric/order queries reuse
+  one entry.
+- CallableResolution is the single dependency-tracked callable authority.
+  Construction-member selection remains the semantic seat/drop/member-order
+  authority; stress perturbation is input only.
+- Empty-list bindings use ordinary type algebra and unread covariant positions
+  cannot publish a partial lower-bound join as Known.
+
+Final integration correction proof
+----------------------------------
+
+The one-map comparison gate was RED against the replay head: after caching a
+disjointness predicate and activation-order verdict for the same Ty pair, the
+total entry count remained one because semantic order lived in a second hidden
+map. The accepted design uses one `HashMap<ComparisonKey, ComparisonOutcome>`;
+the key enum is the operation tag and carries its Ty operand(s), while the
+outcome enum distinguishes a Boolean predicate from an Ordering. Test-only hit
+counters compile out of production.
+
+After the collapse:
+
+- all 137 `compiler2::types::types_test` tests pass;
+- all 9 `compiler2::canon_test` tests pass, including full-arena faithfulness
+  and target-fixture canonical order;
+- the exact typed activation job/fact/use, product wait, transport consumer,
+  and completion movement/wake order tests pass;
+- the three-fixture causal work multiset is exact across two processes;
+- workspace documentation tests pass (one intentionally ignored example);
+- all-target/all-feature check and strict clippy pass with no warning;
+- formatting and diff checks pass.
+
+Latest broad proof at the replay head used the worktree-local isolated target
+`/Users/j5n/Workspace/fz-wt-tfn30-stack-v2/target`: full library 1,773 passed,
+6 ignored; serial fixture matrix 528 passed, 3 ignored; all 25 fz2 CLI tests;
+the ignored native census; targeted causal/lifecycle/ownership suites; all
+targets/all features check; strict clippy; formatting and diff checks. The
+ordinary permanent ownership regression is 0.05 seconds after compilation;
+the 5.21-second temporary 00420 probe and its counters are absent. Expensive
+native census remains ignored outside ordinary CI.
+
+Pre-stack GitHub CI was independently green: PR #110 lint 39 seconds/test
+17 minutes 18 seconds; PR #118 lint 40 seconds/test 24 minutes 9 seconds. The
+stack publication must trigger and pass fresh CI; these pre-stack runs are not
+substitutes.
+
+Downstream DAG decisions
+------------------------
+
+- fz-kdt.214 owns one exact typed path-aware InputDemand flow relation and now
+  precedes fz-kdt.213.
+- fz-kdt.213 owns the one reactive per-function atomic InputDemand fact,
+  deletes its private cone and both solver passes, and absorbs the mutual-cycle
+  returned-axis repair. It precedes fz-kdt.165.
+- fz-kdt.165 adds `callable_identity` as the fourth dimension of that same
+  InputDemand fact and deletes the body-wide identity Boolean.
+- fz-kdt.4 remains the distinct reactive RuntimeDemand ticket. The two facts
+  share generic fact plumbing only, never a cone or compatibility bridge.
+- fz-tfn.10 through fz-tfn.12 delete PullSession artifact mirrors, establish
+  NativeProgram as the sole persistent root product, move macro roots directly
+  onto RootBackendProduct, delete backend/native fact-map bridges and revisions,
+  and reassess nested shared handles after each owner disappears.
+- fz-tfn.12 now precedes fz-tfn.13. fz-tfn.13 moves stable body/content identity
+  before lowering and must delete fz-kdt.163's post-lowering whole-root
+  dedup/index/compare/remap work once the product boundary replaces it.
+- fz-tfn.31 owns one immutable fixture observation bundle and pure named
+  ratchets. It blocks final work-budget ticket fz-tfn.24 and pins the existing
+  duplicate three-fixture compilation paths from six compiles to three without
+  global caching or weaker failure/non-vacuity evidence.
+- Every unfinished fz-tfn child is blocked by fz-tfn.30 directly or through
+  these edges; `bw ready fz-tfn` is empty during integration.
+
+Publication and cleanup still required
+--------------------------------------
+
+After this document and the one-map integration correction receive their own
+cold approval and fz-tfn.30 is committed, the delivery branch may move. Then:
+
+1. initialize `main -> wt/kdt-close -> fz-tfn/long-lived-recalculator` with
+   `gh stack init --base main wt/kdt-close fz-tfn/long-lived-recalculator`;
+2. run `gh stack rebase --no-trunk` as the topology proof;
+3. publish with `gh stack submit`;
+4. verify #110 remains draft against main, #118 remains draft against
+   `wt/kdt-close`, both remote heads are exact, and fresh CI is green;
+5. replace PR #118's now-stale body with the combined topology, head, final CI,
+   5,763 semantic entries, -55 roots/-146 continuations/-201 bodies/-47,760
+   native bytes, and the observed 31,658 -> 0 deep-copy lower bound. Leave PR
+   #110's body unchanged while its head remains `c2c723c63...`;
+6. remove only the integration-owned v1/v2 worktrees and detached
+   `/private/tmp/fz-tfn30-{kdt45-base-wt,kdt72-base-wt,pr110-base-wt,tfn23-original}`
+   proof worktrees after the remote stack and CI are durable. Remove their
+   disposable build targets as well: `/tmp/fz-tfn30-stack-v2-target.MkNvfB`
+   (13 GiB observed), `/tmp/fz-tfn30-stack-target.PoFDXm` (5.7 GiB), the v2
+   worktree target (10 GiB), and the v1 worktree target (1.4 GiB). Preserve all
+   unrelated worktrees and user-owned untracked files.
+
+No shared ref, PR base, or stack was changed while producing this proof.

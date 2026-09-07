@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::drive_test::assert_resolved;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
-    ModuleInterfaceCallable, RootSubmission, World,
+    ModuleInterfaceCallable, RootSubmission,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::{DirectCallTarget, Term};
@@ -389,38 +389,41 @@ fn import_except_wrong_arity_is_error() {
 #[test]
 fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    let math = world.reference_module("Math".to_string());
-    let add = world.reference_function(math, "add".to_string(), 2);
-    world.submit_module_interface(
+    let mut compiler = Compiler2::new(tel);
+    let math = compiler.world_mut().reference_module("Math".to_string());
+    let add = compiler.world_mut().reference_function(math, "add".to_string(), 2);
+    let reference = compiler.world().function_ref(add).clone();
+    compiler.submit_module_interface(
         "Math".to_string(),
         ModuleInterface::new(vec![ModuleInterfaceCallable {
             function: add,
-            reference: world.function_ref(add).clone(),
+            reference,
             kind: InterfaceCallableKind::PublicFunction,
             variadic: false,
         }]),
     );
-    world.submit_code(
-        Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
-        include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
-    );
-    let root = world.submit_root(Some("User".to_string()), "run".to_string(), 2, ExecutableNeed::Value);
-    // Native lowering is demand-only, so demand it explicitly before driving.
-    world.demand(super::Job::LowerNativeProgram(root));
-    assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        "interface-only provider call should settle",
-    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00069_import_from_external_interface.fz".to_string()),
+        text: include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 2,
+        need: ExecutableNeed::Value,
+    });
+    let (_, native) = compiler
+        .drive_root_to_dump_stage(root, super::dump::DumpStage::Native)
+        .expect("interface-only provider call should settle");
     assert!(
-        world.module_defined_revision(math).is_none(),
+        compiler.world().module_defined_revision(math).is_none(),
         "external interface imports should not require a provider module body",
     );
     assert!(
-        world.module_interface_revision(math).is_some(),
+        compiler.world().module_interface_revision(math).is_some(),
         "external interface imports should publish the provider interface fact",
     );
-    let program = world.native_program(root);
+    let program = native.expect("native dump stage must return its native product");
     let edges = program.module.external_call_edges();
     assert_eq!(
         edges.len(),

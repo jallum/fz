@@ -833,7 +833,10 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // backend product: pre-existing pipeline gap for enum_take_drop_split
+    assert_resolved(
+        compiler.drive(),
+        "Enum.reduce semantic facts should settle without requesting a native product",
+    );
     // TODO: declared return fact for Enum.reduce in Enum.drop_positive should be non-bottom
 }
 
@@ -852,7 +855,10 @@ fn take_positive_reduce_while_has_typed_callback_return() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // LowerNativeProgram still has a pre-existing enum_take_drop_split gap.
+    assert_resolved(
+        compiler.drive(),
+        "Enum.take_positive semantic facts should settle without requesting a native product",
+    );
     // TODO: declared return fact for Enum.reduce_while in Enum.take_positive should be non-bottom for int-amount spec
 }
 
@@ -1129,7 +1135,10 @@ fn opaque_value_accessor_no_visibility_diagnostic_inside_module() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // LowerNativeProgram Fatal: pre-existing pipeline gap for opaque accessor
+    assert_resolved(
+        compiler.drive(),
+        "opaque value access inside its declaring module should settle without requesting a native product",
+    );
     // TODO: no type/opaque-visibility diagnostic should be emitted for .value access inside module A
 }
 

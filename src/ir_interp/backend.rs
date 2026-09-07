@@ -10,14 +10,14 @@ use super::value::{
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
-use crate::compiler2::FunctionId;
 use crate::compiler2::pull::TransportCarrier;
-use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportStore};
+use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
     ExecutableDispatch, ValueId, required_dispatch_input_ordinals,
 };
+use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::{
     CallableShape, RuntimeValueReader, matches_runtime_type_predicate, surface_membership,
@@ -46,12 +46,12 @@ enum BackendRunStep {
 
 enum BackendEvalState {
     Executable {
-        executable: usize,
+        executable: Rc<BackendExecutable>,
         args: Vec<AnyValue>,
         continuations: Vec<BackendContinuation>,
     },
     Entry {
-        executable: usize,
+        executable: Rc<BackendExecutable>,
         entry: crate::compiler2::ControlEntryId,
         env: HashMap<ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
@@ -75,13 +75,22 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     output: &dyn OutputSink,
     program: &BackendProgram,
 ) -> Result<i64, String> {
-    let mut runtime = IrInterpRuntime::fresh_with_atoms(program.atom_names.clone());
+    let atom_names = program
+        .atom_names
+        .iter()
+        .map(|name| name.as_ref().clone())
+        .collect::<Vec<_>>();
+    let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
     let module = Module {
-        atom_names: program.atom_names.clone(),
-        struct_schemas: program.struct_schemas.clone(),
+        atom_names,
+        struct_schemas: program
+            .struct_schemas
+            .entries()
+            .map(|(name, fields)| (name.as_ref().clone(), fields.as_ref().clone()))
+            .collect(),
         ..Module::default()
     };
-    runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
+    runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, Vec::new())?;
     let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, None)?;
     let halt_val = completions
         .iter()
@@ -107,7 +116,12 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     process: Process,
     args: Vec<AnyValue>,
 ) -> (Process, Result<AnyValue, String>) {
-    let mut runtime = IrInterpRuntime::with_process(process, &program.atom_names);
+    let names = program
+        .atom_names
+        .iter()
+        .map(|name| name.as_ref().clone())
+        .collect::<Vec<_>>();
+    let mut runtime = IrInterpRuntime::with_process(process, &names);
     let atom_names = runtime
         .process_ref(1)
         .expect("macro runtime should own pid 1")
@@ -115,11 +129,15 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
         .atom_names();
     let module = Module {
         atom_names,
-        struct_schemas: program.struct_schemas.clone(),
+        struct_schemas: program
+            .struct_schemas
+            .entries()
+            .map(|(name, fields)| (name.as_ref().clone(), fields.as_ref().clone()))
+            .collect(),
         ..Module::default()
     };
     let result = (|| {
-        runtime.enqueue_backend_entry(1, program.entry, args)?;
+        runtime.enqueue_backend_entry(1, backend_executable_ref(program, types, program.entry())?, args)?;
         let completions =
             drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, Some(1))?;
         completions
@@ -135,14 +153,19 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
 }
 
 impl IrInterpRuntime {
-    fn enqueue_backend_entry(&mut self, pid: u32, executable: usize, args: Vec<AnyValue>) -> Result<(), String> {
+    fn enqueue_backend_entry(
+        &mut self,
+        pid: u32,
+        executable: Rc<BackendExecutable>,
+        args: Vec<AnyValue>,
+    ) -> Result<(), String> {
         self.enqueue_backend_executable(pid, executable, args, Vec::new())
     }
 
     fn enqueue_backend_executable(
         &mut self,
         pid: u32,
-        executable: usize,
+        executable: Rc<BackendExecutable>,
         args: Vec<AnyValue>,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
@@ -165,7 +188,7 @@ impl IrInterpRuntime {
     fn enqueue_backend_local_entry(
         &mut self,
         pid: u32,
-        executable: usize,
+        executable: Rc<BackendExecutable>,
         entry: crate::compiler2::ControlEntryId,
         env: HashMap<ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
@@ -191,7 +214,11 @@ impl IrInterpRuntime {
         self.backend_resume.remove(&pid)
     }
 
-    pub(super) fn spawn_backend(&mut self, executable: usize, args: Vec<AnyValue>) -> Result<u32, String> {
+    pub(super) fn spawn_backend(
+        &mut self,
+        executable: Rc<BackendExecutable>,
+        args: Vec<AnyValue>,
+    ) -> Result<u32, String> {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         let node = Rc::clone(&self.node);
@@ -221,29 +248,26 @@ impl IrInterpRuntime {
     ) -> Result<(), String> {
         let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
         if let Some(park) = self.backend_parked.remove(receiver_pid) {
+            let entries = entries_for_executable(&park.executable)?;
+            let entry = entries
+                .get(park.entry.as_u32() as usize)
+                .ok_or_else(|| format!("backend parked entry {} is out of bounds", park.entry.as_u32()))?;
+            let BackendTail::Receive(receive) = &entry.tail else {
+                return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
+            };
             if let Some((clause_index, bound_values)) = try_match_backend_receive(
                 self,
                 types,
                 transport,
                 program,
                 module,
-                &park.clauses,
-                &park.dispatch,
+                &receive.clauses,
+                &receive.dispatch,
                 msg,
-                &park.bindings,
+                &receive.bindings,
                 &park.env,
             )? {
-                let executable = program
-                    .executables
-                    .get(park.executable)
-                    .ok_or_else(|| format!("backend parked executable {} is out of bounds", park.executable))?;
-                let BackendBody::Clauses { entries, .. } = &executable.body else {
-                    return Err(format!(
-                        "backend parked executable {} is not clause-backed",
-                        park.executable
-                    ));
-                };
-                let clause = park
+                let clause = receive
                     .clauses
                     .get(clause_index)
                     .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
@@ -259,7 +283,7 @@ impl IrInterpRuntime {
                 )?;
                 self.enqueue_backend_local_entry(
                     *receiver_pid,
-                    park.executable,
+                    park.executable.clone(),
                     clause.entry,
                     env,
                     park.continuations,
@@ -395,12 +419,9 @@ fn run_backend_resume<T: Telemetry + ?Sized>(
                 env,
                 continuations,
             } => {
-                let executable_ref = program
-                    .executables
-                    .get(executable)
-                    .ok_or_else(|| format!("backend executable {} is out of bounds", executable))?;
+                let executable_ref = executable.as_ref();
                 let BackendBody::Clauses { entries, .. } = &executable_ref.body else {
-                    return Err(format!("backend executable {} is not clause-backed", executable));
+                    return Err(format!("backend executable {:?} is not clause-backed", executable.key));
                 };
                 step_eval_entry(
                     runtime,
@@ -409,8 +430,7 @@ fn run_backend_resume<T: Telemetry + ?Sized>(
                     tel,
                     program,
                     module,
-                    executable,
-                    executable_ref,
+                    &executable,
                     entries,
                     entry,
                     env,
@@ -440,18 +460,15 @@ fn continue_backend_value(
             &value,
         )?));
     };
-    let executable = program
-        .executables
-        .get(frame.executable)
-        .ok_or_else(|| format!("backend continuation executable {} is out of bounds", frame.executable))?;
+    let executable = frame.executable.as_ref();
     let BackendBody::Clauses { entries, .. } = &executable.body else {
         return Err(format!(
-            "backend continuation executable {} is not clause-backed",
-            frame.executable
+            "backend continuation executable {:?} is not clause-backed",
+            frame.executable.key
         ));
     };
     Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-        executable: frame.executable,
+        executable: frame.executable.clone(),
         entry: frame.entry,
         env: delivered_env(
             runtime,
@@ -465,8 +482,8 @@ fn continue_backend_value(
         )
         .map_err(|error| {
             format!(
-                "backend continuation delivery executable={} entry={}: {error}",
-                frame.executable,
+                "backend continuation delivery executable={:?} entry={}: {error}",
+                frame.executable.key,
                 frame.entry.as_u32()
             )
         })?,
@@ -481,14 +498,10 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     tel: &T,
     program: &BackendProgram,
     module: &Module,
-    executable_index: usize,
+    executable: Rc<BackendExecutable>,
     args: Vec<AnyValue>,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
-    let executable = program
-        .executables
-        .get(executable_index)
-        .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, types, transport, tel, program, module, signature, None, &args)?;
@@ -501,8 +514,8 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
             )
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, &args)?;
-            let clause_index = match &executable.entry_dispatch {
+            let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
+            let clause_index = match &executable.abi.materialized.entry_dispatch {
                 None => 0,
                 Some(dispatch) => {
                     let dispatch_inputs = semantic_inputs
@@ -517,8 +530,8 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     select_clause(runtime, types, transport, program, module, dispatch, &dispatch_inputs)?.ok_or_else(
                         || {
                             format!(
-                                "function_clause: no backend entry clause matched for executable {}",
-                                executable_index
+                                "function_clause: no backend entry clause matched for executable {:?}",
+                                executable.key
                             )
                         },
                     )?
@@ -529,8 +542,8 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 .ok_or_else(|| format!("backend clause {} is out of bounds", clause_index))?;
             if clause.params.len() != semantic_inputs.len() {
                 return Err(format!(
-                    "backend executable {} expected {} semantic input(s), got {}",
-                    executable_index,
+                    "backend executable {:?} expected {} semantic input(s), got {}",
+                    executable.key,
                     clause.params.len(),
                     semantic_inputs.len()
                 ));
@@ -549,15 +562,15 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 transport,
                 program,
                 module,
-                executable,
+                &executable,
                 &clause.projections,
                 &mut reusable_cons_sources,
                 &mut env,
             )
             .map_err(|error| {
                 format!(
-                    "backend executable {} function {} clause {} failed before entry {}: {error}",
-                    executable_index,
+                    "backend executable {:?} function {} clause {} failed before entry {}: {error}",
+                    executable.key,
                     executable.key.activation.function.as_u32(),
                     clause_index,
                     clause.entry.as_u32()
@@ -570,8 +583,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 tel,
                 program,
                 module,
-                executable_index,
-                executable,
+                &executable,
                 entries,
                 clause.entry,
                 env,
@@ -749,8 +761,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     tel: &T,
     program: &BackendProgram,
     module: &Module,
-    executable_index: usize,
-    executable: &BackendExecutable,
+    executable: &Rc<BackendExecutable>,
     entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
     mut env: HashMap<ValueId, BackendBoundValue>,
@@ -778,8 +789,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     )
     .map_err(|error| {
         format!(
-            "backend executable {} function {} entry {} step evaluation failed: {error}",
-            executable_index,
+            "backend executable {:?} function {} entry {} step evaluation failed: {error}",
+            executable.key,
             executable.key.activation.function.as_u32(),
             entry_id.as_u32()
         )
@@ -793,7 +804,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             // contract publishes no lanes either, so there is nothing to encode
             // and nothing to read. Any other env miss is still a real fault.
             let returns_no_lanes =
-                matches!(dest, ControlDestination::Return) && executable.return_layout.layout.reprs.is_empty();
+                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.reprs.is_empty();
             let result = if returns_no_lanes && !env.contains_key(value) {
                 BackendBoundValue::Absent
             } else {
@@ -804,7 +815,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     continue_backend_value(runtime, transport, program, result, continuations)
                 }
                 ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                    executable: executable_index,
+                    executable: executable.clone(),
                     entry: *target,
                     env: delivered_env(runtime, transport, program, entries, &env, *target, Some(result), &[])?,
                     continuations,
@@ -844,8 +855,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     )?
                     .ok_or_else(|| {
                         format!(
-                            "backend dispatch callsite in executable {} missed an exhaustive dispatch",
-                            executable_index
+                            "backend dispatch callsite in executable {:?} missed an exhaustive dispatch",
+                            executable.key
                         )
                     })?;
                     let arm = dispatch
@@ -857,7 +868,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 }
                 CallEdge::Indirect { .. } => {
                     return Err(format!(
-                        "backend direct callsite in executable {executable_index} materialized as an indirect closure edge; Indirect is closure-call-only"
+                        "backend direct callsite in executable {:?} materialized as an indirect closure edge; Indirect is closure-call-only",
+                        executable.key
                     ));
                 }
             };
@@ -872,7 +884,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 args,
                 extern_marshals,
                 env,
-                executable_index,
+                executable,
                 dest.clone(),
                 continuations,
             )
@@ -906,8 +918,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         AnyValue::FnRef(fn_id, _) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
                             format!(
-                                "closure call executable={} function={} callsite={} callee_value={}: {error}",
-                                executable_index,
+                                "closure call executable={:?} function={} callsite={} callee_value={}: {error}",
+                                executable.key,
                                 executable.key.activation.function.as_u32(),
                                 callsite.as_u32(),
                                 callee.as_u32()
@@ -919,22 +931,14 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 Err(error) => {
                     let Some(target) = target else {
                         return Err(format!(
-                            "closure call executable={} function={} callsite={} callee_value={}: {error}",
-                            executable_index,
+                            "closure call executable={:?} function={} callsite={} callee_value={}: {error}",
+                            executable.key,
                             executable.key.activation.function.as_u32(),
                             callsite.as_u32(),
                             callee.as_u32()
                         ));
                     };
-                    let callee_executable = program
-                        .executables
-                        .get(*target)
-                        .ok_or_else(|| format!("backend executable {} is out of bounds", target))?;
-                    (
-                        FnId(callee_executable.key.activation.function.as_u32()),
-                        None,
-                        Vec::new(),
-                    )
+                    (FnId(target.activation.function.as_u32()), None, Vec::new())
                 }
             };
             let wrapper = construction_wrapper_for_fn(program, fn_id);
@@ -943,21 +947,19 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     .iter()
                     .map(|arg| env_get(transport, runtime.cur_proc(), &env, arg.value))
                     .collect::<Result<Vec<_>, _>>()?;
-                select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
+                &select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
             } else if let Some(target) = target {
-                *target
+                target
             } else {
                 return Err(format!(
-                    "backend closure call executable={} function={} callsite={} has no construction wrapper or direct target",
-                    executable_index,
+                    "backend closure call executable={:?} function={} callsite={} has no construction wrapper or direct target",
+                    executable.key,
                     executable.key.activation.function.as_u32(),
                     callsite.as_u32()
                 ));
             };
-            let callee_executable = program
-                .executables
-                .get(executable_target)
-                .ok_or_else(|| format!("backend executable {} is out of bounds", executable_target))?;
+            let executable_target = backend_executable_ref(program, types, executable_target)?;
+            let callee_executable = executable_target.as_ref();
             let capture_inputs_end = callee_executable
                 .key
                 .activation
@@ -971,17 +973,18 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 })?;
             if missing_direct_callee
                 && callee_executable
+                    .abi
                     .semantic_inputs
                     .iter()
                     .any(|input| input.semantic_index < capture_inputs_end && !input.layout.reprs.is_empty())
             {
                 return Err(format!(
-                    "closure call executable={} function={} callsite={} omitted callee value {} but target {} needs semantic inputs",
-                    executable_index,
+                    "closure call executable={:?} function={} callsite={} omitted callee value {} but target {:?} needs semantic inputs",
+                    executable.key,
                     executable.key.activation.function.as_u32(),
                     callsite.as_u32(),
                     callee.as_u32(),
-                    executable_target
+                    executable_target.key
                 ));
             }
             let call_args = if let Some(wrapper) = wrapper {
@@ -1003,7 +1006,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     transport,
                     program,
                     target: callee_executable,
-                    target_index: executable_target,
                     wrapper,
                     member,
                 }
@@ -1028,7 +1030,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let mut continuations = continuations;
                     let proc = runtime.cur_proc();
                     continuations.push(BackendContinuation {
-                        executable: executable_index,
+                        executable: executable.clone(),
                         entry: *target,
                         env: capture_backend_continuation_env(proc, entries, *target, &env)?,
                     });
@@ -1052,7 +1054,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 *else_entry
             };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                executable: executable_index,
+                executable: executable.clone(),
                 entry: target,
                 env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
                 continuations,
@@ -1082,7 +1084,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 None => dispatch.miss_entry,
             };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                executable: executable_index,
+                executable: executable.clone(),
                 entry: target,
                 env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
                 continuations,
@@ -1113,7 +1115,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     .get(clause_index)
                     .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                    executable: executable_index,
+                    executable: executable.clone(),
                     entry: clause.entry,
                     env: delivered_env(
                         runtime,
@@ -1132,7 +1134,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 && env_get(transport, runtime.cur_proc(), &env, after.timeout)?.as_i64() == Some(0)
             {
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                    executable: executable_index,
+                    executable: executable.clone(),
                     entry: after.entry,
                     env: delivered_env(runtime, transport, program, entries, &env, after.entry, None, &[])?,
                     continuations,
@@ -1141,10 +1143,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             runtime.backend_parked.insert(
                 unsafe { &*runtime.cur_proc() }.pid,
                 BackendParkRecord {
-                    executable: executable_index,
-                    clauses: receive.clauses.clone(),
-                    dispatch: receive.dispatch.clone(),
-                    bindings: receive.bindings.clone(),
+                    executable: executable.clone(),
+                    entry: entry_id,
                     env,
                     continuations,
                 },
@@ -1155,8 +1155,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     };
     transition.map_err(|error| {
         format!(
-            "backend executable {} function {} entry {} tail failed: {error}",
-            executable_index,
+            "backend executable {:?} function {} entry {} tail failed: {error}",
+            executable.key,
             executable.key.activation.function.as_u32(),
             entry_id.as_u32()
         )
@@ -1199,7 +1199,7 @@ fn try_match_backend_receive(
 
 fn eval_steps<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
-    _types: &mut crate::compiler2::Types,
+    types: &mut crate::compiler2::Types,
     _tel: &T,
     transport: &TransportStore,
     program: &BackendProgram,
@@ -1346,8 +1346,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 construction,
             } => {
                 let bound = if let Some(construction) = construction {
-                    construction_callable_value(runtime.cur_proc(), program, *construction, &[])?
+                    construction_callable_value(runtime.cur_proc(), program, construction, types, &[])?
                 } else if executable
+                    .abi
+                    .materialized
                     .runtime_demand
                     .callable_flows
                     .get(value)
@@ -1370,12 +1372,12 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 construction,
             } => {
                 let bound = if let Some(construction) = construction {
-                    let wrapper = construction_wrapper_for_identity(program, *construction).ok_or_else(|| {
-                        format!("backend callable construction {construction} is missing its wrapper")
+                    let wrapper = construction_wrapper_for_identity(program, construction, types).ok_or_else(|| {
+                        format!("backend callable construction {construction:?} is missing its wrapper")
                     })?;
                     if captures.len() != wrapper.captures.len() {
                         return Err(format!(
-                            "backend callable construction {construction} expected {} logical capture(s), got {}",
+                            "backend callable construction {construction:?} expected {} logical capture(s), got {}",
                             wrapper.captures.len(),
                             captures.len()
                         ));
@@ -1387,8 +1389,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         .filter(|(_, capture)| !capture.layout.reprs.is_empty())
                         .map(|(capture, _)| env_get(transport, runtime.cur_proc(), env, capture))
                         .collect::<Result<Vec<_>, _>>()?;
-                    construction_callable_value(runtime.cur_proc(), program, *construction, &physical_captures)?
+                    construction_callable_value(runtime.cur_proc(), program, construction, types, &physical_captures)?
                 } else if executable
+                    .abi
+                    .materialized
                     .runtime_demand
                     .callable_flows
                     .get(value)
@@ -1694,30 +1698,33 @@ fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
     tel: &T,
     program: &BackendProgram,
     module: &Module,
-    callee: &CallTarget<usize>,
+    callee: &CallTarget<ExecutableKey>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
     env: HashMap<ValueId, BackendBoundValue>,
-    executable_index: usize,
+    caller: &Rc<BackendExecutable>,
     dest: ControlDestination,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     match callee {
-        CallTarget::Local(callee) => eval_direct_call(
-            runtime,
-            types,
-            transport,
-            tel,
-            program,
-            module,
-            *callee,
-            args,
-            extern_marshals,
-            env,
-            executable_index,
-            dest,
-            continuations,
-        ),
+        CallTarget::Local(callee) => {
+            let callee = backend_executable_ref(program, types, callee)?;
+            eval_direct_call(
+                runtime,
+                types,
+                transport,
+                tel,
+                program,
+                module,
+                callee,
+                args,
+                extern_marshals,
+                env,
+                caller,
+                dest,
+                continuations,
+            )
+        }
         CallTarget::ProviderBoundary(function) => Err(format!(
             "unresolved provider-boundary backend call to function {}",
             function.as_u32()
@@ -1732,34 +1739,26 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
     tel: &T,
     program: &BackendProgram,
     module: &Module,
-    callee: usize,
+    callee: Rc<BackendExecutable>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
     env: HashMap<ValueId, BackendBoundValue>,
-    executable_index: usize,
+    caller: &Rc<BackendExecutable>,
     dest: ControlDestination,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
-    let executable = program
-        .executables
-        .get(callee)
-        .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
+    let executable = callee.as_ref();
     let call_args = encode_call_args(transport, program, types, runtime, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
             let mut continuations = continuations;
             continuations.push(BackendContinuation {
-                executable: executable_index,
+                executable: caller.clone(),
                 entry: target,
                 env: {
                     let proc = runtime.cur_proc();
-                    capture_backend_continuation_env(
-                        proc,
-                        entries_for_executable(program, executable_index)?,
-                        target,
-                        &env,
-                    )?
+                    capture_backend_continuation_env(proc, entries_for_executable(caller)?, target, &env)?
                 },
             });
             continuations
@@ -1841,13 +1840,9 @@ fn publish_backend_capture(proc: *mut Process, value: &BackendBoundValue) -> Res
     })
 }
 
-fn entries_for_executable(program: &BackendProgram, executable_index: usize) -> Result<&[BackendEntry], String> {
-    let executable = program
-        .executables
-        .get(executable_index)
-        .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
+fn entries_for_executable(executable: &Rc<BackendExecutable>) -> Result<&[BackendEntry], String> {
     let BackendBody::Clauses { entries, .. } = &executable.body else {
-        return Err(format!("backend executable {} is not clause-backed", executable_index));
+        return Err(format!("backend executable {:?} is not clause-backed", executable.key));
     };
     Ok(entries)
 }
@@ -1908,24 +1903,24 @@ fn env_get_value(env: &HashMap<ValueId, BackendBoundValue>, value: ValueId) -> R
 fn bind_executable_inputs(
     transport: &TransportStore,
     types: &crate::compiler2::Types,
-    runtime: &mut IrInterpRuntime,
+    _runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
     let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    let proc = runtime.cur_proc();
-    for input in &executable.semantic_inputs {
+    for input in &executable.abi.semantic_inputs {
         let value = if input.layout.reprs.is_empty() {
             None
         } else {
-            Some(decode_runtime_value_with_carrier(
+            Some(decode_transport_layout(
                 transport,
-                proc,
                 args,
-                input.layout.structural,
-                input.layout.carrier,
+                TransportLayout {
+                    structural: input.layout.structural,
+                    carrier: input.layout.carrier,
+                },
                 &mut lane_index,
             )?)
         };
@@ -1954,15 +1949,15 @@ fn bind_executable_inputs(
 /// `Any` (one lane each); `bind_executable_inputs` validates the lane count.
 pub(crate) fn encode_macro_entry_inputs(
     program: &BackendProgram,
+    types: &crate::compiler2::Types,
     transport: &TransportStore,
     semantic_values: &[AnyValue],
 ) -> Result<Vec<AnyValue>, String> {
     let executable = program
-        .executables
-        .get(program.entry)
-        .ok_or_else(|| format!("macro entry executable {} is out of bounds", program.entry))?;
+        .executable(program.entry(), types)
+        .ok_or_else(|| "backend macro entry is missing from its program".to_string())?;
     let mut lanes = Vec::new();
-    for input in &executable.semantic_inputs {
+    for input in &executable.abi.semantic_inputs {
         let semantic_index = input.semantic_index;
         let shape = input.layout.structural;
         if matches!(transport.interners().shape(shape), ShapeDescr::Nothing) {
@@ -1981,6 +1976,7 @@ pub(crate) fn encode_macro_entry_inputs(
 
 fn value_shape(executable: &BackendExecutable, value: ValueId) -> Result<ShapeId, String> {
     executable
+        .abi
         .value_layouts
         .get(&value)
         .map(|layout| layout.structural)
@@ -2015,48 +2011,27 @@ fn direct_callable_value(
             callable.function
         ));
     }
-    if callable.capture_shapes.len() != captures.len() {
+    if callable.capture_layouts.len() != captures.len() {
         return Err(format!(
             "backend direct callable producer {} expected {} capture shape(s), got {} capture value(s)",
             value.as_u32(),
-            callable.capture_shapes.len(),
+            callable.capture_layouts.len(),
             captures.len()
         ));
     }
-    // The callable descriptor's `capture_lanes` is the one authority on how
-    // many lanes the construction carries, and it can be wider than the sum
-    // of the captures' structural widths: a capture whose structural shape is
-    // width 0 may still own one descriptor lane, carrying the value boxed
-    // (native's construction lowering assigns those extra lanes to width-0
-    // captures greedily in capture order). A width-0 capture that owns no
-    // lane is fully erased -- its value may legitimately be unbound (its own
-    // input published no layout), so it must be skipped without ever reading
-    // the environment.
-    let structural_width: usize = callable
-        .capture_shapes
-        .iter()
-        .map(|shape| transport.interners().shape_width(*shape))
-        .sum();
-    let mut extra_lanes = callable.capture_lanes.len().saturating_sub(structural_width);
     let mut lanes = Vec::new();
-    for (capture, capture_shape) in captures.iter().copied().zip(callable.capture_shapes.iter().copied()) {
-        if transport.interners().shape_width(capture_shape) == 0 {
-            if extra_lanes == 0 {
-                continue;
-            }
-            extra_lanes -= 1;
+    for (capture, layout) in captures.iter().copied().zip(callable.capture_layouts.iter().copied()) {
+        if transport.interners().layout_width(layout) != 0 {
             let bound = env_get_value(env, capture)?;
-            lanes.push(materialize_backend_value(transport, proc, &bound)?);
-        } else {
-            let bound = env_get_value(env, capture)?;
-            encode_runtime_value(transport, program, proc, &bound, capture_shape, &mut lanes)?;
+            encode_transport_layout(transport, program, proc, &bound, layout, &mut lanes)?;
         }
     }
-    if lanes.len() != callable.capture_lanes.len() {
+    let expected = transport.interners().shape_width(shape);
+    if lanes.len() != expected {
         return Err(format!(
             "backend direct callable producer {} expected {} capture lane(s), got {}",
             value.as_u32(),
-            callable.capture_lanes.len(),
+            expected,
             lanes.len()
         ));
     }
@@ -2065,8 +2040,23 @@ fn direct_callable_value(
 
 const CONSTRUCTION_WRAPPER_IDENTITY_BASE: u32 = 0x8000_0000;
 
-fn construction_wrapper_identity_fn(identity: u32) -> FnId {
-    FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | identity)
+fn backend_executable_ref(
+    program: &BackendProgram,
+    types: &crate::compiler2::Types,
+    key: &ExecutableKey,
+) -> Result<Rc<BackendExecutable>, String> {
+    program
+        .executable(key, types)
+        .cloned()
+        .ok_or_else(|| format!("backend executable {key:?} is missing from its program"))
+}
+
+fn construction_wrapper_identity_fn(index: usize) -> Result<FnId, String> {
+    let index = u32::try_from(index)
+        .ok()
+        .filter(|index| index & CONSTRUCTION_WRAPPER_IDENTITY_BASE == 0)
+        .ok_or_else(|| "backend callable construction inventory exceeds runtime identity space".to_string())?;
+    Ok(FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | index))
 }
 
 /// The user-visible parameter count of the callable value `function` produces:
@@ -2081,34 +2071,41 @@ fn construction_wrapper_identity_fn(identity: u32) -> FnId {
 /// arity of its own. The program always does.
 fn callable_value_arity(program: &BackendProgram, function: FunctionId, capture_count: usize) -> u16 {
     program
-        .executables
+        .executables()
         .iter()
         .find(|executable| executable.key.activation.function == function)
-        .map(|executable| executable.semantic_inputs.len().saturating_sub(capture_count) as u16)
+        .map(|executable| executable.abi.semantic_inputs.len().saturating_sub(capture_count) as u16)
         .unwrap_or(0)
 }
 
 fn construction_wrapper_for_fn(program: &BackendProgram, fn_id: FnId) -> Option<&BackendConstructionWrapper> {
     (fn_id.0 & CONSTRUCTION_WRAPPER_IDENTITY_BASE != 0)
         .then_some(fn_id.0 & !CONSTRUCTION_WRAPPER_IDENTITY_BASE)
-        .and_then(|identity| construction_wrapper_for_identity(program, identity))
+        .and_then(|index| program.construction_wrappers().get(index as usize))
+        .map(Rc::as_ref)
 }
 
-fn construction_wrapper_for_identity(program: &BackendProgram, identity: u32) -> Option<&BackendConstructionWrapper> {
+fn construction_wrapper_for_identity<'a>(
+    program: &'a BackendProgram,
+    identity: &TransportPosition,
+    types: &crate::compiler2::Types,
+) -> Option<&'a BackendConstructionWrapper> {
     program
-        .construction_wrappers
-        .iter()
-        .find(|wrapper| wrapper.identity == identity)
+        .construction_index(identity, types)
+        .map(|index| program.construction_wrappers()[index].as_ref())
 }
 
 fn construction_callable_value(
     proc: *mut Process,
     program: &BackendProgram,
-    identity: u32,
+    identity: &TransportPosition,
+    types: &crate::compiler2::Types,
     captures: &[AnyValue],
 ) -> Result<BackendBoundValue, String> {
-    let wrapper = construction_wrapper_for_identity(program, identity)
-        .ok_or_else(|| format!("backend callable construction {identity} is missing its wrapper"))?;
+    let index = program
+        .construction_index(identity, types)
+        .ok_or_else(|| format!("backend callable construction {identity:?} is missing its wrapper"))?;
+    let wrapper = &program.construction_wrappers()[index];
     let capture_count = wrapper
         .captures
         .iter()
@@ -2116,12 +2113,12 @@ fn construction_callable_value(
         .count();
     if captures.len() != capture_count {
         return Err(format!(
-            "backend callable construction {identity} expected {} capture value(s), got {}",
+            "backend callable construction {identity:?} expected {} capture value(s), got {}",
             capture_count,
             captures.len()
         ));
     }
-    let fn_id = construction_wrapper_identity_fn(identity);
+    let fn_id = construction_wrapper_identity_fn(index)?;
     let arity = wrapper.call_arity as u16;
     let value = if captures.is_empty() {
         AnyValue::FnRef(fn_id, arity)
@@ -2142,7 +2139,7 @@ fn select_construction_member<'a>(
 ) -> Result<&'a BackendConstructionMemberAdapter, String> {
     if args.len() != wrapper.call_arity {
         return Err(format!(
-            "backend callable construction {} expected {} call arg(s), got {}",
+            "backend callable construction {:?} expected {} call arg(s), got {}",
             wrapper.identity,
             wrapper.call_arity,
             args.len()
@@ -2159,12 +2156,12 @@ fn select_construction_member<'a>(
             args,
             &HashMap::new(),
         )?
-        .ok_or_else(|| format!("backend callable construction {} matched no member", wrapper.identity))?
+        .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?
             as usize,
         None if wrapper.members.len() == 1 => 0,
         None => {
             return Err(format!(
-                "backend callable construction {} has {} members without a selection plan",
+                "backend callable construction {:?} has {} members without a selection plan",
                 wrapper.identity,
                 wrapper.members.len()
             ));
@@ -2172,7 +2169,7 @@ fn select_construction_member<'a>(
     };
     wrapper.members.get(member).ok_or_else(|| {
         format!(
-            "backend callable construction {} selected member {} outside {} members",
+            "backend callable construction {:?} selected member {} outside {} members",
             wrapper.identity,
             member,
             wrapper.members.len()
@@ -2189,24 +2186,18 @@ pub(super) fn construction_wrapper_invocation(
     fn_id: FnId,
     captures: &[AnyValue],
     args: &[AnyValue],
-) -> Result<(usize, Vec<AnyValue>), String> {
+) -> Result<(Rc<BackendExecutable>, Vec<AnyValue>), String> {
     let wrapper = construction_wrapper_for_fn(program, fn_id)
         .ok_or_else(|| format!("backend callable {} has no construction wrapper", fn_id.0))?;
     let member = select_construction_member(runtime, types, transport, program, module, wrapper, args)?;
-    let target = member.target;
-    let executable = program.executables.get(target).ok_or_else(|| {
-        format!(
-            "backend callable construction {} target {} is out of bounds",
-            wrapper.identity, target
-        )
-    })?;
+    let target = backend_executable_ref(program, types, &member.target)?;
+    let executable = target.as_ref();
     let lanes = ConstructionInputEncoder {
         runtime,
         types,
         transport,
         program,
         target: executable,
-        target_index: target,
         wrapper,
         member,
     }
@@ -2220,7 +2211,6 @@ struct ConstructionInputEncoder<'a> {
     transport: &'a TransportStore,
     program: &'a BackendProgram,
     target: &'a BackendExecutable,
-    target_index: usize,
     wrapper: &'a BackendConstructionWrapper,
     member: &'a BackendConstructionMemberAdapter,
 }
@@ -2245,8 +2235,8 @@ impl ConstructionInputEncoder<'_> {
             .find(|input| input.semantic_index >= semantic_arity)
         {
             return Err(format!(
-                "backend callable construction {} member target {} publishes semantic input {} for arity {}",
-                self.wrapper.identity, self.target_index, input.semantic_index, semantic_arity
+                "backend callable construction {:?} member target {:?} publishes semantic input {} for arity {}",
+                self.wrapper.identity, self.target.key, input.semantic_index, semantic_arity
             ));
         }
         let physical_capture_count = self
@@ -2261,8 +2251,8 @@ impl ConstructionInputEncoder<'_> {
             || args.len() != self.wrapper.call_arity
         {
             return Err(format!(
-                "backend callable construction {} member target {} does not match its published semantic layout",
-                self.wrapper.identity, self.target_index
+                "backend callable construction {:?} member target {:?} does not match its published semantic layout",
+                self.wrapper.identity, self.target.key
             ));
         }
         let mut semantic_values = vec![None; semantic_arity];
@@ -2275,29 +2265,29 @@ impl ConstructionInputEncoder<'_> {
         {
             let slot = semantic_values.get_mut(semantic_index).ok_or_else(|| {
                 format!(
-                    "backend callable construction {} maps capture outside target {}",
-                    self.wrapper.identity, self.target_index
+                    "backend callable construction {:?} maps capture outside target {:?}",
+                    self.wrapper.identity, self.target.key
                 )
             })?;
             if !capture.layout.reprs.is_empty()
                 && slot
                     .replace(physical_captures.next().ok_or_else(|| {
                         format!(
-                            "backend callable construction {} is missing a physical capture",
+                            "backend callable construction {:?} is missing a physical capture",
                             self.wrapper.identity
                         )
                     })?)
                     .is_some()
             {
                 return Err(format!(
-                    "backend callable construction {} maps more than one capture to one target input",
+                    "backend callable construction {:?} maps more than one capture to one target input",
                     self.wrapper.identity
                 ));
             }
         }
         if physical_captures.next().is_some() {
             return Err(format!(
-                "backend callable construction {} has excess physical captures",
+                "backend callable construction {:?} has excess physical captures",
                 self.wrapper.identity
             ));
         }
@@ -2305,19 +2295,19 @@ impl ConstructionInputEncoder<'_> {
         for (arg_index, semantic_index) in self.member.surface_semantic_inputs.iter().copied().enumerate() {
             let slot = explicit_values.get_mut(semantic_index).ok_or_else(|| {
                 format!(
-                    "backend callable construction {} maps an argument outside target {}",
-                    self.wrapper.identity, self.target_index
+                    "backend callable construction {:?} maps an argument outside target {:?}",
+                    self.wrapper.identity, self.target.key
                 )
             })?;
             if semantic_values[semantic_index].is_some() || slot.replace(arg_index).is_some() {
                 return Err(format!(
-                    "backend callable construction {} maps more than one value to target input {}",
+                    "backend callable construction {:?} maps more than one value to target input {}",
                     self.wrapper.identity, semantic_index
                 ));
             }
         }
         let mut lanes = Vec::new();
-        for binding in &self.target.semantic_inputs {
+        for binding in &self.target.abi.semantic_inputs {
             let input = self
                 .member
                 .target_inputs
@@ -2325,8 +2315,8 @@ impl ConstructionInputEncoder<'_> {
                 .find(|input| input.semantic_index == binding.semantic_index)
                 .ok_or_else(|| {
                     format!(
-                        "backend callable construction {} target {} omits semantic input {}",
-                        self.wrapper.identity, self.target_index, binding.semantic_index
+                        "backend callable construction {:?} target {:?} omits semantic input {}",
+                        self.wrapper.identity, self.target.key, binding.semantic_index
                     )
                 })?;
             if input.layout.reprs.is_empty() {
@@ -2337,8 +2327,8 @@ impl ConstructionInputEncoder<'_> {
                 None => {
                     let arg_index = explicit_values[binding.semantic_index].ok_or_else(|| {
                         format!(
-                            "backend callable construction {} cannot populate target {} semantic input {}",
-                            self.wrapper.identity, self.target_index, binding.semantic_index
+                            "backend callable construction {:?} cannot populate target {:?} semantic input {}",
+                            self.wrapper.identity, self.target.key, binding.semantic_index
                         )
                     })?;
                     resolve_arg(&args[arg_index])?
@@ -2399,10 +2389,11 @@ fn materialize_transport_value(
                     .copied()
                     .ok_or_else(|| format!("backend generic callable shape {shape:?} has no published lane"));
             };
-            if lanes.len() != callable.capture_lanes.len() {
+            let expected = transport.interners().shape_width(shape);
+            if lanes.len() != expected {
                 return Err(format!(
                     "backend callable shape {shape:?} expected {} capture lane(s), got {}",
-                    callable.capture_lanes.len(),
+                    expected,
                     lanes.len()
                 ));
             }
@@ -2440,7 +2431,7 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    let bindings = &executable.semantic_inputs;
+    let bindings = &executable.abi.semantic_inputs;
     for binding in bindings
         .iter()
         .filter(|binding| binding.semantic_index >= semantic_start)
@@ -2512,7 +2503,7 @@ fn project_backend_value_for_contract(
     value: &BackendBoundValue,
     layout: &crate::compiler2::BackendReturnLayout,
 ) -> Result<BackendBoundValue, String> {
-    if matches!(layout.layout.carrier, TransportCarrier::ValueRef) {
+    if matches!(layout.layout.carrier, TransportCarrier::ValueRef(_)) {
         return Ok(BackendBoundValue::Runtime(materialize_backend_value(
             transport, proc, value,
         )?));
@@ -2520,12 +2511,10 @@ fn project_backend_value_for_contract(
     let mut lanes = Vec::new();
     encode_runtime_value(transport, program, proc, value, layout.layout.structural, &mut lanes)?;
     let mut lane_index = 0;
-    let decoded = decode_runtime_value_with_carrier(
+    let decoded = decode_transport_layout(
         transport,
-        proc,
         &lanes,
-        layout.layout.structural,
-        TransportCarrier::Absent,
+        TransportLayout::structural(layout.layout.structural),
         &mut lane_index,
     )?;
     if lane_index != lanes.len() {
@@ -2562,9 +2551,9 @@ fn encode_runtime_value(
             Ok(())
         }
         ShapeDescr::Tuple(fields) => {
-            let tuple_fields = tuple_field_values_for_shape(transport, proc, value, shape, fields)?;
-            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
-                encode_runtime_value(transport, program, proc, field_value, field_shape, lanes)?;
+            let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
+            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_transport_layout(transport, program, proc, field_value, field_layout, lanes)?;
             }
             Ok(())
         }
@@ -2580,7 +2569,7 @@ fn encode_runtime_value(
                         proc,
                         value,
                         function,
-                        callable.capture_lanes.len(),
+                        transport.interners().shape_width(shape),
                     )?;
                     lanes.extend(extracted);
                     Ok(())
@@ -2597,28 +2586,24 @@ fn encode_runtime_value(
     }
 }
 
-fn encode_runtime_value_with_carrier(
+fn encode_transport_layout(
     transport: &TransportStore,
     program: &BackendProgram,
     proc: *mut Process,
     value: &BackendBoundValue,
-    shape: ShapeId,
-    carrier: crate::compiler2::pull::TransportCarrier,
+    layout: TransportLayout,
     lanes: &mut Vec<AnyValue>,
 ) -> Result<(), String> {
+    if layout.carrier.is_value_ref() {
+        lanes.push(materialize_backend_value(transport, proc, value)?);
+        return Ok(());
+    }
+    let shape = layout.structural;
     match transport.interners().shape(shape) {
-        ShapeDescr::Nothing if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            lanes.push(materialize_backend_value(transport, proc, value)?);
-            Ok(())
-        }
-        ShapeDescr::Callable(_) if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            lanes.push(materialize_backend_value(transport, proc, value)?);
-            Ok(())
-        }
         ShapeDescr::Tuple(fields) => {
-            let tuple_fields = tuple_field_values_for_shape(transport, proc, value, shape, fields)?;
-            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
-                encode_runtime_value_with_carrier(transport, program, proc, field_value, field_shape, carrier, lanes)?;
+            let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
+            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_transport_layout(transport, program, proc, field_value, field_layout, lanes)?;
             }
             Ok(())
         }
@@ -2639,95 +2624,40 @@ fn encode_runtime_input_binding(
     if input.layout.reprs.is_empty() {
         return Ok(());
     }
-    encode_runtime_value_with_carrier(
+    encode_transport_layout(
         transport,
         program,
         proc,
         value,
-        input.layout.structural,
-        input.layout.carrier,
+        TransportLayout {
+            structural: input.layout.structural,
+            carrier: input.layout.carrier,
+        },
         lanes,
     )
 }
 
-fn decode_runtime_value_with_carrier(
+fn decode_transport_layout(
     transport: &TransportStore,
-    proc: *mut Process,
     args: &[AnyValue],
-    shape: ShapeId,
-    carrier: crate::compiler2::pull::TransportCarrier,
+    layout: TransportLayout,
     lane_index: &mut usize,
 ) -> Result<BackendBoundValue, String> {
+    if layout.carrier.is_value_ref() {
+        return next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime);
+    }
+    let shape = layout.structural;
     match transport.interners().shape(shape) {
-        ShapeDescr::Nothing if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime)
-        }
         ShapeDescr::Nothing => Ok(BackendBoundValue::Absent),
         ShapeDescr::Lane(_) => {
             let value = next_runtime_lane(args, lane_index)?;
             Ok(BackendBoundValue::Runtime(value))
         }
-        ShapeDescr::Callable(_) if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime)
-        }
-        ShapeDescr::Callable(_) => {
-            let width = backend_shape_width(transport, shape);
+        ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) => {
+            let width = transport.interners().shape_width(shape);
             let lanes = take_runtime_lanes(args, lane_index, width)?;
             decode_backend_value_from_lanes(transport, shape, lanes)
         }
-        ShapeDescr::Tuple(fields) => {
-            let mut field_values = Vec::with_capacity(fields.len());
-            let mut raw_lanes = Vec::new();
-            let mut all_raw = true;
-            for field in fields.iter().copied() {
-                let value = decode_runtime_value_with_carrier(transport, proc, args, field, carrier, lane_index)?;
-                if all_raw {
-                    if let Some(lanes) = raw_lanes_for_shape_value(transport, field, &value) {
-                        raw_lanes.extend(lanes);
-                    } else {
-                        all_raw = false;
-                    }
-                }
-                field_values.push(value);
-            }
-            if all_raw {
-                return Ok(BackendBoundValue::Transport {
-                    shape,
-                    lanes: raw_lanes,
-                });
-            }
-            let fields = field_values
-                .iter()
-                .map(|value| materialize_backend_value(transport, proc, value))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(BackendBoundValue::Runtime(make_tuple_on_proc(proc, fields)?))
-        }
-    }
-}
-
-fn backend_shape_width(transport: &TransportStore, shape: ShapeId) -> usize {
-    match transport.interners().shape(shape) {
-        ShapeDescr::Callable(callable) if transport.interners().callable(*callable).function.is_none() => 1,
-        _ => transport.interners().shape_width(shape),
-    }
-}
-
-fn raw_lanes_for_shape_value(
-    transport: &TransportStore,
-    shape: ShapeId,
-    value: &BackendBoundValue,
-) -> Option<Vec<AnyValue>> {
-    match (transport.interners().shape(shape), value) {
-        (ShapeDescr::Nothing, BackendBoundValue::Absent) => Some(Vec::new()),
-        (ShapeDescr::Lane(_), BackendBoundValue::Runtime(value)) => Some(vec![*value]),
-        (
-            ShapeDescr::Tuple(_) | ShapeDescr::Callable(_),
-            BackendBoundValue::Transport {
-                shape: value_shape,
-                lanes,
-            },
-        ) if *value_shape == shape && lanes.len() == transport.interners().shape_width(shape) => Some(lanes.clone()),
-        _ => None,
     }
 }
 
@@ -2756,10 +2686,10 @@ fn decode_backend_value_from_lanes(
     shape: ShapeId,
     lanes: Vec<AnyValue>,
 ) -> Result<BackendBoundValue, String> {
-    if lanes.len() != backend_shape_width(transport, shape) {
+    if lanes.len() != transport.interners().shape_width(shape) {
         return Err(format!(
             "backend transport shape {shape:?} expected {} lane(s), got {}",
-            backend_shape_width(transport, shape),
+            transport.interners().shape_width(shape),
             lanes.len()
         ));
     }
@@ -2809,30 +2739,37 @@ fn transport_field_views(
         .ok_or_else(|| format!("backend transport shape {shape:?} is not a tuple"))?;
     spans
         .into_iter()
-        .map(|(field_shape, span)| {
+        .map(|(field_layout, span)| {
             let field_lanes = lanes
                 .get(span)
                 .ok_or_else(|| format!("backend tuple transport shape {shape:?} has an invalid lane span"))?
                 .to_vec();
-            decode_backend_value_from_lanes(transport, field_shape, field_lanes)
+            if field_layout.carrier.is_value_ref() {
+                field_lanes
+                    .first()
+                    .copied()
+                    .map(BackendBoundValue::Runtime)
+                    .ok_or_else(|| format!("backend ValueRef tuple field in {shape:?} has no runtime lane"))
+            } else {
+                decode_backend_value_from_lanes(transport, field_layout.structural, field_lanes)
+            }
         })
         .collect()
 }
 
-fn tuple_field_values_for_shape(
+fn tuple_field_values_for_encoding(
     transport: &TransportStore,
     proc: *mut Process,
     value: &BackendBoundValue,
-    shape: ShapeId,
-    fields: &[ShapeId],
+    fields: &[TransportLayout],
 ) -> Result<Vec<BackendBoundValue>, String> {
     if let BackendBoundValue::Transport {
         shape: value_shape,
         lanes,
     } = value
-        && *value_shape == shape
+        && matches!(transport.interners().shape(*value_shape), ShapeDescr::Tuple(source) if source.len() == fields.len())
     {
-        return transport_field_views(transport, shape, lanes);
+        return transport_field_views(transport, *value_shape, lanes);
     }
     let tuple = materialize_backend_value(transport, proc, value)?;
     fields
@@ -2957,8 +2894,8 @@ fn tuple_step_value(
     value: ValueId,
     items: &[ValueId],
 ) -> Result<BackendBoundValue, String> {
-    if let Some(layout) = executable.value_layouts.get(&value)
-        && !matches!(layout.carrier, TransportCarrier::ValueRef)
+    if let Some(layout) = executable.abi.value_layouts.get(&value)
+        && !matches!(layout.carrier, TransportCarrier::ValueRef(_))
         && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
     {
         let fields = fields.clone();
@@ -2971,9 +2908,11 @@ fn tuple_step_value(
             ));
         }
         let mut lanes = Vec::new();
-        for (item, field_shape) in items.iter().copied().zip(fields.iter().copied()) {
-            let bound = env_get_value(env, item)?;
-            encode_runtime_value(transport, program, proc, &bound, field_shape, &mut lanes)?;
+        for (item, field_layout) in items.iter().copied().zip(fields.iter().copied()) {
+            if transport.interners().layout_width(field_layout) != 0 {
+                let bound = env_get_value(env, item)?;
+                encode_transport_layout(transport, program, proc, &bound, field_layout, &mut lanes)?;
+            }
         }
         return Ok(BackendBoundValue::Transport {
             shape: layout.structural,
@@ -3236,6 +3175,341 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_lookup() {
+        let mut world = crate::compiler2::World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "retained_resume", 0);
+        let key = ExecutableKey {
+            activation: crate::compiler2::ActivationKey::from_inputs(
+                crate::compiler2::RootId::for_test(0),
+                function,
+                &[],
+                world.types_mut(),
+            ),
+            need: crate::compiler2::ExecutableNeed::Value,
+        };
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let return_ty = world.types_mut().int();
+        let mut executable = BackendExecutable::for_test(key.clone(), return_ty, nothing);
+        let value = ValueId::from_u32(0);
+        let first = crate::compiler2::ControlEntryId::from_u32(0);
+        let last = crate::compiler2::ControlEntryId::from_u32(1);
+        executable.body = BackendBody::Clauses {
+            clauses: Vec::new(),
+            entries: [ControlDestination::Deliver(last), ControlDestination::Return]
+                .into_iter()
+                .map(|dest| BackendEntry {
+                    span: crate::source::Span::DUMMY,
+                    origin: crate::compiler2::BackendEntryOrigin::Branch,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: vec![ProgramStep::Const {
+                        value,
+                        literal: crate::ground_value::GroundValue::Int(42),
+                    }],
+                    tail: BackendTail::Value { value, dest },
+                })
+                .collect(),
+            generated: Vec::new(),
+        };
+        let executable = Rc::new(executable);
+        let mut program = BackendProgram::empty(key.clone());
+        program.add_executable(Rc::clone(&executable), world.types());
+        let retained = backend_executable_ref(&program, world.types(), &key).expect("root boundary lookup");
+        assert!(Rc::ptr_eq(&retained, &executable));
+        let continuation = BackendContinuation {
+            executable: retained,
+            entry: first,
+            env: HashMap::new(),
+        };
+        program.remove_executable(&key, world.types());
+        assert!(
+            program.executables().is_empty(),
+            "no ordinal or key lookup can find the retained frame"
+        );
+
+        let transport = TransportStore::new();
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).expect("test process");
+        let next = continue_backend_value(
+            &mut runtime,
+            &transport,
+            &program,
+            BackendBoundValue::Runtime(AnyValue::Int(0)),
+            vec![continuation],
+        )
+        .expect("retained continuation");
+        let BackendEvalTransition::Next(BackendEvalState::Entry {
+            executable: resumed,
+            entry,
+            env,
+            continuations,
+        }) = next
+        else {
+            panic!("continuation must resume its local body")
+        };
+        assert!(Rc::ptr_eq(&resumed, &executable));
+        runtime
+            .enqueue_backend_local_entry(1, resumed, entry, env, continuations)
+            .expect("queue retained resume");
+        let resume = runtime.take_backend_resume(1).expect("queued resume");
+        let outcome = run_backend_resume(
+            &mut runtime,
+            world.types_mut(),
+            &transport,
+            &crate::telemetry::ConfiguredTelemetry::new(),
+            &program,
+            &Module::default(),
+            resume,
+        )
+        .expect("local transitions must execute the retained allocation even without root membership");
+        assert!(matches!(outcome, BackendRunStep::Done(value) if value.as_i64() == Some(42)));
+    }
+
+    fn empty_backend_program() -> BackendProgram {
+        BackendProgram::empty_for_test()
+    }
+
+    fn encode_for_layout(
+        transport: &TransportStore,
+        process: *mut Process,
+        value: &BackendBoundValue,
+        shape: ShapeId,
+    ) -> Result<Vec<AnyValue>, String> {
+        encode_with_layout(transport, process, value, TransportLayout::structural(shape))
+    }
+
+    fn encode_with_layout(
+        transport: &TransportStore,
+        process: *mut Process,
+        value: &BackendBoundValue,
+        layout: TransportLayout,
+    ) -> Result<Vec<AnyValue>, String> {
+        let mut encoded = Vec::new();
+        encode_transport_layout(
+            transport,
+            &empty_backend_program(),
+            process,
+            value,
+            layout,
+            &mut encoded,
+        )?;
+        Ok(encoded)
+    }
+
+    fn tuple_shape(transport: &mut TransportStore, fields: &[ShapeId]) -> ShapeId {
+        transport.interners_mut().intern_shape(ShapeDescr::Tuple(
+            fields
+                .iter()
+                .copied()
+                .map(TransportLayout::structural)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ))
+    }
+
+    #[test]
+    fn tuple_decode_keeps_an_absent_parent_decomposed_and_a_carried_parent_boxed() {
+        let mut transport = TransportStore::new();
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let tuple_ty = types.tuple(&[int]);
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: int,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let tuple_lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let tuple = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout {
+                structural: scalar,
+                carrier: TransportCarrier::ValueRef(lane),
+            }])));
+        let args = [AnyValue::Int(7)];
+        let mut decomposed_index = 0;
+        let decomposed = decode_transport_layout(
+            &transport,
+            &args,
+            TransportLayout::structural(tuple),
+            &mut decomposed_index,
+        )
+        .expect("an absent parent carrier preserves its recursive physical lanes");
+        assert!(matches!(
+            decomposed,
+            BackendBoundValue::Transport { shape, lanes }
+                if shape == tuple && matches!(lanes.as_slice(), [AnyValue::Int(7)])
+        ));
+        assert_eq!(decomposed_index, 1);
+
+        let mut boxed_index = 0;
+        let boxed = decode_transport_layout(
+            &transport,
+            &args,
+            TransportLayout {
+                structural: tuple,
+                carrier: TransportCarrier::ValueRef(tuple_lane),
+            },
+            &mut boxed_index,
+        )
+        .expect("the parent carrier dominates its structural tuple");
+        assert!(matches!(boxed, BackendBoundValue::Runtime(AnyValue::Int(7))));
+        assert_eq!(boxed_index, 1);
+    }
+
+    #[test]
+    fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
+        let mut transport = TransportStore::new();
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let inner_tuple_ty = types.tuple(&[int, int, int]);
+        let outer_tuple_ty = types.tuple(&[int, inner_tuple_ty]);
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: int,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let inner_tuple_lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: inner_tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let inner_tuple_value = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Lane(inner_tuple_lane));
+        let outer_tuple_lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: outer_tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let source_inner = tuple_shape(&mut transport, &[scalar, scalar, scalar]);
+        let source = tuple_shape(&mut transport, &[nothing, source_inner]);
+        let destination = tuple_shape(&mut transport, &[nothing, inner_tuple_value]);
+        let selective_inner = tuple_shape(&mut transport, &[nothing, scalar, nothing]);
+        let selective_destination = tuple_shape(&mut transport, &[nothing, selective_inner]);
+        let required_absent_destination = tuple_shape(&mut transport, &[scalar, nothing]);
+        let arity_mismatch_destination = tuple_shape(&mut transport, &[scalar]);
+        let value = BackendBoundValue::Transport {
+            shape: source,
+            lanes: vec![AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        let mut process = runtime.take_process(1).expect("test process");
+        let process = &mut process as *mut Process;
+        let encoded = encode_for_layout(&transport, process, &value, destination)
+            .expect("the destination erases the absent field before encoding the required inner tuple");
+
+        assert_eq!(encoded.len(), 1);
+        assert!(
+            matches!(encoded[0], AnyValue::Ref(_)),
+            "the inner tuple crosses as one value ref"
+        );
+        assert_eq!(transport.interners().lane(inner_tuple_lane).ty, inner_tuple_ty);
+        let inner_fields = (0..3)
+            .map(|index| {
+                with_value_ref(process, encoded[0], "reprojected inner tuple", |tuple| {
+                    fz_struct_get_field_ref(process, tuple, index * 8)
+                })
+                .and_then(|word| interp_value_from_ref_word(word, "reprojected inner tuple field"))
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .ok_or_else(|| "inner tuple field was not an int".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the destination lane should hold the materialized inner tuple");
+        assert_eq!(inner_fields, [1, 2, 3]);
+
+        let selectively_encoded = encode_for_layout(&transport, process, &value, selective_destination)
+            .expect("a second consumer should independently select one nested source field");
+        assert_eq!(selectively_encoded.len(), 1);
+        assert_eq!(selectively_encoded[0].as_i64(), Some(2));
+
+        let source_with_present_discard = tuple_shape(&mut transport, &[scalar, source_inner]);
+        let value_with_present_discard = BackendBoundValue::Transport {
+            shape: source_with_present_discard,
+            lanes: vec![AnyValue::Int(99), AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        };
+        let present_discarded = encode_for_layout(&transport, process, &value_with_present_discard, destination)
+            .expect("destination Nothing should discard a present source field");
+        assert_eq!(present_discarded.len(), 1);
+        assert!(matches!(present_discarded[0], AnyValue::Ref(_)));
+
+        let whole_carrier = encode_with_layout(
+            &transport,
+            process,
+            &value_with_present_discard,
+            TransportLayout {
+                structural: source_with_present_discard,
+                carrier: TransportCarrier::ValueRef(outer_tuple_lane),
+            },
+        )
+        .expect("a whole tuple should satisfy an outer ValueRef carrier");
+        assert_eq!(whole_carrier.len(), 1);
+        assert!(matches!(whole_carrier[0], AnyValue::Ref(_)));
+        assert!(
+            encode_with_layout(
+                &transport,
+                process,
+                &value,
+                TransportLayout {
+                    structural: destination,
+                    carrier: TransportCarrier::ValueRef(outer_tuple_lane),
+                },
+            )
+            .is_err(),
+            "same-arity reprojection must not bypass an outer ValueRef obligation",
+        );
+
+        let required_absent = encode_for_layout(&transport, process, &value, required_absent_destination)
+            .expect_err("a required destination field cannot be invented from an absent source field");
+        assert_eq!(required_absent, "backend value was absent and cannot be materialized");
+
+        let arity_mismatch = encode_for_layout(&transport, process, &value, arity_mismatch_destination)
+            .expect_err("arity-mismatched tuples retain outer materialization behavior");
+        assert_eq!(arity_mismatch, "backend value was absent and cannot be materialized");
+
+        let non_tuple = encode_runtime_value(
+            &transport,
+            &empty_backend_program(),
+            process,
+            &value,
+            scalar,
+            &mut Vec::new(),
+        )
+        .expect_err("non-tuple destinations retain outer materialization behavior");
+        assert_eq!(non_tuple, "backend value was absent and cannot be materialized");
+
+        let mut identical = Vec::new();
+        encode_runtime_value(
+            &transport,
+            &empty_backend_program(),
+            process,
+            &value,
+            source,
+            &mut identical,
+        )
+        .expect("an identical layout keeps the direct lane-copy path");
+        assert_eq!(
+            identical.iter().map(|value| value.as_i64()).collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3)]
+        );
+    }
 
     #[test]
     fn backend_destructor_closure_unpack_errors_propagate() {

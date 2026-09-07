@@ -7,9 +7,10 @@ use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
-use super::drive::{FactKey, JobEffects};
+use super::drive::{FactKey, JobEffects, ProductAddress};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
+use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_surface::{
     MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface, span_from_meta,
 };
@@ -43,6 +44,8 @@ pub(crate) trait QuotedExpansionCtx {
     fn current_module(&self) -> ModuleId;
     fn required_remote_macros(&self) -> &HashSet<FunctionId>;
     fn note_read(&mut self, fact: FactKey);
+    fn products(&self) -> Option<&ProductSessions>;
+    fn note_product_read(&mut self, product: ProductAddress);
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId>;
     fn wait_for_callable_module_interface(&mut self, function: FunctionId) -> JobEffects {
         let world = self.world();
@@ -336,15 +339,27 @@ pub(crate) trait QuotedExpansionCtx {
         depth: usize,
         args: &[QuotedSourceCursor],
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
-        let macro_fact = FactKey::MacroExecutable(function);
-        if self.world().fact_revision(&macro_fact).is_none() {
-            // `MacroExecutable`'s sole producer arm is `Job::BuildMacroExecutable`
-            // (`World::demand_fact_producer`).
+        let definition = FactKey::FunctionDefined(function);
+        if self.world().fact_revision(&definition).is_none() {
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
-                macro_fact,
+                definition,
             ))));
         }
-        self.note_read(macro_fact);
+        self.note_read(definition);
+        let root = self.world().macro_root(function);
+        let address = ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        };
+        let Some(ProductValue::RootBackendProduct(program)) =
+            self.products().and_then(|products| products.product(&address))
+        else {
+            return Ok(ExpandedValue::Blocked(Box::new(JobEffects {
+                product_waits: vec![address],
+                ..JobEffects::default()
+            })));
+        };
+        self.note_product_read(address);
 
         let builder = owner.builder();
         let caller = self
@@ -356,7 +371,7 @@ pub(crate) trait QuotedExpansionCtx {
         let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
         let (world, tel) = self.split();
         let expanded = super::drive::ExecutionContext::new(world, tel)
-            .run_macro_on_source(function, owner, caller, &arg_roots)
+            .run_macro_on_source(function, &program, owner, caller, &arg_roots)
             .map_err(|error| {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;

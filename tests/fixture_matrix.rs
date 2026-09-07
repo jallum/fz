@@ -29,7 +29,7 @@
 //!     defer: rationale     # optional whole-fixture deferral
 //!     defer.build: rationale  # optional per-path deferral
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
-//!     timeout.interp_secs: 15  # path-specific timeout override
+//!     timeout.interp_secs: 30  # path-specific hang-guard override
 //!     #---
 //!
 //! Behavioural routes default to `run`, `interp`, and `build`. A fixture may
@@ -61,18 +61,19 @@ use fz::compiler2::{
 };
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::env::{temp_dir, var};
-use std::fs::{self, remove_file};
-use std::io::Error;
-use std::os::fd::RawFd;
+use std::fs::{self, File, remove_file};
+use std::io::{Error, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio, id};
+use std::process::{Child, Command, ExitStatus, Output, Stdio, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
-const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_FIXTURE_HANG_TIMEOUT: Duration = Duration::from_secs(20);
 static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
@@ -163,6 +164,18 @@ fn main() {
 /// and the trial list survives refactors.
 fn static_tests() -> Vec<(&'static str, fn())> {
     vec![
+        (
+            "fixture_telemetry_reserves_its_path",
+            fixture_telemetry_reserves_its_path,
+        ),
+        (
+            "fixture_telemetry_cleans_failed_invocations",
+            fixture_telemetry_cleans_failed_invocations,
+        ),
+        (
+            "fixture_telemetry_concurrent_spec_violations",
+            fixture_telemetry_concurrent_spec_violations,
+        ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
         (
             "behavior_fixtures_route_via_filename_not_paths_frontmatter",
@@ -191,6 +204,37 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "interpreter_stepper_does_not_update_quiet_quanta",
             interpreter_stepper_does_not_update_quiet_quanta,
+        ),
+        ("fixture_hang_guard_policy", fixture_hang_guard_policy),
+        (
+            "fixture_command_capture_does_not_wait_for_an_open_writer",
+            fixture_command_capture_does_not_wait_for_an_open_writer,
+        ),
+        (
+            "fixture_command_rejects_missing_readiness",
+            fixture_command_rejects_missing_readiness,
+        ),
+        ("fixture_readiness_eof_before_exit", fixture_readiness_eof_before_exit),
+        ("fixture_readiness_exit_before_eof", fixture_readiness_exit_before_eof),
+        (
+            "fixture_readiness_drains_an_exited_child",
+            fixture_readiness_drains_an_exited_child,
+        ),
+        (
+            "kind_test_commands_signal_execution_ready_once",
+            kind_test_commands_signal_execution_ready_once,
+        ),
+        (
+            "kind_test_timeouts_kill_the_outer_command_and_its_hung_root",
+            kind_test_timeouts_kill_the_outer_command_and_its_hung_root,
+        ),
+        (
+            "build_output_owner_cleans_timeout_and_error_paths",
+            build_output_owner_cleans_timeout_and_error_paths,
+        ),
+        (
+            "diagnostic_build_path_cleans_every_output",
+            diagnostic_build_path_cleans_every_output,
         ),
         ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
     ]
@@ -249,6 +293,17 @@ fn behavior_fixtures_route_via_filename_not_paths_frontmatter() {
             "{} should not carry dead `repl` timeout cruft in the compiler2 matrix",
             path.display()
         );
+        let fixture = FixtureCase::new(path.clone());
+        let header = parse_header(&fixture).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+        assert!(
+            header
+                .path_timeouts
+                .iter()
+                .all(|(_, timeout)| *timeout > DEFAULT_FIXTURE_HANG_TIMEOUT),
+            "{} carries a timeout override no more generous than the shared hang guard; \
+             that is a performance stopwatch, not a nontermination backstop",
+            path.display()
+        );
     }
 }
 
@@ -298,7 +353,7 @@ impl Header {
         self.path_timeouts
             .iter()
             .find_map(|(timeout_path, timeout)| (*timeout_path == path).then_some(*timeout))
-            .unwrap_or(FIXTURE_COMMAND_TIMEOUT)
+            .unwrap_or(DEFAULT_FIXTURE_HANG_TIMEOUT)
     }
 
     fn defer_for_path(&self, path: FixtureMatrixPath) -> Option<&str> {
@@ -594,49 +649,165 @@ enum TimeoutStart {
     OnExecutionReady,
 }
 
-fn close_fd(fd: RawFd) {
-    unsafe {
-        let _ = libc::close(fd);
+enum ExecutionReady {
+    Pending,
+    Ready,
+    Closed,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FixtureCommandState {
+    Running,
+    Exited,
+    MissingExecutionReady,
+}
+
+fn fixture_command_state(
+    timeout_start: TimeoutStart,
+    readiness_bytes: usize,
+    readiness_open: bool,
+    status: Option<ExitStatus>,
+) -> FixtureCommandState {
+    if matches!(timeout_start, TimeoutStart::OnExecutionReady)
+        && readiness_bytes == 0
+        && (!readiness_open || status.is_some())
+    {
+        FixtureCommandState::MissingExecutionReady
+    } else if status.is_some() {
+        FixtureCommandState::Exited
+    } else {
+        FixtureCommandState::Running
     }
 }
 
-fn execution_ready_pipe() -> Result<(RawFd, RawFd), String> {
+#[derive(Debug)]
+struct GuardedOutput {
+    output: Output,
+    execution_ready_count: usize,
+}
+
+struct CommandCapture {
+    stdout: File,
+    stderr: File,
+}
+
+impl CommandCapture {
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            stdout: anonymous_capture("stdout")?,
+            stderr: anonymous_capture("stderr")?,
+        })
+    }
+
+    fn stdio(&self) -> Result<(Stdio, Stdio), String> {
+        let clone = |file: &File| file.try_clone().map(Stdio::from).map_err(|error| error.to_string());
+        Ok((clone(&self.stdout)?, clone(&self.stderr)?))
+    }
+
+    fn output(mut self, status: ExitStatus) -> Result<Output, String> {
+        fn read(file: &mut File) -> Result<Vec<u8>, String> {
+            let length = file.metadata().map_err(|error| error.to_string())?.len();
+            file.seek(SeekFrom::Start(0)).map_err(|error| error.to_string())?;
+            let mut bytes = Vec::new();
+            file.take(length)
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            Ok(bytes)
+        }
+        Ok(Output {
+            status,
+            stdout: read(&mut self.stdout)?,
+            stderr: read(&mut self.stderr)?,
+        })
+    }
+}
+
+struct FixtureTempFile {
+    path: Option<PathBuf>,
+    file: Option<File>,
+}
+
+impl FixtureTempFile {
+    fn new(label: &str) -> Result<Self, String> {
+        loop {
+            let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = temp_dir().join(format!("fz_fixture_{}_{}_{}", id(), nonce, label));
+            match File::options().read(true).write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path: Some(path),
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("create fixture {label}: {error}")),
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_deref().expect("named temporary file has a path")
+    }
+
+    fn unlink(mut self) -> Result<File, String> {
+        let path = self.path();
+        remove_file(path).map_err(|error| format!("unlink {}: {error}", path.display()))?;
+        self.path = None;
+        Ok(self.file.take().expect("created capture has a file"))
+    }
+}
+
+impl Drop for FixtureTempFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = remove_file(path);
+        }
+    }
+}
+
+fn anonymous_capture(stream: &str) -> Result<File, String> {
+    FixtureTempFile::new(stream)?.unlink()
+}
+
+fn execution_start(boundary: TimeoutStart, now: Instant) -> Option<Instant> {
+    matches!(boundary, TimeoutStart::OnSpawn).then_some(now)
+}
+
+fn execution_ready_pipe() -> Result<(OwnedFd, OwnedFd), String> {
     let mut fds = [0; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc != 0 {
         return Err(format!("pipe {}: {}", FZ_EXEC_READY_FD_ENV, Error::last_os_error()));
     }
-    let flags = unsafe { libc::fcntl(fds[0], libc::F_GETFL) };
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    let flags = unsafe { libc::fcntl(read_fd.as_raw_fd(), libc::F_GETFL) };
     if flags < 0 {
-        close_fd(fds[0]);
-        close_fd(fds[1]);
         return Err(format!("fcntl {}: {}", FZ_EXEC_READY_FD_ENV, Error::last_os_error()));
     }
-    let rc = unsafe { libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    let rc = unsafe { libc::fcntl(read_fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
     if rc != 0 {
-        close_fd(fds[0]);
-        close_fd(fds[1]);
         return Err(format!(
             "fcntl nonblock {}: {}",
             FZ_EXEC_READY_FD_ENV,
             Error::last_os_error()
         ));
     }
-    Ok((fds[0], fds[1]))
+    Ok((read_fd, write_fd))
 }
 
-fn read_execution_ready(fd: RawFd) -> Result<bool, String> {
+fn read_execution_ready(fd: &OwnedFd) -> Result<ExecutionReady, String> {
     let mut byte = [0_u8];
-    let n = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), byte.len()) };
+    let n = unsafe { libc::read(fd.as_raw_fd(), byte.as_mut_ptr().cast(), byte.len()) };
     if n > 0 {
-        return Ok(true);
+        return Ok(ExecutionReady::Ready);
     }
     if n == 0 {
-        return Ok(false);
+        return Ok(ExecutionReady::Closed);
     }
     let err = Error::last_os_error();
     match err.raw_os_error() {
-        Some(code) if code == libc::EAGAIN || code == libc::EINTR => Ok(false),
+        Some(code) if code == libc::EAGAIN || code == libc::EINTR => Ok(ExecutionReady::Pending),
         _ => Err(format!("read {}: {}", FZ_EXEC_READY_FD_ENV, err)),
     }
 }
@@ -647,71 +818,555 @@ fn fixture_command_output(
     timeout_start: TimeoutStart,
     timeout: Duration,
 ) -> Result<Output, String> {
+    guarded_fixture_command(cmd, label, timeout_start, DEFAULT_FIXTURE_HANG_TIMEOUT, timeout)
+        .map(|finished| finished.output)
+}
+
+fn guarded_fixture_command(
+    cmd: &mut Command,
+    label: &str,
+    timeout_start: TimeoutStart,
+    setup_timeout: Duration,
+    execution_timeout: Duration,
+) -> Result<GuardedOutput, String> {
     let ready_pipe = match timeout_start {
         TimeoutStart::OnSpawn => None,
         TimeoutStart::OnExecutionReady => Some(execution_ready_pipe()?),
     };
-    if let Some((_read_fd, write_fd)) = ready_pipe {
-        cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.to_string());
+    if let Some((_read_fd, write_fd)) = ready_pipe.as_ref() {
+        cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string());
     }
-    let spawned = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
-    let mut ready_read_fd = ready_pipe.map(|(read_fd, write_fd)| {
-        close_fd(write_fd);
-        read_fd
-    });
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(e) => {
-            if let Some(read_fd) = ready_read_fd.take() {
-                close_fd(read_fd);
-            }
-            return Err(format!("spawn {}: {}", label, e));
-        }
-    };
-    let mut start = matches!(timeout_start, TimeoutStart::OnSpawn).then(Instant::now);
+    let capture = CommandCapture::new()?;
+    let (stdout, stderr) = capture.stdio()?;
+    cmd.process_group(0);
+    let spawned = cmd.stdout(stdout).stderr(stderr).spawn();
+    let ready_read_fd = ready_pipe.map(|(read_fd, _write_fd)| read_fd);
+    let child = spawned.map_err(|error| format!("spawn {}: {}", label, error))?;
+    wait_fixture_command(
+        FixtureProcess { child, capture },
+        ready_read_fd,
+        label,
+        timeout_start,
+        setup_timeout,
+        execution_timeout,
+    )
+}
+
+fn wait_fixture_command(
+    mut process: FixtureProcess,
+    mut ready_read_fd: Option<OwnedFd>,
+    label: &str,
+    timeout_start: TimeoutStart,
+    setup_timeout: Duration,
+    execution_timeout: Duration,
+) -> Result<GuardedOutput, String> {
+    let spawned_at = Instant::now();
+    let mut execution_started = execution_start(timeout_start, spawned_at);
+    let mut execution_ready_count = 0;
     loop {
-        if let Some(read_fd) = ready_read_fd
-            && start.is_none()
-            && read_execution_ready(read_fd)?
-        {
-            if let Some(read_fd) = ready_read_fd.take() {
-                close_fd(read_fd);
+        // Observe exit before draining: an exited child's final ready byte is
+        // already in the pipe, even if it arrived after the previous drain.
+        let status = match process.child.try_wait() {
+            Ok(status) => status,
+            Err(error) => return Err(process.fail(label, format!("wait {label}: {error}"))),
+        };
+        while let Some(read_fd) = ready_read_fd.as_ref() {
+            match read_execution_ready(read_fd) {
+                Ok(ExecutionReady::Ready) => {
+                    execution_ready_count += 1;
+                    if execution_ready_count == 1 {
+                        execution_started = Some(Instant::now());
+                    }
+                }
+                Ok(ExecutionReady::Pending) => break,
+                Ok(ExecutionReady::Closed) => {
+                    ready_read_fd = None;
+                }
+                Err(error) => {
+                    return Err(process.fail(label, error));
+                }
             }
-            start = Some(Instant::now());
         }
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                if let Some(read_fd) = ready_read_fd.take()
-                    && start.is_none()
-                {
-                    close_fd(read_fd);
-                }
-                return child.wait_with_output().map_err(|e| format!("wait {}: {}", label, e));
-            }
-            Ok(None) if start.map(|started| started.elapsed() >= timeout).unwrap_or(false) => {
-                let _ = child.kill();
-                let out = child
-                    .wait_with_output()
-                    .map_err(|e| format!("wait timed-out {}: {}", label, e))?;
-                if let Some(read_fd) = ready_read_fd.take() {
-                    close_fd(read_fd);
-                }
-                let stderr = String::from_utf8_lossy(&out.stderr);
+        match fixture_command_state(timeout_start, execution_ready_count, ready_read_fd.is_some(), status) {
+            FixtureCommandState::MissingExecutionReady => {
+                let output = process.finish(label)?;
                 return Err(format!(
-                    "{} exceeded {:?}; stderr: {}",
+                    "{} ended before execution-ready signal (0 readiness bytes); stderr: {}",
                     label,
-                    timeout,
-                    stderr.trim_end()
+                    String::from_utf8_lossy(&output.stderr).trim_end()
                 ));
             }
-            Ok(None) => sleep(Duration::from_millis(10)),
-            Err(e) => {
-                if let Some(read_fd) = ready_read_fd.take() {
-                    close_fd(read_fd);
-                }
-                return Err(format!("wait {}: {}", label, e));
+            FixtureCommandState::Exited => {
+                let output = process.finish(label)?;
+                return Ok(GuardedOutput {
+                    output,
+                    execution_ready_count,
+                });
+            }
+            FixtureCommandState::Running
+                if execution_started
+                    .map(|started| started.elapsed() >= execution_timeout)
+                    .unwrap_or_else(|| spawned_at.elapsed() >= setup_timeout) =>
+            {
+                let output = process.finish(label)?;
+                return Err(match execution_started {
+                    None => format!(
+                        "{} did not signal execution ready within {:?}; stderr: {}",
+                        label,
+                        setup_timeout,
+                        String::from_utf8_lossy(&output.stderr).trim_end()
+                    ),
+                    Some(_) => format!(
+                        "{} exceeded {:?}; stderr: {}",
+                        label,
+                        execution_timeout,
+                        String::from_utf8_lossy(&output.stderr).trim_end()
+                    ),
+                });
+            }
+            FixtureCommandState::Running => sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+struct FixtureProcess {
+    child: Child,
+    capture: CommandCapture,
+}
+
+impl FixtureProcess {
+    fn finish(mut self, label: &str) -> Result<Output, String> {
+        let group_error = kill_process_group(&self.child).err();
+        if group_error.is_some()
+            && let Err(direct_error) = kill_child(&mut self.child)
+        {
+            // This is our direct child and the harness does not change credentials.
+            // If it is still live after both SIGKILL attempts fail, returning would
+            // silently detach a process the harness owns.
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("owned child stayed live after group and direct kill failed: {direct_error}"),
+                Err(error) => panic!("cannot prove owned child reaped after kill failures: {error}"),
             }
         }
+        let status = wait_child(&mut self.child, label);
+        if let Some(error) = group_error {
+            return Err(format!("teardown {label}: {error}; leader reaped as {status}"));
+        }
+        self.capture.output(status)
+    }
+
+    fn fail(self, label: &str, message: String) -> String {
+        match self.finish(label) {
+            Ok(_) => message,
+            Err(error) => format!("{message}; {error}"),
+        }
+    }
+}
+
+fn wait_child(child: &mut Child, label: &str) -> ExitStatus {
+    loop {
+        match child.wait() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Ok(status) => return status,
+            Err(wait_error) => match child.try_wait() {
+                Ok(Some(status)) => return status,
+                Ok(None) => panic!("wait {label} failed while owned child stayed live: {wait_error}"),
+                Err(poll_error) => panic!("cannot prove {label} reaped after wait failed: {wait_error}; {poll_error}"),
+            },
+        }
+    }
+}
+
+fn kill_child(child: &mut Child) -> std::io::Result<()> {
+    loop {
+        match child.kill() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
+fn kill_process_group(child: &Child) -> Result<(), String> {
+    let process_group = -(child.id() as libc::pid_t);
+    loop {
+        if unsafe { libc::kill(process_group, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+        let error = Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ESRCH) => return Ok(()),
+            _ => return Err(format!("kill process group {}: {}", child.id(), error)),
+        }
+    }
+}
+
+fn fixture_hang_guard_policy() {
+    assert_eq!(
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        Duration::from_secs(20),
+        "the default is the CI-proven hang backstop, not a performance stopwatch"
+    );
+    let now = Instant::now();
+    assert_eq!(
+        execution_start(TimeoutStart::OnExecutionReady, now),
+        None,
+        "pre-execution work must not arm the execution hang guard"
+    );
+    assert_eq!(
+        execution_start(TimeoutStart::OnSpawn, now),
+        Some(now),
+        "a spawn-timed command arms its execution guard immediately"
+    );
+}
+
+fn fixture_command_capture_does_not_wait_for_an_open_writer() {
+    let capture = CommandCapture::new().expect("create anonymous regular-file capture");
+    let mut writer = capture.stdout.try_clone().expect("clone capture writer");
+    writer.write_all(b"bounded snapshot").expect("write snapshot");
+
+    let out = capture.output(ExitStatus::from_raw(0)).expect("read bounded snapshot");
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"bounded snapshot");
+    assert!(out.stderr.is_empty());
+    writer.write_all(b" after return").expect("writer remains open");
+}
+
+fn fixture_command_rejects_missing_readiness() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid_path = temp_dir().join(format!("fz_ready_eof_{}_{}.pid", id(), nonce));
+    let error = fixture_command_output(
+        Command::new("sh").env("FZ_READY_EOF_PID_PATH", &pid_path).args([
+            "-c",
+            "printf %s $$ > \"$FZ_READY_EOF_PID_PATH\"; eval \"exec ${FZ_EXEC_READY_FD}>&-\"; sleep 2",
+        ]),
+        "readiness EOF fixture",
+        TimeoutStart::OnExecutionReady,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .expect_err("closing the readiness pipe without a signal must fail explicitly");
+    assert_eq!(
+        error,
+        "readiness EOF fixture ended before execution-ready signal (0 readiness bytes); stderr: "
+    );
+
+    assert_reaped(read_pid(&pid_path));
+    let _ = fs::remove_file(pid_path);
+
+    let error = fixture_command_output(
+        Command::new("sh").args(["-c", "sleep 2 &"]),
+        "pre-ready leader",
+        TimeoutStart::OnExecutionReady,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .expect_err("leader success without an execution-ready signal is a harness error");
+    assert_eq!(
+        error,
+        "pre-ready leader ended before execution-ready signal (0 readiness bytes); stderr: "
+    );
+
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid_path = temp_dir().join(format!("fz_setup_hang_{}_{}.pid", id(), nonce));
+    let error = guarded_fixture_command(
+        Command::new("sh")
+            .env("FZ_SETUP_HANG_PID_PATH", &pid_path)
+            .args(["-c", "printf %s $$ > \"$FZ_SETUP_HANG_PID_PATH\"; sleep 2"]),
+        "setup-hung fixture",
+        TimeoutStart::OnExecutionReady,
+        Duration::from_secs(1),
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .expect_err("a live command that never signals readiness must hit the setup guard");
+    assert_eq!(
+        error,
+        "setup-hung fixture did not signal execution ready within 1s; stderr: "
+    );
+    assert_reaped(read_pid(&pid_path));
+    let _ = fs::remove_file(pid_path);
+}
+
+fn fixture_readiness_eof_before_exit() {
+    assert_missing_readiness_observation_order(false);
+}
+
+fn fixture_readiness_exit_before_eof() {
+    assert_missing_readiness_observation_order(true);
+}
+
+fn fixture_readiness_drains_an_exited_child() {
+    for (signal, exit_code) in [(true, 0), (true, 7), (false, 7)] {
+        let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
+        let capture = CommandCapture::new().expect("create command capture");
+        let (stdout, stderr) = capture.stdio().expect("capture child output");
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'child diagnostic\\n' >&2; if [ \"$1\" = true ]; then eval \"printf x >&${FZ_EXEC_READY_FD}\"; fi; exit \"$2\"",
+                "readiness probe",
+                if signal { "true" } else { "false" },
+                &exit_code.to_string(),
+            ])
+            .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
+            .stdout(stdout)
+            .stderr(stderr)
+            .process_group(0)
+            .spawn()
+            .expect("spawn exited readiness probe");
+        let pid = child.id() as libc::pid_t;
+        drop(write_fd);
+        assert_eq!(
+            child.wait().expect("exit before reading readiness").code(),
+            Some(exit_code)
+        );
+        let result = wait_fixture_command(
+            FixtureProcess { child, capture },
+            Some(read_fd),
+            "exited readiness probe",
+            TimeoutStart::OnExecutionReady,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+        );
+        assert_reaped(pid);
+        if signal {
+            let finished = result.expect("consume the exited child's buffered signal before judging its status");
+            assert_eq!(finished.execution_ready_count, 1);
+            assert_eq!(finished.output.status.code(), Some(exit_code));
+            assert_eq!(finished.output.stderr, b"child diagnostic\n");
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "exited readiness probe ended before execution-ready signal (0 readiness bytes); stderr: child diagnostic"
+            );
+        }
+    }
+}
+
+fn assert_missing_readiness_observation_order(exit_first: bool) {
+    let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
+    let capture = CommandCapture::new().expect("create command capture");
+    let (stdout, stderr) = capture.stdio().expect("capture child output");
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "printf 'setup diagnostic\\n' >&2; eval \"exec ${FZ_EXEC_READY_FD}>&-\"; read release; exit 0",
+        ])
+        .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
+        .stdin(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
+        .process_group(0)
+        .spawn()
+        .expect("spawn readiness observation probe");
+    let pid = child.id() as libc::pid_t;
+    drop(write_fd);
+    if exit_first {
+        child
+            .stdin
+            .take()
+            .expect("child control pipe")
+            .write_all(b"exit\n")
+            .unwrap();
+        assert!(
+            child
+                .wait()
+                .expect("observe child exit before reading readiness")
+                .success()
+        );
+    } else {
+        let mut ready = libc::pollfd {
+            fd: read_fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut ready, 1, 20_000) }, 1);
+        assert_eq!(ready.revents & libc::POLLHUP, libc::POLLHUP);
+        assert!(
+            child
+                .try_wait()
+                .expect("observe child blocked on control pipe")
+                .is_none()
+        );
+    }
+    assert_eq!(
+        fixture_command_state(
+            TimeoutStart::OnExecutionReady,
+            0,
+            false,
+            child.try_wait().expect("observe child status")
+        ),
+        FixtureCommandState::MissingExecutionReady,
+        "pipe EOF and child exit have one semantic verdict"
+    );
+    let error = wait_fixture_command(
+        FixtureProcess { child, capture },
+        Some(read_fd),
+        "missing readiness probe",
+        TimeoutStart::OnExecutionReady,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .expect_err("both observation orders reject the same missing boundary");
+    assert_reaped(pid);
+    assert_eq!(
+        error,
+        "missing readiness probe ended before execution-ready signal (0 readiness bytes); stderr: setup diagnostic"
+    );
+}
+
+fn read_pid(path: &Path) -> libc::pid_t {
+    fs::read_to_string(path)
+        .expect("read child pid")
+        .parse()
+        .expect("parse child pid")
+}
+
+fn assert_reaped(pid: libc::pid_t) {
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+}
+
+fn kind_test_commands_signal_execution_ready_once() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let fixture = temp_dir().join(format!("fz_kind_test_ready_{}_{}.fz", id(), nonce));
+    fs::write(
+        &fixture,
+        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes), do: assert(true)\n",
+    )
+    .expect("write kind:test readiness probe");
+
+    for interp in [false, true] {
+        let mut command = Command::new(FZ2_BIN);
+        command.arg("test");
+        if interp {
+            command.arg("--interp");
+        }
+        command.arg(&fixture);
+        assert_execution_ready_count(&mut command, "fz2 test", 1);
+    }
+
+    for interp in [false, true] {
+        let mut command = Command::new(FZ2_BIN);
+        command.arg("run-test-root").arg(&fixture).args(["-", "passes"]);
+        if interp {
+            command.arg("--interp");
+        }
+        assert_execution_ready_count(&mut command, "fz2 run-test-root", 0);
+    }
+
+    let _ = fs::remove_file(fixture);
+}
+
+fn assert_execution_ready_count(command: &mut Command, label: &str, expected: usize) {
+    let result = guarded_fixture_command(
+        command,
+        label,
+        TimeoutStart::OnExecutionReady,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    );
+    if expected == 0 {
+        let error = result.expect_err("private root must not signal readiness");
+        assert_eq!(
+            error,
+            format!("{label} ended before execution-ready signal (0 readiness bytes); stderr: ")
+        );
+        return;
+    }
+    let finished = result.unwrap_or_else(|error| panic!("run `{label}` readiness probe: {error}"));
+    assert!(finished.output.status.success());
+    assert_eq!(finished.execution_ready_count, expected);
+}
+
+fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let fixture = temp_dir().join(format!("fz_kind_test_hang_{}_{}.fz", id(), nonce));
+    fs::write(
+        &fixture,
+        "#---\n# purpose: timeout probe\n# kind: test\n#---\ntest(:hangs), do: loop()\nfn loop(), do: loop()\n",
+    )
+    .expect("write kind:test timeout probe");
+
+    for args in [&["test"][..], &["test", "--interp"][..]] {
+        let label = format!("fz2 {}", args.join(" "));
+        let error = fixture_command_output(
+            Command::new(FZ2_BIN).args(args).arg(&fixture),
+            &label,
+            TimeoutStart::OnExecutionReady,
+            Duration::from_secs(1),
+        )
+        .expect_err("a kind:test root that never returns must time out");
+        assert_eq!(error, format!("{label} exceeded 1s; stderr: "));
+    }
+
+    let _ = fs::remove_file(fixture);
+}
+
+fn build_output_owner_cleans_timeout_and_error_paths() {
+    let path = temp_build_output_path("owner_timeout");
+    let timeout = with_fz2_build_outputs(path.clone(), |out_path| {
+        seed_fz2_build_outputs(out_path);
+        fixture_command_output(
+            Command::new("sh").args(["-c", "sleep 2"]),
+            "timed-out build probe",
+            TimeoutStart::OnSpawn,
+            Duration::from_millis(20),
+        )
+    });
+    assert!(timeout.unwrap_err().contains("exceeded 20ms"));
+    assert_fz2_build_outputs_absent(&path);
+
+    let path = temp_build_output_path("owner_error");
+    let error = with_fz2_build_outputs(path.clone(), |out_path| {
+        seed_fz2_build_outputs(out_path);
+        Err::<(), _>("build failed")
+    });
+    assert_eq!(error, Err("build failed"));
+    assert_fz2_build_outputs_absent(&path);
+}
+
+fn diagnostic_build_path_cleans_every_output() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let fixture_path = temp_dir().join(format!("fz_diagnostic_cleanup_{}_{}.fz", id(), nonce));
+    fs::write(
+        &fixture_path,
+        "#---\n# purpose: diagnostic cleanup probe\n# expect: diagnostic\n# diagnostic.code: probe/unexpected\n#---\nfn main(), do: 0\n",
+    )
+    .expect("write diagnostic cleanup fixture");
+    let fixture = FixtureCase::new(fixture_path.clone());
+    let header = parse_header(&fixture).expect("parse diagnostic cleanup fixture");
+    let out_path = temp_build_output_path("diagnostic");
+    let outcome = run_fz2_build_path_to(&fixture, &header, out_path.clone());
+    assert!(
+        matches!(outcome, RunOutcome::Ran(Ran { success: true, .. })),
+        "the deliberately valid diagnostic fixture must exercise unexpected build success"
+    );
+    assert_fz2_build_outputs_absent(&out_path);
+    let _ = fs::remove_file(fixture_path);
+}
+
+fn temp_build_output_path(label: &str) -> PathBuf {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    temp_dir().join(format!("fz2_matrix_{label}_{}_{}", id(), nonce))
+}
+
+fn seed_fz2_build_outputs(out_path: &Path) {
+    for path in [
+        out_path.to_path_buf(),
+        out_path.with_extension("o"),
+        out_path.with_extension("bin.o"),
+    ] {
+        fs::write(path, b"partial build output").expect("seed partial build output");
+    }
+}
+
+fn assert_fz2_build_outputs_absent(out_path: &Path) {
+    for path in [
+        out_path.to_path_buf(),
+        out_path.with_extension("o"),
+        out_path.with_extension("bin.o"),
+    ] {
+        assert!(!path.exists(), "build output leaked: {}", path.display());
     }
 }
 
@@ -753,16 +1408,27 @@ fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
     let stem = fixture.name();
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let out_path = temp_dir().join(format!("fz2_matrix_{}_{}_{}", stem, id(), nonce));
+    run_fz2_build_path_to(fixture, header, out_path)
+}
+
+fn run_fz2_build_path_to(fixture: &FixtureCase, header: &Header, out_path: PathBuf) -> RunOutcome {
+    with_fz2_build_outputs(out_path, |out_path| run_fz2_build_path_owned(fixture, header, out_path))
+}
+
+fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &Path) -> RunOutcome {
     let input = fixture.source_path();
-    let build = match Command::new(FZ2_BIN)
-        .args(["build"])
-        .arg(&input)
-        .args(["-o"])
-        .arg(&out_path)
-        .output()
-    {
+    let build = match fixture_command_output(
+        Command::new(FZ2_BIN)
+            .args(["build"])
+            .arg(&input)
+            .args(["-o"])
+            .arg(out_path),
+        "fz2 build",
+        TimeoutStart::OnSpawn,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    ) {
         Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(format!("spawn fz2 build: {}", e)),
+        Err(e) => return RunOutcome::Failed(e),
     };
     let build_stderr = String::from_utf8_lossy(&build.stderr).to_string();
     if header.expect == Expect::Diagnostic {
@@ -773,22 +1439,17 @@ fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
         });
     }
     if !build.status.success() {
-        remove_fz2_build_outputs(&out_path);
         return RunOutcome::Failed(format!("fz2 build exit {}: {}", build.status, build_stderr.trim_end()));
     }
     let run = match fixture_command_output(
-        &mut Command::new(&out_path),
+        &mut Command::new(out_path),
         "fz2-built binary",
         TimeoutStart::OnSpawn,
         header.timeout_for_path(FixtureMatrixPath::Build),
     ) {
         Ok(o) => o,
-        Err(e) => {
-            remove_fz2_build_outputs(&out_path);
-            return RunOutcome::Failed(e);
-        }
+        Err(e) => return RunOutcome::Failed(e),
     };
-    remove_fz2_build_outputs(&out_path);
     let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
     let diagnostics = format!("{}{}", build_stderr, run_stderr);
     RunOutcome::Ran(Ran {
@@ -796,6 +1457,31 @@ fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
         stdout: String::from_utf8_lossy(&run.stdout).to_string(),
         diagnostics,
     })
+}
+
+struct Fz2BuildOutputs {
+    out_path: PathBuf,
+}
+
+impl Fz2BuildOutputs {
+    fn new(out_path: PathBuf) -> Self {
+        Self { out_path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.out_path
+    }
+}
+
+impl Drop for Fz2BuildOutputs {
+    fn drop(&mut self) {
+        remove_fz2_build_outputs(self.path());
+    }
+}
+
+fn with_fz2_build_outputs<T>(out_path: PathBuf, run: impl FnOnce(&Path) -> T) -> T {
+    let outputs = Fz2BuildOutputs::new(out_path);
+    run(outputs.path())
 }
 
 fn remove_fz2_build_outputs(out_path: &Path) {
@@ -1036,14 +1722,10 @@ fn check_diagnostic_telemetry(
     path: FixtureMatrixPath,
     expected_code: &str,
 ) -> CheckOutcome {
-    let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
-    let out = match run_path_logged(fixture, header, path, &telemetry_path) {
+    let (out, log) = match run_path_logged(fixture, header, path) {
         Ok(out) => out,
         Err(e) => return CheckOutcome::Fail(e),
     };
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
     let code_needle = format!("\"code\":\"{}\"", expected_code);
     let found = log
         .lines()
@@ -1069,6 +1751,23 @@ fn run_path_logged(
     fixture: &FixtureCase,
     header: &Header,
     path: FixtureMatrixPath,
+) -> Result<(Output, String), String> {
+    with_fixture_telemetry(|telemetry_path| run_path_logged_to(fixture, header, path, telemetry_path))
+}
+
+fn with_fixture_telemetry(run: impl FnOnce(&Path) -> Result<Output, String>) -> Result<(Output, String), String> {
+    let telemetry = FixtureTempFile::new("telemetry.jsonl")?;
+    let output = run(telemetry.path())?;
+    let log = fs::read_to_string(telemetry.path())
+        .map_err(|error| format!("read {}: {error}", telemetry.path().display()))?;
+    telemetry.unlink()?;
+    Ok((output, log))
+}
+
+fn run_path_logged_to(
+    fixture: &FixtureCase,
+    header: &Header,
+    path: FixtureMatrixPath,
     telemetry_path: &Path,
 ) -> Result<Output, String> {
     if path == FixtureMatrixPath::Build {
@@ -1085,7 +1784,7 @@ fn run_path_logged(
                 .arg(&out_path),
             "fz2 build --log-telemetry",
             TimeoutStart::OnSpawn,
-            header.timeout_for_path(path),
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
         );
         remove_fz2_build_outputs(&out_path);
         return out;
@@ -1147,13 +1846,19 @@ fn oracle_goldens_match_elixir() {
             ));
             continue;
         }
-        let out = match Command::new("elixir").arg(&oracle_path).output() {
+        let label = format!("elixir {}", oracle_path.display());
+        let out = match fixture_command_output(
+            Command::new("elixir").arg(&oracle_path),
+            &label,
+            TimeoutStart::OnSpawn,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(e) => {
                 failures.push(format!(
-                    "{}: spawn `elixir {}`: {} (is Elixir installed and on PATH?)",
+                    "{}: `{}` failed: {} (is Elixir installed and on PATH?)",
                     fixture.display_path().display(),
-                    oracle_path.display(),
+                    label,
                     e
                 ));
                 continue;
@@ -1207,13 +1912,111 @@ fn oracle_goldens_match_elixir() {
 // per-pair compare all live in the helpers above; the trial wiring
 // is at the top of this file.
 
-fn temp_telemetry_path(fixture: &FixtureCase, emit: &str) -> PathBuf {
-    let name = fixture.name();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_nanos();
-    temp_dir().join(format!("fz_telemetry_{}_{}_{}_{}.jsonl", name, emit, id(), nanos))
+fn fixture_telemetry_reserves_its_path() {
+    let telemetry = FixtureTempFile::new("telemetry.jsonl").expect("reserve telemetry");
+    let path = telemetry.path().to_path_buf();
+    assert!(
+        path.is_file(),
+        "telemetry invocation must reserve its path before spawning a writer"
+    );
+    assert_eq!(
+        File::create_new(&path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    drop(telemetry);
+    assert!(!path.exists(), "only dropping the owner removes its reservation");
+}
+
+fn fixture_telemetry_cleans_failed_invocations() {
+    let mut reserved = PathBuf::new();
+    let result = with_fixture_telemetry(|path| {
+        reserved = path.to_path_buf();
+        fs::write(path, "unfinished telemetry").expect("write partial log");
+        Err("child failed before completion".into())
+    });
+    assert_eq!(result.unwrap_err(), "child failed before completion");
+    assert!(!reserved.exists(), "failed commands must release their telemetry");
+
+    let result = with_fixture_telemetry(|path| {
+        reserved = path.to_path_buf();
+        fs::remove_file(path).expect("inject premature removal");
+        Ok(Output {
+            status: ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .starts_with(&format!("read {}:", reserved.display())),
+        "a missing log after completion must remain a hard read error"
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_fixture_telemetry(|path| {
+            reserved = path.to_path_buf();
+            panic!("injected invocation panic");
+        })
+    }));
+    assert!(result.is_err());
+    assert!(!reserved.exists(), "unwinding must release the reservation");
+}
+
+fn fixture_telemetry_concurrent_spec_violations() {
+    const INVOCATIONS: usize = 24;
+    let barrier = std::sync::Barrier::new(INVOCATIONS);
+    let paths = std::thread::scope(|scope| {
+        let handles = (0..INVOCATIONS)
+            .map(|index| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let fixture = behavior_fixture_case("spec_violation");
+                    let header = parse_header(&fixture).expect("parse spec violation");
+                    let leg = [
+                        FixtureMatrixPath::Run,
+                        FixtureMatrixPath::Interp,
+                        FixtureMatrixPath::Build,
+                    ][index % 3];
+                    let mut reserved = PathBuf::new();
+                    let (output, log) = with_fixture_telemetry(|path| {
+                        reserved = path.to_path_buf();
+                        assert!(path.is_file());
+                        barrier.wait();
+                        run_path_logged_to(&fixture, &header, leg, path)
+                    })
+                    .expect("complete telemetry invocation");
+                    assert!(!output.status.success(), "spec violation must reject compilation");
+                    assert!(log.ends_with('\n'), "completed JSONL must end on a whole record");
+                    let events = log
+                        .lines()
+                        .map(|line| {
+                            serde_json::from_str::<serde_json::Value>(line)
+                                .expect("every completed telemetry record must parse")
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(
+                        events
+                            .iter()
+                            .any(|event| event["name"] == serde_json::json!(["fz", "diag", "error"])
+                                && event["metadata"]["diagnostic"]["code"] == "spec/violation"),
+                        "each invocation must retain its diagnostic"
+                    );
+                    assert!(!reserved.exists(), "successful reads must release their reservation");
+                    reserved
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("telemetry worker"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        paths.iter().collect::<std::collections::HashSet<_>>().len(),
+        INVOCATIONS,
+        "simultaneous paths, including repeated fixture legs, must never alias"
+    );
 }
 
 fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
@@ -1245,14 +2048,9 @@ impl ReusableConsTelemetryStats {
 }
 
 fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableConsTelemetryStats {
-    let telemetry_path = temp_telemetry_path(fixture, "reusable_cons");
-    let out = Command::new(FZ2_BIN)
-        .args(["--log-telemetry"])
-        .arg(&telemetry_path)
-        .args(["run"])
-        .arg(fixture.source_path())
-        .output()
-        .unwrap_or_else(|e| panic!("spawn fz2 run --log-telemetry: {}", e));
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) = run_path_logged(fixture, &header, FixtureMatrixPath::Run)
+        .unwrap_or_else(|e| panic!("run fz2 run --log-telemetry: {}", e));
     assert!(
         out.status.success(),
         "fz2 run --log-telemetry {} exited {}: {}",
@@ -1260,9 +2058,6 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
     let mut stats = ReusableConsTelemetryStats::default();
     let mut saw_native_event = false;
     for line in log.lines() {
@@ -1436,9 +2231,9 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "the public reducer bridge closure is erased on every path",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
-        "`struct_allocs = 1`",
+        "`struct_allocs = 0`",
         "`scalar_box_allocs = 3`",
-        "final list/struct/map heap headline is `112`",
+        "final list/struct/map heap headline is `80`",
     ] {
         assert!(
             readme.contains(needle),
@@ -1450,7 +2245,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &["5\ntrue\n15", "{5, 80, 1, 32, 0, 0, 3, 48, 0, 0}", "\n112\n"],
+        &["5\ntrue\n15", "{5, 80, 0, 0, 0, 0, 3, 48, 0, 0}", "\n80\n"],
     );
     // birth_count counts static `SplitList` ([h|t] destructure) sites across every
     // executable the whole-program native lowering produces for this root, so it

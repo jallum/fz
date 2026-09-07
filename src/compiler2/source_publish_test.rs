@@ -85,6 +85,7 @@ fn publish_compiler_fragment_scope(
     publish_scope(
         world,
         tel,
+        None,
         code,
         ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
         &surface,
@@ -481,6 +482,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         move |_, _, _, _, function| expanded_function_sink.borrow_mut().push(*function),
     );
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("macro_inc.fz".to_string()),
         include_str!("../../fixtures2/behavior/macro_inc.fz").to_string(),
@@ -489,7 +491,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "source publication should complete without expanding ordinary function bodies",
@@ -539,7 +541,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "demanding the function should stage its expanded source and define it",
@@ -583,6 +585,7 @@ fn source_publication_defers_source_sugar_rewrite_until_function_demand() {
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("source-sugar.fz".to_string()),
         r#"
@@ -610,7 +613,7 @@ end
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "source publication should not rewrite source-only sugars inside ordinary functions",
@@ -636,7 +639,7 @@ end
     );
     assert!(
         matches!(
-            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
             DriveOutcome::Resolved
         ),
         "demanding the function should rewrite sugars into staged expanded source",

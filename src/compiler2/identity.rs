@@ -25,6 +25,11 @@ impl ModuleId {
     pub fn is_global(self) -> bool {
         self == Self::GLOBAL
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -819,8 +824,8 @@ impl RootMap {
         self.slots.is_empty()
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = RootId> + use<> {
-        (0..self.slots.len() as u32).map(RootId)
+    pub fn len(&self) -> usize {
+        self.slots.len()
     }
 }
 

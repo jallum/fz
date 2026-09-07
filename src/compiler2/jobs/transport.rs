@@ -1,20 +1,23 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use super::super::body::{
     CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
     callsite_input_modes,
 };
 use super::super::drive::FactKey;
+use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
-    InputSlot, ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact,
 };
 use super::super::semantic::{
     CallableDemand, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand,
-    SelectedCallee, ShapeDemand,
+    SelectedCallee, SemanticOrd, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
@@ -23,8 +26,6 @@ use super::super::transport::{
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
-use super::artifact::{compare_executable_symbols, compare_transport_positions};
-use super::runtime_demand::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableFactsDraft {
@@ -133,9 +134,7 @@ impl TransportFactsBuilder {
             .callables
             .into_iter()
             .map(|(id, mut draft)| {
-                draft
-                    .resolutions
-                    .sort_by(|left, right| compare_executable_symbols(left, right, types));
+                draft.resolutions.sort_by(|left, right| left.semantic_cmp(right, types));
                 draft
                     .direct_surfaces
                     .sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
@@ -160,10 +159,8 @@ impl TransportFactsBuilder {
             .map(|(id, mut draft)| {
                 draft
                     .publications
-                    .sort_by(|left, right| compare_transport_positions(left, right, types));
-                draft
-                    .resolutions
-                    .sort_by(|left, right| compare_executable_symbols(left, right, types));
+                    .sort_by(|left, right| left.semantic_cmp(right, types));
+                draft.resolutions.sort_by(|left, right| left.semantic_cmp(right, types));
                 (
                     id,
                     BoundaryFacts {
@@ -198,29 +195,56 @@ pub(crate) fn produce_callable_construction_product(
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = match context.read_executable_facts(tel, &executable) {
-        Some(facts) => facts,
-        None => return PullOutcome::wait_on_product(ProductKey::ExecutableFacts(executable)),
-    };
-    let runtime = match context.read_runtime_demand(tel, &executable) {
-        Some(runtime) => runtime,
-        None => return PullOutcome::wait_on_product(ProductKey::RuntimeDemand(executable)),
-    };
-    let TransportPosition::Value { value, .. } = position else {
+    let facts = context.read_executable_facts(world, &executable);
+    let runtime = context.read_runtime_demand_fact(world, &executable);
+    let mut waits = Vec::new();
+    if facts.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
+            executable.clone(),
+        ))));
+    }
+    if runtime.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let facts = facts.expect("executable-facts wait should have been satisfied");
+    let runtime = runtime.expect("runtime-demand wait should have been satisfied");
+    let Some((value, producer, flow)) = local_callable_construction(&facts, &runtime, position) else {
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
-    let Some(TransportSource::CallableValue(producer)) = facts.value_origin(*value) else {
-        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
-    };
-    let Some(flow) = runtime.callable_flows.get(value) else {
-        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
-    };
-    let demand = runtime.value_demands.get(value).cloned().unwrap_or_default();
-    match produce_local_callable_construction(world, tel, context, &executable, facts.as_ref(), producer, flow, demand)
-    {
-        Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(answer))),
+    let demand = runtime.value_demands.get(&value).cloned().unwrap_or_default();
+    match produce_local_callable_construction(
+        world,
+        tel,
+        context,
+        &executable,
+        facts.as_ref(),
+        value,
+        producer,
+        flow,
+        demand,
+    ) {
+        Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
     }
+}
+
+pub(crate) fn local_callable_construction<'a>(
+    facts: &'a ExecutableFacts,
+    runtime: &'a ExecutableRuntimeDemand,
+    position: &TransportPosition,
+) -> Option<(ValueId, &'a LocalCallableProducer, &'a CallableFlowFact)> {
+    let TransportPosition::Value { value, .. } = position else {
+        return None;
+    };
+    let TransportSource::CallableValue(producer) = facts.value_origin(*value)? else {
+        return None;
+    };
+    Some((*value, producer, runtime.callable_flows.get(value)?))
 }
 
 fn produce_generic_callable_owner(
@@ -228,25 +252,45 @@ fn produce_generic_callable_owner(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     runtime: &ExecutableRuntimeDemand,
     position: &TransportPosition,
 ) -> PullOutcome {
     let shape_key = ProductKey::TransportShape(position.clone());
-    let layout = match context.read_product(tel, shape_key.clone()) {
-        Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
+    let mut waits = Vec::new();
+    if let TransportPosition::ExecutableInput { semantic_index, .. } = position
+        && runtime
+            .input_demands
+            .get(*semantic_index)
+            .is_some_and(demand_contains_callable)
+    {
+        let fact = FactUse::settled(FactKey::IncomingInputSlot(InputSlot {
+            executable: executable.clone(),
+            semantic_index: *semantic_index,
+        }));
+        if !context.read_fact(world, fact.clone()) {
+            waits.push(PullWait::Fact(fact));
+        }
+    }
+    let layout = match context.read_product(tel, shape_key.clone(), world.types()) {
+        Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
         Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-        None => return PullOutcome::wait_on_product(shape_key),
+        None => {
+            waits.push(PullWait::Product(shape_key));
+            None
+        }
     };
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let layout = layout.expect("shape wait must be satisfied");
     if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
-        return PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(
-            CallableConstructionOwner {
-                layout,
-                construction: None,
-                callable_facts: HashMap::new(),
-                boundary_facts: HashMap::new(),
-            },
-        )));
+        return PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
+            layout,
+            construction: None,
+            callable_facts: HashMap::new(),
+            boundary_facts: HashMap::new(),
+        })));
     }
     if let Some(fact) = generic_owner_ty_fact(executable, position) {
         let fact = FactUse::settled(fact);
@@ -259,20 +303,17 @@ fn produce_generic_callable_owner(
     if demand_contains_callable(&demand) {
         match position {
             TransportPosition::ExecutableInput { semantic_index, .. } => {
-                let key = ProductKey::IncomingInputSlot(InputSlot {
+                let slot = InputSlot {
                     executable: executable.clone(),
                     semantic_index: *semantic_index,
-                });
-                match context.read_product(tel, key.clone()) {
-                    Some(ProductValue::IncomingInputSlot(sources)) => {
-                        source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
-                            executable: executable_symbol(&source.producer, world.types()),
-                            value: source.value,
-                        }));
-                    }
-                    Some(value) => panic!("incoming input slot produced unexpected value {value:?}"),
-                    None => return PullOutcome::wait_on_product(key),
-                }
+                };
+                let sources = world
+                    .incoming_input_sources(&slot)
+                    .expect("settled input slot has an authoritative answer");
+                source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
+                    executable: executable_symbol(&source.producer, world.types()),
+                    value: source.value,
+                }));
             }
             TransportPosition::Value { value, .. } => {
                 if let Some(origin) = facts.value_origin(*value)
@@ -381,36 +422,30 @@ fn produce_generic_callable_owner(
     for source in &source_positions {
         let key = ProductKey::CallableConstruction(source.clone());
         let current = ProductKey::CallableConstruction(position.clone());
-        if context.pending_dependency_reaches(&key, &current) {
-            let _ = context.read_product(tel, key);
-            let members = context.pending_recursive_group(&current);
-            let mut evidence = TransportFactsBuilder::default();
-            evidence.merge(&builder);
-            for owner in context.recursive_group_callable_owners(&members) {
-                evidence.merge_owner(&owner);
+        let members = match context.read_recursive_product(tel, key.clone(), &current, world.types()) {
+            super::super::pull::RecursiveProductRead::Ready(ProductValue::CallableConstruction(owner)) => {
+                builder.merge_owner(owner);
+                continue;
             }
-            let values = members
-                .iter()
-                .map(|member| project_group_member_owner(world, context, &evidence, member))
-                .collect();
-            if !context.finish_callable_construction_group(tel, &current, &members, values) {
-                return PullOutcome::wait_on_product(current);
+            super::super::pull::RecursiveProductRead::Ready(value) => {
+                panic!("callable construction produced unexpected value {value:?}")
             }
-            return context
-                .session()
-                .memo()
-                .get(&current)
-                .cloned()
-                .map(PullOutcome::Produced)
-                .expect("settled callable owner group must contain the requested member");
+            super::super::pull::RecursiveProductRead::Waiting => return PullOutcome::wait_on_product(key),
+            super::super::pull::RecursiveProductRead::Group(members) => members,
+        };
+        let mut evidence = TransportFactsBuilder::default();
+        evidence.merge(&builder);
+        for owner in context.recursive_group_callable_owners(&current, &members, world.types()) {
+            evidence.merge_owner(&owner);
         }
-        match context.read_product(tel, key.clone()) {
-            Some(ProductValue::CallableConstruction(owner)) => builder.merge_owner(owner),
-            Some(value) => panic!("callable construction produced unexpected value {value:?}"),
-            None => return PullOutcome::wait_on_product(key),
-        }
+        let values = members
+            .iter()
+            .map(|member| project_group_member_owner(world, context, &evidence, member))
+            .collect();
+        let value = context.stage_recursive_group(&current, &members, values);
+        return PullOutcome::Produced(value);
     }
-    PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(project_owner_answer(
+    PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(project_owner_answer(
         world, &builder, layout, ty, &demand, position,
     ))))
 }
@@ -433,14 +468,16 @@ fn project_group_member_owner(
         .callable_group_layout(member)
         .expect("callable owner group member must have a settled transport shape");
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = context
-        .settled_executable_facts(&executable)
+    let facts = world
+        .executable_facts(&executable)
+        .cloned()
         .expect("callable owner group member must have settled executable facts");
-    let runtime = context
-        .settled_runtime_demand(&executable)
+    let runtime = world
+        .runtime_demand(&executable)
+        .cloned()
         .expect("callable owner group member must have a settled runtime demand");
-    let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, runtime, position);
-    ProductValue::CallableConstruction(Box::new(project_owner_answer(
+    let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, &runtime, position);
+    ProductValue::CallableConstruction(Rc::new(project_owner_answer(
         world, evidence, layout, ty, &demand, position,
     )))
 }
@@ -657,7 +694,15 @@ fn project_generic_owner_node(
             let field_tys =
                 exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); fields.len()]);
             for ((field, field_ty), field_demand) in fields.iter().copied().zip(field_tys).zip(field_demands) {
-                project_generic_owner_node(world, source, projected, field, field_ty, field_demand, publication);
+                project_generic_owner_node(
+                    world,
+                    source,
+                    projected,
+                    field.structural,
+                    field_ty,
+                    field_demand,
+                    publication,
+                );
             }
         }
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
@@ -707,15 +752,15 @@ fn record_generic_owner_facts(
                 return;
             }
             let surfaces = &demand.callable.resolved;
-            let surface_shapes = surface_shapes(world, surfaces, facts);
+            let surface_layouts = surface_layouts(world, surfaces, facts);
+            let surface_shapes = surface_shapes_from_layouts(&surface_layouts);
             let boundary_ids = if demand.callable.is_first_class() && !surfaces.is_empty() {
                 publish_boundaries_for_callable(
                     world,
                     facts,
                     callable,
                     surfaces,
-                    &surface_shapes,
-                    &[],
+                    &surface_layouts,
                     ty,
                     &vec![Vec::new(); surfaces.len()],
                     Some(publication.clone()),
@@ -734,7 +779,7 @@ fn record_generic_owner_facts(
             let field_tys =
                 exact_tuple_field_tys(world, ty).unwrap_or_else(|| vec![world.types_mut().any(); fields.len()]);
             for ((field, field_ty), field_demand) in fields.iter().copied().zip(field_tys).zip(field_demands) {
-                record_generic_owner_facts(world, facts, field, field_ty, field_demand, publication);
+                record_generic_owner_facts(world, facts, field.structural, field_ty, field_demand, publication);
             }
         }
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
@@ -789,24 +834,21 @@ fn evaluate_transport_recipe(
         TransportRecipe::Terminal => exact_direct_callable_layout(world, tel, context, ty, demand, position)
             .unwrap_or_else(|| RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))),
         TransportRecipe::PublicCallableReturn => {
-            let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
-            if !matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
-                layout.carrier = TransportCarrier::ValueRef;
-            }
-            RecipeLayout::Exact(layout)
+            let layout = joined_transport_layout(world, ty, demand, position, &[]);
+            RecipeLayout::Exact(with_value_ref_carrier(world, ty, position, layout))
         }
         TransportRecipe::ClosureCallReturn { callee, grounded } => {
             // One authority: `materialize_closure_call_edge` goes direct only
             // when the callee value's carrier is exact; the claim grounds on
             // exactly that condition.
             let callee_key = ProductKey::TransportShape(callee.clone());
-            let callee_layout = match context.read_product(tel, callee_key.clone()) {
+            let callee_layout = match context.read_product(tel, callee_key.clone(), world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
                 Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
                 None => return RecipeLayout::Waiting(callee_key),
             };
             match grounded {
-                Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef) => {
+                Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef(_)) => {
                     evaluate_transport_recipe(world, tel, context, grounded, ty, demand, position)
                 }
                 _ => evaluate_transport_recipe(
@@ -823,7 +865,7 @@ fn evaluate_transport_recipe(
         TransportRecipe::CutEdge => RecipeLayout::Cut(Vec::new()),
         TransportRecipe::Alias(child) => {
             let key = ProductKey::TransportShape(child.clone());
-            match context.read_product(tel, key.clone()) {
+            match context.read_product(tel, key.clone(), world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => RecipeLayout::Exact(*layout),
                 Some(value) => panic!("transport shape produced unexpected value {value:?}"),
                 None => RecipeLayout::Waiting(key),
@@ -857,37 +899,25 @@ fn evaluate_transport_recipe(
                     waiting @ RecipeLayout::Waiting(_) => return waiting,
                 }
             }
-            let carrier = layouts
-                .iter()
-                .any(|layout| layout.carrier == TransportCarrier::ValueRef)
-                || demand.callable.is_first_class();
-            RecipeLayout::Exact(TransportLayout {
-                structural: world.intern_shape(ShapeDescr::Tuple(
-                    layouts
-                        .iter()
-                        .map(|layout| layout.structural)
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                )),
-                carrier: if carrier {
-                    TransportCarrier::ValueRef
-                } else {
-                    TransportCarrier::Absent
-                },
-            })
+            RecipeLayout::Exact(tuple_layout(world, &layouts))
         }
         TransportRecipe::TupleField { tuple, index } => {
             match evaluate_transport_recipe(world, tel, context, tuple, ty, demand, position) {
                 RecipeLayout::Exact(layout) => match world.shape(layout.structural) {
-                    ShapeDescr::Tuple(fields) => fields.get(*index).copied().map_or_else(
-                        || RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[])),
-                        |structural| {
+                    ShapeDescr::Tuple(fields) => {
+                        if let Some(field) = fields.get(*index).copied() {
                             RecipeLayout::Exact(TransportLayout {
-                                structural,
-                                carrier: layout.carrier,
+                                structural: field.structural,
+                                carrier: if layout.carrier.is_value_ref() {
+                                    TransportCarrier::ValueRef(value_lane(world, ty))
+                                } else {
+                                    field.carrier
+                                },
                             })
-                        },
-                    ),
+                        } else {
+                            RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))
+                        }
+                    }
                     ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
                         RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))
                     }
@@ -895,6 +925,13 @@ fn evaluate_transport_recipe(
                 other => other,
             }
         }
+    }
+}
+
+fn tuple_layout(world: &mut World, fields: &[TransportLayout]) -> TransportLayout {
+    TransportLayout {
+        structural: world.intern_shape(ShapeDescr::Tuple(fields.to_vec().into_boxed_slice())),
+        carrier: TransportCarrier::Absent,
     }
 }
 
@@ -991,44 +1028,34 @@ fn direct_callable_descr(
             // closure's captures exist before the closure does, so none of
             // them can reach back to it.
             let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
-            layout.carrier = TransportCarrier::ValueRef;
+            layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
             return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
         }
         let key = ProductKey::TransportShape(capture);
-        match context.read_product(tel, key.clone()) {
+        match context.read_product(tel, key.clone(), world.types()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
         }
     }
     let capture_tys = &target.activation_inputs[..capture_count];
-    let capture_shapes = capture_layouts
-        .iter()
-        .map(|layout| layout.structural)
-        .collect::<Vec<_>>();
-    let capture_lanes = capture_layouts
-        .iter()
-        .zip(capture_tys.iter().copied())
-        .flat_map(|(layout, ty)| capture_lanes_for_layout(world, *layout, ty))
-        .collect::<Vec<_>>();
     DirectCallableDescr::Descr(CallableDescr {
         function: Some(target.activation.function),
         // The activation's inputs are the environment followed by the call
         // arguments, so what the environment does not supply is the arity.
         arity: (target.activation_inputs.len() - capture_count) as u16,
         capture_tys: capture_tys.to_vec().into_boxed_slice(),
-        capture_shapes: capture_shapes.into_boxed_slice(),
-        capture_lanes: capture_lanes.into_boxed_slice(),
+        capture_layouts: capture_layouts.into_boxed_slice(),
     })
 }
 
-/// The one callable row a closure callsite could ground its return against:
-/// a settled summary naming exactly one compiler-owned target. Whether the
+/// The one compiler-owned target a closure callsite could ground its return
+/// against. Whether the
 /// grounding APPLIES is decided at recipe evaluation from the callee value's
 /// own transport carrier — the same fact `materialize_closure_call_edge` uses
 /// to choose a direct edge — so claim and call share one authority.
 fn singleton_closure_call_target(
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     callsite: &CallSiteId,
 ) -> Option<(ActivationKey, ExecutableNeed)> {
     let summary = facts.callsites().get(callsite)?;
@@ -1049,7 +1076,7 @@ fn singleton_closure_call_target(
 fn origin_transport_recipe(
     world: &World,
     symbol: &ExecutableSymbol,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     origin: &TransportSource,
 ) -> TransportRecipe {
     match origin {
@@ -1094,7 +1121,7 @@ fn origin_transport_recipe(
             )
         }
         TransportSource::ClosureCallReturn { callsite, callee } => {
-            // A closure-call result refines the authoritative callable row
+            // A closure-call result refines the settled singleton target
             // forward (fz-9i4.4.5): when the callee VALUE travels in its exact
             // (non-ValueRef) carrier, `materialize_closure_call_edge` lowers
             // the call as a direct edge to the settled singleton target, so
@@ -1160,7 +1187,8 @@ fn produce_local_callable_construction(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
+    value: ValueId,
     producer: &LocalCallableProducer,
     flow: &CallableFlowFact,
     demand: RuntimeDemand,
@@ -1170,7 +1198,7 @@ fn produce_local_callable_construction(
     let callable_ty = facts
         .analysis()
         .value_types
-        .get(&producer.value)
+        .get(&value)
         .copied()
         .unwrap_or_else(|| world.types_mut().any());
     let capture_tys = producer
@@ -1188,13 +1216,11 @@ fn produce_local_callable_construction(
     let mut capture_demands = vec![RuntimeDemand::ignore(); capture_tys.len()];
     let mut waits = Vec::new();
     for resolution in &flow.resolutions {
-        let key = ProductKey::RuntimeDemand(resolution.clone());
-        let Some(value) = context.read_product(tel, key.clone()) else {
-            waits.push(PullWait::Product(key));
+        let Some(resolution_demand) = context.read_runtime_demand_fact(world, resolution) else {
+            waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+                resolution.clone(),
+            ))));
             continue;
-        };
-        let ProductValue::RuntimeDemand(resolution_demand) = value else {
-            panic!("runtime demand produced unexpected value {value:?}");
         };
         assert!(resolution_demand.input_demands.len() >= capture_tys.len());
         for (capture, input) in capture_demands
@@ -1206,13 +1232,19 @@ fn produce_local_callable_construction(
     }
     let symbol = executable_symbol(executable, world.types());
     let mut capture_layouts = Vec::with_capacity(producer.captures.len());
-    for capture in producer.captures.iter().copied() {
+    for (index, capture) in producer.captures.iter().copied().enumerate() {
         let key = ProductKey::TransportShape(TransportPosition::Value {
             executable: symbol.clone(),
             value: capture,
         });
-        match context.read_product(tel, key.clone()) {
-            Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
+        match context.read_product(tel, key.clone(), world.types()) {
+            Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => {
+                let mut layout = *layout;
+                if capture_demands[index].callable.is_first_class() && !layout.carrier.is_value_ref() {
+                    layout.carrier = TransportCarrier::ValueRef(value_lane(world, capture_tys[index]));
+                }
+                capture_layouts.push(layout);
+            }
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => waits.push(PullWait::Product(key)),
         }
@@ -1224,38 +1256,26 @@ fn produce_local_callable_construction(
     let mut builder = TransportFactsBuilder::default();
     let direct_surfaces = surface_shapes(world, &flow.direct_surfaces, &mut builder);
     let direct_edges = callable_direct_edges(world, &flow.direct_edges, &mut builder);
-    let capture_shapes = capture_layouts
-        .iter()
-        .map(|layout| layout.structural)
-        .collect::<Vec<_>>();
-    let capture_lanes = capture_layouts
-        .iter()
-        .zip(capture_tys.iter().copied())
-        .zip(capture_demands.iter())
-        .flat_map(|((layout, ty), demand)| capture_lanes_for_callable_descriptor(world, *layout, ty, demand))
-        .collect::<Vec<_>>();
     let arity = callable_ty_arity(world, callable_ty);
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
         arity,
         capture_tys: capture_tys.into_boxed_slice(),
-        capture_shapes: capture_shapes.into_boxed_slice(),
-        capture_lanes: capture_lanes.clone().into_boxed_slice(),
+        capture_layouts: capture_layouts.clone().into_boxed_slice(),
     });
     let boundary_surfaces = flow.first_class_surfaces.clone();
-    let boundary_shapes = surface_shapes(world, &boundary_surfaces, &mut builder);
+    let boundary_layouts = surface_layouts(world, &boundary_surfaces, &mut builder);
     let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces, world.types());
     let producer_position = TransportPosition::Value {
         executable: symbol,
-        value: producer.value,
+        value,
     };
     let boundaries_by_surface = publish_boundaries_for_callable(
         world,
         &mut builder,
         callable,
         &boundary_surfaces,
-        &boundary_shapes,
-        &capture_lanes,
+        &boundary_layouts,
         callable_ty,
         &boundary_resolutions,
         Some(producer_position.clone()),
@@ -1279,7 +1299,7 @@ fn produce_local_callable_construction(
         // the wrapper tests them in; the member list below is built by walking
         // exactly that, which is how the fz-kdt.108 weld -- selection row `i`
         // is member `i` -- is re-derived from the seated order instead of
-        // inherited from the edge list's `cmp_tys` content order.
+        // inherited from the edge list's typed activation content order.
         let selection =
             super::super::callsite_dispatch::construction_member_selection(world.types_mut(), &flow.first_class_edges)
                 .expect("settled callable flow edges should produce a dispatch plan");
@@ -1325,7 +1345,7 @@ fn produce_local_callable_construction(
         layout: TransportLayout {
             structural: world.intern_shape(ShapeDescr::Callable(callable)),
             carrier: if demand.callable.is_first_class() {
-                TransportCarrier::ValueRef
+                TransportCarrier::ValueRef(value_lane(world, callable_ty))
             } else {
                 TransportCarrier::Absent
             },
@@ -1339,7 +1359,7 @@ fn produce_local_callable_construction(
 /// The callsite's result value and whether the call sits in tail position
 /// (`ControlDestination::Return`), where the result aliases the caller's
 /// return. `None` when the callsite id names no call tail in this body.
-fn callsite_result(facts: &super::runtime_demand::ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
+fn callsite_result(facts: &ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
     let LoweredBody::Clauses { entries, .. } = facts.body() else {
         return None;
     };
@@ -1436,30 +1456,43 @@ fn produce_named_transport_position(
     executable: &ExecutableKey,
     position: &TransportPosition,
 ) -> Option<PullOutcome> {
-    let facts = match context.read_executable_facts(tel, executable) {
-        Some(facts) => facts,
-        None => {
-            return Some(PullOutcome::wait_on_product(ProductKey::ExecutableFacts(
-                executable.clone(),
-            )));
+    let facts = context.read_executable_facts(world, executable);
+    let runtime = context.read_runtime_demand_fact(world, executable);
+    let position_fact = match position {
+        TransportPosition::ExecutableInput { .. } => Some(FactKey::ActivationInputs(executable.activation.clone())),
+        TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
+            Some(FactKey::ReturnType(executable.activation.clone()))
         }
+        _ => None,
     };
-    let runtime = match context.read_runtime_demand(tel, executable) {
-        Some(runtime) => runtime,
-        None => {
-            return Some(PullOutcome::wait_on_product(ProductKey::RuntimeDemand(
-                executable.clone(),
-            )));
-        }
-    };
+    let position_fact_ready = position_fact
+        .as_ref()
+        .is_none_or(|fact| context.read_fact(world, FactUse::settled(fact.clone())));
+    let mut waits = Vec::new();
+    if facts.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
+            executable.clone(),
+        ))));
+    }
+    if runtime.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
+    }
+    if !position_fact_ready {
+        waits.push(PullWait::Fact(FactUse::settled(
+            position_fact.expect("an unready position fact must exist"),
+        )));
+    }
+    if !waits.is_empty() {
+        return Some(PullOutcome::Waiting(waits));
+    }
+    let facts = facts.expect("executable-facts wait should have been satisfied");
+    let runtime = runtime.expect("runtime-demand wait should have been satisfied");
     let symbol = position.executable().clone();
     let mut recipe = TransportRecipe::Terminal;
     let (ty, demand) = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => {
-            let fact = FactUse::settled(FactKey::ActivationInputs(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let ty = world
                 .activation_inputs_joined(&executable.activation)
                 .unwrap_or_else(|| executable.activation.inputs(world.types()))
@@ -1470,10 +1503,6 @@ fn produce_named_transport_position(
             (ty, demand)
         }
         TransportPosition::ExecutableReturn { .. } => {
-            let fact = FactUse::settled(FactKey::ReturnType(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let Some(ty) = world.activation_return(&executable.activation) else {
                 return Some(bottom_transport_shape(world));
             };
@@ -1484,7 +1513,7 @@ fn produce_named_transport_position(
                     .map(|origin| origin_transport_recipe(world, &symbol, &facts, origin))
                     .collect(),
             );
-            (ty, runtime.return_demand)
+            (ty, runtime.return_demand.clone())
         }
         TransportPosition::Value { value, .. } => {
             let ty = facts
@@ -1497,8 +1526,7 @@ fn produce_named_transport_position(
             match facts.value_origin(*value) {
                 Some(TransportSource::CallableValue(_)) if runtime.callable_flows.contains_key(value) => {
                     let key = ProductKey::CallableConstruction(position.clone());
-                    let construction = context.read_product(tel, key.clone()).cloned();
-                    return Some(match construction {
+                    return Some(match context.read_product(tel, key.clone(), world.types()) {
                         Some(ProductValue::CallableConstruction(construction)) => PullOutcome::Produced(
                             ProductValue::TransportShape(TransportShapeFact::Layout(construction.layout)),
                         ),
@@ -1586,10 +1614,6 @@ fn produce_named_transport_position(
             (ty, demand)
         }
         TransportPosition::ReturnPayload { callsite, .. } => {
-            let fact = FactUse::settled(FactKey::ReturnType(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let Some(caller_return_ty) = world.activation_return(&executable.activation) else {
                 return Some(bottom_transport_shape(world));
             };
@@ -1619,7 +1643,7 @@ fn produce_named_transport_position(
                         .unwrap_or_else(|| world.types_mut().any()),
                     runtime.value_demands.get(&value).cloned().unwrap_or_default(),
                 ),
-                _ => (caller_return_ty, runtime.return_demand),
+                _ => (caller_return_ty, runtime.return_demand.clone()),
             }
         }
         TransportPosition::EntryCapture {
@@ -1664,6 +1688,9 @@ fn produce_named_transport_position(
         }
     };
 
+    if demand.is_ignore() {
+        return Some(bottom_transport_shape(world));
+    }
     let names_in_component_direct_return = match cut_recursive_edges(world, context, executable, &mut recipe) {
         Ok(names_direct) => names_direct,
         Err(fact) => return Some(PullOutcome::wait_on_fact(fact)),
@@ -1677,7 +1704,7 @@ fn produce_named_transport_position(
         && matches!(position, TransportPosition::ExecutableReturn { .. })
         && !demand.is_callable();
 
-    let layout = match evaluate_transport_recipe(world, tel, context, &recipe, ty, &demand, position) {
+    let mut layout = match evaluate_transport_recipe(world, tel, context, &recipe, ty, &demand, position) {
         RecipeLayout::Waiting(key) => return Some(PullOutcome::wait_on_product(key)),
         // A return whose recipe names an in-component DIRECT return publishes
         // the CONTRACT, however much
@@ -1694,9 +1721,52 @@ fn produce_named_transport_position(
         RecipeLayout::Exact(layout) => layout,
         RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, position, &evidence),
     };
+    if extern_position_requires_value_ref(world, facts.body(), position, layout) {
+        layout = with_value_ref_carrier(world, ty, position, layout);
+    }
     Some(PullOutcome::Produced(ProductValue::TransportShape(
         TransportShapeFact::Layout(layout),
     )))
+}
+
+fn extern_position_requires_value_ref(
+    world: &World,
+    body: &LoweredBody,
+    position: &TransportPosition,
+    layout: TransportLayout,
+) -> bool {
+    let LoweredBody::Extern { signature } = body else {
+        return false;
+    };
+    let composite = matches!(
+        world.shape(layout.structural),
+        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_)
+    );
+    match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => signature
+            .params
+            .get(*semantic_index)
+            .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any && composite),
+        TransportPosition::ExecutableReturn { .. } => signature.ret == crate::fz_ir::ExternTy::Any && composite,
+        _ => false,
+    }
+}
+
+fn with_value_ref_carrier(
+    world: &mut World,
+    ty: Ty,
+    position: &TransportPosition,
+    mut layout: TransportLayout,
+) -> TransportLayout {
+    if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
+        return layout;
+    }
+    if !layout_carries(world, layout, ty) {
+        let complete = tuple_refined_demand(world, ty, &RuntimeDemand::whole());
+        layout = joined_transport_layout(world, ty, &complete, position, &[]);
+    }
+    layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
+    layout
 }
 
 /// The form a position settles on when a cut left its evidence incomplete.
@@ -1716,7 +1786,7 @@ fn cut_transport_layout(
 ) -> TransportLayout {
     if !evidence.is_empty() {
         let layout = joined_transport_layout(world, ty, demand, position, evidence);
-        if shape_carries(world, layout.structural, ty) {
+        if layout_carries(world, layout, ty) {
             return layout;
         }
     }
@@ -1786,9 +1856,19 @@ fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
                 && tuple_field_tys(world, ty, fields.len())
                     .into_iter()
                     .zip(fields.iter().copied())
-                    .all(|(field_ty, field)| shape_carries(world, field, field_ty))
+                    .all(|(field_ty, field)| layout_carries(world, field, field_ty))
         }
         ShapeDescr::Callable(_) => true,
+    }
+}
+
+fn layout_carries(world: &mut World, layout: TransportLayout, ty: Ty) -> bool {
+    match layout.carrier {
+        TransportCarrier::Absent => shape_carries(world, layout.structural, ty),
+        TransportCarrier::ValueRef(lane) => {
+            let lane_ty = world.lane(lane).ty;
+            world.types().is_subtype(&ty, &lane_ty)
+        }
     }
 }
 
@@ -1946,7 +2026,7 @@ fn append_origin_children(
     world: &World,
     executable: &ExecutableKey,
     symbol: &ExecutableSymbol,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     origin: &TransportSource,
     children: &mut Vec<TransportPosition>,
 ) -> bool {
@@ -2023,7 +2103,7 @@ fn append_origin_children(
 
 fn produce_joined_transport_layout(
     world: &mut World,
-    _facts: &super::runtime_demand::ExecutableFacts,
+    _facts: &ExecutableFacts,
     ty: Ty,
     demand: RuntimeDemand,
     position: &TransportPosition,
@@ -2041,30 +2121,60 @@ fn joined_transport_layout(
     position: &TransportPosition,
     layouts: &[TransportLayout],
 ) -> TransportLayout {
-    let carrier = layouts
-        .iter()
-        .any(|layout| layout.carrier == TransportCarrier::ValueRef)
-        || demand.callable.is_first_class();
-    let structural = match layouts {
-        [first, rest @ ..] if rest.iter().all(|layout| layout.structural == first.structural) => first.structural,
-        _ => {
-            let mut facts = TransportFactsBuilder::default();
-            generic_shape_from_demand(world, ty, demand, &mut facts, Some(position.clone()))
-        }
-    };
+    if let [first, rest @ ..] = layouts
+        && rest.iter().all(|layout| layout == first)
+    {
+        return *first;
+    }
+    let mut facts = TransportFactsBuilder::default();
+    let generic = generic_layout_from_demand(world, ty, demand, &mut facts, Some(position.clone()));
+    if layouts.is_empty() {
+        return generic;
+    }
+    let structural = joined_tuple_structural(world, ty, demand, position, layouts).unwrap_or(generic.structural);
+    let carrier = layouts.iter().any(|layout| layout.carrier.is_value_ref()) || generic.carrier.is_value_ref();
     TransportLayout {
         structural,
         carrier: if carrier {
-            TransportCarrier::ValueRef
+            TransportCarrier::ValueRef(value_lane(world, ty))
         } else {
             TransportCarrier::Absent
         },
     }
 }
 
+fn joined_tuple_structural(
+    world: &mut World,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    position: &TransportPosition,
+    layouts: &[TransportLayout],
+) -> Option<ShapeId> {
+    let field_tys = exact_tuple_field_tys(world, ty)?;
+    let arity = field_tys.len();
+    let alternatives = layouts
+        .iter()
+        .map(|layout| match world.shape(layout.structural) {
+            ShapeDescr::Tuple(fields) if fields.len() == arity => Some(fields.to_vec()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let field_demands = tuple_field_demands(&demand.shape, arity)?;
+    let fields = field_tys
+        .into_iter()
+        .zip(field_demands)
+        .enumerate()
+        .map(|(index, (field_ty, field_demand))| {
+            let layouts = alternatives.iter().map(|fields| fields[index]).collect::<Vec<_>>();
+            joined_transport_layout(world, field_ty, &field_demand, position, &layouts)
+        })
+        .collect::<Vec<_>>();
+    Some(world.intern_shape(ShapeDescr::Tuple(fields.into_boxed_slice())))
+}
+
 fn produce_generic_transport_layout(
     world: &mut World,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     ty: Ty,
     demand: RuntimeDemand,
     position: &TransportPosition,
@@ -2084,25 +2194,6 @@ fn executable_key_for_transport_position(root: RootId, position: &TransportPosit
     }
 }
 
-fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.shape(shape) {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Callable(callable) => world
-            .callable(*callable)
-            .capture_lanes
-            .iter()
-            .copied()
-            .map(|lane| (shape, lane))
-            .collect(),
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| lanes_for_codegen_seam_shape(world, item))
-            .collect(),
-    }
-}
-
 fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
@@ -2119,8 +2210,8 @@ fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSym
 /// construction wrapper publishes is a function of what the edges say.
 fn compare_callable_direct_edges(left: &CallableDirectEdge, right: &CallableDirectEdge, types: &Types) -> Ordering {
     types
-        .cmp_tys(&left.surface_inputs, &right.surface_inputs)
-        .then_with(|| compare_executable_symbols(&left.resolution, &right.resolution, types))
+        .cmp_activation_tys(&left.surface_inputs, &right.surface_inputs)
+        .then_with(|| left.resolution.semantic_cmp(&right.resolution, types))
 }
 
 fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
@@ -2136,10 +2227,25 @@ fn surface_shapes(
     surfaces: &BTreeSet<CallableSurface>,
     facts: &mut TransportFactsBuilder,
 ) -> Vec<Box<[ShapeId]>> {
+    surface_shapes_from_layouts(&surface_layouts(world, surfaces, facts))
+}
+
+fn surface_shapes_from_layouts(layouts: &[Box<[TransportLayout]>]) -> Vec<Box<[ShapeId]>> {
+    layouts
+        .iter()
+        .map(|layouts| layouts.iter().map(|layout| layout.structural).collect())
+        .collect()
+}
+
+fn surface_layouts(
+    world: &mut World,
+    surfaces: &BTreeSet<CallableSurface>,
+    facts: &mut TransportFactsBuilder,
+) -> Vec<Box<[TransportLayout]>> {
     // One shape row per surface, in the SAME order the surfaces are walked:
     // `publish_boundaries_for_callable` zips this result positionally with the
-    // same `surfaces` set, so a boundary's `surface_arg_shapes` must be the
-    // shapes of the surface it is published for. Sorting the rows here by
+    // same `surfaces` set, so a boundary's `surface_arg_layouts` must be the
+    // layouts of the surface it is published for. Sorting the rows here by
     // `ShapeId` (a mint-order index, the agenda's) broke that correspondence,
     // handing a surface the shapes of whichever surface happened to intern a
     // lower shape id -- a schedule-dependent boundary content, visible as the
@@ -2153,7 +2259,7 @@ fn surface_shapes(
                 .copied()
                 .map(|ty| {
                     let demand = boundary_runtime_demand(world, ty);
-                    generic_shape_from_demand(world, ty, &demand, facts, None)
+                    generic_layout_from_demand(world, ty, &demand, facts, None)
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice()
@@ -2198,27 +2304,67 @@ fn generic_shape_from_demand(
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    generic_layout_from_demand(world, ty, demand, facts, publication).structural
+}
+
+fn generic_layout_from_demand(
+    world: &mut World,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    facts: &mut TransportFactsBuilder,
+    publication: Option<TransportPosition>,
+) -> TransportLayout {
     if demand.is_ignore() || world.types().is_empty(&ty) {
-        return world.intern_shape(ShapeDescr::Nothing);
+        return TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
     }
     if demand.is_callable() {
-        return generic_callable_shape(world, ty, &demand.callable, facts, publication);
+        let structural = generic_callable_shape(world, ty, &demand.callable, facts, publication);
+        return TransportLayout {
+            structural,
+            carrier: if demand.callable.is_first_class() {
+                TransportCarrier::ValueRef(value_lane(world, ty))
+            } else {
+                TransportCarrier::Absent
+            },
+        };
     }
     match &demand.shape {
-        ShapeDemand::Ignore => world.intern_shape(ShapeDescr::Nothing),
-        ShapeDemand::Whole => value_lane_shape(world, ty),
-        ShapeDemand::TupleFields(fields) => {
-            if !has_exact_tuple_arity(world, ty, fields.len()) {
-                return value_lane_shape(world, ty);
-            }
-            let items = tuple_field_tys(world, ty, fields.len())
+        ShapeDemand::Ignore => TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)),
+        ShapeDemand::Whole => {
+            let Some(fields) = exact_tuple_field_tys(world, ty) else {
+                return TransportLayout::structural(value_lane_shape(world, ty));
+            };
+            let items = fields
                 .into_iter()
-                .zip(fields.iter())
-                .map(|(field_ty, field_demand)| generic_shape_from_demand(world, field_ty, field_demand, facts, None))
+                .map(|field_ty| generic_layout_from_demand(world, field_ty, &RuntimeDemand::whole(), facts, None))
                 .collect::<Vec<_>>();
-            world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
+            TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
+        }
+        ShapeDemand::TupleFields(_) => {
+            let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
+                return TransportLayout::structural(value_lane_shape(world, ty));
+            };
+            let Some(field_demands) = tuple_field_demands(&demand.shape, field_tys.len()) else {
+                return TransportLayout::structural(value_lane_shape(world, ty));
+            };
+            let items = field_tys
+                .into_iter()
+                .zip(field_demands.iter())
+                .map(|(field_ty, field_demand)| generic_layout_from_demand(world, field_ty, field_demand, facts, None))
+                .collect::<Vec<_>>();
+            TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
         }
     }
+}
+
+fn tuple_field_demands(shape: &ShapeDemand, arity: usize) -> Option<Vec<RuntimeDemand>> {
+    let mut fields = match shape {
+        ShapeDemand::TupleFields(fields) if fields.len() <= arity => fields.clone(),
+        ShapeDemand::Whole => vec![RuntimeDemand::whole(); arity],
+        ShapeDemand::Ignore | ShapeDemand::TupleFields(_) => return None,
+    };
+    fields.resize_with(arity, RuntimeDemand::ignore);
+    Some(fields)
 }
 
 fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
@@ -2262,8 +2408,7 @@ fn generic_callable_shape_with_resolutions(
         // it is never minted into a closure value.
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: Box::default(),
-        capture_lanes: Box::default(),
+        capture_layouts: Box::default(),
     });
     world.intern_shape(ShapeDescr::Callable(callable))
 }
@@ -2273,16 +2418,15 @@ fn publish_boundaries_for_callable(
     facts: &mut TransportFactsBuilder,
     callable: CallableId,
     surfaces: &BTreeSet<CallableSurface>,
-    surface_shapes: &[Box<[ShapeId]>],
-    capture_lanes: &[LaneId],
+    surface_layouts: &[Box<[TransportLayout]>],
     published_value_ty: Ty,
     resolution_symbols: &[Vec<ExecutableSymbol>],
     publication: Option<TransportPosition>,
 ) -> BTreeMap<CallableSurface, BoundaryId> {
     assert_eq!(
         surfaces.len(),
-        surface_shapes.len(),
-        "boundary surface shapes must align with published surfaces"
+        surface_layouts.len(),
+        "boundary surface layouts must align with published surfaces"
     );
     assert_eq!(
         surfaces.len(),
@@ -2290,24 +2434,16 @@ fn publish_boundaries_for_callable(
         "boundary resolution symbols must align with published surfaces"
     );
     let mut boundaries_by_surface = BTreeMap::new();
-    for ((surface, arg_shapes), resolutions) in surfaces
+    for ((surface, arg_layouts), resolutions) in surfaces
         .iter()
-        .zip(surface_shapes.iter())
+        .zip(surface_layouts.iter())
         .zip(resolution_symbols.iter())
     {
         let published_value_lane = value_lane(world, published_value_ty);
-        let arg_lanes = arg_shapes
-            .iter()
-            .copied()
-            .zip(surface.inputs.iter().copied())
-            .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
-            .collect::<Vec<_>>();
         let boundary = world.intern_boundary(BoundaryDescr {
             callable,
-            surface_arg_shapes: arg_shapes.clone(),
+            surface_arg_layouts: arg_layouts.clone(),
             published_value_lane,
-            published_capture_lanes: capture_lanes.to_vec().into_boxed_slice(),
-            published_arg_lanes: arg_lanes.into_boxed_slice(),
         });
         if let Some(position) = publication.clone() {
             facts.record_boundary(boundary, position);
@@ -2316,28 +2452,6 @@ fn publish_boundaries_for_callable(
         boundaries_by_surface.insert(surface.clone(), boundary);
     }
     boundaries_by_surface
-}
-
-fn capture_lanes_for_callable_descriptor(
-    world: &mut World,
-    layout: TransportLayout,
-    ty: Ty,
-    demand: &RuntimeDemand,
-) -> Vec<LaneId> {
-    if layout.carrier == TransportCarrier::ValueRef || demand.callable.is_first_class() {
-        return vec![value_lane(world, ty)];
-    }
-    capture_lanes_for_layout(world, layout, ty)
-}
-
-fn capture_lanes_for_layout(world: &mut World, layout: TransportLayout, ty: Ty) -> Vec<LaneId> {
-    if layout.carrier == TransportCarrier::ValueRef {
-        return vec![value_lane(world, ty)];
-    }
-    lanes_for_codegen_seam_shape(world, layout.structural)
-        .into_iter()
-        .map(|(_, lane)| lane)
-        .collect()
 }
 
 fn boundary_resolution_symbols_for_flow_surfaces(
@@ -2357,32 +2471,13 @@ fn boundary_resolution_symbols_for_flow_surfaces(
         .collect()
 }
 
-fn boundary_lanes_for_shape(world: &mut World, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
-    match world.shape(shape).clone() {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![lane],
-        ShapeDescr::Tuple(items) => {
-            let field_tys = tuple_field_tys(world, ty, items.len());
-            items
-                .iter()
-                .copied()
-                .zip(field_tys)
-                .flat_map(|(item, field_ty)| boundary_lanes_for_shape(world, item, field_ty))
-                .collect()
-        }
-        ShapeDescr::Callable(_) => {
-            vec![value_lane(world, ty)]
-        }
-    }
-}
-
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
     if predicate.tuples.arities().cofinite || predicate.tuples.arities().values.len() != 1 {
         return None;
     }
     let arity = *predicate.tuples.arities().values.iter().next()?;
-    Some(tuple_field_tys(world, ty, arity))
+    has_exact_tuple_arity(world, ty, arity).then(|| tuple_field_tys(world, ty, arity))
 }
 
 fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {
@@ -2430,4 +2525,219 @@ fn boundary_runtime_demand(world: &mut World, ty: Ty) -> RuntimeDemand {
         opaque: false,
         escape: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tuple_carrier_comes_from_the_composite_demand_not_its_child_lanes() {
+        let mut world = World::new();
+        let atom = world.types_mut().atom();
+        let any = world.types_mut().any();
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let atom_lane = value_lane_shape(&mut world, atom);
+        let any_lane_id = value_lane(&mut world, any);
+        let any_lane = world.intern_shape(ShapeDescr::Lane(any_lane_id));
+        let child = TransportLayout {
+            structural: any_lane,
+            carrier: TransportCarrier::ValueRef(any_lane_id),
+        };
+        let partial_layout = tuple_layout(&mut world, &[TransportLayout::structural(nothing), child]);
+        assert_eq!(partial_layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(partial_layout.structural) else {
+            panic!("the partial composite should retain its tuple field positions")
+        };
+        assert_eq!(fields.as_ref(), &[TransportLayout::structural(nothing), child]);
+
+        let complete_fields = [TransportLayout::structural(atom_lane), child];
+        let whole = tuple_layout(&mut world, &complete_fields);
+        assert_eq!(whole.carrier, TransportCarrier::Absent);
+        assert_eq!(
+            world.shape(whole.structural),
+            &ShapeDescr::Tuple(Box::new([TransportLayout::structural(atom_lane), child,]))
+        );
+
+        assert!(
+            !tuple_layout(&mut world, &complete_fields).carrier.is_value_ref(),
+            "tuple composition never manufactures the composite carrier",
+        );
+    }
+
+    #[test]
+    fn tuple_child_carrier_lane_must_cover_its_field_type() {
+        let mut world = World::new();
+        let atom = world.types_mut().atom();
+        let int = world.types_mut().int();
+        let any = world.types_mut().any();
+        let tuple_ty = world.types_mut().tuple(&[atom]);
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let int_lane = value_lane(&mut world, int);
+        let any_lane = value_lane(&mut world, any);
+        let mismatched = world.intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout {
+            structural: nothing,
+            carrier: TransportCarrier::ValueRef(int_lane),
+        }])));
+        let covering = world.intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout {
+            structural: nothing,
+            carrier: TransportCarrier::ValueRef(any_lane),
+        }])));
+
+        assert!(!shape_carries(&mut world, mismatched, tuple_ty));
+        assert!(shape_carries(&mut world, covering, tuple_ty));
+    }
+
+    #[test]
+    fn same_arity_tuple_join_keeps_a_child_carrier_local() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tuple_ty = world.types_mut().tuple(&[int]);
+        let lane = value_lane(&mut world, int);
+        let scalar = world.intern_shape(ShapeDescr::Lane(lane));
+        let structural_child = TransportLayout::structural(scalar);
+        let carried_child = TransportLayout {
+            structural: scalar,
+            carrier: TransportCarrier::ValueRef(lane),
+        };
+        let structural_tuple = tuple_layout(&mut world, &[structural_child]);
+        let carried_tuple = tuple_layout(&mut world, &[carried_child]);
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "join", 0);
+        let arrow = world
+            .types_mut()
+            .fn_ref_lit(crate::types::ClosureTarget(function.as_u32()), 0);
+        let position = TransportPosition::Value {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function,
+                    arrow,
+                    input: Box::default(),
+                },
+                need: ExecutableNeed::Value,
+            },
+            value: ValueId::from_u32(0),
+        };
+        let joined = joined_transport_layout(
+            &mut world,
+            tuple_ty,
+            &RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole()]),
+            &position,
+            &[structural_tuple, carried_tuple],
+        );
+
+        assert_eq!(joined.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(joined.structural) else {
+            panic!("same-arity tuple alternatives should join field by field")
+        };
+        assert_eq!(fields.as_ref(), &[carried_child]);
+    }
+
+    #[test]
+    fn generic_tuple_layout_retains_a_nested_first_class_carrier() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let callable_ty = world.types_mut().fn_ref_lit(crate::types::ClosureTarget(7), 1);
+        let tuple_ty = world.types_mut().tuple(&[int, callable_ty]);
+        let demand = RuntimeDemand::tuple_fields(vec![
+            RuntimeDemand::whole(),
+            RuntimeDemand::callable(CallableDemand::escaped()),
+        ]);
+        let mut facts = TransportFactsBuilder::default();
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &demand, &mut facts, None);
+
+        assert_eq!(layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
+            panic!("the exact tuple demand should produce a recursive tuple layout")
+        };
+        assert!(fields[1].carrier.is_value_ref());
+        assert!(matches!(world.shape(fields[1].structural), ShapeDescr::Callable(_)));
+    }
+
+    #[test]
+    fn generic_whole_exact_tuple_stays_complete_and_decomposed() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tuple_ty = world.types_mut().tuple(&[int, int]);
+        let mut facts = TransportFactsBuilder::default();
+
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &RuntimeDemand::whole(), &mut facts, None);
+
+        assert_eq!(layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
+            panic!("Whole over an exact tuple must retain complete field layouts")
+        };
+        assert_eq!(fields.len(), 2);
+        assert!(fields.iter().all(|field| field.carrier == TransportCarrier::Absent));
+        assert!(
+            fields
+                .iter()
+                .all(|field| matches!(world.shape(field.structural), ShapeDescr::Lane(_)))
+        );
+    }
+
+    #[test]
+    fn generic_partial_exact_tuple_fills_omitted_trailing_fields_with_nothing() {
+        let mut world = World::new();
+        let atom = world.types_mut().atom();
+        let int = world.types_mut().int();
+        let tuple_ty = world.types_mut().tuple(&[atom, atom, int, atom]);
+        let demand = RuntimeDemand::tuple_fields(vec![
+            RuntimeDemand::ignore(),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::whole(),
+        ]);
+        let mut facts = TransportFactsBuilder::default();
+
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &demand, &mut facts, None);
+
+        assert_eq!(layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
+            panic!("a tuple demand prefix must retain the exact tuple's positions")
+        };
+        assert_eq!(fields.len(), 4);
+        assert!(matches!(world.shape(fields[0].structural), ShapeDescr::Nothing));
+        assert!(matches!(world.shape(fields[1].structural), ShapeDescr::Nothing));
+        assert!(matches!(world.shape(fields[2].structural), ShapeDescr::Lane(_)));
+        assert!(matches!(world.shape(fields[3].structural), ShapeDescr::Nothing));
+
+        let overlong = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); 5]);
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &overlong, &mut facts, None);
+        assert!(
+            matches!(world.shape(layout.structural), ShapeDescr::Lane(_)),
+            "a demanded index beyond the exact tuple arity must use the safe boxed contract"
+        );
+    }
+
+    #[test]
+    fn equal_layout_join_returns_without_minting_a_generic_alternative() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let exact = TransportLayout::structural(nothing);
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "join", 0);
+        let arrow = world
+            .types_mut()
+            .fn_ref_lit(crate::types::ClosureTarget(function.as_u32()), 0);
+        let position = TransportPosition::Value {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function,
+                    arrow,
+                    input: Box::default(),
+                },
+                need: ExecutableNeed::Value,
+            },
+            value: ValueId::from_u32(0),
+        };
+        let before = (world.shape_count(), world.lane_count());
+
+        let joined = joined_transport_layout(&mut world, int, &RuntimeDemand::whole(), &position, &[exact, exact]);
+
+        assert_eq!(joined, exact);
+        assert_eq!(
+            (world.shape_count(), world.lane_count()),
+            before,
+            "an exact concordant join must not construct an unused generic layout",
+        );
+    }
 }

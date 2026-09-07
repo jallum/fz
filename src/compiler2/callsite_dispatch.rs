@@ -237,7 +237,7 @@ fn routable_alternatives(
 /// carries no routing at all, and [`canonically_order_separated_neighbours`]
 /// runs after the insertion pass to take that free axis away where it can: a
 /// pair of ADJACENT groups no value can reach both of is put in
-/// [`Types::cmp_tys`] order of what the two say, so the artifact stops
+/// [`Types::cmp_activation_tys`] order of what the two say, so the artifact stops
 /// recording which of them the fixpoint happened to settle first. Adjacency is
 /// the whole safety argument and it is also the limit -- a run settles only
 /// where it is pairwise separated end to end, and a non-separated pair of any
@@ -316,7 +316,7 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 /// # What it removes, and what it leaves
 ///
 /// ```text
-///     A B C   pairwise separated end to end   ->  cmp_tys order, from any arrival
+///     A B C   pairwise separated end to end   ->  typed activation order, from any arrival
 ///     A B C   A|B, B|C separated, A|C not     ->  blocked at B; both A|C orders survive
 /// ```
 ///
@@ -334,27 +334,20 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 ///
 /// # The key, and the other key it is not
 ///
-/// A group is compared by the `cmp_tys`-LEAST OBSERVABLE surface among its
+/// A group is compared by the typed-activation-LEAST OBSERVABLE surface among its
 /// members, never by whichever member arrived first -- the members' own order
 /// is fz-kdt.107's residue and a key read off it would put the schedule back.
-/// The key is a strict total order across groups: `cmp_tys` is `Equal` only on
+/// The key is a strict total order across groups: the typed activation relation is `Equal` only on
 /// identical `Ty` slices, identical surfaces project to identical questions,
 /// and one question is one group -- so two distinct groups can never tie.
 ///
-/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders by
-/// `cmp_tys` over the OBSERVABLE ENVELOPE ([`observable_inputs`], which is
-/// what the plan's rows are built from); fz-kdt.108's gate
-/// `compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
-/// `cmp_tys` over the members' `surface_inputs`, which is what the envelope
-/// was projected FROM. On any surface holding a callable the two disagree, so
-/// "concordant with 108" is not free and is not assumed here. It is MEASURED,
-/// at the seam 108 owns: with construction-wrapper member selection running
-/// this repair (fz-kdt.179), 108's own invariant is violated on 20 / 202 / 212
-/// member lists under `wrappers:1` / `:6` / `:reverse` across the 604-fixture
-/// corpus with the repair suppressed, and on 6 / 192 / 198 with it in place.
-/// The repair strictly REDUCES 108's violations and introduces none. At the
-/// settled arrival, where 108's gate actually runs, it takes 0 wrapper swaps
-/// and 234 / 234 member lists are non-decreasing either way.
+/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders semantic
+/// destinations by the typed activation relation over the OBSERVABLE ENVELOPE
+/// ([`observable_inputs`], which is what the plan's rows are built from).
+/// `plan_callable_flows` orders independent callable surfaces by their full
+/// inputs before resolving their edges. That earlier order schedules resolution;
+/// it does not order wrapper destinations. This function alone drops and seats
+/// the finished edges, so no concordance between the two quantities is assumed.
 ///
 /// # The one separation this may be reading off a fiction (fz-kdt.202)
 ///
@@ -403,7 +396,9 @@ fn canonically_order_separated_neighbours(
                 seating(types, questions, observable, &groups[early], &groups[late]),
                 Seating::Separated,
             );
-            if separated && types.cmp_tys(&observable[keys[early]], &observable[keys[late]]) == Ordering::Greater {
+            if separated
+                && types.cmp_activation_tys(&observable[keys[early]], &observable[keys[late]]) == Ordering::Greater
+            {
                 seated.swap(at - 1, at);
                 settling = true;
             }
@@ -412,7 +407,7 @@ fn canonically_order_separated_neighbours(
 }
 
 /// The member whose observable surface speaks for a whole group: the
-/// `cmp_tys`-least of them.
+/// typed-activation-least of them.
 ///
 /// A group is a set of arms one question cannot separate, and their order
 /// within it is fz-kdt.107's residue -- so a group's canonical name may not be
@@ -422,7 +417,7 @@ fn canonically_order_separated_neighbours(
 fn canonical_key(types: &Types, observable: &[Vec<Ty>], group: &[usize]) -> usize {
     *group
         .iter()
-        .min_by(|left, right| types.cmp_tys(&observable[**left], &observable[**right]))
+        .min_by(|left, right| types.cmp_activation_tys(&observable[**left], &observable[**right]))
         .expect("a question group holds at least one arm")
 }
 
@@ -863,18 +858,17 @@ pub(crate) struct ConstructionSelection {
 /// of the member that stands in for it, and [`specificity_order`] corrects the
 /// order wherever a member would otherwise take values its own surface never
 /// named. Before fz-kdt.179 this plan ran neither: its rows were built
-/// straight from the edge list, which is the fz-kdt.108 `cmp_tys` order, and
+/// straight from the edge list, which is the fz-kdt.108 typed activation order, and
 /// that is a CONTENT order, not a safety one.
 ///
 /// EVERY MEMBER OF ONE WRAPPER IS ONE CALLEE, which is why the stand-in test's
 /// same-callee conjunct is satisfied outright here. A construction wrapper is
-/// one function at one capture layout -- `jobs/runtime_demand.rs`'s
-/// `callable_flow_resolution_edges_product` mints every edge's resolution from
-/// `producer.function` and the producer's capture types, varying only the call
-/// surface -- so two members are two specializations of one body, never two
-/// bodies. That also settles the drop's one open residue in this caller's
-/// favour: fz-kdt.143's group-dissolution reroute is meaning-bearing only
-/// between DIFFERENT callees, and there are none to be had.
+/// one function at one capture layout: each edge is derived from the same local
+/// producer and capture types, varying only the planned call surface. Two
+/// members are therefore two specializations of one
+/// body, never two bodies. That also settles the drop's one open residue in this
+/// caller's favour: fz-kdt.143's group-dissolution reroute is meaning-bearing
+/// only between DIFFERENT callees, and there are none to be had.
 pub(crate) fn construction_member_selection(
     types: &mut Types,
     edges: &[CallableFlowEdge],
@@ -1089,7 +1083,7 @@ fn unroutable_alternatives(
 /// corrects arrival wherever the arms justify a correction, and it does so
 /// deterministically -- a covering-proven inversion is a fact about the arms,
 /// not about when they turned up, and a pair no value reaches both of is put
-/// in `cmp_tys` order whichever way it arrived, wherever the run it sits in is
+/// in typed activation order whichever way it arrived, wherever the run it sits in is
 /// separated end to end (fz-kdt.194). So permuting arrival does not perturb
 /// the seat's own decisions at all; what it perturbs is exactly the RESIDUE
 /// nothing decides: the members of one question group, where arrival is the
@@ -1117,10 +1111,10 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// - a callsite's ARRIVAL order, which is the settled targets' order, which is
 ///   the semantic fixpoint's, which is the agenda's ([`arrival_order`]);
-/// - a callable value's CONSTRUCTION-WRAPPER member order, whose surfaces arrive
-///   as a `BTreeSet<CallableSurface>` walked in interned-id order -- the type
-///   interner's mint order, which is the agenda's again -- before
-///   [`construction_member_selection`] drops and seats them into the member list.
+/// - a callable value's CONSTRUCTION-WRAPPER member order: runtime demand plans
+///   and resolves each surface independently, then
+///   [`construction_member_selection`] drops and seats the finished edges into
+///   the member list.
 ///
 /// Any permutation of either is an order the fixpoint could have delivered, so
 /// an answer that moves under one is an answer a schedule decides.
@@ -1321,37 +1315,11 @@ pub(crate) mod dispatch_stress {
         reversed
     }
 
-    /// The construction-wrapper members and the selection plan's rows, in the
-    /// order this thread's setting asks for.
-    ///
-    /// This is the ONE authority: fz-kdt.108 established that a selection row's
-    /// `body_id` indexes the parallel member list and must increase
-    /// monotonically, so the two are welded and no permutation downstream of
-    /// the weld is representable. Permuting the edges themselves, before either
-    /// derives, keeps the weld and lets members, selection, boundary
-    /// resolutions and the flow's resolution list all inherit one order. It is
-    /// called from `jobs/runtime_demand.rs`, where the edges are built.
-    ///
-    /// WHAT IT CATCHES, measured rather than hoped for (fz-kdt.141). It does
-    /// NOT produce fz-kdt.132's `matched no member`, and no ordering can --
-    /// today for a better reason than when this gate was written: fz-kdt.132
-    /// minted the covering rung, so every value that arrives has a member
-    /// whose key names it, whatever the order. (The original argument leaned
-    /// on the pre-fz-kdt.138 blind tuple test handing everything to the
-    /// first member; that test is exact now, and the 392-run stress matrix
-    /// across all three permutation families re-verified the conclusion
-    /// against the new mechanism.)
-    ///
-    /// It used to decide the whole 268-escape
-    /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline (268 settled, 68 at
-    /// `wrappers:1`, 20 at `wrappers:6`) where arm seeds moved it by zero.
-    /// fz-kdt.132 emptied that census by minting the accumulator rung whose
-    /// values had no member at all, so the order now decides nothing there:
-    /// every setting reads 0. What this perturbation still holds is the law --
-    /// which member a value reaches must not change an answer -- and
-    /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members`
-    /// proves it still lands on a moved artifact.
-    pub(crate) fn perturbed_construction_members(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
+    /// A test-only permutation of resolved construction edges before semantic
+    /// member selection. `finish_callable_flows` applies it to completed product
+    /// answers; `construction_member_selection` may then drop and reseat those
+    /// edges and alone defines the wrapper members and selection rows.
+    pub(crate) fn perturbed_construction_edges(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
         match wrappers() {
             Perturbation::Settled => edges,
             Perturbation::Reversed => edges.into_iter().rev().collect(),
@@ -1461,6 +1429,7 @@ mod tests {
                     surface_inputs: vec![list],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -1468,6 +1437,7 @@ mod tests {
                     surface_inputs: vec![range],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -1534,6 +1504,7 @@ mod tests {
                 surface_inputs: vec![any],
                 activation: None,
                 activation_inputs: None,
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,
@@ -1591,6 +1562,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -1635,6 +1607,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1685,6 +1658,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(narrow_map);
@@ -1743,6 +1717,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(int);
@@ -1806,6 +1781,7 @@ mod tests {
             surface_inputs: vec![list],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(narrow_list);
@@ -1898,6 +1874,7 @@ mod tests {
             surface_inputs: vec![map, atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(two, narrow_map, atom_a);
@@ -1979,6 +1956,7 @@ mod tests {
             surface_inputs: vec![state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2025,6 +2003,8 @@ mod tests {
     fn a_closure_nested_in_a_tuple_is_named_by_the_test() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
+        world.types_mut().name_callable(ClosureTarget(66), "boxed_one/1");
+        world.types_mut().name_callable(ClosureTarget(68), "boxed_other/1");
         let tag = world.types_mut().atom_lit("tag");
         let one = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 1);
         let other = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 1);
@@ -2036,6 +2016,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -2077,6 +2058,9 @@ mod tests {
     fn a_nested_callables_captures_are_a_question() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
+        world
+            .types_mut()
+            .name_callable(ClosureTarget(66), "capturing_callable/1");
         let tag = world.types_mut().atom_lit("tag");
         let int = world.types_mut().int();
         let float = world.types_mut().float();
@@ -2090,6 +2074,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -2130,6 +2115,10 @@ mod tests {
     fn arms_that_differ_only_in_their_lambda_are_told_apart_by_it() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
+        world.types_mut().name_callable(ClosureTarget(66), "multiply_by_two/2");
+        world
+            .types_mut()
+            .name_callable(ClosureTarget(68), "multiply_by_three/2");
         let int = world.types_mut().int();
         let one_reducer = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 2);
         let other_reducer = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 2);
@@ -2139,6 +2128,7 @@ mod tests {
             surface_inputs: vec![int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2151,9 +2141,11 @@ mod tests {
         else {
             panic!("two lambdas the runtime can name are two destinations");
         };
-        assert_eq!(
-            dispatch.targets, summary.targets,
-            "both arms stay, and now each is reachable",
+        assert!(
+            dispatch.targets.len() == summary.targets.len()
+                && summary.targets.iter().all(|target| dispatch.targets.contains(target)),
+            "both arms stay, and now each is reachable: {:#?}",
+            dispatch.targets,
         );
         assert!(
             matches!(
@@ -2186,6 +2178,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2262,6 +2255,7 @@ mod tests {
             surface_inputs: vec![list, state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(halt_false, empty);
@@ -2329,6 +2323,7 @@ mod tests {
             surface_inputs: vec![list, int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let bools_arm = target(bool_list, all_one);
@@ -2393,6 +2388,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let atoms_arm = target(atom_list, either);
@@ -2640,6 +2636,7 @@ mod tests {
             surface_inputs: vec![head, list],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let tails_arm = target(tail_atom, tail_list);
@@ -2679,7 +2676,7 @@ mod tests {
         // from. The two agree on this pair, which carries no callable, and a
         // gate that mirrored production with the other quantity would stop
         // agreeing on one that did.
-        let canonical = match types.cmp_tys(&observable[0], &observable[1]) {
+        let canonical = match types.cmp_activation_tys(&observable[0], &observable[1]) {
             Ordering::Greater => vec![ints_arm.clone(), tails_arm.clone()],
             _ => vec![tails_arm.clone(), ints_arm.clone()],
         };
@@ -2697,7 +2694,7 @@ mod tests {
             assert_eq!(
                 dispatch.targets, canonical,
                 "no value reaches both arms, so which of them the fixpoint delivered first is not a \
-                 fact about the program: BOTH arrivals come out in one `cmp_tys` order, and neither \
+                 fact about the program: BOTH arrivals come out in one typed activation order, and neither \
                  arm is dropped for the other (fz-kdt.194)",
             );
         }
@@ -2759,6 +2756,7 @@ mod tests {
             surface_inputs: vec![tagged],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let (arm_a, arm_b, arm_c) = (target(a), target(b), target(c));
@@ -2823,7 +2821,7 @@ mod tests {
     /// The tie the canonical repair can never be handed: two DISTINCT question
     /// groups whose keys compare `Equal`.
     ///
-    /// `cmp_tys` is `Equal` only on identical `Ty` slices, and a group's key is
+    /// The typed activation relation is `Equal` only on identical `Ty` slices, and a group's key is
     /// one of its members' observable surfaces. So a tie would mean one surface
     /// sitting in two groups -- but the question is a function of the surface,
     /// and one question is one group. The repair therefore never has to fall
@@ -2847,6 +2845,7 @@ mod tests {
             surface_inputs: vec![surface],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arms = [
@@ -2871,7 +2870,7 @@ mod tests {
         for (x, group_x) in groups.iter().enumerate() {
             for (y, group_y) in groups.iter().enumerate().skip(x + 1) {
                 assert_ne!(
-                    types.cmp_tys(&observable[keys[x]], &observable[keys[y]]),
+                    types.cmp_activation_tys(&observable[keys[x]], &observable[keys[y]]),
                     Ordering::Equal,
                     "distinct groups may never tie under the repair's key -- an equal key is an equal \
                      surface, an equal surface is an equal question, and one question is one group: \
@@ -2933,6 +2932,7 @@ mod tests {
             surface_inputs: vec![head, second],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(ok, carved);
@@ -3044,6 +3044,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arms = [target(bool_list), target(mixed_list), target(int_list)];
@@ -3135,6 +3136,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(int_list);
@@ -3196,6 +3198,7 @@ mod tests {
             surface_inputs: vec![reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let ints = target(first_fn, over_int);
@@ -3243,6 +3246,7 @@ mod tests {
                     surface_inputs: vec![int, cont],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -3250,6 +3254,7 @@ mod tests {
                     surface_inputs: vec![int, halt],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -3296,6 +3301,7 @@ mod tests {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: Box::from([0, 1]),
+            boundary_input_demands: Box::new([]),
         };
 
         let edges = [edge(atom), edge(tuple)];
@@ -3334,6 +3340,7 @@ mod tests {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: (0..surface.len()).collect(),
+            boundary_input_demands: Box::new([]),
         }
     }
 
@@ -3435,7 +3442,7 @@ mod tests {
     /// puts it first, the drop may NOT take it (both survive). This is the
     /// reorder path, and the point of the probe is that the weld still holds:
     /// `members` is the SEATED order (narrow first), whatever the edge list's
-    /// own `cmp_tys` order was, and each row's `body_id` is its index in that
+    /// own typed activation order was, and each row's `body_id` is its index in that
     /// seated list. This is what every body_id consumer indexes.
     #[test]
     fn a_wrapper_the_seat_reorders_welds_row_index_to_member_index() {
@@ -3529,8 +3536,10 @@ mod tests {
     fn callable_flow_dispatch_discriminates_callable_correlations() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let closure_a = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 1);
-        let closure_b = world.types_mut().closure_lit(ClosureTarget(2), Vec::new(), 1);
+        world.types_mut().name_callable(ClosureTarget(66), "closure_a/1");
+        world.types_mut().name_callable(ClosureTarget(68), "closure_b/1");
+        let closure_a = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 1);
+        let closure_b = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 1);
         let target_a = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "target_a", 1);
         let target_b = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "target_b", 1);
         let root = crate::compiler2::RootId::for_test(0);
@@ -3550,6 +3559,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
             CallableFlowEdge {
                 surface: super::super::semantic::CallableSurface {
@@ -3566,6 +3576,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
         ];
         let plan = construction_member_selection(world.types_mut(), &edges)
@@ -3640,6 +3651,7 @@ mod tests {
             surface_inputs: vec![atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];
@@ -3741,6 +3753,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let targets = vec![target(int), target(atom)];
@@ -3834,7 +3847,7 @@ mod tests {
     ///     P  {[int|:bb],  :t}    separated from both at tuple position 1 (:t vs :s)
     /// ```
     ///
-    /// with `key(Q) < key(P) < key(R)` under `cmp_tys`. Arrival `[P, Q, R]`.
+    /// with `key(Q) < key(P) < key(R)` under typed activation order. Arrival `[P, Q, R]`.
     ///
     /// - The LANDED shape (insertion pass, then adjacent-transposition repair)
     ///   keeps `R` ahead of `Q`: the covering seat the insertion pass made
@@ -3868,6 +3881,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         // arrival [P, Q, R]
@@ -3905,12 +3919,12 @@ mod tests {
             "and the other direction is a blind escape -- Q ahead of R is what must not happen",
         );
         assert_eq!(
-            types.cmp_tys(&observable[keys[q]], &observable[keys[p]]),
+            types.cmp_activation_tys(&observable[keys[q]], &observable[keys[p]]),
             Ordering::Less,
             "key(Q) < key(P)",
         );
         assert_eq!(
-            types.cmp_tys(&observable[keys[p]], &observable[keys[r]]),
+            types.cmp_activation_tys(&observable[keys[p]], &observable[keys[r]]),
             Ordering::Less,
             "key(P) < key(R)",
         );
@@ -3931,7 +3945,7 @@ mod tests {
                     || (matches!(
                         seating(types, &questions, &observable, &groups[x], &groups[y]),
                         Seating::Separated
-                    ) && types.cmp_tys(&observable[keys[x]], &observable[keys[y]]) == Ordering::Less)
+                    ) && types.cmp_activation_tys(&observable[keys[x]], &observable[keys[y]]) == Ordering::Less)
             };
             let mut seated: Vec<usize> = Vec::new();
             for group in 0..groups.len() {
@@ -4008,6 +4022,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
@@ -4073,6 +4088,7 @@ mod tests {
             surface_inputs: vec![atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];

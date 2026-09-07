@@ -120,7 +120,6 @@ pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Res
         destructor: dtor,
         payload,
     });
-    LIVE_COUNT.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(r)
 }
 
@@ -157,8 +156,6 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
         // scope; we've already snapshotted payload/dtor above).
         let _wrapper = unsafe { Box::from_raw(p) };
         unsafe { dtor(payload) };
-        #[cfg(not(loom))]
-        LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -183,22 +180,10 @@ pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
         fence(Ordering::Acquire);
         let payload = r.payload;
         let _wrapper = unsafe { Box::from_raw(p) };
-        #[cfg(not(loom))]
-        LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
         Some(payload)
     } else {
         None
     }
-}
-
-// ===== Live-count gauge =====================================================
-
-static LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// Number of currently-live heap-allocated Resource objects.
-#[cfg(test)]
-pub(crate) fn live_count() -> usize {
-    LIVE_COUNT.load(Ordering::Relaxed)
 }
 
 // ===== ResourceHandle =======================================================

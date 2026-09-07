@@ -17,7 +17,7 @@ fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
     let index = index_code(&mut world, &tel, prelude).expect("runtime prelude should index");
     world.complete_job(Job::IndexCode(prelude), index);
 
-    let scoped = scope_code(&mut world, &tel, prelude).expect("runtime prelude scoping should not fatal");
+    let scoped = scope_code(&mut world, &tel, None, prelude).expect("runtime prelude scoping should not fatal");
     assert!(
         scoped.waits.is_empty(),
         "runtime prelude exact imports should bind expectations without blocking on Kernel's full interface: {scoped:?}",
@@ -40,10 +40,10 @@ fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
         .expect("Kernel should be a known runtime module");
     let kernel_index = index_code(&mut world, &tel, kernel_code).expect("Kernel runtime source should index");
     world.complete_job(Job::IndexCode(kernel_code), kernel_index);
-    let kernel_scope = scope_code(&mut world, &tel, kernel_code).expect("Kernel runtime source should scope");
+    let kernel_scope = scope_code(&mut world, &tel, None, kernel_code).expect("Kernel runtime source should scope");
     world.complete_job(Job::ScopeCode(kernel_code), kernel_scope);
 
-    let kernel_define = define_module(&mut world, &tel, kernel).unwrap_or_else(|_| {
+    let kernel_define = define_module(&mut world, &tel, None, kernel).unwrap_or_else(|_| {
         let diagnostic = capture
             .last(&["fz", "diag", "error"])
             .expect("Kernel definition failure should emit a diagnostic");
@@ -64,7 +64,7 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
 
     let index = index_code(&mut world, &tel, prelude).expect("runtime prelude should index");
     world.complete_job(Job::IndexCode(prelude), index);
-    let scoped = scope_code(&mut world, &tel, prelude).expect("runtime prelude should scope");
+    let scoped = scope_code(&mut world, &tel, None, prelude).expect("runtime prelude should scope");
     world.complete_job(Job::ScopeCode(prelude), scoped);
 
     let fn_macro = world.reference_function(ModuleId::GLOBAL, "fn", 1);
@@ -73,7 +73,7 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     let publish =
         publish_function_source_job(&mut world, &tel, fn_macro).expect("fn/1 source should publish from stash");
     world.complete_job(Job::PublishFunctionSource(fn_macro), publish);
-    let expand = expand_function_source(&mut world, &tel, fn_macro).expect("fn/1 source should expand");
+    let expand = expand_function_source(&mut world, &tel, None, fn_macro).expect("fn/1 source should expand");
     world.complete_job(Job::ExpandFunctionSource(fn_macro), expand);
     let define = define_function(&mut world, &tel, fn_macro).expect("fn/1 should define from expanded source");
     world.complete_job(Job::DefineFunction(fn_macro), define);
@@ -81,7 +81,7 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     let initial_revision = world
         .fact_revision(&FactKey::FunctionSource(fn_macro))
         .expect("fn/1 source fact should exist after first scope");
-    let replay = scope_code(&mut world, &tel, prelude).expect("re-scoping runtime prelude should not fatal");
+    let replay = scope_code(&mut world, &tel, None, prelude).expect("re-scoping runtime prelude should not fatal");
     assert!(
         !replay.changed.contains(&FactKey::FunctionSource(fn_macro)),
         "stable re-scoping must not republish fn/1 source as changed: {replay:?}",

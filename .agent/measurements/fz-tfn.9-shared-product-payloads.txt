@@ -1,0 +1,101 @@
+fz-tfn.9 immutable product-payload sharing on the combined stack
+=================================================================
+
+Scope
+-----
+
+These measurements were taken on 2026-09-04 from parent
+`c5e1cd558a64f70211f5bc01dc54dfaa1de36c0c` plus the staged fz-tfn.9
+replay. They replace the original branch's 204-product and 50,901-operation
+figures; those values described an older graph and are not acceptance facts
+for the combined stack.
+
+Direct copy probe
+-----------------
+
+A temporary test-only counter wrapped `ProductValue::clone` and counted the
+variants that owned large trees before this change: root answers, symbolic
+backend, ABI, materialized executable, runtime demand, and callable
+construction. A second counter covered successful typed runtime-demand reads,
+which clone the inner answer rather than `ProductValue`. The counters were
+reset immediately before one 00420 backend-product drive and run alone with
+one test thread.
+
+                                                     before-deep / after-shared
+large ProductValue transfers                                      17,840 / 0
+typed RuntimeDemand reads                                         13,581 / 0
+packaged-executable RuntimeDemand transfers                           237 / 0
+observed eliminated deep-copy lower bound                         31,658 / 0
+
+The after column counts deep payload copies, not `Rc::clone`. Surviving
+handoffs are one reference-count increment; the redundant producer-to-memo
+staging clone found by strict lint after the probe was deleted entirely. The
+lower bound deliberately excludes other removed copies, including
+whole-program World/native handoffs and the deleted
+`EmissionReadyExecutable` rebuild. The latter constructed one copied aggregate
+for each of the 237 backend products; backend lowering now reads the retained
+ABI/materialized values directly.
+
+The same temporary 00420 drive observed 237 materialized products, 237 ABI
+products, 237 symbolic backend products, 237 packaged executables, and 4,946
+callable-owner references retained by ABI products. The permanent test uses a
+small fixture to prove every ownership edge without adding 00420's work to
+normal CI. The temporary counters and large-fixture substitution were removed
+after this measurement.
+
+Combined native-work corroboration
+----------------------------------
+
+The existing ignored native corpus probe remains semantically unchanged by
+outer payload sharing and supplies a combined-stack structural census:
+
+- 510 candidates: 474 resolved and 36 non-successes (2 known drive panics,
+  34 expected fatal paths); 472 paired codegen successes.
+- 5,763 semantic executable entries remain represented.
+- Physical sharing removes 55 executable roots, 146 continuations, 201
+  bodies, and 47,760 native bytes; 118 MakeClosure constructions remain.
+- The sharing pass performs 206 passes, indexes 18,569 bodies, owns 17,769
+  graph bodies, makes 6,796 graph comparisons, and 6,107 body comparisons.
+- Paired codegen timing was 12,796 -> 12,270 ms. Timing is corroborative, not
+  a threshold.
+
+The ignored corpus probe took 76.96 seconds in this debug test environment and
+is not part of ordinary CI. The permanent small ownership test took 0.05
+seconds after compilation; the instrumented 00420 probe took 5.21 seconds and
+was removed. These timings are observations, not acceptance thresholds.
+
+Resulting ownership
+-------------------
+
+- A producer allocates each large product payload once. ProductValue, the
+  typed PullSession inventory, ProductMemo, downstream typed products, World
+  projection, direct pull result, and cache hit retain the same `Rc`.
+- An unchanged re-settlement retains the memo's earlier canonical allocation;
+  the driver and side inventories return that allocation rather than the
+  equal duplicate a producer just constructed.
+- ABI products retain their materialized input and callable-construction
+  owners. Symbolic backend products retain their ABI input. Materialized, ABI,
+  symbolic backend, and packaged backend products retain the memoized runtime
+  demand.
+- Root answers and World retain one `Rc<BackendProgram>`, including across a
+  fresh product session. Macro consumers retain that World handle. World
+  stores and returns `Rc<NativeProgram>`.
+- Backend and native root projections use the same generic root-slot map and
+  retain the existing handle for equal content. Native equality remains
+  exhaustive, including `struct_schemas`.
+- All members of a recursive completion retain one validated
+  `Rc<ProductDependencies>` snapshot.
+- Demand settlement uses a member-aligned vector for each round's own-input
+  overlays instead of a hash map and cloned executable keys, and removes
+  external read handles before returning the member-only result.
+
+`Rc` is sufficient because PullSession and World are single-thread owned and
+already use `Rc` for facts and ordered product values; they do not cross a
+`Send`/`Sync` handoff. `Arc` would add atomic reference-count traffic without
+making another ownership path valid.
+
+Structural equality remains the movement rule. A separately allocated equal
+payload preserves its generation and the previous canonical handle; changed
+content advances the generation and replaces the handle. Product keys,
+dependency contents, semantic type comparison, and recursive-group validation
+are unchanged.

@@ -1,0 +1,15 @@
+#---
+# purpose: "named struct overloads reject plain maps with the same fields"
+#---
+defmodule Foo do
+  defstruct [:value]
+  @type t :: %Foo{value: integer}
+end
+
+fn pick(x :: Foo.t), do: 1
+fn pick(x), do: 2
+
+fn main() do
+  dbg(pick(%Foo{value: 7}))
+  dbg(pick(%{value: 7}))
+end

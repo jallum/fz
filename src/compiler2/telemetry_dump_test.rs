@@ -17,7 +17,8 @@ fn null_requested_output_is_inert() {
 
     assert!(!output.wants_clif());
     output.semantic(&world, root, &[]);
-    output.program(&world, root);
+    let backend = super::BackendProgram::empty_for_test();
+    output.program(&world, root, &backend, None);
 }
 
 #[test]

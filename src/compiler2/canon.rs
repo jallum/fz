@@ -34,6 +34,7 @@
 //! per-instance `RandomState` order, so a form derived from it would differ run
 //! to run even between equal structs.
 
+use super::transport::TransportPosition;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -65,7 +66,9 @@ use super::semantic::{
     CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand,
     RuntimeDemand, ShapeDemand,
 };
-use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId};
+use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId, TransportCarrier, TransportLayout};
+#[cfg(test)]
+use super::types::{ClosureSurfacePos, decode_closure_surface_var};
 use super::types::{Ty, TyCanon, TypeVarId};
 use super::world::World;
 
@@ -75,24 +78,28 @@ pub(crate) fn canon_backend_program(world: &World, program: &BackendProgram) -> 
     ProgramCanon::new(world, TyCanon::new(&labels)).render(program)
 }
 
-/// The canonical wrapper number [`canon_backend_program`] heads each wrapper
-/// block with, indexed by the wrapper IDENTITY the artifact publishes.
-///
-/// ONE AUTHORITY FOR ONE NUMBER (fz-kdt.193). A wrapper has two numbers -- the
-/// published `identity`, which is its position in
-/// `program.construction_wrappers` and what the interpreter's own errors print,
-/// and the canonical number, which is where [`ProgramCanon::wrapper_order`]
-/// sorts it and what the dump prints. They agree only by accident: measured on
-/// `00277_enum_tier0_fixture` the map is `0->3, 1->4, 2->1, 3->2, 4->0` and on
-/// `00419_enum_take_mixed` it is `0->2, 1->3, 2->0, 3->1` -- neither has a
-/// fixed point at all. Anything that LABELS a wrapper for a human to look up in
-/// a dump must therefore get the canonical number from here rather than mint a
-/// second opinion.
-///
-/// Nothing in a production build labels a wrapper for a dump reader -- the
-/// interpreter prints the identity it holds, and the dump prints the canonical
-/// number it computes -- so this bridge between them exists only where a gate
-/// needs to follow one to the other.
+#[cfg(test)]
+pub(crate) fn canon_runtime_demand_fact(
+    world: &World,
+    executable: &ExecutableKey,
+    demand: &ExecutableRuntimeDemand,
+) -> String {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    let mut canon = ProgramCanon::new(world, TyCanon::new(&labels));
+    let mut out = vec![canon.executable_key(executable)];
+    out.extend(canon.runtime_demand(demand));
+    out.join("\n")
+}
+
+#[cfg(test)]
+pub(crate) fn canon_executable_key(world: &World, executable: &ExecutableKey) -> String {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    ProgramCanon::new(world, TyCanon::new(&labels)).executable_key(executable)
+}
+/// Canonical display numbers indexed by consumer-local wrapper ordinal.
+/// Both projections name the same immutable wrappers; neither is their typed
+/// construction identity. Tests use this to match interpreter runtime labels
+/// against canonical dump labels.
 #[cfg(test)]
 pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram) -> Vec<usize> {
     let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
@@ -117,6 +124,19 @@ pub(crate) fn function_label(world: &World, function: FunctionId) -> String {
         None if module.is_empty() => format!("{name}/{arity}"),
         None => format!("{module}.{name}/{arity}"),
     }
+}
+
+#[cfg(test)]
+fn stable_closure_alpha_label(world: &World, id: TypeVarId) -> Option<String> {
+    let (fn_id, position) = decode_closure_surface_var(id)?;
+    let function = FunctionId::from_fn_id(fn_id);
+    let arity = world.try_function_ref(function)?.arity;
+    let slot = match position {
+        ClosureSurfacePos::Arg(position) if (position as usize) < arity => format!("arg{position}"),
+        ClosureSurfacePos::Ret => "return".to_string(),
+        ClosureSurfacePos::Arg(_) => return None,
+    };
+    Some(format!("closure({}:{slot})", function_label(world, function)))
 }
 
 fn parse_generated_name(name: &str) -> Option<(FunctionId, u32, u32)> {
@@ -173,7 +193,7 @@ impl Out {
 /// values are sparse and carry no meaning. Names are handed out at first
 /// appearance in the body walk, which is the one traversal order the artifact
 /// itself fixes.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Names {
     values: HashMap<ValueId, usize>,
     callsites: HashMap<CallSiteId, usize>,
@@ -205,14 +225,14 @@ impl Names {
 struct ProgramCanon<'a> {
     world: &'a World,
     tyc: TyCanon<'a>,
-    /// Old vector position to canonical position, for the two program-wide
-    /// vectors every index in the artifact points into.
-    executables: Vec<usize>,
-    wrappers: Vec<usize>,
+    executables: HashMap<ExecutableKey, usize>,
+    wrappers: HashMap<TransportPosition, usize>,
     names: Names,
     shapes: HashMap<ShapeId, Arc<str>>,
     callables: HashMap<CallableId, Arc<str>>,
     boundaries: HashMap<BoundaryId, Arc<str>>,
+    #[cfg(test)]
+    strict_formula_names: bool,
 }
 
 impl<'a> ProgramCanon<'a> {
@@ -220,13 +240,30 @@ impl<'a> ProgramCanon<'a> {
         Self {
             world,
             tyc,
-            executables: Vec::new(),
-            wrappers: Vec::new(),
+            executables: HashMap::new(),
+            wrappers: HashMap::new(),
             names: Names::default(),
             shapes: HashMap::new(),
             callables: HashMap::new(),
             boundaries: HashMap::new(),
+            #[cfg(test)]
+            strict_formula_names: false,
         }
+    }
+
+    fn formula_sort_key(&self, render: impl FnOnce(&mut ProgramCanon<'_>) -> String) -> String {
+        let labels = |fn_id| function_label(self.world, FunctionId::from_fn_id(fn_id));
+        #[cfg(test)]
+        let tyc = TyCanon::alpha_normalized(&labels);
+        #[cfg(not(test))]
+        let tyc = TyCanon::new(&labels);
+        let mut canon = ProgramCanon::new(self.world, tyc);
+        canon.names = self.names.clone();
+        #[cfg(test)]
+        {
+            canon.strict_formula_names = self.strict_formula_names;
+        }
+        render(&mut canon)
     }
 
     // ------------------------------------------------------------------
@@ -236,13 +273,20 @@ impl<'a> ProgramCanon<'a> {
     fn render(&mut self, program: &BackendProgram) -> String {
         let executable_order = self.executable_order(program);
         let wrapper_order = self.wrapper_order(program);
-        self.executables = inverse(&executable_order);
-        self.wrappers = inverse(&wrapper_order);
+        self.executables = executable_order
+            .iter()
+            .enumerate()
+            .map(|(canonical, old)| (program.executables()[*old].key.clone(), canonical))
+            .collect();
+        self.wrappers = wrapper_order
+            .iter()
+            .enumerate()
+            .map(|(canonical, old)| (program.construction_wrappers()[*old].identity.clone(), canonical))
+            .collect();
 
         let mut out = Out::default();
         out.enter("backend_program");
-        out.put(&format!("revision {}", program.backend_revision));
-        out.put(&format!("entry {}", self.executable_ref(program.entry)));
+        out.put(&format!("entry {}", self.executable_ref(program.entry())));
         // The atom table's ORDER is an allocation artifact: nothing in the
         // artifact names an atom by its index (steps carry `GroundValue::Atom`
         // with the name), so only the set is meaningful.
@@ -251,16 +295,16 @@ impl<'a> ProgramCanon<'a> {
         out.section("atoms", atoms);
         if !program.struct_schemas.is_empty() {
             out.enter("struct_schemas");
-            for (name, fields) in &program.struct_schemas {
+            for (name, fields) in program.struct_schemas.entries() {
                 out.put(&format!("{name} [{}]", fields.join(", ")));
             }
             out.exit();
         }
         for (canonical, old) in executable_order.iter().enumerate() {
-            self.executable(&mut out, canonical, &program.executables[*old]);
+            self.executable(&mut out, canonical, &program.executables()[*old]);
         }
         for (canonical, old) in wrapper_order.iter().enumerate() {
-            self.wrapper(&mut out, canonical, &program.construction_wrappers[*old]);
+            self.wrapper(&mut out, canonical, &program.construction_wrappers()[*old]);
         }
         out.exit();
         out.buf
@@ -275,22 +319,22 @@ impl<'a> ProgramCanon<'a> {
     ///
     /// Two executables that render the SAME key tie, and `sort` breaks a tie on
     /// published position — so this rendering is only as id-free as the
-    /// published order behind it. That order is
-    /// `jobs::backend::compare_executable_keys`, which since fz-kdt.101
-    /// compares its type components through `Types::cmp_ty` rather than as raw
-    /// interner ids, so the fallback no longer smuggles interning order in.
+    /// published order behind it. That order is the central typed
+    /// `SemanticOrd<Types>` relation for `ExecutableKey`, which compares the
+    /// addressed activation arrow structurally and never consults rendering or
+    /// raw interner ids.
     fn executable_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
-            .executables
+            .executables()
             .iter()
             .enumerate()
             .map(|(index, executable)| {
                 let key = format!(
                     "{}|{}|{:?}|{}",
                     self.executable_key(&executable.key),
-                    self.ty(executable.return_ty),
-                    executable.param_reprs,
-                    effects_text(executable.effects)
+                    self.ty(executable.abi.materialized.return_ty),
+                    executable.abi.param_reprs,
+                    effects_text(executable.abi.effects)
                 );
                 (key, index)
             })
@@ -304,11 +348,11 @@ impl<'a> ProgramCanon<'a> {
     /// Wrappers tie far more readily than executables — two specializations of
     /// one callable publish wrappers that render byte-identically — so the
     /// published-order fallback is load-bearing here rather than theoretical.
-    /// It is `jobs::artifact::compare_transport_positions` over the owner
-    /// positions the wrappers are enumerated from, canonical since fz-kdt.101.
+    /// It is the central typed `SemanticOrd<Types>` relation for
+    /// `TransportPosition`, shared by publication and packaging.
     fn wrapper_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
             .enumerate()
             .map(|(index, wrapper)| {
@@ -331,18 +375,15 @@ impl<'a> ProgramCanon<'a> {
         keys.into_iter().map(|(_, index)| index).collect()
     }
 
-    fn executable_ref(&self, old: usize) -> String {
+    fn executable_ref(&self, old: &ExecutableKey) -> String {
         match self.executables.get(old) {
             Some(canonical) => format!("x{canonical}"),
             None => "x?".to_string(),
         }
     }
 
-    fn wrapper_ref(&self, identity: u32) -> String {
-        // A wrapper's `identity` IS its position in the published vector
-        // (`package_backend_construction_wrappers` enumerates them), so the
-        // same remap serves both.
-        match self.wrappers.get(identity as usize) {
+    fn wrapper_ref(&self, identity: &TransportPosition) -> String {
+        match self.wrappers.get(identity) {
             Some(canonical) => format!("w{canonical}"),
             None => "w?".to_string(),
         }
@@ -357,21 +398,24 @@ impl<'a> ProgramCanon<'a> {
         // The body is rendered FIRST so value and callsite names are handed out
         // in body-walk order; the sections that only reference them follow.
         let body = self.body(&executable.body);
-        let demand = self.runtime_demand(&executable.runtime_demand);
+        let demand = self.runtime_demand(&executable.abi.materialized.runtime_demand);
         let values = self.value_table(executable);
         let dispatch = executable
+            .abi
+            .materialized
             .entry_dispatch
             .as_ref()
             .map(|dispatch| self.entry_dispatch(dispatch));
 
         out.enter(&format!("executable x{index}"));
         out.put(&format!("key {}", self.executable_key(&executable.key)));
-        out.put(&format!("return {}", self.ty(executable.return_ty)));
-        out.put(&format!("param_reprs [{}]", reprs_text(&executable.param_reprs)));
-        out.put(&format!("effects {}", effects_text(executable.effects)));
+        out.put(&format!("return {}", self.ty(executable.abi.materialized.return_ty)));
+        out.put(&format!("param_reprs [{}]", reprs_text(&executable.abi.param_reprs)));
+        out.put(&format!("effects {}", effects_text(executable.abi.effects)));
         out.section(
             "semantic_inputs",
             executable
+                .abi
                 .semantic_inputs
                 .iter()
                 .map(|input| self.semantic_input(input))
@@ -379,7 +423,7 @@ impl<'a> ProgramCanon<'a> {
         );
         out.put(&format!(
             "return_layout {}",
-            self.return_layout(&executable.return_layout)
+            self.return_layout(&executable.abi.return_layout)
         ));
         if let Some(dispatch) = dispatch {
             out.section("entry_dispatch", dispatch);
@@ -409,20 +453,25 @@ impl<'a> ProgramCanon<'a> {
 
     fn value_table(&mut self, executable: &BackendExecutable) -> Vec<String> {
         let mut keys: Vec<&ValueId> = executable
+            .abi
+            .materialized
             .value_types
             .keys()
-            .chain(executable.value_layouts.keys())
+            .chain(executable.abi.value_layouts.keys())
             .collect();
         keys.sort();
         keys.dedup();
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for value in keys {
             let ty = executable
+                .abi
+                .materialized
                 .value_types
                 .get(value)
                 .map(|ty| self.ty(*ty))
                 .unwrap_or_else(|| "-".to_string());
             let layout = executable
+                .abi
                 .value_layouts
                 .get(value)
                 .map(|layout| self.layout(layout))
@@ -446,6 +495,12 @@ impl<'a> ProgramCanon<'a> {
 
 impl ProgramCanon<'_> {
     fn ty(&mut self, ty: Ty) -> String {
+        #[cfg(test)]
+        for id in self.world.types().free_var_ids(&ty) {
+            if let Some(name) = stable_closure_alpha_label(self.world, id) {
+                self.tyc.name_structural_alpha(id, name);
+            }
+        }
         self.tyc.render(self.world.types(), ty).to_string()
     }
 
@@ -460,10 +515,14 @@ impl ProgramCanon<'_> {
 
     fn layout(&mut self, layout: &BackendValueLayout) -> String {
         let tys: Vec<String> = layout.tys.iter().map(|ty| self.ty(*ty)).collect();
+        let carrier = match layout.carrier {
+            TransportCarrier::Absent => "Absent".to_string(),
+            TransportCarrier::ValueRef(lane) => format!("ValueRef({})", self.lane(lane)),
+        };
         format!(
-            "{} carrier={:?} tys=[{}] reprs=[{}]",
+            "{} carrier={} tys=[{}] reprs=[{}]",
             self.shape(layout.structural),
-            layout.carrier,
+            carrier,
             tys.join(", "),
             reprs_text(&layout.reprs)
         )
@@ -481,7 +540,7 @@ impl ProgramCanon<'_> {
             ShapeDescr::Nothing => "nothing".to_string(),
             ShapeDescr::Lane(lane) => format!("lane({})", self.lane(lane)),
             ShapeDescr::Tuple(fields) => {
-                let fields: Vec<String> = fields.iter().map(|field| self.shape(*field).to_string()).collect();
+                let fields: Vec<String> = fields.iter().map(|field| self.transport_layout(*field)).collect();
                 format!("shape{{{}}}", fields.join(", "))
             }
             ShapeDescr::Callable(callable) => format!("callable({})", self.callable(callable)),
@@ -496,6 +555,14 @@ impl ProgramCanon<'_> {
         format!("{:?}:{}", descr.class, self.ty(descr.ty))
     }
 
+    fn transport_layout(&mut self, layout: TransportLayout) -> String {
+        let structural = self.shape(layout.structural);
+        match layout.carrier {
+            TransportCarrier::Absent => structural.to_string(),
+            TransportCarrier::ValueRef(lane) => format!("{structural}+value_ref({})", self.lane(lane)),
+        }
+    }
+
     fn callable(&mut self, id: CallableId) -> Arc<str> {
         if let Some(hit) = self.callables.get(&id) {
             return Arc::clone(hit);
@@ -506,18 +573,16 @@ impl ProgramCanon<'_> {
             .map(|function| function_label(self.world, function))
             .unwrap_or_else(|| "<unknown>".to_string());
         let tys: Vec<String> = descr.capture_tys.iter().map(|ty| self.ty(*ty)).collect();
-        let shapes: Vec<String> = descr
-            .capture_shapes
+        let layouts: Vec<String> = descr
+            .capture_layouts
             .iter()
-            .map(|shape| self.shape(*shape).to_string())
+            .map(|layout| self.transport_layout(*layout))
             .collect();
-        let lanes: Vec<String> = descr.capture_lanes.iter().map(|lane| self.lane(*lane)).collect();
         let text: Arc<str> = format!(
-            "{function}/{} captures=[{}] shapes=[{}] lanes=[{}]",
+            "{function}/{} captures=[{}] layouts=[{}]",
             descr.arity,
             tys.join(", "),
-            shapes.join(", "),
-            lanes.join(", ")
+            layouts.join(", ")
         )
         .into();
         self.callables.insert(id, Arc::clone(&text));
@@ -530,19 +595,15 @@ impl ProgramCanon<'_> {
         }
         let descr = self.world.boundary(id).clone();
         let args: Vec<String> = descr
-            .surface_arg_shapes
+            .surface_arg_layouts
             .iter()
-            .map(|shape| self.shape(*shape).to_string())
+            .map(|layout| self.transport_layout(*layout))
             .collect();
-        let capture_lanes: Vec<String> = descr.published_capture_lanes.iter().map(|l| self.lane(*l)).collect();
-        let arg_lanes: Vec<String> = descr.published_arg_lanes.iter().map(|l| self.lane(*l)).collect();
         let text: Arc<str> = format!(
-            "boundary({}) args=[{}] value_lane={} capture_lanes=[{}] arg_lanes=[{}]",
+            "boundary({}) args=[{}] value_lane={}",
             self.callable(descr.callable),
             args.join(", "),
             self.lane(descr.published_value_lane),
-            capture_lanes.join(", "),
-            arg_lanes.join(", ")
         )
         .into();
         self.boundaries.insert(id, Arc::clone(&text));
@@ -557,6 +618,8 @@ impl ProgramCanon<'_> {
 impl ProgramCanon<'_> {
     fn runtime_demand(&mut self, demand: &ExecutableRuntimeDemand) -> Vec<String> {
         let mut out = Out::default();
+        let activation_inputs = self.callable_activation_inputs(&demand.callable_activation_inputs);
+        out.section("callable_activation_inputs", activation_inputs);
         out.put(&format!("return {}", self.demand(&demand.return_demand)));
         for (index, input) in demand.input_demands.iter().enumerate() {
             out.put(&format!("input {index} {}", self.demand(input)));
@@ -605,11 +668,22 @@ impl ProgramCanon<'_> {
 
     /// `CallableDemand`'s two sets are `BTreeSet`s ordered by raw `Ty`, so their
     /// iteration order tracks the arena rather than the program. They are
-    /// re-sorted on their rendered form.
+    /// ordered on an entry-local alpha-normalized form before the shared alpha
+    /// environment renders them.
     fn callable_demand(&mut self, demand: &CallableDemand) -> String {
-        let mut resolved: Vec<String> = demand.resolved.iter().map(|s| self.callable_surface(s)).collect();
+        let mut ordered_resolved = demand.resolved.iter().collect::<Vec<_>>();
+        ordered_resolved.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut resolved = ordered_resolved
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         resolved.sort();
-        let mut targets: Vec<String> = demand.targets.iter().map(|t| self.callable_target(t)).collect();
+        let mut ordered_targets = demand.targets.iter().collect::<Vec<_>>();
+        ordered_targets.sort_by_cached_key(|target| self.formula_sort_key(|local| local.callable_target(target)));
+        let mut targets = ordered_targets
+            .into_iter()
+            .map(|target| self.callable_target(target))
+            .collect::<Vec<_>>();
         targets.sort();
         format!(
             "callable(resolved=[{}] targets=[{}] opaque={} escape={})",
@@ -623,6 +697,27 @@ impl ProgramCanon<'_> {
     fn callable_surface(&mut self, surface: &CallableSurface) -> String {
         let inputs: Vec<String> = surface.inputs.iter().map(|ty| self.ty(*ty)).collect();
         format!("({})", inputs.join(", "))
+    }
+
+    fn callable_activation_input(&mut self, input: &super::semantic::CallableActivationInput) -> String {
+        let captures = input.captures.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        format!(
+            "captures=[{}] surface={} own_surface_calls={:?}",
+            captures.join(", "),
+            self.callable_surface(&input.surface),
+            input.capture_called_with_own_surface
+        )
+    }
+
+    fn callable_activation_inputs(&mut self, inputs: &[super::semantic::CallableActivationInput]) -> Vec<String> {
+        let mut ordered = inputs.iter().collect::<Vec<_>>();
+        ordered.sort_by_cached_key(|input| self.formula_sort_key(|local| local.callable_activation_input(input)));
+        let mut inputs = ordered
+            .into_iter()
+            .map(|input| self.callable_activation_input(input))
+            .collect::<Vec<_>>();
+        inputs.sort();
+        inputs
     }
 
     fn callable_target(&mut self, target: &CallableTarget) -> String {
@@ -640,13 +735,20 @@ impl ProgramCanon<'_> {
         // Named only, never naming: the body walk is the one place a value
         // earns a name, and this fact is read long after that walk is over.
         let captures: Vec<String> = flow.captures.iter().map(|value| self.value_ref(*value)).collect();
-        let mut direct: Vec<String> = flow.direct_surfaces.iter().map(|s| self.callable_surface(s)).collect();
+        let mut direct_surfaces = flow.direct_surfaces.iter().collect::<Vec<_>>();
+        direct_surfaces.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut direct = direct_surfaces
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         direct.sort();
-        let mut first_class: Vec<String> = flow
-            .first_class_surfaces
-            .iter()
-            .map(|s| self.callable_surface(s))
-            .collect();
+        let mut first_class_surfaces = flow.first_class_surfaces.iter().collect::<Vec<_>>();
+        first_class_surfaces
+            .sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut first_class = first_class_surfaces
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         first_class.sort();
         let direct_edges: Vec<String> = flow.direct_edges.iter().map(|e| self.callable_flow_edge(e)).collect();
         let first_class_edges: Vec<String> = flow
@@ -671,16 +773,35 @@ impl ProgramCanon<'_> {
     }
 
     fn value_ref(&self, value: ValueId) -> String {
-        self.names.known_value(value).unwrap_or_else(|| "v?".to_string())
+        if let Some(name) = self.names.known_value(value) {
+            return name;
+        }
+        #[cfg(test)]
+        assert!(
+            !self.strict_formula_names,
+            "formula canon missing body-local value {value:?}"
+        );
+        "v?".to_string()
     }
 
     fn callable_flow_edge(&mut self, edge: &CallableFlowEdge) -> String {
+        let boundary = edge
+            .boundary_input_demands
+            .iter()
+            .map(|demand| {
+                demand
+                    .as_ref()
+                    .map(|demand| self.demand(demand))
+                    .unwrap_or_else(|| "none".to_string())
+            })
+            .collect::<Vec<_>>();
         format!(
-            "{}->{} captures={:?} surface={:?}",
+            "{}->{} captures={:?} surface={:?} boundary=[{}]",
             self.callable_surface(&edge.surface),
             self.executable_key(&edge.resolution),
             edge.capture_semantic_inputs,
-            edge.surface_semantic_inputs
+            edge.surface_semantic_inputs,
+            boundary.join(", ")
         )
     }
 
@@ -689,11 +810,16 @@ impl ProgramCanon<'_> {
     /// position, so they are ordered by their content instead.
     fn keyed_by_value<V>(&mut self, map: &HashMap<ValueId, V>, render: fn(&mut Self, &V) -> String) -> Vec<String> {
         let mut keys: Vec<&ValueId> = map.keys().collect();
-        keys.sort();
+        keys.sort_by_key(|key| (self.names.values.get(key).copied().unwrap_or(usize::MAX), key.as_u32()));
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for key in keys {
             let value = render(self, &map[key]);
             let named = self.names.known_value(*key);
+            #[cfg(test)]
+            assert!(
+                named.is_some() || !self.strict_formula_names,
+                "formula canon missing body-local value {key:?}"
+            );
             rows.push((
                 named.as_ref().map(|_| self.names.values[key]),
                 format!("{} {value}", named.unwrap_or_else(|| "v?".to_string())),
@@ -708,11 +834,22 @@ impl ProgramCanon<'_> {
         render: fn(&mut Self, &V) -> String,
     ) -> Vec<String> {
         let mut keys: Vec<&CallSiteId> = map.keys().collect();
-        keys.sort_by_key(|key| (key.as_u32(), key.span().start));
+        keys.sort_by_key(|key| {
+            (
+                self.names.callsites.get(key).copied().unwrap_or(usize::MAX),
+                key.as_u32(),
+                key.span().start,
+            )
+        });
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for key in keys {
             let value = render(self, &map[key]);
             let named = self.names.known_callsite(*key);
+            #[cfg(test)]
+            assert!(
+                named.is_some() || !self.strict_formula_names,
+                "formula canon missing body-local callsite {key:?}"
+            );
             rows.push((
                 named.as_ref().map(|_| self.names.callsites[key]),
                 format!("{} {value}", named.unwrap_or_else(|| "cs?".to_string())),
@@ -910,7 +1047,7 @@ impl ProgramCanon<'_> {
                 format!(
                     "{name} = function_ref {} {}",
                     function_label(self.world, *function),
-                    self.construction(*construction)
+                    self.construction(construction.as_ref())
                 )
             }
             BackendStep::Lambda {
@@ -924,7 +1061,7 @@ impl ProgramCanon<'_> {
                 format!(
                     "{name} = lambda {label} captures=[{}] {}",
                     self.value_list(captures),
-                    self.construction(*construction)
+                    self.construction(construction.as_ref())
                 )
             }
             BackendStep::BinaryOp { value, op, left, right } => {
@@ -1027,7 +1164,7 @@ impl ProgramCanon<'_> {
         format!("%{{{}}}", pairs.join(", "))
     }
 
-    fn construction(&mut self, construction: Option<u32>) -> String {
+    fn construction(&mut self, construction: Option<&TransportPosition>) -> String {
         match construction {
             None => "construction=-".to_string(),
             Some(identity) => format!("construction={}", self.wrapper_ref(identity)),
@@ -1094,6 +1231,7 @@ impl ProgramCanon<'_> {
                 let callee = self.names.value(*callee);
                 let args = self.call_args(args);
                 let target = target
+                    .as_ref()
                     .map(|target| self.executable_ref(target))
                     .unwrap_or_else(|| "-".to_string());
                 out.enter(&format!(
@@ -1199,7 +1337,7 @@ impl ProgramCanon<'_> {
         format!("{} timeout={timeout} e{}", self.span(after.span), after.entry.as_u32())
     }
 
-    fn call_edge(&mut self, out: &mut Out, edge: &CallEdge<usize, BackendReturnFlow>) {
+    fn call_edge(&mut self, out: &mut Out, edge: &CallEdge<ExecutableKey, BackendReturnFlow>) {
         match edge {
             CallEdge::Direct(direct) => {
                 let callee = self.call_target(&direct.callee);
@@ -1230,9 +1368,9 @@ impl ProgramCanon<'_> {
         }
     }
 
-    fn call_target(&mut self, target: &CallTarget<usize>) -> String {
+    fn call_target(&mut self, target: &CallTarget<ExecutableKey>) -> String {
         match target {
-            CallTarget::Local(index) => self.executable_ref(*index),
+            CallTarget::Local(index) => self.executable_ref(index),
             CallTarget::ProviderBoundary(function) => {
                 format!("provider:{}", function_label(self.world, *function))
             }
@@ -1310,7 +1448,7 @@ impl ProgramCanon<'_> {
         format!(
             "{} target={} inputs=[{}] shapes=[{}] captures={:?} surface={:?} target_inputs=[{}] return={}",
             self.boundary(member.boundary),
-            self.executable_ref(member.target),
+            self.executable_ref(&member.target),
             inputs.join(", "),
             shapes.join(", "),
             member.capture_semantic_inputs,
@@ -1686,10 +1824,49 @@ fn ordered(mut rows: Vec<(Option<usize>, String)>) -> Vec<String> {
     rows.into_iter().map(|(_, line)| line).collect()
 }
 
+#[cfg(test)]
 fn inverse(order: &[usize]) -> Vec<usize> {
     let mut inverse = vec![0; order.len()];
     for (canonical, old) in order.iter().enumerate() {
         inverse[*old] = canonical;
     }
     inverse
+}
+
+#[cfg(test)]
+mod carrier_canon_tests {
+    use super::*;
+
+    fn render_root_carrier_with_dummy_lanes(dummy_lanes: usize) -> String {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        for _ in 0..dummy_lanes {
+            world.intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: atom,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        }
+        let carrier = world.intern_lane(crate::compiler2::transport::LaneDescr {
+            ty: int,
+            class: crate::compiler2::transport::TransportClass::Value,
+        });
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let layout = BackendValueLayout {
+            structural: nothing,
+            carrier: TransportCarrier::ValueRef(carrier),
+            tys: Box::new([int]),
+            reprs: Box::new([AbiValueRepr::ValueRef]),
+        };
+        let labels = |fn_id| function_label(&world, FunctionId::from_fn_id(fn_id));
+        ProgramCanon::new(&world, TyCanon::new(&labels)).layout(&layout)
+    }
+
+    #[test]
+    fn root_carrier_canon_uses_the_lane_type_not_its_mint_order() {
+        assert_eq!(
+            render_root_carrier_with_dummy_lanes(0),
+            render_root_carrier_with_dummy_lanes(1)
+        );
+    }
 }

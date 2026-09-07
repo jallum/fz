@@ -120,5 +120,13 @@ declared function's head check is deferred to contract derivation. Functions
 without contracts retain the domain-free check, and an empty contract produced
 after a resolution error does not create a coverage domain.
 
+Runtime-library helpers declare the exact producer-owned boundary they consume;
+coverage does not infer a private helper's domain from whichever activations a
+particular program happened to create. For example, `List.member?/2` accepts a
+list and any search value, `Enum.member_result/3` accepts the two result variants
+published by `Enumerable.member?/2`, and both `Enum.with_index_list` arities
+accept lists. Their empty and cons clauses are therefore total without a
+wildcard that would admit an impossible container or result variant.
+
 Diagnostics should not reimplement matching with syntax walkers. If a warning
 depends on dispatch reachability, ask the dispatch graph.

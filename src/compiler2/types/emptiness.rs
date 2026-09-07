@@ -291,6 +291,9 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
     if c.pos.is_empty() {
         return false;
     }
+    if c.pos.iter().skip(1).any(|p| p.tag != c.pos[0].tag) {
+        return true;
+    }
     let mut merged: BTreeMap<MapKey, Descr> = c.pos[0]
         .fields
         .iter()
@@ -308,6 +311,9 @@ pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>, memo: &mut Memo)
         return true;
     }
     for n in &c.neg {
+        if n.tag != c.pos[0].tag {
+            continue;
+        }
         let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
         if !n_keys_subset {
             continue;

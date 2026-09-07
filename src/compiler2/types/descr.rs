@@ -6,7 +6,7 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
 use super::{MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 
@@ -26,6 +26,7 @@ type AtomSet = FiniteSet<String>;
 type VarSet = FiniteSet<TypeVarId>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) struct Descr {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
@@ -85,6 +86,19 @@ impl Descr {
     pub(super) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(name.into());
+        d
+    }
+
+    pub(super) fn struct_map(tag: StructTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
+        Self::record(MapTag::Struct(tag), fields)
+    }
+
+    pub(super) fn record(tag: MapTag, fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
+        let mut d = Self::unbranded();
+        d.maps.push(Conj::pos_of(MapSig {
+            tag,
+            fields: fields.into_iter().collect(),
+        }));
         d
     }
 
@@ -192,17 +206,11 @@ impl Descr {
     }
 
     pub(super) fn map_top() -> Self {
-        let mut d = Self::unbranded();
-        d.maps.push(Conj::top());
-        d
+        Self::record(MapTag::Plain, [])
     }
 
     pub(super) fn map_of(fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
-        let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig {
-            fields: fields.into_iter().collect(),
-        }));
-        d
+        Self::record(MapTag::Plain, fields)
     }
 
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {
@@ -389,7 +397,7 @@ impl Descr {
             && self.maps.is_empty()
     }
 
-    pub(super) fn pure_map(&self) -> Option<&MapSig> {
+    pub(super) fn pure_record(&self) -> Option<&MapSig> {
         self.axis_free()
             .then_some(())
             .and_then(|_| single_positive(&self.maps))
@@ -633,7 +641,7 @@ impl Descr {
         // said. `utf8` erases to `binary`, and `binary` erases to itself.
         d.brands = FiniteSet::any();
         let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
-        // Opaques carry no embedded inner (opaque_of sets only the tag axis); erase conservatively.
+        // Nominals carry no embedded inner; erase conservatively.
         if !opaques.is_none() {
             d = d.union(cx, &Descr::any());
         }

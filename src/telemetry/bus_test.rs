@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::telemetry::capture::Capture;
-use crate::telemetry::sink::{RawSpanStop1 as _, RawSpanStop2 as _, TelemetryExt};
+use crate::telemetry::sink::{RawSpanStop1 as _, TelemetryExt};
 use crate::telemetry::value::Value;
 use crate::{measurements, metadata};
 
@@ -97,9 +97,21 @@ fn legacy_handlers_do_not_enable_raw_events() {
     t.attach(&["fz", "raw"], cap.handler());
     let value = 41_u64;
 
+    assert!(!t.is_raw_event_enabled(&["fz", "raw", "event"]));
     t.raw_event1(&["fz", "raw", "event"], &value);
 
     assert!(cap.events().is_empty());
+}
+
+#[test]
+fn raw_subscribers_do_not_enable_legacy_dispatch() {
+    let raw_event = ConfiguredTelemetry::new();
+    raw_event.attach_raw_event1::<u64, _>(&["fz", "raw"], |_, _, _, _| {});
+    assert!(!raw_event.is_enabled(&["fz", "raw", "event"]));
+
+    let raw_lifecycle = ConfiguredTelemetry::new();
+    raw_lifecycle.attach_raw_lifecycle(&["fz", "raw"], |_, _, _, _, _| {});
+    assert!(!raw_lifecycle.is_enabled(&["fz", "raw", "event"]));
 }
 
 #[test]
@@ -113,6 +125,7 @@ fn raw_event_registration_filters_type_prefix_and_detach() {
     let value = 1_u64;
     let wrong = 1_u32;
 
+    assert!(t.is_raw_event_enabled(&["fz", "raw", "event"]));
     t.raw_event1(&["other"], &value);
     t.raw_event1(&["fz", "raw"], &wrong);
     t.raw_event1(&["fz", "raw"], &value);
@@ -195,16 +208,16 @@ fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
     let wrong_start = Rc::clone(&wrong_calls);
     let wrong_stop = Rc::clone(&wrong_calls);
     let wrong_exception = Rc::clone(&wrong_calls);
-    t.attach_raw_span1_2::<String, String, u64, _, _, _>(
+    t.attach_raw_span1_1::<String, String, _, _, _>(
         &["fz", "raw", "span"],
         move |_, _, _, _| wrong_start.set(wrong_start.get() + 1),
-        move |_, _, _, _, _, _| wrong_stop.set(wrong_stop.get() + 1),
+        move |_, _, _, _, _| wrong_stop.set(wrong_stop.get() + 1),
         move |_, _, _, _| wrong_exception.set(wrong_exception.get() + 1),
     );
-    t.attach_raw_span1_2::<String, Vec<u8>, u64, _, _, _>(
+    t.attach_raw_span1_1::<String, Vec<u8>, _, _, _>(
         &["fz", "raw", "span"],
         move |_, _, _, value| start_sink.set(value),
-        move |_, _, _, elapsed_ns, value, _| {
+        move |_, _, _, elapsed_ns, value| {
             assert!(elapsed_ns > 0);
             stop_sink.set(value);
         },
@@ -212,11 +225,10 @@ fn raw_span_handlers_match_both_signatures_and_borrow_both_phases() {
     );
     let start = String::from("start");
     let stop = vec![1_u8, 2];
-    let stop_count = 2_u64;
 
-    let span = t.raw_span1_2::<String, Vec<u8>, u64>(&["fz", "raw", "span"], &start);
+    let span = t.raw_span1_1::<String, Vec<u8>>(&["fz", "raw", "span"], &start);
     sleep(Duration::from_micros(50));
-    span.stop2(&stop, &stop_count);
+    span.stop1(&stop);
 
     assert_eq!(start_pointer.get(), &start);
     assert_eq!(stop_pointer.get(), &stop);
@@ -252,16 +264,16 @@ fn unwinding_payload_span_invokes_payloadless_exception() {
     let t = ConfiguredTelemetry::new();
     let exceptions = Rc::new(Cell::new(0));
     let sink = Rc::clone(&exceptions);
-    t.attach_raw_span1_2::<String, Vec<u8>, u64, _, _, _>(
+    t.attach_raw_span1_1::<String, Vec<u8>, _, _, _>(
         &["fz", "raw", "span"],
         |_, _, _, _| {},
-        |_, _, _, _, _, _| panic!("unexpected stop"),
+        |_, _, _, _, _| panic!("unexpected stop"),
         move |_, _, _, _| sink.set(sink.get() + 1),
     );
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let start = String::from("start");
-        let _span = t.raw_span1_2::<String, Vec<u8>, u64>(&["fz", "raw", "span"], &start);
+        let _span = t.raw_span1_1::<String, Vec<u8>>(&["fz", "raw", "span"], &start);
         panic!("planned");
     }));
 
@@ -277,11 +289,10 @@ fn null_telemetry_raw_boundary_is_a_no_op() {
     let stop = vec![1_u8, 2];
 
     t.raw_event1(&["fz", "raw"], &start);
-    let stop_count = 2_u64;
-    let span = t.raw_span1_2::<String, Vec<u8>, u64>(&["fz", "raw", "span"], &start);
+    let span = t.raw_span1_1::<String, Vec<u8>>(&["fz", "raw", "span"], &start);
     assert_eq!(std::mem::size_of_val(&span), 0);
     assert!(!std::mem::needs_drop::<crate::telemetry::sink::NullSpan>());
-    span.stop2(&stop, &stop_count);
+    span.stop1(&stop);
 }
 
 #[test]

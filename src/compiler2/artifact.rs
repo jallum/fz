@@ -8,7 +8,8 @@
 //! CPS/native handoff that carries only backend-consumption facts and never
 //! rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
@@ -30,11 +31,11 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, RootId};
+use super::identity::{ExecutableKey, FunctionId, ModuleId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
-    BoundaryFacts, BoundaryId, CallableConstructionOwner, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
-    ShapeId, TransportCarrier, TransportLayout, TransportPosition,
+    BoundaryId, CallableConstructionOwner, CallableId, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
+    TransportPosition,
 };
 use super::types::Ty;
 
@@ -59,24 +60,9 @@ impl<T: Copy> CallTarget<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MaterializedTransportPlan {
-    pub entry: ExecutableSymbol,
-    pub executable_membership: Box<[ExecutableSymbol]>,
-    pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
-    /// Per-callable boundary inventory projected from position-owned callable
-    /// construction products.
-    pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
-    pub boundary_ids: Vec<BoundaryId>,
-    pub codegen_seam_facts: Box<[CodegenSeamFact]>,
-    pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
-    pub callable_facts: HashMap<CallableId, CallableFacts>,
-    pub boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionWrapper {
-    pub identity: u32,
+    pub identity: TransportPosition,
     pub callable: CallableId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub call_arity: usize,
@@ -97,7 +83,7 @@ pub struct BackendConstructionMemberAdapter {
     pub boundary: BoundaryId,
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
-    pub target: usize,
+    pub target: ExecutableKey,
     pub capture_semantic_inputs: Box<[usize]>,
     pub surface_semantic_inputs: Box<[usize]>,
     pub target_inputs: Box<[BackendSemanticInputLayout]>,
@@ -129,24 +115,6 @@ pub struct BackendConstructionCapture {
     pub layout: BackendValueLayout,
 }
 
-impl MaterializedTransportPlan {
-    #[cfg(test)]
-    pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
-        self.layout_at(position).map(|layout| layout.structural)
-    }
-
-    pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
-        self.position_layouts
-            .iter()
-            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
-    }
-
-    pub fn carries_runtime_value(&self, position: &TransportPosition) -> bool {
-        self.layout_at(position)
-            .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedExecutableTransport {
     pub executable: ExecutableSymbol,
@@ -168,15 +136,19 @@ impl MaterializedExecutableTransport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub runtime_demand: ExecutableRuntimeDemand,
+    pub runtime_demand: Rc<ExecutableRuntimeDemand>,
     pub transport: MaterializedExecutableTransport,
     pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
+    /// Struct schemas this pruned executable can construct, test, or name in
+    /// its type surface, kept as typed compiler identities until root packaging.
+    pub(crate) struct_modules: Box<[ModuleId]>,
     pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
@@ -202,9 +174,8 @@ pub enum CallEdge<T, F = CallReturnFlow> {
 
 impl<T, F> CallEdge<T, F> {
     /// Every local callee the edge can reach: the direct target, or all
-    /// dispatch arms. This is the single callee-extraction both the effects
-    /// producer's cone traversal and the session's effect-dependents reverse
-    /// edges are derived from, so the two stay in agreement by construction.
+    /// dispatch arms. Product formulas use this one projection to name their
+    /// exact callee dependencies.
     pub fn local_callees(&self) -> Vec<&T> {
         match self {
             Self::Direct(direct) => direct.callee.local().into_iter().collect(),
@@ -276,39 +247,20 @@ pub enum BackendReturnFlow {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BackendProgram {
-    pub backend_revision: u64,
-    pub entry: usize,
-    pub atom_names: Vec<String>,
-    pub struct_schemas: BTreeMap<String, Vec<String>>,
-    pub executables: Vec<BackendExecutable>,
-    pub construction_wrappers: Vec<BackendConstructionWrapper>,
-}
+pub use super::backend_program::BackendProgram;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RootBackendProductAnswer {
-    pub program: BackendProgram,
-    pub transport: MaterializedTransportPlan,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MacroExecutable {
-    pub root: RootId,
-    pub backend_revision: u64,
-    pub program: BackendProgram,
-}
-
-#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug)]
 pub(crate) struct NativeProgram {
-    /// Revision of the `BackendProgram(root)` snapshot this native handoff
-    /// was derived from.
-    pub backend_revision: u64,
     /// The CPS/native entry body the shared JIT/AOT pipeline should start at.
     pub entry: FnId,
     /// Compiler2-owned CPS/native module handed to shared codegen. This
     /// replaces the old prepared `Module` input for Compiler2-native runs.
     pub module: IrModule,
+    /// Every semantic executable in the closed backend program and the
+    /// physical CPS/native entry that implements it. Several semantic keys may
+    /// share one entry when their closed native graphs are equivalent.
+    pub executable_entries: Vec<NativeExecutableEntry>,
     /// Per-body native facts that replace old planner-owned side tables such
     /// as `ModulePlan.effective_returns`, `SpecPlan.vars`, and continuation
     /// classification.
@@ -316,6 +268,569 @@ pub(crate) struct NativeProgram {
     /// Closed callable-boundary inventory plus callable identity bodies. This
     /// replaces the old planner-side callable-entry lookup surface.
     pub callable_boundaries: Vec<NativeCallableBoundary>,
+}
+
+impl PartialEq for NativeProgram {
+    fn eq(&self, other: &Self) -> bool {
+        native_programs_equal(self, other)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeExecutableEntry {
+    pub key: ExecutableKey,
+    pub fn_id: FnId,
+}
+
+impl NativeProgram {
+    #[cfg(test)]
+    pub(crate) fn executable_fn(&self, key: &ExecutableKey) -> Option<FnId> {
+        self.executable_entries
+            .iter()
+            .find(|entry| &entry.key == key)
+            .map(|entry| entry.fn_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_graph_fn_ids(&self, key: &ExecutableKey) -> HashSet<FnId> {
+        let Some(index) = self.executable_entries.iter().position(|entry| &entry.key == key) else {
+            return HashSet::new();
+        };
+        NativeGraphIndex::new(self).graphs[index]
+            .bodies
+            .values()
+            .copied()
+            .collect()
+    }
+
+    /// Compare the closed native graph owned by two semantic executables.
+    ///
+    /// The executable body and every clause/continuation it owns are compared
+    /// structurally. Only the graph's own `FnId`s, diagnostic names, and
+    /// same-span callsite allocation identities are alpha-renamed. Direct
+    /// targets, construction words, ABI facts, effects, capture layouts, and
+    /// every codegen-relevant value type remain exact comparands.
+    #[cfg(test)]
+    pub(crate) fn native_cps_graphs_equivalent(&self, left: &ExecutableKey, right: &ExecutableKey) -> bool {
+        let Some(left) = self.executable_entries.iter().position(|entry| &entry.key == left) else {
+            return false;
+        };
+        let Some(right) = self.executable_entries.iter().position(|entry| &entry.key == right) else {
+            return false;
+        };
+        NativeGraphIndex::new(self)
+            .mapping(left, right, &mut NativeGraphSharingWork::default())
+            .is_some()
+    }
+
+    pub(crate) fn deduplicate_equivalent_sibling_graphs(&mut self) -> NativeGraphSharingWork {
+        let groups = self.sibling_entry_groups();
+        if groups.is_empty() {
+            return NativeGraphSharingWork::default();
+        }
+        let mut work = NativeGraphSharingWork::default();
+        while self.deduplicate_equivalent_sibling_graphs_once(&groups, &mut work) {}
+        work
+    }
+
+    fn sibling_entry_groups(&self) -> Vec<Vec<usize>> {
+        let mut groups = BTreeMap::<FunctionId, Vec<usize>>::new();
+        for (index, entry) in self.executable_entries.iter().enumerate() {
+            groups.entry(entry.key.activation.function).or_default().push(index);
+        }
+        groups.into_values().filter(|group| group.len() > 1).collect()
+    }
+
+    fn deduplicate_equivalent_sibling_graphs_once(
+        &mut self,
+        groups: &[Vec<usize>],
+        work: &mut NativeGraphSharingWork,
+    ) -> bool {
+        let replacements = {
+            let graphs = NativeGraphIndex::new(self);
+            #[cfg(test)]
+            {
+                work.passes += 1;
+                work.indexed_bodies += self.bodies.len();
+                work.owned_graph_bodies += graphs.graphs.iter().map(|graph| graph.bodies.len()).sum::<usize>();
+            }
+            graphs.replacements(groups, work)
+        };
+        if replacements.is_empty() {
+            return false;
+        }
+
+        self.apply_native_graph_replacements(&replacements);
+        true
+    }
+
+    fn apply_native_graph_replacements(&mut self, replacements: &HashMap<FnId, FnId>) {
+        let remap = |fn_id: &mut FnId| {
+            if let Some(representative) = replacements.get(fn_id) {
+                *fn_id = *representative;
+            }
+        };
+        remap(&mut self.entry);
+        for entry in &mut self.executable_entries {
+            remap(&mut entry.fn_id);
+        }
+        for boundary in &mut self.callable_boundaries {
+            for member in &mut boundary.members {
+                remap(&mut member.target_fn);
+            }
+        }
+        self.bodies.retain(|body| !replacements.contains_key(&body.fn_id));
+        for body in &mut self.bodies {
+            if let NativeBodyOrigin::Continuation { owner } = &mut body.origin {
+                remap(owner);
+            }
+        }
+        self.module
+            .fns
+            .retain(|function| !replacements.contains_key(&function.id));
+        for function in &mut self.module.fns {
+            remap_ir_control_fn_ids(function, replacements);
+        }
+        self.module.fn_idx = self
+            .module
+            .fns
+            .iter()
+            .enumerate()
+            .map(|(index, function)| (function.id, index))
+            .collect();
+    }
+}
+
+/// Deterministic cost of finding the physical native graphs a program can
+/// share. A pass indexes each remaining body once; comparisons then follow the
+/// indexed ownership paths rather than rescanning the body inventory.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeGraphSharingWork {
+    #[cfg(test)]
+    pub passes: usize,
+    #[cfg(test)]
+    pub indexed_bodies: usize,
+    #[cfg(test)]
+    pub owned_graph_bodies: usize,
+    #[cfg(test)]
+    pub graph_comparisons: usize,
+    #[cfg(test)]
+    pub body_comparisons: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeGraphRole {
+    clause: Option<u32>,
+    continuations: Vec<usize>,
+}
+
+struct NativeOwnedGraph {
+    bodies: BTreeMap<NativeGraphRole, FnId>,
+    complete: bool,
+}
+
+/// One-pass ownership index for structural graph comparison. Clause indices
+/// identify entry roots; completed IR control-edge paths identify continuation
+/// roles. Lowering order and allocated function ids are not authorities.
+struct NativeGraphIndex<'a> {
+    program: &'a NativeProgram,
+    bodies: HashMap<FnId, &'a NativeBody>,
+    graphs: Vec<NativeOwnedGraph>,
+}
+
+impl<'a> NativeGraphIndex<'a> {
+    fn new(program: &'a NativeProgram) -> Self {
+        let mut bodies = HashMap::new();
+        let mut clauses = HashMap::<ExecutableKey, BTreeMap<u32, FnId>>::new();
+        let mut continuations = HashMap::<FnId, Vec<FnId>>::new();
+        for body in &program.bodies {
+            assert!(
+                bodies.insert(body.fn_id, body).is_none(),
+                "native body {:?} must have one ownership record",
+                body.fn_id,
+            );
+            match &body.origin {
+                NativeBodyOrigin::Clause { owner, index } => {
+                    assert!(
+                        clauses
+                            .entry(owner.clone())
+                            .or_default()
+                            .insert(*index, body.fn_id)
+                            .is_none(),
+                        "native executable {owner:?} must not own duplicate clause index {index}",
+                    );
+                }
+                NativeBodyOrigin::Continuation { owner } => continuations.entry(*owner).or_default().push(body.fn_id),
+                NativeBodyOrigin::Executable(_) | NativeBodyOrigin::CallableWrapper { .. } => {}
+            }
+        }
+        let control_edges = program
+            .module
+            .fns
+            .iter()
+            .map(|function| (function.id, ir_control_fn_ids(function)))
+            .collect::<HashMap<_, _>>();
+        let graphs = program
+            .executable_entries
+            .iter()
+            .map(|entry| NativeOwnedGraph::new(entry, &clauses, &continuations, &control_edges))
+            .collect();
+        Self {
+            program,
+            bodies,
+            graphs,
+        }
+    }
+
+    fn replacements(&self, groups: &[Vec<usize>], work: &mut NativeGraphSharingWork) -> HashMap<FnId, FnId> {
+        let mut replacements = HashMap::new();
+        for group in groups {
+            let mut compared_roots = HashSet::new();
+            for (offset, &left) in group.iter().enumerate() {
+                let left_root = self.program.executable_entries[left].fn_id;
+                if replacements.contains_key(&left_root) || !compared_roots.insert(left_root) {
+                    continue;
+                }
+                for &right in &group[offset + 1..] {
+                    let right_root = self.program.executable_entries[right].fn_id;
+                    if right_root == left_root || replacements.contains_key(&right_root) {
+                        continue;
+                    }
+                    if let Some(mapping) = self.mapping(left, right, work) {
+                        replacements.extend(mapping);
+                    }
+                }
+            }
+        }
+        replacements
+    }
+
+    fn mapping(&self, left: usize, right: usize, _work: &mut NativeGraphSharingWork) -> Option<HashMap<FnId, FnId>> {
+        #[cfg(test)]
+        {
+            _work.graph_comparisons += 1;
+        }
+        let (left, right) = (&self.graphs[left], &self.graphs[right]);
+        if !left.complete || !right.complete || !left.bodies.keys().eq(right.bodies.keys()) {
+            return None;
+        }
+        let right_to_left = right
+            .bodies
+            .values()
+            .copied()
+            .zip(left.bodies.values().copied())
+            .collect::<HashMap<_, _>>();
+        for (right_fn, left_fn) in right.bodies.values().zip(left.bodies.values()) {
+            #[cfg(test)]
+            {
+                _work.body_comparisons += 1;
+            }
+            let (left_body, right_body) = (self.bodies[left_fn], self.bodies[right_fn]);
+            let left_ir = self.program.module.fn_by_id(*left_fn);
+            let mut normalized_right_ir = self.program.module.fn_by_id(*right_fn).clone();
+            normalized_right_ir.id = *left_fn;
+            normalized_right_ir.name = left_ir.name.clone();
+            remap_ir_control_fn_ids(&mut normalized_right_ir, &right_to_left);
+            align_ir_callsite_identities(left_ir, &mut normalized_right_ir);
+            if !native_body_facts_equal(left_body, right_body, left_ir, &normalized_right_ir)
+                || left_ir != &normalized_right_ir
+            {
+                return None;
+            }
+        }
+        Some(right_to_left)
+    }
+}
+
+impl NativeOwnedGraph {
+    fn new(
+        entry: &NativeExecutableEntry,
+        clauses: &HashMap<ExecutableKey, BTreeMap<u32, FnId>>,
+        continuations: &HashMap<FnId, Vec<FnId>>,
+        control_edges: &HashMap<FnId, Vec<FnId>>,
+    ) -> Self {
+        let mut roots = vec![(
+            NativeGraphRole {
+                clause: None,
+                continuations: Vec::new(),
+            },
+            entry.fn_id,
+        )];
+        roots.extend(clauses.get(&entry.key).into_iter().flatten().map(|(&index, &fn_id)| {
+            (
+                NativeGraphRole {
+                    clause: Some(index),
+                    continuations: Vec::new(),
+                },
+                fn_id,
+            )
+        }));
+
+        let mut owned = HashSet::new();
+        let mut ownership_frontier = roots.iter().map(|(_, fn_id)| *fn_id).collect::<Vec<_>>();
+        while let Some(fn_id) = ownership_frontier.pop() {
+            if owned.insert(fn_id) {
+                ownership_frontier.extend(continuations.get(&fn_id).into_iter().flatten().copied());
+            }
+        }
+
+        let mut bodies = BTreeMap::new();
+        let mut reached = HashSet::new();
+        let mut frontier = VecDeque::new();
+        for (role, fn_id) in roots {
+            assert!(
+                bodies.insert(role.clone(), fn_id).is_none(),
+                "native graph must not publish duplicate ownership role {role:?}",
+            );
+            assert!(
+                reached.insert(fn_id),
+                "native graph must not publish body {fn_id:?} under multiple entry roles",
+            );
+            frontier.push_back((role, fn_id));
+        }
+        while let Some((role, fn_id)) = frontier.pop_front() {
+            for (index, child) in control_edges.get(&fn_id).into_iter().flatten().enumerate() {
+                if !owned.contains(child) || !reached.insert(*child) {
+                    continue;
+                }
+                let mut child_role = role.clone();
+                child_role.continuations.push(index);
+                assert!(
+                    bodies.insert(child_role.clone(), *child).is_none(),
+                    "native graph must not publish duplicate structural role {child_role:?}",
+                );
+                frontier.push_back((child_role, *child));
+            }
+        }
+        Self {
+            bodies,
+            complete: reached.len() == owned.len(),
+        }
+    }
+}
+
+pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
+    let mut fn_ids = Vec::new();
+    for block in &function.blocks {
+        match &block.terminator {
+            IrTerm::Call {
+                callee, continuation, ..
+            } => {
+                if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                    fn_ids.push(*fn_id);
+                }
+                fn_ids.push(continuation.fn_id);
+            }
+            IrTerm::TailCall { callee, .. } => {
+                if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                    fn_ids.push(*fn_id);
+                }
+            }
+            IrTerm::CallClosure { continuation, .. } => fn_ids.push(continuation.fn_id),
+            IrTerm::ReceiveMatched { clauses, after, .. } => {
+                for clause in clauses {
+                    if let Some(guard) = clause.guard {
+                        fn_ids.push(guard);
+                    }
+                    fn_ids.push(clause.body);
+                }
+                if let Some(after) = after {
+                    fn_ids.push(after.body);
+                }
+            }
+            IrTerm::Goto(..)
+            | IrTerm::If { .. }
+            | IrTerm::TailCallClosure { .. }
+            | IrTerm::Return(_)
+            | IrTerm::ReturnLanes(_)
+            | IrTerm::Halt(_) => {}
+        }
+    }
+    fn_ids
+}
+
+fn native_body_facts_equal(left: &NativeBody, right: &NativeBody, left_ir: &IrFn, right_ir: &IrFn) -> bool {
+    left.entry_abi == right.entry_abi
+        && left.param_reprs == right.param_reprs
+        && left.return_ty == right.return_ty
+        && left.return_reprs == right.return_reprs
+        && left.return_tuple_arity == right.return_tuple_arity
+        && left.block_param_reprs == right.block_param_reprs
+        && native_value_types_equal(left, right, left_ir, right_ir)
+        && left.extern_marshals == right.extern_marshals
+        && left.effects == right.effects
+}
+
+fn native_value_types_equal(left: &NativeBody, right: &NativeBody, left_ir: &IrFn, right_ir: &IrFn) -> bool {
+    if left.value_types.len() != right.value_types.len() {
+        return false;
+    }
+    let left_opaque = indirect_callee_only_vars(left_ir);
+    let right_opaque = indirect_callee_only_vars(right_ir);
+    left.value_types.iter().all(|(var, left_ty)| {
+        right.value_types.get(var).is_some_and(|right_ty| {
+            left_ty == right_ty
+                || (left_opaque.contains(var)
+                    && right_opaque.contains(var)
+                    && left.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+                    && right.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef))
+        })
+    })
+}
+
+/// A variable used only as the callee word of an indirect closure call has no
+/// type-directed codegen decision below the native handoff. Its representation
+/// is already fixed by `block_param_reprs`; arguments, captures, and results
+/// remain ordinary typed uses and therefore disqualify it.
+pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
+    let mut candidates = HashSet::new();
+    let mut other_uses = HashSet::new();
+    for block in &function.blocks {
+        for IrStmt::Let(_, prim) in &block.stmts {
+            prim.collect_used_vars(&mut other_uses);
+        }
+        match &block.terminator {
+            IrTerm::CallClosure {
+                closure,
+                args,
+                continuation,
+                ..
+            } => {
+                candidates.insert(*closure);
+                other_uses.extend(args.iter().copied());
+                other_uses.extend(continuation.captured.iter().copied());
+            }
+            IrTerm::TailCallClosure { closure, args, .. } => {
+                candidates.insert(*closure);
+                other_uses.extend(args.iter().copied());
+            }
+            IrTerm::Goto(_, args) => other_uses.extend(args.iter().copied()),
+            IrTerm::If { cond, .. } => {
+                other_uses.insert(*cond);
+            }
+            IrTerm::Call { args, continuation, .. } => {
+                other_uses.extend(args.iter().copied());
+                other_uses.extend(continuation.captured.iter().copied());
+            }
+            IrTerm::TailCall { args, .. } => other_uses.extend(args.iter().copied()),
+            IrTerm::Return(var) | IrTerm::Halt(var) => {
+                other_uses.insert(*var);
+            }
+            IrTerm::ReturnLanes(vars) => other_uses.extend(vars.iter().copied()),
+            IrTerm::ReceiveMatched {
+                pinned,
+                captures,
+                after,
+                ..
+            } => {
+                other_uses.extend(pinned.iter().map(|(_, var)| *var));
+                other_uses.extend(captures.iter().copied());
+                if let Some(after) = after {
+                    other_uses.insert(after.timeout);
+                }
+            }
+        }
+    }
+    candidates.retain(|var| !other_uses.contains(var));
+    candidates
+}
+
+/// Visit CPS control edges, never callable construction words carried by
+/// `MakeFnRef`, `MakeClosure`, or `ClosureCapture`.
+fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)) {
+    for block in &mut function.blocks {
+        match &mut block.terminator {
+            IrTerm::Call {
+                callee, continuation, ..
+            } => {
+                if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                    visit(fn_id);
+                }
+                visit(&mut continuation.fn_id);
+            }
+            IrTerm::TailCall { callee, .. } => {
+                if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                    visit(fn_id);
+                }
+            }
+            IrTerm::CallClosure { continuation, .. } => visit(&mut continuation.fn_id),
+            IrTerm::ReceiveMatched { clauses, after, .. } => {
+                for clause in clauses {
+                    if let Some(guard) = &mut clause.guard {
+                        visit(guard);
+                    }
+                    visit(&mut clause.body);
+                }
+                if let Some(after) = after {
+                    visit(&mut after.body);
+                }
+            }
+            IrTerm::Goto(..)
+            | IrTerm::If { .. }
+            | IrTerm::TailCallClosure { .. }
+            | IrTerm::Return(_)
+            | IrTerm::ReturnLanes(_)
+            | IrTerm::Halt(_) => {}
+        }
+    }
+}
+
+fn remap_ir_control_fn_ids(function: &mut IrFn, ids: &HashMap<FnId, FnId>) {
+    visit_ir_control_fn_ids(function, |fn_id| {
+        if let Some(mapped) = ids.get(fn_id) {
+            *fn_id = *mapped;
+        }
+    });
+}
+
+fn align_ir_callsite_identities(left: &IrFn, right: &mut IrFn) {
+    let align = |left: &CallsiteIdent, right: &mut CallsiteIdent| {
+        if left.span() == right.span() {
+            *right = left.clone();
+        }
+    };
+    for (left_block, right_block) in left.blocks.iter().zip(&mut right.blocks) {
+        for (left_stmt, right_stmt) in left_block.stmts.iter().zip(&mut right_block.stmts) {
+            let (IrStmt::Let(_, left_prim), IrStmt::Let(_, right_prim)) = (left_stmt, right_stmt);
+            match (left_prim, right_prim) {
+                (IrPrim::Extern(left, ..), IrPrim::Extern(right, ..))
+                | (IrPrim::MakeFnRef(left, ..), IrPrim::MakeFnRef(right, ..))
+                | (IrPrim::MakeClosure(left, ..), IrPrim::MakeClosure(right, ..)) => align(left, right),
+                _ => {}
+            }
+        }
+        match (&left_block.terminator, &mut right_block.terminator) {
+            (IrTerm::Call { ident: left, .. }, IrTerm::Call { ident: right, .. })
+            | (IrTerm::TailCall { ident: left, .. }, IrTerm::TailCall { ident: right, .. })
+            | (IrTerm::CallClosure { ident: left, .. }, IrTerm::CallClosure { ident: right, .. })
+            | (IrTerm::TailCallClosure { ident: left, .. }, IrTerm::TailCallClosure { ident: right, .. }) => {
+                align(left, right);
+            }
+            (
+                IrTerm::ReceiveMatched {
+                    ident: left_ident,
+                    clauses: left_clauses,
+                    after: left_after,
+                    ..
+                },
+                IrTerm::ReceiveMatched {
+                    ident: right_ident,
+                    clauses: right_clauses,
+                    after: right_after,
+                    ..
+                },
+            ) => {
+                align(left_ident, right_ident);
+                for (left_clause, right_clause) in left_clauses.iter().zip(right_clauses) {
+                    align(&left_clause.ident, &mut right_clause.ident);
+                }
+                if let (Some(left_after), Some(right_after)) = (left_after, right_after) {
+                    align(&left_after.ident, &mut right_after.ident);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,7 +843,7 @@ pub(crate) enum NativeEntryAbi {
 pub(crate) enum NativeBodyOrigin {
     Executable(ExecutableKey),
     Clause { owner: ExecutableKey, index: u32 },
-    Continuation { owner: FnId, index: u32 },
+    Continuation { owner: FnId },
     CallableWrapper { identity: u32 },
 }
 
@@ -406,21 +921,17 @@ impl NativeCallableBoundary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct AbiReadyExecutable {
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
+    pub materialized: Rc<MaterializedExecutable>,
     pub param_reprs: Vec<AbiValueRepr>,
     pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
     pub return_layout: BackendReturnLayout,
     pub return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
-    pub runtime_demand: ExecutableRuntimeDemand,
     pub transport: MaterializedExecutableTransport,
-    pub original_entry_ids: Vec<ControlEntryId>,
-    pub value_types: HashMap<ValueId, Ty>,
     pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
-    pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
 }
@@ -428,7 +939,7 @@ pub struct AbiReadyExecutable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PositionedCallableConstructionOwner {
     pub position: TransportPosition,
-    pub owner: CallableConstructionOwner,
+    pub owner: Rc<CallableConstructionOwner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,42 +949,86 @@ pub struct AbiReadyCallEdge {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EmissionReadyExecutable {
-    pub key: ExecutableKey,
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
-    pub param_reprs: Vec<AbiValueRepr>,
-    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
-    pub return_layout: BackendReturnLayout,
-    pub runtime_demand: ExecutableRuntimeDemand,
-    pub transport: MaterializedExecutableTransport,
-    pub original_entry_ids: Vec<ControlEntryId>,
-    pub value_types: HashMap<ValueId, Ty>,
-    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
-    pub effects: EffectSummary,
-    pub body: LoweredBody,
-    pub call_edges: Vec<EmissionReadyCallEdge>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmissionReadyCallEdge {
-    pub callsite: CallSiteId,
-    pub target: CallEdge<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct BackendExecutable {
     pub key: ExecutableKey,
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
-    pub param_reprs: Vec<AbiValueRepr>,
-    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
-    pub return_layout: BackendReturnLayout,
-    pub runtime_demand: ExecutableRuntimeDemand,
-    pub value_types: HashMap<ValueId, Ty>,
-    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
-    pub effects: EffectSummary,
+    pub abi: Rc<AbiReadyExecutable>,
     pub body: BackendBody,
+    pub construction_wrappers: Box<[Rc<BackendConstructionWrapper>]>,
+    pub(crate) atom_names: Box<[Rc<String>]>,
+    pub(crate) boxed_apply_requirements: Box<[super::backend_program::boxed_contract::BoxedApplyRequirement]>,
+}
+
+#[cfg(test)]
+impl BackendExecutable {
+    pub(crate) fn for_test(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> Self {
+        let symbol = ExecutableSymbol {
+            activation: super::transport::ActivationSymbol {
+                function: key.activation.function,
+                arrow: key.activation.arrow,
+                input: Box::default(),
+            },
+            need: key.need,
+        };
+        let transport = MaterializedExecutableTransport {
+            executable: symbol.clone(),
+            position_layouts: Vec::new(),
+            input_positions: Vec::new(),
+            return_position: TransportPosition::ExecutableReturn { executable: symbol },
+            resume_positions: Vec::new(),
+            return_payload_positions: Vec::new(),
+            entry_capture_positions: Vec::new(),
+            call_arg_positions: Vec::new(),
+            value_positions: Vec::new(),
+        };
+        let materialized = Rc::new(MaterializedExecutable {
+            entry_dispatch: None,
+            return_ty,
+            runtime_demand: Rc::default(),
+            transport: transport.clone(),
+            original_entry_ids: Vec::new(),
+            value_types: HashMap::new(),
+            effects: EffectSummary::default(),
+            struct_modules: Box::default(),
+            body: LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            call_edges: HashMap::new(),
+        });
+        let abi = Rc::new(AbiReadyExecutable {
+            materialized,
+            param_reprs: Vec::new(),
+            semantic_inputs: Box::default(),
+            return_layout: BackendReturnLayout {
+                layout: BackendValueLayout {
+                    structural: nothing,
+                    carrier: TransportCarrier::Absent,
+                    tys: Box::default(),
+                    reprs: Box::default(),
+                },
+                diverges: false,
+            },
+            return_endpoints: Box::default(),
+            transport,
+            value_layouts: HashMap::new(),
+            effects: EffectSummary::default(),
+            call_edges: HashMap::new(),
+            callable_owners: Box::default(),
+        });
+        Self {
+            key,
+            abi,
+            body: BackendBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            construction_wrappers: Box::default(),
+            atom_names: Box::default(),
+            boxed_apply_requirements: Box::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -695,7 +1250,7 @@ pub enum BackendTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        target: CallEdge<usize, BackendReturnFlow>,
+        target: CallEdge<ExecutableKey, BackendReturnFlow>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
     },
@@ -703,7 +1258,7 @@ pub enum BackendTail {
         value: ValueId,
         callsite: CallSiteId,
         callee: ValueId,
-        target: Option<usize>,
+        target: Option<ExecutableKey>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
         return_flow: Option<BackendReturnFlow>,
@@ -763,13 +1318,13 @@ pub enum BackendStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
-        construction: Option<u32>,
+        construction: Option<TransportPosition>,
     },
     Lambda {
         value: ValueId,
         function: FunctionId,
         captures: Vec<ValueId>,
-        construction: Option<u32>,
+        construction: Option<TransportPosition>,
     },
     BinaryOp {
         value: ValueId,
@@ -874,174 +1429,9 @@ impl EffectSummary {
     }
 }
 
-#[derive(Debug, Clone)]
-enum ProjectionState<T> {
-    Placeholder,
-    Defined(T),
-}
-
-#[derive(Debug, Clone)]
-struct ProjectionSlot<T> {
-    state: ProjectionState<T>,
-    revision: u64,
-}
-
-#[derive(Debug)]
-struct RootProjectionMap<T> {
-    slots: Vec<ProjectionState<T>>,
-}
-
-#[derive(Debug, Default)]
-pub struct BackendProgramMap {
-    inner: RootProjectionMap<BackendProgram>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MacroExecutableMap {
-    slots: Vec<ProjectionSlot<MacroExecutable>>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct NativeProgramMap {
-    slots: Vec<ProjectionState<NativeProgram>>,
-}
-
-impl BackendProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: BackendProgram) -> bool {
-        self.inner.define(root, program)
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&BackendProgram> {
-        self.inner.get(root)
-    }
-}
-
-impl MacroExecutableMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, function: FunctionId, executable: MacroExecutable) -> bool {
-        self.ensure(function);
-        let slot = &mut self.slots[function.as_u32() as usize];
-        let next = ProjectionState::Defined(executable);
-        let changed = !slot.state.same_state(&next);
-        if !slot.state.same_state(&next) {
-            slot.state = next;
-            slot.revision += 1;
-        }
-        changed
-    }
-
-    pub fn get(&self, function: FunctionId) -> Option<&MacroExecutable> {
-        match &self.slots.get(function.as_u32() as usize)?.state {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, function: FunctionId) {
-        let needed = function.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionSlot {
-                state: ProjectionState::Placeholder,
-                revision: 0,
-            });
-        }
-    }
-}
-
-impl NativeProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: NativeProgram) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let next = ProjectionState::Defined(program);
-        let changed = !native_program_same_state(slot, &next);
-        *slot = next;
-        changed
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&NativeProgram> {
-        match self.slots.get(root.as_u32() as usize)? {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionState::Placeholder);
-        }
-    }
-}
-
-impl<T> RootProjectionMap<T>
-where
-    T: PartialEq,
-{
-    fn define(&mut self, root: RootId, value: T) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let next = ProjectionState::Defined(value);
-        let changed = !slot.same_state(&next);
-        *slot = next;
-        changed
-    }
-
-    fn get(&self, root: RootId) -> Option<&T> {
-        match self.slots.get(root.as_u32() as usize)? {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionState::Placeholder);
-        }
-    }
-}
-
-impl<T> Default for RootProjectionMap<T> {
-    fn default() -> Self {
-        Self { slots: Vec::new() }
-    }
-}
-
-impl<T> ProjectionState<T>
-where
-    T: PartialEq,
-{
-    fn same_state(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
-            (ProjectionState::Defined(left), ProjectionState::Defined(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
-fn native_program_same_state(left: &ProjectionState<NativeProgram>, right: &ProjectionState<NativeProgram>) -> bool {
-    match (left, right) {
-        (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
-        (ProjectionState::Defined(left), ProjectionState::Defined(right)) => native_programs_equal(left, right),
-        _ => false,
-    }
-}
-
-fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
-    left.backend_revision == right.backend_revision
-        && left.entry == right.entry
+pub(crate) fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
+    left.entry == right.entry
+        && left.executable_entries == right.executable_entries
         && left.bodies == right.bodies
         && left.callable_boundaries == right.callable_boundaries
         && native_modules_equal(&left.module, &right.module)
@@ -1059,6 +1449,7 @@ fn native_modules_equal(left: &IrModule, right: &IrModule) -> bool {
         && left.atom_names == right.atom_names
         && left.externs == right.externs
         && left.extern_idx == right.extern_idx
+        && left.struct_schemas == right.struct_schemas
         && left.external_call_edges().len() == right.external_call_edges().len()
         && left
             .external_call_edges()

@@ -39,12 +39,15 @@ use super::world::World;
 
 type Outputs = Vec<FactKey>;
 type Changed = Vec<FactKey>;
+use super::drive::ProductAddress;
+use super::pull::ProductSessions;
 
 pub(crate) enum ScopePublication {
     Complete {
         namespace: Namespace,
         revision_floor: u64,
         reads: Vec<FactKey>,
+        product_reads: Vec<ProductAddress>,
         outputs: Outputs,
         changed: Changed,
         interface: ModuleInterface,
@@ -101,6 +104,8 @@ impl FragmentPublicationContext {
 struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     world: &'world mut World,
     telemetry: &'tel T,
+    products: Option<&'world ProductSessions>,
+    product_reads: Vec<ProductAddress>,
     code_id: CodeId,
     current_module: ModuleId,
     namespace: Namespace,
@@ -141,6 +146,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
         self.reads.push(fact);
     }
 
+    fn products(&self) -> Option<&ProductSessions> {
+        self.products
+    }
+    fn note_product_read(&mut self, product: ProductAddress) {
+        self.product_reads.push(product);
+    }
+
     fn lookup_current_module_macro(&mut self, _scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId> {
         match self.local_callables.get(&(name.to_string(), arity)).cloned() {
             Some(NamespaceSymbol::Macro(function)) if self.world.function_module(function) == self.current_module => {
@@ -154,11 +166,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
 pub(crate) fn publish_scope(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
+    products: Option<&ProductSessions>,
     code_id: CodeId,
     current_scope: ScopeSnapshot,
     surface: &ScopeSurface,
 ) -> Result<ScopePublication, FatalError> {
-    ScopeSession::new(world, tel, code_id, current_scope).publish(surface)
+    ScopeSession::new(world, tel, products, code_id, current_scope).publish(surface)
 }
 
 pub(crate) fn publish_protocol_surface(
@@ -248,6 +261,7 @@ pub(crate) fn publish_protocol_surface(
         namespace: scope,
         revision_floor: 0,
         reads: Vec::new(),
+        product_reads: Vec::new(),
         outputs,
         changed,
         interface: ModuleInterface::new(callables),
@@ -257,12 +271,19 @@ pub(crate) fn publish_protocol_surface(
 pub(crate) fn publish_protocol_impl_surface(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
+    products: Option<&ProductSessions>,
     code_id: CodeId,
     impl_module: ModuleId,
     namespace: Namespace,
     source: &ProtocolImplSource,
 ) -> Result<ScopePublication, FatalError> {
-    let mut session = ScopeSession::new(world, tel, code_id, ScopeSnapshot::module(impl_module, namespace));
+    let mut session = ScopeSession::new(
+        world,
+        tel,
+        products,
+        code_id,
+        ScopeSnapshot::module(impl_module, namespace),
+    );
     session.publish_resolved_protocol_impl(impl_module, source)?;
     Ok(session.complete())
 }
@@ -473,10 +494,18 @@ fn type_expr_body_span(body: &TypeExprBody) -> Span {
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T> {
-    fn new(world: &'world mut World, telemetry: &'tel T, code_id: CodeId, current_scope: ScopeSnapshot) -> Self {
+    fn new(
+        world: &'world mut World,
+        telemetry: &'tel T,
+        products: Option<&'world ProductSessions>,
+        code_id: CodeId,
+        current_scope: ScopeSnapshot,
+    ) -> Self {
         Self {
             world,
             telemetry,
+            products,
+            product_reads: Vec::new(),
             code_id,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
@@ -1044,6 +1073,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
         effects.reads.extend(current_uses(self.reads.clone()));
+        effects.product_reads.extend(self.product_reads.clone());
         effects.outputs.extend(self.outputs.clone());
         effects.changed.extend(self.changed.clone());
         effects
@@ -1443,6 +1473,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             namespace: self.namespace,
             revision_floor: self.revision_floor,
             reads: self.reads,
+            product_reads: self.product_reads,
             outputs: self.outputs,
             changed: self.changed,
             interface: ModuleInterface::new(self.callables),

@@ -312,7 +312,6 @@ fn alloc_bitstring_const_small_payload_is_inline() {
 /// the holding heap drops, the anchor is preserved (refcount stays
 /// at 1) — the static SharedBin lives forever.
 #[test]
-#[serial_test::serial]
 fn alloc_procbin_from_static_preserves_anchor() {
     use crate::procbin::SharedBin;
     use crate::sync::{AtomicUsize, Ordering};
@@ -351,7 +350,6 @@ fn alloc_procbin_from_static_preserves_anchor() {
 
 /// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
 #[test]
-#[serial_test::serial]
 fn alloc_bitstring_const_large_payload_is_procbin() {
     with_process(|process| {
         let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)

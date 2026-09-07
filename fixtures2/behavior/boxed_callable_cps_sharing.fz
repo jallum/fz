@@ -1,0 +1,21 @@
+#---
+# purpose: "boxed predicate identities share equivalent native reducer code without changing the result"
+# oracle: oracle.exs
+#---
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+fn reduce_plain(_, acc, _reducer), do: acc
+
+fn gt2(x), do: x > 2
+fn even(x), do: (x % 2) == 0
+
+fn make_reducer(predicate) do
+  fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+end
+
+fn main() do
+  xs = [1, 2, 3, 4]
+  dbg(reduce_plain(xs, 0, make_reducer(gt2)) + reduce_plain(xs, 0, make_reducer(even)))
+end

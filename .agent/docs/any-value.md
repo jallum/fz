@@ -267,6 +267,22 @@ so scalars are never chased. When a scalar ref sits in a durable root slot, GC
 copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
 object) and rewrites the root to the copy — copied, not followed.
 
+Off-heap binaries and resources have their own atomic reference counts. A
+16-byte `ProcBin` stub owns one edge to a 40-byte `SharedBin`; a resource stub
+owns one edge to a 24-byte `Resource`. Copying a stub into another heap retains
+one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
+or dropping its heap releases it. An immediate last release invokes the
+allocation's destructor and reclaims its storage. Deferred resource release
+reclaims the wrapper and returns its payload for later destructor dispatch,
+without invoking the stored C destructor. Static binaries keep a permanent
+anchor and use a no-op destructor.
+
+Lifetime tests observe these exact allocations. A retained handle keeps the
+pointer valid while checking which heap-owned edges remain. Separate scoped
+destructor observations prove actual final release, including GC, cross-heap
+sharing and cross-thread release. A retained witness alone does not prove
+destruction, and allocations made by another test do not enter either proof.
+
 ## Persistent Roots
 
 Anything that outlives a scheduler or GC boundary is held as `AnyValueRef`,

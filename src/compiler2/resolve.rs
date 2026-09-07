@@ -311,7 +311,7 @@ impl World {
                     .iter()
                     .map(|name| by_name.get(name).copied().unwrap_or(any))
                     .collect::<Vec<_>>();
-                Ok(self.struct_value_ty(&module_name.dotted(), &ordered_names, &ordered_fields))
+                Ok(self.struct_value_ty(module_id, &ordered_names, &ordered_fields))
             }
             TypeExpr::Map(pairs) => {
                 let mut fields = Vec::with_capacity(pairs.len());
