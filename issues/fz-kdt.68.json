@@ -8,14 +8,16 @@
     "fz-tfn.21",
     "fz-tfn.39"
   ],
+  "closed_at": "2026-09-07T18:54:13Z",
+  "close_reason": "Measured regression with no production consumer; deletion is owned by fz-tfn.21.",
   "created": "2026-08-30T15:23:21Z",
   "description": "## Status\n\nRefuted. Do not port or land the parked per-answer derivation experiment.\n\nThe experiment measured a 6–10 percent regression and no production JobEffects currently reports multiple derivations. Fresh blocked-analysis counts show almost every blocked completion changes partial evidence, so the proposed preservation has little reusable work to recover. Retaining engine-wide derivation identity without a paying consumer contradicts the epic's simplification and work-reduction goals.\n\nfz-tfn.21 owns deletion of DerivationId, JobDerivation and the dormant per-derivation scheduler substrate, with deterministic causal/allocation proof. Historical experiment branches and measurements are evidence only.",
   "id": "fz-kdt.68",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Refuted: per-answer derivations do not repay their cost",
   "type": "task",
-  "updated_at": "2026-09-07T18:54:12Z"
+  "updated_at": "2026-09-07T18:54:13Z"
 }
