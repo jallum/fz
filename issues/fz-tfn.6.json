@@ -5,8 +5,7 @@
   ],
   "blocks": [
     "fz-kdt.200",
-    "fz-tfn.15",
-    "fz-tfn.39"
+    "fz-tfn.15"
   ],
   "created": "2026-09-03T08:00:19Z",
   "description": "## Goal\n\nIgnite activation analysis from the exact absent-to-present Activation(key) movement through the same edge-triggered fact-production mechanism established by fz-kdt.46.\n\n## Model\n\nThe movement demands ActivationAnalyzed(key). Re-evaluation follows the analysis job's standing Current(Activation) read. Retraction and reappearance use ordinary dependency edges. Do not add another pending queue or activation registry.\n\n## TDD and deletion\n\nProve multiple activations, blocked first analysis, macros, self-recursion, retraction/reappearance, equal reproduction, deterministic causal work and artifacts. Delete World.activation_frontier, its HashSet clone/render/sort/retire loop, accessors, start telemetry, WorkStartReason variant, docs and probes.\n\n## Acceptance\n\nEvery analysis start names its activation appearance or changed dependency. No normal-drive activation scan or display-derived scheduling remains. Unchanged/unrelated requests perform no activation work.",
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Ignite activation analysis from exact activation-appearance edges",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:35Z"
+  "updated_at": "2026-09-07T18:57:10Z"
 }
