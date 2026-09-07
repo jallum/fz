@@ -12,6 +12,7 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::ir_runtime::fz_value_cmp_ref;
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
     fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -331,6 +332,32 @@ where
     }
 }
 
+/// fz-5xp.18 — one dynamic ordering, shared with native codegen and with the
+/// `Kernel` operators, so a guard cannot answer a comparison differently from
+/// the expression that spells it out.
+fn guard_cmp(proc: *mut Process, left: AnyValue, right: AnyValue) -> Option<i64> {
+    // Numbers are answered without boxing either operand — `as_ref_word` would
+    // allocate a scalar box, and a guard comparing two unboxed integers is the
+    // hot path quicksort's `when h < p` is made of.
+    if let (Some(l), Some(r)) = (left.as_float(), right.as_float()) {
+        return Some(order_of(l, r));
+    }
+    Some(fz_value_cmp_ref(
+        left.as_ref_word(proc).ok()?,
+        right.as_ref_word(proc).ok()?,
+    ))
+}
+
+fn order_of(left: f64, right: f64) -> i64 {
+    if left < right {
+        -1
+    } else if left > right {
+        1
+    } else {
+        0
+    }
+}
+
 pub(super) fn eval_dispatch_guard<TypeHandle, F>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
@@ -376,10 +403,15 @@ where
                 PatternGuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
                 PatternGuardBinOp::Eq => interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?),
                 PatternGuardBinOp::Neq => interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?),
-                PatternGuardBinOp::Lt => interp_bool_value(guard_int(l)? < guard_int(r)?),
-                PatternGuardBinOp::LtEq => interp_bool_value(guard_int(l)? <= guard_int(r)?),
-                PatternGuardBinOp::Gt => interp_bool_value(guard_int(l)? > guard_int(r)?),
-                PatternGuardBinOp::GtEq => interp_bool_value(guard_int(l)? >= guard_int(r)?),
+                // fz-5xp.18 — a guard orders its operands the same way the rest
+                // of the language does, through `fz_value_cmp_ref`. Comparing
+                // as integers could not see a float at all: `when a >= b` with
+                // a = 2 and b = 1.0 failed the conversion and fell through to
+                // the next clause instead of answering true.
+                PatternGuardBinOp::Lt => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? < 0),
+                PatternGuardBinOp::LtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? <= 0),
+                PatternGuardBinOp::Gt => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? > 0),
+                PatternGuardBinOp::GtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? >= 0),
                 PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(!(r.is_false() || r.is_nil())),
             }
         }

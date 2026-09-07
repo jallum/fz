@@ -1996,11 +1996,6 @@ pub extern "C" fn fz_alloc_frame(process: *mut Process, schema_id: u32, total_si
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
 /// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
 /// promotes integer operands here; raw float operands stay in typed lanes.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_promote_f64(raw_int: i64) -> f64 {
-    raw_int as f64
-}
-
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
 /// frem opcode, so the JIT's float-mod slow path calls out here.
 #[unsafe(no_mangle)]
@@ -2028,6 +2023,116 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
     u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
 }
 
+/// fz-5xp.18 — the ONE dynamic ordering implementation, the counterpart to
+/// [`fz_value_eq_ref`].
+///
+/// Ordering used to be built twice: the interpreter promoted both operands
+/// through its own `float_cmp!` macro, and native codegen inlined a private
+/// `both_int` tag test whose slow arm boxed an operand and read the resulting
+/// pointer as a number. Two implementations of one question is why the doors
+/// disagreed — `2 >= 1.0` answered `false` on the JIT and `true` everywhere
+/// else. Equality never had that problem because both doors already call
+/// `fz_value_eq_ref`. This is that shape, for ordering.
+///
+/// Numbers are ordered by value across the integer/float boundary, matching
+/// Elixir. `Kernel` reaches this only for operands it could not type as a
+/// numeric pair; a statically or dynamically known pair is answered by a typed
+/// clause and lowers to a direct machine comparison instead.
+///
+/// Returns -1, 0 or 1. Ordering between non-numbers is Erlang term order and is
+/// not implemented yet (fz-5xp.8); reaching it aborts rather than inventing an
+/// answer, because the behaviour it replaces was a silent wrong one.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_cmp_ref(a_ref: u64, b_ref: u64) -> i64 {
+    let a = any_value_from_ref_word(a_ref, "fz_value_cmp_ref lhs");
+    let b = any_value_from_ref_word(b_ref, "fz_value_cmp_ref rhs");
+    cmp_any_value(a, b)
+}
+
+fn cmp_any_value(a: AnyValue, b: AnyValue) -> i64 {
+    if let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) {
+        return if left < right {
+            -1
+        } else if left > right {
+            1
+        } else {
+            0
+        };
+    }
+    if is_bitstring_kind(a.kind()) && is_bitstring_kind(b.kind()) {
+        let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
+        let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
+        return cmp_bitstring(ap, bp);
+    }
+    panic!(
+        "ordering between a {:?} and a {:?} is not supported yet (fz-5xp.8: term ordering)",
+        a.kind(),
+        b.kind()
+    );
+}
+
+/// Ordering between a dynamic `AnyValueRef` and an unboxed payload, with no
+/// allocation on either side — the ordering counterpart to
+/// [`fz_value_eq_raw_const`].
+///
+/// An `AnyValueRef` for an integer, float or atom is a POINTER to a heap
+/// scalar box, so handing an unboxed operand to a ref-taking function forces
+/// an allocation. Comparison never needs a value's identity, only its kind and
+/// payload, so codegen passes those directly. `swap` says the unboxed side was
+/// the right-hand operand, so the caller does not have to negate the result.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_cmp_raw_const(ref_word: u64, kind_tag: u32, raw: u64, swap: u32) -> i64 {
+    let dynamic = any_value_from_ref_word(ref_word, "fz_value_cmp_raw_const");
+    let Some(kind) = ValueKind::new(kind_tag as u8) else {
+        panic!("fz_value_cmp_raw_const: unknown operand kind {kind_tag}");
+    };
+    let Some(unboxed) = AnyValue::decode_parts(raw, kind.tag()) else {
+        panic!("fz_value_cmp_raw_const: undecodable operand of kind {kind:?}");
+    };
+    let (left, right) = if swap == 0 {
+        (dynamic, unboxed)
+    } else {
+        (unboxed, dynamic)
+    };
+    cmp_any_value(left, right)
+}
+
+fn is_bitstring_kind(kind: ValueKind) -> bool {
+    matches!(kind, ValueKind::BITSTRING | ValueKind::PROCBIN)
+}
+
+/// Byte-lexicographic, with the shorter of two otherwise-equal prefixes first —
+/// Erlang's order for binaries, and so Elixir's for strings: `"a" < "ab"`,
+/// `"Z" < "a"`, `"" < "a"`.
+///
+/// Bit-level ordering between bitstrings whose lengths are not byte multiples
+/// is decided by length once the common bytes agree; a full bit-granular
+/// comparison belongs with term ordering (fz-5xp.8).
+fn cmp_bitstring(ap: *mut u8, bp: *mut u8) -> i64 {
+    let a_bits = unsafe { bitstring_bit_len(ap) } as usize;
+    let b_bits = unsafe { bitstring_bit_len(bp) } as usize;
+    let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(ap), a_bits.div_ceil(8)) };
+    let b_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(bp), b_bits.div_ceil(8)) };
+    let common = (a_bits.min(b_bits)) / 8;
+    match a_bytes[..common].cmp(&b_bytes[..common]) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => match a_bits.cmp(&b_bits) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => 0,
+        },
+    }
+}
+
+fn numeric_as_f64(value: AnyValue) -> Option<f64> {
+    match value.kind() {
+        ValueKind::INT => Some(value.raw() as i64 as f64),
+        ValueKind::FLOAT => Some(f64::from_bits(value.raw())),
+        _ => None,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     if a_ref == b_ref {
@@ -2039,6 +2144,13 @@ pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64)
 }
 
 fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue) -> bool {
+    // fz-5xp.18 — `==` compares numbers by value across the integer/float
+    // boundary, as Elixir does: `1 == 1.0` is true. Only `===` is strict, and
+    // fz has no `===`. Equality is total, so this belongs here rather than in
+    // per-kind clauses in `Kernel`.
+    if let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) {
+        return left == right;
+    }
     if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
         && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
     {

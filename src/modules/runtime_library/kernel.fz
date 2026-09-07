@@ -28,12 +28,28 @@ defmodule Kernel do
   extern "C" fn fz_op_rem_if(integer, float) :: float
   extern "C" fn fz_op_rem_fi(float, integer) :: float
   extern "C" fn fz_op_rem_ff(float, float) :: float
-  extern "C" fn fz_op_lt(any, any) :: bool
-  extern "C" fn fz_op_lte(any, any) :: bool
-  extern "C" fn fz_op_gt(any, any) :: bool
-  extern "C" fn fz_op_gte(any, any) :: bool
+  extern "C" fn fz_op_lt_ii(integer, integer) :: bool
+  extern "C" fn fz_op_lt_ff(float, float) :: bool
+  extern "C" fn fz_op_lt_bb(binary, binary) :: bool
+  extern "C" fn fz_op_lte_ii(integer, integer) :: bool
+  extern "C" fn fz_op_lte_ff(float, float) :: bool
+  extern "C" fn fz_op_lte_bb(binary, binary) :: bool
+  extern "C" fn fz_op_gt_ii(integer, integer) :: bool
+  extern "C" fn fz_op_gt_ff(float, float) :: bool
+  extern "C" fn fz_op_gt_bb(binary, binary) :: bool
+  extern "C" fn fz_op_gte_ii(integer, integer) :: bool
+  extern "C" fn fz_op_gte_ff(float, float) :: bool
+  extern "C" fn fz_op_gte_bb(binary, binary) :: bool
   extern "C" fn fz_op_eq(any, any) :: bool
   extern "C" fn fz_op_neq(any, any) :: bool
+  extern "C" fn fz_op_lt_if(integer, float) :: bool
+  extern "C" fn fz_op_lt_fi(float, integer) :: bool
+  extern "C" fn fz_op_lte_if(integer, float) :: bool
+  extern "C" fn fz_op_lte_fi(float, integer) :: bool
+  extern "C" fn fz_op_gt_if(integer, float) :: bool
+  extern "C" fn fz_op_gt_fi(float, integer) :: bool
+  extern "C" fn fz_op_gte_if(integer, float) :: bool
+  extern "C" fn fz_op_gte_fi(float, integer) :: bool
 
   @doc "Aborts the current process."
   @spec panic(any) :: never
@@ -132,17 +148,57 @@ defmodule Kernel do
   fn left :: float % right :: integer, do: fz_op_rem_fi(left, right)
   fn left :: float % right :: float, do: fz_op_rem_ff(left, right)
 
-  @spec any < any :: bool
-  fn left < right, do: fz_op_lt(left, right)
+  # Comparing an integer against a float is a comparison of two floats, and
+  # widening the integer is this module's job. Arithmetic already spells its
+  # four numeric combinations out one clause at a time; comparison does the
+  # same, so a mixed pair is answered by a typed clause on unboxed lanes
+  # rather than by codegen boxing an operand and coercing it behind our back.
+  # The trailing untyped clause answers same-kind numbers, for which the
+  # backend emits a direct comparison, and every non-numeric pair.
 
-  @spec any <= any :: bool
-  fn left <= right, do: fz_op_lte(left, right)
+  @spec integer < integer :: bool
+  @spec float < float :: bool
+  @spec integer < float :: bool
+  @spec float < integer :: bool
+  @spec binary < binary :: bool
+  fn left :: integer < right :: integer, do: fz_op_lt_ii(left, right)
+  fn left :: float < right :: float, do: fz_op_lt_ff(left, right)
+  fn left :: integer < right :: float, do: fz_op_lt_if(left, right)
+  fn left :: float < right :: integer, do: fz_op_lt_fi(left, right)
+  fn left :: binary < right :: binary, do: fz_op_lt_bb(left, right)
 
-  @spec any > any :: bool
-  fn left > right, do: fz_op_gt(left, right)
+  @spec integer <= integer :: bool
+  @spec float <= float :: bool
+  @spec integer <= float :: bool
+  @spec float <= integer :: bool
+  @spec binary <= binary :: bool
+  fn left :: integer <= right :: integer, do: fz_op_lte_ii(left, right)
+  fn left :: float <= right :: float, do: fz_op_lte_ff(left, right)
+  fn left :: integer <= right :: float, do: fz_op_lte_if(left, right)
+  fn left :: float <= right :: integer, do: fz_op_lte_fi(left, right)
+  fn left :: binary <= right :: binary, do: fz_op_lte_bb(left, right)
 
-  @spec any >= any :: bool
-  fn left >= right, do: fz_op_gte(left, right)
+  @spec integer > integer :: bool
+  @spec float > float :: bool
+  @spec integer > float :: bool
+  @spec float > integer :: bool
+  @spec binary > binary :: bool
+  fn left :: integer > right :: integer, do: fz_op_gt_ii(left, right)
+  fn left :: float > right :: float, do: fz_op_gt_ff(left, right)
+  fn left :: integer > right :: float, do: fz_op_gt_if(left, right)
+  fn left :: float > right :: integer, do: fz_op_gt_fi(left, right)
+  fn left :: binary > right :: binary, do: fz_op_gt_bb(left, right)
+
+  @spec integer >= integer :: bool
+  @spec float >= float :: bool
+  @spec integer >= float :: bool
+  @spec float >= integer :: bool
+  @spec binary >= binary :: bool
+  fn left :: integer >= right :: integer, do: fz_op_gte_ii(left, right)
+  fn left :: float >= right :: float, do: fz_op_gte_ff(left, right)
+  fn left :: integer >= right :: float, do: fz_op_gte_if(left, right)
+  fn left :: float >= right :: integer, do: fz_op_gte_fi(left, right)
+  fn left :: binary >= right :: binary, do: fz_op_gte_bb(left, right)
 
   @spec any == any :: bool
   fn left == right, do: fz_op_eq(left, right)

@@ -883,7 +883,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
                 }
                 BinOp::Eq | BinOp::Neq => {
-                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
+                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var, false)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     lower_cmp_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
@@ -976,22 +976,37 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mod, &arg_vars);
             }
             if decl.symbol == "fz_op_eq" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Eq, &arg_vars, dest_var);
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Eq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                    true,
+                );
             }
             if decl.symbol == "fz_op_neq" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Neq, &arg_vars, dest_var);
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Neq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                    true,
+                );
             }
-            if decl.symbol == "fz_op_lt" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Lt, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_lte" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Le, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_gt" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Gt, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_gte" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Ge, &arg_vars, dest_var);
+            if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
+                && args.len() == 2
+            {
+                return lower_typed_cmp(body, var_env, runtime, op, kinds, &arg_vars, dest_var);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(
@@ -1621,6 +1636,13 @@ fn raw_scalar_vs_dynamic(
 /// raw atom compare for atom/nil/bool pairs, the no-allocation raw-scalar
 /// check when only one side is an unboxed int/atom, or calls the runtime
 /// value_eq_ref for the fully heterogeneous fallback.
+/// `widen_numerics` separates the two questions this lowering answers.
+///
+/// The `==` operator compares numbers by value, so `1 == 1.0` is true. Clause
+/// and pattern matching does not: `case 1.0 do 1 -> ... end` must not match,
+/// exactly as in Elixir. Only the operator path passes `true`; every matching
+/// caller passes `false` and keeps the value-disjointness fold that decides a
+/// float can never equal an integer literal.
 fn lower_eq_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1631,6 +1653,7 @@ fn lower_eq_binop<M, T>(
     a: Var,
     bv: Var,
     dest_var: Var,
+    widen_numerics: bool,
 ) -> Result<LowerOut, CodegenError>
 where
     M: cranelift_module::Module,
@@ -1639,6 +1662,33 @@ where
     let is_eq = matches!(op, BinOp::Eq);
     let int_cc = if is_eq { IntCC::Equal } else { IntCC::NotEqual };
     let f_cc = if is_eq { FloatCC::Equal } else { FloatCC::NotEqual };
+
+    // fz-5xp.18 — an integer and a float are value-disjoint for MATCHING
+    // (Elixir's `case 1.0 do 1 -> ...` does not match, and neither does fz's)
+    // but not for `==`, which compares numbers by value: `1 == 1.0` is true.
+    // So a mixed numeric pair skips the disjointness fold and is answered by
+    // widening the integer, the same way the ordering operators answer it.
+    let a_is_int = ty_is_int(t, value_types, a);
+    let b_is_int = ty_is_int(t, value_types, bv);
+    let a_is_float = ty_is_float(t, value_types, a);
+    let b_is_float = ty_is_float(t, value_types, bv);
+    let mixed_numeric = widen_numerics && ((a_is_int && b_is_float) || (a_is_float && b_is_int));
+    if mixed_numeric {
+        let (left, right) = if a_is_int {
+            let raw = body.as_raw_i64(var_env, a.0);
+            let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
+            (widened, body.as_raw_f64(var_env, bv.0))
+        } else {
+            let raw = body.as_raw_i64(var_env, bv.0);
+            let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
+            (body.as_raw_f64(var_env, a.0), widened)
+        };
+        let cmp = body.b.ins().fcmp(f_cc, left, right);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
 
     // Value-disjoint (brand-erased) fold doesn't need either operand.
     if descrs_value_disjoint(t, value_types, a, bv) {
@@ -1798,6 +1848,37 @@ where
     ) {
         return Ok(out);
     }
+    // One side unboxed and the other dynamic: hand the runtime the unboxed
+    // side's kind and payload directly. Boxing it into a heap scalar just to
+    // form an `AnyValueRef` is the allocation this avoids, exactly as
+    // `fz_value_eq_raw_const` avoids it for `==`.
+    // `raw_scalar_vs_dynamic(x, y)` succeeds when `x` is the unboxed side, so
+    // the first arm has the unboxed operand on the LEFT (swap = 1) and the
+    // second has it on the right (swap = 0).
+    if let Some((kind, raw, dyn_var, swap)) = raw_scalar_vs_dynamic(var_env, a, bv)
+        .map(|(k, r, d)| (k, r, d, 1u32))
+        .or_else(|| raw_scalar_vs_dynamic(var_env, bv, a).map(|(k, r, d)| (k, r, d, 0u32)))
+    {
+        let dyn_ref = body.tagged_var(var_env, dyn_var.0);
+        let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
+        let swap_flag = body.b.ins().iconst(types::I32, i64::from(swap));
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.value_cmp_raw_const_id, body.b.func);
+        let inst = body.b.ins().call(fref, &[dyn_ref, kind_tag, raw, swap_flag]);
+        let ordering = body.b.inst_results(inst)[0];
+        let zero = body.b.ins().iconst(types::I64, 0);
+        let cmp = body.b.ins().icmp(icc, ordering, zero);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
+
+    // Two unboxed integers are the overwhelmingly common dynamic case — a
+    // guard like quicksort's `when h < p` — and comparing them must not box
+    // either operand, which is what keeps that fixture at zero scalar boxes.
+    // So the runtime tag test and its inline `icmp` stay.
     let av = *var_env.get(&a.0).expect("cmp lhs");
     let bv_value = *var_env.get(&bv.0).expect("cmp rhs");
     let a_is_int = body.value_is_tag(av, ValueKind::INT);
@@ -1817,26 +1898,22 @@ where
     let cmp = body.b.ins().icmp(icc, ai, bi);
     body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
+    // fz-5xp.18 — anything else asks `fz_value_cmp_ref`, the one dynamic
+    // ordering, shared with the interpreter and with the `bb` intrinsic. It
+    // replaces an inlined coercion that boxed the float operand and then read
+    // the resulting pointer as a number: that answered `2 >= 1.0` as false,
+    // and answered it differently from the interpreter, because ordering was
+    // implemented twice.
     body.b.switch_to_block(slow_blk);
     body.b.seal_block(slow_blk);
-    // Inlined float-cmp slow path: promote both operands
-    // to f64 and emit native fcmp.
-    let pfref = body.jmod.declare_func_in_func(runtime.promote_f64_id, body.b.func);
-    let fcc = match op {
-        BinOp::Lt => FloatCC::LessThan,
-        BinOp::Le => FloatCC::LessThanOrEqual,
-        BinOp::Gt => FloatCC::GreaterThan,
-        BinOp::Ge => FloatCC::GreaterThanOrEqual,
-        _ => unreachable!(),
-    };
-    let av = body.tagged_var(var_env, a.0);
-    let bvv = body.tagged_var(var_env, bv.0);
-    let i0 = body.b.ins().call(pfref, &[av]);
-    let af = body.b.inst_results(i0)[0];
-    let i1 = body.b.ins().call(pfref, &[bvv]);
-    let bf = body.b.inst_results(i1)[0];
-    let cmp = body.b.ins().fcmp(fcc, af, bf);
-    body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
+    let left = body.tagged_var(var_env, a.0);
+    let right = body.tagged_var(var_env, bv.0);
+    let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
+    let call = body.b.ins().call(cmp_ref, &[left, right]);
+    let ordering = body.b.inst_results(call)[0];
+    let zero = body.b.ins().iconst(types::I64, 0);
+    let slow_cmp = body.b.ins().icmp(icc, ordering, zero);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(slow_cmp)]);
 
     body.b.switch_to_block(join_blk);
     body.b.seal_block(join_blk);
@@ -1945,29 +2022,126 @@ where
     lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
 }
 
-fn lower_extern_fz_op_cmp<M, T>(
+/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects for an operand
+/// pair whose kinds it knows.
+///
+/// Ordering is a partial function: `Kernel` declares a clause for each pair it
+/// can order and no `any`/`any` default, so an unsupported combination has no
+/// matching clause and is refused at compile time rather than answered wrongly
+/// at run time. Equality is total and keeps its structural default.
+///
+/// `ii` and `ff` compare two raw lanes directly. `if`/`fi` widen the integer
+/// with one `fcvt_from_sint` and compare — no tag test, no boxing, and no
+/// promotion helper reading a value it was not handed, which is what the
+/// deleted coercion path did. `bb` asks the runtime for byte-lexicographic
+/// order, the same function the interpreter asks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CmpOperands {
+    IntInt,
+    FloatFloat,
+    IntFloat,
+    FloatInt,
+    BinaryBinary,
+}
+
+fn typed_cmp_extern(symbol: &str) -> Option<(BinOp, CmpOperands)> {
+    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
+    let kinds = match suffix {
+        "ii" => CmpOperands::IntInt,
+        "ff" => CmpOperands::FloatFloat,
+        "if" => CmpOperands::IntFloat,
+        "fi" => CmpOperands::FloatInt,
+        "bb" => CmpOperands::BinaryBinary,
+        _ => return None,
+    };
+    let op = match op {
+        "eq" => BinOp::Eq,
+        "neq" => BinOp::Neq,
+        "lt" => BinOp::Lt,
+        "lte" => BinOp::Le,
+        "gt" => BinOp::Gt,
+        "gte" => BinOp::Ge,
+        _ => return None,
+    };
+    Some((op, kinds))
+}
+
+fn lower_typed_cmp<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     op: BinOp,
+    kinds: CmpOperands,
     args: &[Var],
     dest_var: Var,
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    match op {
-        BinOp::Eq | BinOp::Neq => {
-            lower_eq_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+) -> Result<LowerOut, CodegenError> {
+    let cmp = match kinds {
+        CmpOperands::IntInt => {
+            let icc = match op {
+                BinOp::Eq => IntCC::Equal,
+                BinOp::Neq => IntCC::NotEqual,
+                BinOp::Lt => IntCC::SignedLessThan,
+                BinOp::Le => IntCC::SignedLessThanOrEqual,
+                BinOp::Gt => IntCC::SignedGreaterThan,
+                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+            };
+            let left = body.as_raw_i64(var_env, args[0].0);
+            let right = body.as_raw_i64(var_env, args[1].0);
+            body.b.ins().icmp(icc, left, right)
         }
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            lower_cmp_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+        CmpOperands::FloatFloat | CmpOperands::IntFloat | CmpOperands::FloatInt => {
+            let fcc = float_cc_for(op)?;
+            let (left, right) = match kinds {
+                CmpOperands::FloatFloat => (body.as_raw_f64(var_env, args[0].0), body.as_raw_f64(var_env, args[1].0)),
+                CmpOperands::IntFloat => {
+                    let raw = body.as_raw_i64(var_env, args[0].0);
+                    let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
+                    (widened, body.as_raw_f64(var_env, args[1].0))
+                }
+                _ => {
+                    let raw = body.as_raw_i64(var_env, args[1].0);
+                    let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
+                    (body.as_raw_f64(var_env, args[0].0), widened)
+                }
+            };
+            body.b.ins().fcmp(fcc, left, right)
         }
-        _ => unreachable!(),
+        CmpOperands::BinaryBinary => {
+            let icc = match op {
+                BinOp::Eq => IntCC::Equal,
+                BinOp::Neq => IntCC::NotEqual,
+                BinOp::Lt => IntCC::SignedLessThan,
+                BinOp::Le => IntCC::SignedLessThanOrEqual,
+                BinOp::Gt => IntCC::SignedGreaterThan,
+                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+            };
+            let left = body.tagged_var(var_env, args[0].0);
+            let right = body.tagged_var(var_env, args[1].0);
+            let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
+            let call = body.b.ins().call(cmp_ref, &[left, right]);
+            let ordering = body.b.inst_results(call)[0];
+            let zero = body.b.ins().iconst(types::I64, 0);
+            body.b.ins().icmp(icc, ordering, zero)
+        }
+    };
+    if body.cache.if_only_conds.contains(&dest_var.0) {
+        return Ok(LowerOut::Condition(cmp));
     }
+    Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+}
+
+fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
+    Ok(match op {
+        BinOp::Eq => FloatCC::Equal,
+        BinOp::Neq => FloatCC::NotEqual,
+        BinOp::Lt => FloatCC::LessThan,
+        BinOp::Le => FloatCC::LessThanOrEqual,
+        BinOp::Gt => FloatCC::GreaterThan,
+        BinOp::Ge => FloatCC::GreaterThanOrEqual,
+        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+    })
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and

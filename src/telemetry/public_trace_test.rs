@@ -1653,9 +1653,12 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
 /// anything, so the edge facts a component walk needs are already demanded
 /// when it starts and eight of its restarts never happen.
 const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
-    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
-    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 251, 129),
+    // fz-5xp.18: 101 -> 125 evaluations and 51 -> 63 blocked. Each comparison
+    // operator now has a clause per orderable operand pair, and this fixture
+    // reaches four of them; the callees of each are derived once.
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 125, 63),
+    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 158, 83),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 267, 137),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2057,7 +2060,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the semantic total; every retained evaluation remains caused.
         // fz-5xp.2: 990 -> 989, the one AnalyzeActivation evaluation the
         // unminted reduce-and-reverse activation no longer needs.
-        total_evaluations: 989,
+        total_evaluations: 1109,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2126,7 +2129,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
         // above; no other formula family moves.
         // Macro readiness is a retained content dependency.
-        total_evaluations: 1378,
+        total_evaluations: 1458,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2305,7 +2308,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same thirteen absorbed-identity analyses
         // from the semantic total.
-        total_evaluations: 2417,
+        total_evaluations: 2497,
     },
 ];
 

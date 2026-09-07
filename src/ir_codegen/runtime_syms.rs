@@ -99,7 +99,8 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_box_float_for_any" => (&[I64, F64], &[I64]),
         "fz_box_atom_for_any" => (&[I64, I64], &[I64]),
         "fz_map_is_map" => (&[I64], &[I8]),
-        "fz_promote_f64" => (&[I64], &[F64]),
+        "fz_value_cmp_ref" => (&[I64, I64], &[I64]),
+        "fz_value_cmp_raw_const" => (&[I64, I32, I64, I32], &[I64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
         "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_raw_const" => (&[I64, I32, I64], &[I64]),
@@ -220,9 +221,10 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         box_float_for_any_id: val.box_float_for_any_id,
         box_atom_for_any_id: val.box_atom_for_any_id,
         map_is_map_id: val.map_is_map_id,
-        promote_f64_id: arith.promote_f64_id,
         dynamic_float_arith_unsupported_id: arith.dynamic_float_arith_unsupported_id,
         value_eq_ref_id: arith.value_eq_ref_id,
+        value_cmp_ref_id: arith.value_cmp_ref_id,
+        value_cmp_raw_const_id: arith.value_cmp_raw_const_id,
         value_eq_raw_const_id: arith.value_eq_raw_const_id,
         matcher_eq_bytes_id: matcher.matcher_eq_bytes_id,
         matcher_map_get_ref_id: matcher.matcher_map_get_ref_id,
@@ -440,20 +442,23 @@ fn declare_value_runtime<M: ClModule>(jmod: &mut M) -> Result<ValueRefs, Codegen
 }
 
 struct ArithRefs {
-    promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
     value_eq_ref_id: FuncId,
+    value_cmp_ref_id: FuncId,
+    value_cmp_raw_const_id: FuncId,
     value_eq_raw_const_id: FuncId,
 }
 
-/// Mixed-type arithmetic and value-equality slow-path helpers. Mixed-type
-/// arith/cmp slow paths are inlined in JIT. `fz_promote_f64` does the
-/// tag-aware Int|Float -> f64 conversion (panics on non-numeric).
+/// Mixed-type arithmetic and value-comparison helpers. `Kernel` gives the
+/// arithmetic and comparison operators a typed clause per operand pair, so a
+/// mixed numeric pair is widened by a clause and lowered inline; what remains
+/// here answers the pairs whose kinds are not both known statically.
 fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, CodegenError> {
     Ok(ArithRefs {
-        promote_f64_id: decl_import(jmod, "fz_promote_f64")?,
         dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
+        value_cmp_ref_id: decl_import(jmod, "fz_value_cmp_ref")?,
+        value_cmp_raw_const_id: decl_import(jmod, "fz_value_cmp_raw_const")?,
         value_eq_raw_const_id: decl_import(jmod, "fz_value_eq_raw_const")?,
     })
 }
@@ -718,9 +723,13 @@ pub(crate) struct RuntimeRefs {
     pub(crate) box_float_for_any_id: FuncId,
     pub(crate) box_atom_for_any_id: FuncId,
     pub(crate) map_is_map_id: FuncId,
-    pub(crate) promote_f64_id: FuncId,
     pub(crate) dynamic_float_arith_unsupported_id: FuncId,
     pub(crate) value_eq_ref_id: FuncId,
+    /// fz-5xp.18 — dynamic ordering, the counterpart to `value_eq_ref_id`.
+    pub(crate) value_cmp_ref_id: FuncId,
+    /// Ordering against an unboxed payload, allocating nothing — the counterpart
+    /// to `value_eq_raw_const_id`.
+    pub(crate) value_cmp_raw_const_id: FuncId,
     /// Checked `==` between a dynamic `AnyValueRef` and an unboxed int/atom
     /// raw payload, with no allocation on either side: verifies the ref's
     /// runtime tag matches the expected `INT`/`ATOM` `ValueKind` before

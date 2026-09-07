@@ -1,7 +1,7 @@
 use super::*;
 use crate::fz_ir::{BinOp, FnId, UnOp};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_captured_count, closure_fn_ptr};
-use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_eq_ref};
+use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_cmp_ref, fz_value_eq_ref};
 use fz_runtime::process::Process;
 use std::ptr::null_mut;
 
@@ -18,11 +18,13 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
             }
         };
     }
+    // fz-5xp.18 — ordering asks the same runtime function native asks, the way
+    // equality already asks `fz_value_eq_ref`. Two hand-rolled implementations
+    // of one question is why the doors disagreed on `2 >= 1.0`.
     macro_rules! float_cmp {
         ($op:tt) => {{
-            let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
-            let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
-            Ok(interp_bool_value(af $op bf))
+            let ordering = fz_value_cmp_ref(a.as_ref_word(proc)?, b.as_ref_word(proc)?);
+            Ok(interp_bool_value(ordering $op 0))
         }};
     }
     match op {
@@ -57,7 +59,8 @@ pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> R
     match (a, b) {
         (AnyValue::Null, AnyValue::Null) => Ok(true),
         (AnyValue::Int(a), AnyValue::Int(b)) => Ok(a == b),
-        (AnyValue::Int(_), AnyValue::Float(_)) | (AnyValue::Float(_), AnyValue::Int(_)) => Ok(false),
+        (AnyValue::Int(a), AnyValue::Float(b)) => Ok((a as f64) == b),
+        (AnyValue::Float(a), AnyValue::Int(b)) => Ok(a == (b as f64)),
         (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a == b),
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),

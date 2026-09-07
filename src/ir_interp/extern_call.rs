@@ -8,7 +8,7 @@ use fz_runtime::extern_variadic::{
 };
 use fz_runtime::ir_runtime::{
     fz_binary_concat, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8, fz_dbg_value, fz_make_ref_raw, fz_map_count,
-    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats,
+    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats, fz_value_cmp_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -34,11 +34,66 @@ fn interp_operator_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
     }
 }
 
+/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects once it knows
+/// both operand kinds. All of them answer through `fz_value_cmp_ref`, the same
+/// runtime function native codegen calls, so the doors cannot drift apart the
+/// way they did while each had its own coercion.
+///
+/// `Eq`/`Neq` appear here on purpose: `interp_value_eq` is deliberately strict,
+/// so `1 == 1.0` must not route through it.
+fn interp_typed_cmp_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
+    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
+    if !matches!(suffix, "ii" | "ff" | "if" | "fi" | "bb") {
+        return None;
+    }
+    match op {
+        "eq" => Some(crate::fz_ir::BinOp::Eq),
+        "neq" => Some(crate::fz_ir::BinOp::Neq),
+        "lt" => Some(crate::fz_ir::BinOp::Lt),
+        "lte" => Some(crate::fz_ir::BinOp::Le),
+        "gt" => Some(crate::fz_ir::BinOp::Gt),
+        "gte" => Some(crate::fz_ir::BinOp::Ge),
+        _ => None,
+    }
+}
+
 fn eval_interp_operator_extern(
     runtime: &mut IrInterpRuntime,
     symbol: &str,
     args: &[AnyValue],
 ) -> Result<Option<AnyValue>, String> {
+    if let Some(op) = interp_typed_cmp_extern(symbol) {
+        if args.len() != 2 {
+            return Err(format!("{symbol}/2 got {} args", args.len()));
+        }
+        let proc = runtime.cur_proc();
+        // The intrinsic's suffix already names both operand kinds, so a numeric
+        // pair is compared directly. Boxing them through `as_ref_word` would
+        // allocate a scalar box per comparison — visible immediately in
+        // `Enum.sort`'s allocation golden.
+        let ordering = match (args[0].as_float(), args[1].as_float()) {
+            (Some(left), Some(right)) => {
+                if left < right {
+                    -1
+                } else if left > right {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => fz_value_cmp_ref(args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
+        };
+        let answer = match op {
+            crate::fz_ir::BinOp::Eq => ordering == 0,
+            crate::fz_ir::BinOp::Neq => ordering != 0,
+            crate::fz_ir::BinOp::Lt => ordering < 0,
+            crate::fz_ir::BinOp::Le => ordering <= 0,
+            crate::fz_ir::BinOp::Gt => ordering > 0,
+            crate::fz_ir::BinOp::Ge => ordering >= 0,
+            other => return Err(format!("{symbol} is not a comparison: {other:?}")),
+        };
+        return Ok(Some(super::value::interp_bool_value(answer)));
+    }
     let Some(op) = interp_operator_extern(symbol) else {
         return Ok(None);
     };
