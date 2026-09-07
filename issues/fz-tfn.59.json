@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.21"
+  ],
   "created": "2026-09-07T18:47:45Z",
   "description": "## Goal\n\nRetire invalid PR #123 and rebuild the recalculator stack on code that actually contains every closed prerequisite. No compiler ticket may start from a branch where bw says a prerequisite is closed but its commit is absent.\n\n## Required state\n\n- Preserve current .200/.220 working material and parked candidates only as recoverable research; do not land them wholesale.\n- Close PR #123 as invalid. Neither fz-kdt.214 nor fz-kdt.75 is carried as architecture.\n- Keep PR #121 as the denotational-list predecessor.\n- Reconcile PR #122 onto the accepted current #121 head. PR #122 contains fz-kdt.183, .199, .210 and other code required by the revised semantic plan.\n- PR #124 remains independent concordant cleanup and may land separately.\n- Create a clean recalculator branch above the accepted #122 boundary. The first accepted implementation ticket opens a new draft PR with gh stacks; ticket 11 starts the next stacked PR.\n- Push a completed ticket only when the preceding pushed head is green. Work may continue locally while CI runs.\n\n## Acceptance\n\nThe new branch contains the exact accepted #121 and #122 histories, contains neither invalid #123 commit, has a clean tracked worktree, and all protected untracked measurements and recoverable stashes remain intact. The epic description and dependency graph tell only the revised plan. A cold graph audit confirms that bw ready exposes no implementation before this gate closes.",
   "id": "fz-tfn.59",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Rebuild the recalculator stack above accepted PR #122",
   "type": "task",
-  "updated_at": "2026-09-07T18:47:45Z"
+  "updated_at": "2026-09-07T18:56:23Z"
 }
