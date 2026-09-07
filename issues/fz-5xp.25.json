@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T05:24:52Z",
+  "description": "Bracket access on a keyword list ABORTS the process on every door.\n\n  opts = [timeout: 30, retries: 2]\n  opts[:timeout]\n\n  fz run/interp/build:\n    panicked at runtime/src/ir_runtime.rs:1654:\n    fz_struct_get_named_field_ref: ExpectedTag { expected: ValueKind(3), found: ValueKind(1) }\n    fatal runtime error: failed to initiate panic, error 5, aborting\n  Elixir: 30   (and nil for a missing key)\n\n`lhs[key]` is parsed as `Access.get/2` (frontdoor.rs bracket-access rule) and\ndecoded back into `Expr::Index` (quoted_function.rs is_access_get). `Expr::Index`\nassumes a map or struct receiver and reaches a struct field read with a LIST\ntag, which is not a diagnostic -- it is a non-unwinding abort.\n\nElixir's `Access` works on keyword lists as well as maps, and `opts[:key]` over\na keyword list is one of the most common shapes in real Elixir code.\n\nMATTERS FOR THIS EPIC: fz-5xp.13 adds `Keyword`, whose entire surface is\nkeyword lists, and `keyword()` is already a declared type in runtime.fz. Any\n`Keyword` code a user writes will reach for `opts[:key]`.\n\nPre-existing -- unrelated to fz-5xp.4, which only stopped `Alias.get/2` being\nmistaken for an index. Found while writing that ticket's fixture, which\noriginally covered keyword bracket access and had to be narrowed.\n\nFIX SHAPE: `Expr::Index` needs to dispatch on the receiver -- map/struct as\ntoday, keyword list by key lookup, and anything else a clean diagnostic rather\nthan a struct read on a mistagged value.",
+  "id": "fz-5xp.25",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Bracket access on a keyword list aborts the process",
+  "type": "bug",
+  "updated_at": "2026-09-07T05:24:52Z"
+}
