@@ -73,7 +73,12 @@ take, so each door implements the same typed operation rather than re-deriving
 which operation applies. Native lowers them in place (`ARITH_SHIMS` in
 `native_codegen/prim.rs`); the interpreter has private Rust shims
 (`ir_interp/extern_call.rs`). They agree because the name carries the types.
-Float remainder is the known exception: fz-5xp.34.
+
+`%` is the one operator with no Elixir counterpart to be checked against —
+Elixir has no `%`, and its `rem/2` is integer-only. fz's `%` is C's `fmod`, so
+the result takes the sign of the dividend, and its float lanes are a CALL rather
+than an instruction because Cranelift has no `frem`: `fz_op_rem_ff` lives in the
+runtime crate so the AOT door can link it (fz-5xp.34).
 
 **Runtime type tests** — owner `RuntimeTestAxis` (`src/runtime_type_predicate.rs`),
 one axis table with three lowerings that must each be taught, and the design we

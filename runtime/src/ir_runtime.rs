@@ -925,6 +925,23 @@ pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {
     -value
 }
 
+/// Float remainder, the `%` operator's float lanes.
+///
+/// Lives in the runtime crate rather than beside the interpreter's other
+/// `fz_op_*` shims because the NATIVE doors need to call it: Cranelift has no
+/// `frem`, so float `%` cannot be an instruction the way `+ - * /` are. An
+/// interp-private shim would be a `symbol not found` at AOT link time
+/// (fz-5xp.29's hazard).
+///
+/// Rust's `%` on `f64` is C's `fmod`: the result takes the sign of the
+/// DIVIDEND, so `-7.5 % 2.0` is `-1.5`. That is what the interpreter has always
+/// answered, and it is what fz's `%` means -- Elixir has no `%` operator to
+/// disagree with, and its `rem/2` is integer-only.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_rem_ff(left: f64, right: f64) -> f64 {
+    left % right
+}
+
 /// Is this bitstring byte-aligned -- a `binary` rather than a partial
 /// `bitstring`?
 ///

@@ -1548,6 +1548,21 @@ where
 /// Three code paths: float coercion (int+float mix), typed fast path
 /// (same-kind int or float), and tagged dispatch fallback that splits
 /// on runtime tag tests.
+/// Float `%`. Cranelift has no `frem`, so where `+ - * /` are one instruction
+/// this is a call into the runtime (fz-5xp.34). Excluding Mod from the float
+/// paths instead is what made `7.5 % 2.0` answer 1.5 on interp and abort in
+/// `fz_dynamic_float_arith_unsupported` on run and build.
+fn emit_float_rem<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    left: ir::Value,
+    right: ir::Value,
+) -> ir::Value {
+    let fref = body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[left, right]);
+    body.b.inst_results(inst)[0]
+}
+
 fn lower_arith_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1568,8 +1583,7 @@ where
     if matches!(
         (a_repr, b_repr),
         (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
-    ) && !matches!(mop, BinOp::Mod)
-    {
+    ) {
         let af = as_known_numeric_f64(var_env, body.b, a.0);
         let bf = as_known_numeric_f64(var_env, body.b, bv.0);
         return Ok(LowerOut::RawF64(match mop {
@@ -1577,10 +1591,14 @@ where
             BinOp::Sub => body.b.ins().fsub(af, bf),
             BinOp::Mul => body.b.ins().fmul(af, bf),
             BinOp::Div => body.b.ins().fdiv(af, bf),
+            BinOp::Mod => emit_float_rem(body, runtime, af, bf),
             _ => unreachable!(),
         }));
     }
-    // Typed fast paths: float (skipped for Mod) and int.
+    // Typed fast paths: float and int. Float `%` is the one that is a CALL
+    // rather than an instruction, so its funcref is declared up front — the
+    // closure below is handed a builder, not the module.
+    let rem_fref = matches!(mop, BinOp::Mod).then(|| body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func));
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
@@ -1589,14 +1607,15 @@ where
         bv,
         var_env,
         |b, af, bf| {
-            if matches!(mop, BinOp::Mod) {
-                return None;
-            }
             Some(LowerOut::RawF64(match mop {
                 BinOp::Add => b.ins().fadd(af, bf),
                 BinOp::Sub => b.ins().fsub(af, bf),
                 BinOp::Mul => b.ins().fmul(af, bf),
                 BinOp::Div => b.ins().fdiv(af, bf),
+                BinOp::Mod => {
+                    let inst = b.ins().call(rem_fref.expect("float rem funcref"), &[af, bf]);
+                    b.inst_results(inst)[0]
+                }
                 _ => unreachable!(),
             }))
         },

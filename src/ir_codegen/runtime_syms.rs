@@ -100,6 +100,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_value_cmp_ref" => (&[I64, I64], &[I64]),
         "fz_value_cmp_raw_const" => (&[I64, I32, I64, I32], &[I64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
+        "fz_op_rem_ff" => (&[F64, F64], &[F64]),
         "fz_value_eq_widening_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_raw_const" => (&[I64, I32, I64], &[I64]),
@@ -221,6 +222,7 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         box_atom_for_any_id: val.box_atom_for_any_id,
         map_is_map_id: val.map_is_map_id,
         dynamic_float_arith_unsupported_id: arith.dynamic_float_arith_unsupported_id,
+        op_rem_ff_id: arith.op_rem_ff_id,
         value_eq_ref_id: arith.value_eq_ref_id,
         value_eq_widening_ref_id: arith.value_eq_widening_ref_id,
         value_cmp_ref_id: arith.value_cmp_ref_id,
@@ -443,6 +445,7 @@ fn declare_value_runtime<M: ClModule>(jmod: &mut M) -> Result<ValueRefs, Codegen
 
 struct ArithRefs {
     dynamic_float_arith_unsupported_id: FuncId,
+    op_rem_ff_id: FuncId,
     value_eq_ref_id: FuncId,
     value_eq_widening_ref_id: FuncId,
     value_cmp_ref_id: FuncId,
@@ -457,6 +460,7 @@ struct ArithRefs {
 fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, CodegenError> {
     Ok(ArithRefs {
         dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
+        op_rem_ff_id: decl_import(jmod, "fz_op_rem_ff")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
         value_eq_widening_ref_id: decl_import(jmod, "fz_value_eq_widening_ref")?,
         value_cmp_ref_id: decl_import(jmod, "fz_value_cmp_ref")?,
@@ -726,6 +730,9 @@ pub(crate) struct RuntimeRefs {
     pub(crate) box_atom_for_any_id: FuncId,
     pub(crate) map_is_map_id: FuncId,
     pub(crate) dynamic_float_arith_unsupported_id: FuncId,
+    /// fz-5xp.34 — float `%`. Cranelift has no `frem`, so the float lanes of
+    /// the `%` operator are a call where `+ - * /` are instructions.
+    pub(crate) op_rem_ff_id: FuncId,
     pub(crate) value_eq_ref_id: FuncId,
     /// fz-5xp.18 — `==` over two dynamic values, which widens numerics.
     /// Structural identity uses `value_eq_ref_id` and stays strict.

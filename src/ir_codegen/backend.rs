@@ -198,6 +198,7 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ("fz_op_div_ii_to_float", ir_runtime::fz_op_div_ii_to_float as *const u8),
         ("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8),
         ("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8),
+        ("fz_op_rem_ff", ir_runtime::fz_op_rem_ff as *const u8),
         ("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8),
         ("fz_float_to_binary", ir_runtime::fz_float_to_binary as *const u8),
         ("fz_bs_reader_init_ref", ir_runtime::fz_bs_reader_init_ref as *const u8),
