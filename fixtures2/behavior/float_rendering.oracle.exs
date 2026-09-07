@@ -13,3 +13,9 @@ IO.inspect(0.0001)
 IO.inspect(0.00001)
 
 IO.inspect(0.3333333333333333)
+
+IO.inspect(1.0e-7)
+IO.inspect(1.7976931348623157e308)
+IO.inspect(5.0e-324)
+IO.inspect(1.0e16)
+IO.inspect(1.0e15)

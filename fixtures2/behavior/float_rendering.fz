@@ -29,11 +29,6 @@
 # Elixir, so this is parity by construction rather than by a table someone
 # typed.
 #
-# Not covered: values that need exponent notation in the SOURCE, such as
-# `1.0e-7` or `1.7976931348623157e308`. fz's parser does not accept an exponent
-# in a float literal (fz-5xp.39), so they cannot be written here yet. The
-# runtime unit tests pin those against Elixir by bit pattern instead.
-#
 # Not covered: infinity and NaN. Erlang has no such floats -- `1.0 / 0.0`
 # raises there and yields `inf` here -- so there is nothing to be in parity
 # with. That divergence belongs to the division-semantics ticket.
@@ -57,4 +52,12 @@ fn main() do
   dbg(0.00001)
 
   dbg(0.3333333333333333)
+
+  # only writable since the lexer learned exponents (fz-5xp.39), and these are
+  # the values where the two notations are furthest apart
+  dbg(1.0e-7)
+  dbg(1.7976931348623157e308)
+  dbg(5.0e-324)
+  dbg(1.0e16)
+  dbg(1.0e15)
 end

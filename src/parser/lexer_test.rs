@@ -373,3 +373,32 @@ fn null_telemetry_is_a_silent_no_op() {
         .expect("lex");
     assert!(!toks.is_empty());
 }
+
+/// Elixir's float-literal grammar requires a fractional part before any
+/// exponent: `1e10` is a SyntaxError there, not a float, so accepting it here
+/// would be a divergence rather than a convenience.
+#[test]
+fn float_literals_take_an_exponent_only_after_a_fraction() {
+    for (source, expected) in [
+        ("1.0e14", 1.0e14f64),
+        ("1.0e-7", 1.0e-7),
+        ("1.0E3", 1000.0),
+        ("1.5e+3", 1500.0),
+        ("1_000.5e-3", 1.0005),
+        ("5.0e-324", 5.0e-324),
+        ("1.7976931348623157e308", 1.7976931348623157e308),
+    ] {
+        assert_eq!(toks_of(source), vec![Tok::Float(expected)], "`{source}`");
+    }
+}
+
+/// The exponent is taken only when a digit actually follows, so an `e` that
+/// begins the next token is left alone -- `1.0end` must keep its `end`.
+#[test]
+fn a_trailing_e_without_digits_is_not_an_exponent() {
+    assert_eq!(toks_of("1.0e"), vec![Tok::Float(1.0), Tok::Ident("e".to_string())]);
+    // `end` is a keyword, so this also shows the number stopping cleanly at a
+    // token boundary rather than at a character class.
+    assert_eq!(toks_of("1.0end"), vec![Tok::Float(1.0), Tok::End]);
+    assert_eq!(toks_of("1.0 e5"), vec![Tok::Float(1.0), Tok::Ident("e5".to_string())],);
+}

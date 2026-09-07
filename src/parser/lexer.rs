@@ -317,6 +317,21 @@ impl<'a> Lexer<'a> {
             self.bump();
             self.eat_while(|c| c.is_ascii_digit() || c == b'_');
         }
+        // An exponent, only after a fractional part: `1.0e14` is a float and
+        // `1e10` is a syntax error, which is Elixir's rule rather than an
+        // omission. The exponent must have at least one digit, so `1.0 end`
+        // and `1.0end` keep their `e` -- the lookahead decides before any
+        // input is consumed.
+        if is_float && matches!(self.peek(0), Some(b'e') | Some(b'E')) {
+            let signed = usize::from(matches!(self.peek(1), Some(b'+') | Some(b'-')));
+            if self.peek(1 + signed).is_some_and(|c| c.is_ascii_digit()) {
+                self.bump();
+                for _ in 0..signed {
+                    self.bump();
+                }
+                self.eat_while(|c| c.is_ascii_digit() || c == b'_');
+            }
+        }
         let raw = from_utf8(&self.src[start..self.pos]).unwrap();
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
         if is_float {
