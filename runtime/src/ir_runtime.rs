@@ -1563,6 +1563,34 @@ pub extern "C" fn fz_map_put_float(process: *mut Process, map_ref_word: u64, key
     )
 }
 
+/// Build a map from parallel key and value lists in ONE allocation.
+///
+/// A map is a flat sorted array, so `put/3` in a loop copies the whole array
+/// per key -- O(n^2), and the exact idiom Elixir's docs encourage because a
+/// HAMT makes it cheap there. Every BULK function in `Map` funnels here
+/// instead: collect the pairs, allocate once.
+///
+/// Parallel lists rather than a list of pairs because a tuple's fields are not
+/// reachable from here; the caller already has both lists in hand.
+///
+/// Sorting and deduping are `alloc_map_refs_bits`'s -- which did NOT do either
+/// until this needed it -- so a duplicate key keeps the LAST value, which is
+/// what `merge/2` needs and what Elixir does.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_from_kv(process: *mut Process, keys_ref_word: u64, values_ref_word: u64) -> u64 {
+    let mut keys = any_value_ref_from_word(keys_ref_word, "fz_map_from_kv keys");
+    let mut values = any_value_ref_from_word(values_ref_word, "fz_map_from_kv values");
+    let mut entries: Vec<(AnyValueRef, AnyValueRef)> = Vec::new();
+    while !keys.is_empty_list() {
+        let key = list_head_ref(keys).expect("fz_map_from_kv key");
+        let value = list_head_ref(values).expect("fz_map_from_kv value");
+        entries.push((key, value));
+        keys = list_tail_ref(keys).expect("fz_map_from_kv keys tail");
+        values = list_tail_ref(values).expect("fz_map_from_kv values tail");
+    }
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_refs_bits(&entries))
+}
+
 /// `Map.put` with an ATOM value, taking the atom as a tagged ref.
 ///
 /// The sibling below takes a raw atom ID, which is what the interpreter's

@@ -334,7 +334,31 @@ impl Heap {
 
     /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
     /// supplies canonically-sorted typed entries; this performs the heap copy.
+    /// Write a map from refs, sorting and deduping first.
+    ///
+    /// The ref sibling of `alloc_map_slots`, and it holds the same invariant
+    /// for the same reason: a map is a flat SORTED array and every lookup
+    /// assumes it. fz-5xp.49 fixed the slot writer and left this one, whose
+    /// callers all happened to sort beforehand -- until `fz_map_from_kv` did
+    /// not, and `Map.new([{"x", 1}, {"x", 2}])` produced a map holding BOTH
+    /// entries where Elixir keeps the last.
+    ///
+    /// Held here rather than asked of callers, so a new one cannot get it
+    /// wrong. Last key wins, matching Elixir.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
+        let mut sorted: Vec<(AnyValueRef, AnyValueRef)> = entries.to_vec();
+        sorted.sort_by(|a, b| map_key_cmp_refs(a.0, b.0));
+        let mut entries: Vec<(AnyValueRef, AnyValueRef)> = Vec::with_capacity(sorted.len());
+        for (key, value) in sorted {
+            if let Some((last_key, last_value)) = entries.last_mut()
+                && same_value_ref(*last_key, key)
+            {
+                *last_value = value;
+                continue;
+            }
+            entries.push((key, value));
+        }
+        let entries = &entries[..];
         let total = map_size_for_count(entries.len());
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {

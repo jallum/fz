@@ -24,10 +24,64 @@ defmodule Map do
   extern "C" fn fz_map_entry_key(any, integer) :: any
   extern "C" fn fz_map_entry_value(any, integer) :: any
   extern "fz" fn fz_map_delete(any, any) :: any
+  extern "fz" fn fz_map_from_kv(any, any) :: any
   extern "fz" fn fz_map_put_ref(any, any, any) :: any
   extern "fz" fn fz_map_put_int(any, any, integer) :: any
   extern "fz" fn fz_map_put_float(any, any, float) :: any
   extern "fz" fn fz_map_put_atom_ref(any, any, atom) :: any
+
+  # ---- BULK: one pass, one allocation. Reach for these. ----
+
+  @doc "A map from a list of {key, value} pairs. Later keys win."
+  @spec new([{any, any}]) :: any
+  fn new(pairs), do: build(pairs, [], [])
+
+  @doc "Both maps, with `b`'s value winning on a shared key."
+  @spec merge(any, any) :: any
+  fn merge(a, b), do: build(to_list(a) ++ to_list(b), [], [])
+
+  @doc "Only the given keys, in one pass."
+  @spec take(any, [any]) :: any
+  fn take(map, keys), do: build(taken(map, keys, []), [], [])
+
+  @doc "Everything except the given keys, in one pass."
+  @spec drop(any, [any]) :: any
+  fn drop(map, keys), do: build(dropped(to_list(map), keys, []), [], [])
+
+  @doc "The entries whose {key, value} the function keeps."
+  @spec filter(any, ({any, any}) -> bool) :: any
+  fn filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
+
+  @doc "{taken, dropped} by the given keys, in one pass each."
+  @spec split(any, [any]) :: {any, any}
+  fn split(map, keys), do: {take(map, keys), drop(map, keys)}
+
+  # Splits the pair list into parallel key and value lists, which is what the
+  # one-allocation builder takes.
+  fnp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
+  fnp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
+
+  fnp taken(_map, [], acc), do: reverse(acc, [])
+  fnp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
+  fnp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
+  fnp take_one(_map, _k, acc, false), do: acc
+
+  fnp dropped([], _keys, acc), do: reverse(acc, [])
+  fnp dropped([{k, v} | t], keys, acc), do: dropped(t, keys, drop_one({k, v}, keys, acc, key_listed?(keys, k)))
+  fnp drop_one(_pair, _keys, acc, true), do: acc
+  fnp drop_one(pair, _keys, acc, false), do: [pair | acc]
+
+  fnp kept([], _fun, acc), do: reverse(acc, [])
+  fnp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
+  fnp keep_one(pair, acc, true), do: [pair | acc]
+  fnp keep_one(_pair, acc, false), do: acc
+
+  fnp key_listed?([], _v), do: false
+  fnp key_listed?([h | t], v), do: key_listed_or?(h === v, t, v)
+  fnp key_listed_or?(true, _t, _v), do: true
+  fnp key_listed_or?(false, t, v), do: key_listed?(t, v)
+
+  # ---- SINGLE KEY: each copies the whole array. Not in a loop. ----
 
   @doc "The map with `key` set. Copies the whole array; do not use in a loop."
   #
