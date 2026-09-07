@@ -895,6 +895,33 @@ fn decode_struct_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Span
     Ok(Spanned::new(Pattern::Struct { module, fields }, span))
 }
 
+/// A STRING LITERAL segment is a binary of its own byte length.
+///
+/// `<<"true", rest :: binary>>` is Elixir's spelling and it has to match the
+/// four bytes `true`. Without this the segment kept the default integer spec,
+/// so the matcher read ONE BYTE, compared it against the four-byte literal, and
+/// never matched -- silently, falling through to the next clause. A scanner
+/// written the natural way compiled, ran, and did nothing (fz-5xp.52).
+///
+/// Only an unsized segment is adjusted: an explicit size is the author's, and a
+/// literal of the wrong length under it should fail to match rather than be
+/// quietly resized.
+fn sized_for_binary_literal(value: &Pattern, spec: BitFieldSpec) -> BitFieldSpec {
+    let Pattern::Binary(bytes) = value else {
+        return spec;
+    };
+    if spec.size.is_some() {
+        return spec;
+    }
+    BitFieldSpec {
+        ty: BitType::Binary,
+        // BYTES, not bits: a `binary` segment's size is in units of 8, which is
+        // what `binary-size(1)` means for one byte.
+        size: Some(BitSize::Literal(bytes.len() as u32)),
+        ..spec
+    }
+}
+
 fn decode_bitstring_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let mut fields = Vec::new();
     for field in args {
@@ -908,16 +935,14 @@ fn decode_bitstring_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<S
                 ));
             }
             let field_span = span_from_meta(&node.meta)?;
-            fields.push(BitField {
-                value: decode_pattern(&parts[0], Some(span))?,
-                spec: decode_bit_spec(&parts[1], field_span)?,
-            });
+            let value = decode_pattern(&parts[0], Some(span))?;
+            let spec = sized_for_binary_literal(&value.node, decode_bit_spec(&parts[1], field_span)?);
+            fields.push(BitField { value, spec });
             continue;
         }
-        fields.push(BitField {
-            value: decode_pattern(field, Some(span))?,
-            spec: BitFieldSpec::default(),
-        });
+        let value = decode_pattern(field, Some(span))?;
+        let spec = sized_for_binary_literal(&value.node, BitFieldSpec::default());
+        fields.push(BitField { value, spec });
     }
     Ok(Spanned::new(Pattern::Bitstring(fields), span))
 }

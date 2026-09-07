@@ -1,0 +1,10 @@
+{:true_lit, ",x"}
+{:null_lit, ""}
+{:no, "false"}
+{:space, "abc"}
+{:newline, "abc"}
+{:no, "abc"}
+{:annotated, "cd"}
+{:no, "xy"}
+{:quote, "hi\""}
+{:sized, "ab", "cd"}

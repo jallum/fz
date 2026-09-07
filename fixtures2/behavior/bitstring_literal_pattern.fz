@@ -1,0 +1,67 @@
+#---
+# purpose: "a string literal in a bitstring pattern matches the bytes it spells"
+# oracle: oracle.exs
+#---
+#
+# # bitstring_literal_pattern
+#
+#     fnp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
+#     fnp lit(bin), do: {:no, bin}
+#
+#     lit("true,x")   elixir {:true_lit, ",x"}   fz {:no, "true,x"}
+#
+# The clause never matched, silently, and control fell to the next one. A
+# scanner written the natural Elixir way compiled, ran, and did nothing.
+#
+# A literal segment kept the DEFAULT INTEGER SPEC -- eight bits -- so the
+# matcher read one byte and compared it against a four-byte binary. A byte value
+# in the same position always worked, which is why the machinery looked fine:
+# `<<32, rest :: binary>>` matched a space where `<<" ", rest :: binary>>` did
+# not.
+#
+# Found by writing the JSON scanner the goal program needs. Every JSON token is
+# a literal -- `true`, `false`, `null`, `{`, `[`, `,`, `:`, `"` -- so a decoder
+# either used numeric byte soup or silently did nothing.
+#
+# ## What it covers
+#
+#   * a single-byte literal, where the wrong spec still read the right NUMBER of
+#     bytes and so failed only on the comparison;
+#   * multi-byte literals, where it read too few;
+#   * a literal that consumes the whole subject, leaving an empty rest;
+#   * the `:: binary`-annotated spelling, which was equally broken;
+#   * a byte VALUE beside them, which always worked and must keep working;
+#   * an explicitly sized segment, whose size is the author's and is not
+#     overridden.
+fnp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
+fnp lit(<<"null", rest :: binary>>), do: {:null_lit, rest}
+fnp lit(bin), do: {:no, bin}
+
+fnp ws(<<" ", rest :: binary>>), do: {:space, rest}
+fnp ws(<<"\n", rest :: binary>>), do: {:newline, rest}
+fnp ws(bin), do: {:no, bin}
+
+fnp annotated(<<"ab" :: binary, rest :: binary>>), do: {:annotated, rest}
+fnp annotated(bin), do: {:no, bin}
+
+fnp byte_form(<<34, rest :: binary>>), do: {:quote, rest}
+fnp byte_form(bin), do: {:no, bin}
+
+fnp sized(<<x :: binary-size(2), rest :: binary>>), do: {:sized, x, rest}
+fnp sized(bin), do: {:no, bin}
+
+fn main() do
+  dbg(lit("true,x"))
+  dbg(lit("null"))
+  dbg(lit("false"))
+
+  dbg(ws(" abc"))
+  dbg(ws("\nabc"))
+  dbg(ws("abc"))
+
+  dbg(annotated("abcd"))
+  dbg(annotated("xy"))
+
+  dbg(byte_form("\"hi\""))
+  dbg(sized("abcd"))
+end
