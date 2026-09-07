@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-07T15:25:30Z",
   "created": "2026-09-07T11:31:29Z",
   "description": "Found by measuring the goal program's allocations, which is what the epic's\nSIGNAL asks for.\n\n    case bin do\n      \u003c\u003cs :: binary-size(n), rest :: binary\u003e\u003e -\u003e {:ok, s, rest}\n      _ -\u003e :error\n    end\n\n    take(\"hello world\", 5)\n      elixir  {:ok, \"hello\", \" world\"}\n      fz      :error          on every door, silently\n\nA LITERAL size works -- `binary-size(5)` on the same input returns\n`{:ok, \"hello\", \" world\"}` -- so it is specifically a bound variable as the\nsize. No error, no warning: the clause just never fires.\n\nWHY IT IS P1 RATHER THAN A CURIOSITY. Without it, no library function can take\na SLICE of a binary whose length it computed. Every string-building routine has\nto accumulate one byte at a time:\n\n    fnp string(\u003c\u003cc, r :: binary\u003e\u003e, acc), do: string(r, acc \u003c\u003e \u003c\u003cc\u003e\u003e)\n\nwhich allocates a new binary per byte. Measured on the goal program, decoding a\n68-byte JSON document costs 435 BITSTRING ALLOCATIONS and 71,600 bytes. The\ndocument's string content is about ten bytes. That is O(n^2) in the length of\nevery string, and it is the exact shape this epic exists to remove -- \"the\ncompiler is ahead of the library; the library squanders it\".\n\nWith variable sizes working, a scanner finds the extent and takes ONE slice:\n435 allocations become a handful.\n\nDONE = a bound variable as a binary segment's size matches the bytes it names,\non all three doors, with a fixture. Then re-measure the JSON allocation golden;\nthe drop is the point.\n\nWATCH OUT: `BitSize::Var` exists in the AST, so the surface parses it and\nsomething downstream drops or misreads it. Whatever that is, a size the matcher\ncannot honour should be a diagnostic, not a clause that never fires -- the same\nlesson as fz-5xp.52.",
   "id": "fz-5xp.54",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] A variable-size binary segment silently never matches",
   "type": "bug",
-  "updated_at": "2026-09-07T11:53:12Z"
+  "updated_at": "2026-09-07T15:25:30Z"
 }
