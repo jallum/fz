@@ -983,12 +983,10 @@ fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
     };
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
-        // `to_uppercase` yields several chars for the special casings; taking
-        // exactly one keeps this the SIMPLE mapping and leaves the rest alone,
-        // which is what a one-codepoint-in-one-codepoint-out table means.
-        // FULL casing, not simple: `to_uppercase` yields several codepoints for
-        // the special casings, and taking all of them is what makes `"straße"`
-        // upcase to `"STRASSE"` the way Elixir's default mode does.
+        // Full casing rather than simple: `to_uppercase` yields several
+        // codepoints for the special casings, and taking all of them is what
+        // makes `"straße"` upcase to `"STRASSE"`, the way Elixir's default
+        // mode does.
         if upper {
             out.extend(ch.to_uppercase());
         } else {

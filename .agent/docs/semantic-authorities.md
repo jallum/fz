@@ -155,13 +155,19 @@ rather than by construction, because an address table has to exist somewhere:
 see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
 
 **Text** — `String` (`src/modules/runtime_library/string.fz`) is plain fz over
-binaries, and declares only two primitives of its own: `byte_size/1`, a header
-read, and `to_atom/1`, which reaches the node's atom table. Everything else is
-recursion over a binary, which is only affordable because a tail is a view
-(fz-5xp.55) and a computed size can be matched (fz-5xp.54). Case mapping is
-ASCII only; the Unicode tables belong in their own module and are not written
-yet, so `upcase`/`downcase` are checked against Elixir's `:ascii` mode rather
-than its default.
+binaries, and declares three primitives of its own: `to_atom/1`, which reaches
+the node's atom table, and `fz_binary_upcase`/`fz_binary_downcase`. It does not
+declare `byte_size/1`; that comes from `Kernel`. Everything else is recursion
+over a binary, which is only affordable because a tail is a view and a computed
+size can be matched.
+
+Case mapping is the one place the owner is a Rust table rather than fz. It is
+FULL Unicode casing — `char::to_uppercase` and its inverse, all 103 special
+casings, so `"straße"` upcases to `"STRASSE"` — and the oracle twins check it
+against Elixir's DEFAULT mode, not `:ascii`. The table lives in the runtime
+because as fz clauses its 2,723 pairs would go through the dispatch matrix and
+make compile work proportional to the table rather than to the program; it
+belongs in fz once a table can be data rather than clauses (fz-5xp.68).
 
 ## Reading this list
 
