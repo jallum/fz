@@ -901,6 +901,19 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     }
 }
 
+/// `/` on two integers, which is a FLOAT in Elixir: `1 / 2` is `0.5`, not `0`.
+/// The truncating form is `div/2`, which keeps `fz_op_div_ii`.
+///
+/// Lives HERE rather than beside the interpreter's other `fz_op_*` shims
+/// because native codegen does not intercept it by name: it takes the generic
+/// extern path, which needs a symbol the JIT can look up and the AOT link can
+/// resolve. The private shims work only while an intercept covers them, which
+/// is fz-5xp.29.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_div_ii_to_float(a: i64, b: i64) -> f64 {
+    a as f64 / b as f64
+}
+
 /// `-x` for an integer. Its own symbol rather than `0 - x`, because the two
 /// differ: `0.0 - 0.0` is `0.0` while `-0.0` is `-0.0`, and the float sibling
 /// below has to preserve that.

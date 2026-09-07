@@ -23,6 +23,7 @@ defmodule Kernel do
   extern "C" fn fz_op_mul_if(integer, float) :: float
   extern "C" fn fz_op_mul_ff(float, float) :: float
   extern "C" fn fz_op_div_ii(integer, integer) :: integer
+  extern "C" fn fz_op_div_ii_to_float(integer, integer) :: float
   extern "C" fn fz_op_div_if(integer, float) :: float
   extern "C" fn fz_op_div_fi(float, integer) :: float
   extern "C" fn fz_op_div_ff(float, float) :: float
@@ -154,14 +155,26 @@ defmodule Kernel do
   fn left :: float * right :: integer, do: fz_op_mul_if(right, left)
   fn left :: float * right :: float, do: fz_op_mul_ff(left, right)
 
-  @spec integer / integer :: integer
+  # `/` ALWAYS returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
+  # truncating form is `div/2` below. Getting this wrong is silent -- integer
+  # division simply loses the fraction -- and a JSON number parser building
+  # `3 + 5 / 10` needs `3.5`.
+  @spec integer / integer :: float
   @spec float / float :: float
   @spec integer / float :: float
   @spec float / integer :: float
-  fn left :: integer / right :: integer, do: fz_op_div_ii(left, right)
+  fn left :: integer / right :: integer, do: fz_op_div_ii_to_float(left, right)
   fn left :: integer / right :: float, do: fz_op_div_if(left, right)
   fn left :: float / right :: integer, do: fz_op_div_fi(left, right)
   fn left :: float / right :: float, do: fz_op_div_ff(left, right)
+
+  @doc "Truncating integer division, Elixir's div/2."
+  @spec div(integer, integer) :: integer
+  fn div(left, right), do: fz_op_div_ii(left, right)
+
+  @doc "Integer remainder, Elixir's rem/2."
+  @spec rem(integer, integer) :: integer
+  fn rem(left, right), do: fz_op_rem_ii(left, right)
 
   @spec integer % integer :: integer
   @spec float % float :: float

@@ -1658,7 +1658,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // reaches four of them; the callees of each are derived once.
     ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 125, 63),
     ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 158, 83),
-    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 267, 137),
+    // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 261, 134),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2308,7 +2309,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same thirteen absorbed-identity analyses
         // from the semantic total.
-        total_evaluations: 2497,
+        // fz-5xp.6 lowers this by 30 -- see the work-start census.
+        total_evaluations: 2467,
     },
 ];
 

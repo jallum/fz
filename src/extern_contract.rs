@@ -65,6 +65,7 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     ("fz_op_mul_if", ExternAbi::C),
     ("fz_op_mul_ff", ExternAbi::C),
     ("fz_op_div_ii", ExternAbi::C),
+    ("fz_op_div_ii_to_float", ExternAbi::C),
     ("fz_op_div_if", ExternAbi::C),
     ("fz_op_div_fi", ExternAbi::C),
     ("fz_op_div_ff", ExternAbi::C),

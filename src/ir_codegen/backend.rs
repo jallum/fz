@@ -173,6 +173,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("fz_map_put_int", ir_runtime::fz_map_put_int as *const u8);
     builder.symbol("fz_map_put_float", ir_runtime::fz_map_put_float as *const u8);
     builder.symbol("fz_map_put_atom", ir_runtime::fz_map_put_atom as *const u8);
+    builder.symbol("fz_op_div_ii_to_float", ir_runtime::fz_op_div_ii_to_float as *const u8);
     builder.symbol("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8);
     builder.symbol("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8);
     builder.symbol("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8);

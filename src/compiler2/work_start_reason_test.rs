@@ -228,19 +228,22 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4184, 11, 21, 401),
+        // fz-5xp.6 removes 30 more applies: `Range.count` reaches `div/2`
+        // directly where `/` now returns a float and had to be narrowed back.
+        (4154, 11, 21, 401),
         "fz-kdt.182 removed 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities, and fz-5xp.2 removes 49 more applies and 9 more runs by letting a list reach Enum.to_list/1 as itself; scope and module work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1469,
+        // fz-5xp.6 removes twelve more wakes via `Range.count`'s `div/2`.
+        1457,
         "fz-kdt.182 removed twenty changed-revision wakes for redundant list-union executable identities and fz-5xp.2 removes eleven more with the reduce-and-reverse activations Enum.to_list/1 no longer mints for a list; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1175,
+        1157,
         "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities and fz-5xp.2 removes four more with the unminted reduce-and-reverse activations; macro products require no separate readiness producer",
     );
     assert_eq!(
