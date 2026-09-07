@@ -7,9 +7,15 @@
   "id": "fz-5xp.25",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "SCOPE CORRECTED after review: this is not about keyword lists. It is the\natom-key `Index` lowering, and keyword lists are one instance.\n\nsrc/compiler2/jobs/body.rs:1636-1655 lowers `Expr::Index` with an ATOM key to\n`ExprStep::FieldAccess` -- struct-field semantics -- and only a non-atom key to\n`MapIndex`. So EVERY atom-key bracket access on a non-map/non-struct aborts,\nand `nil` is the common case, not an exotic one:\n\n  n = %{outer: %{inner: 7}}\n  n[:nope][:x]      elixir nil\n                    fz interp: \"StructField: subject is not a map or Struct\",\n                    process aborts\n  nil[:a]           elixir nil     fz aborts\n\n  opts = [timeout: 30]\n  opts[:timeout]    elixir 30      fz aborts (the case this ticket was filed for)\n\nConversely `%Struct{}[:field]` SUCCEEDS in fz where Elixir refuses to compile,\nbecause `Access` is not implemented for structs. So the lowering is both too\npermissive and too fragile, in the same rule.\n\nFIX SHAPE: `Expr::Index` should dispatch on the RECEIVER, not on the key's kind\n-- map by key lookup, keyword list by key lookup, struct refused, anything else\na diagnostic rather than a struct read on a mistagged value. Deciding by key\nkind is what makes `nil[:a]` an abort and `%Struct{}[:f]` a success.\n\nChained access is the shape that makes this urgent: `a[:x][:y]` where `a[:x]`\nmisses is ordinary Elixir and currently kills the process.\n\nRelated: fz-5xp.26 (integer key + atom value panics the compiler),\nfz-5xp.27 (tuple/list keys never match), fz-5xp.28 (no Access module).\nTogether these four are the bracket-access surface, and fz-5xp.12's `Map`\nwork will meet all of them.",
+      "timestamp": "2026-09-07T05:56:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Bracket access on a keyword list aborts the process",
   "type": "bug",
-  "updated_at": "2026-09-07T05:24:52Z"
+  "updated_at": "2026-09-07T05:56:05Z"
 }
