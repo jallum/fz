@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-07T18:53:52Z",
   "close_reason": "Superseded by the atomic implementation boundary fz-kdt.200; all valid acceptance criteria moved into that description.",
   "created": "2026-09-02T18:16:08Z",
@@ -29,5 +27,5 @@
   "status": "closed",
   "title": "Absorbed into fz-kdt.200",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:34Z"
+  "updated_at": "2026-09-07T18:55:35Z"
 }
