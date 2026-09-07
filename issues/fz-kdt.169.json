@@ -6,7 +6,6 @@
     "fz-tfn.30"
   ],
   "blocks": [
-    "fz-tfn.13",
     "fz-tfn.39"
   ],
   "closed_at": "2026-09-06T17:13:59Z",
@@ -26,5 +25,5 @@
   "status": "closed",
   "title": "Retain transported capture tuples after rejecting costlier flow-sensitive erasure",
   "type": "task",
-  "updated_at": "2026-09-06T17:39:27Z"
+  "updated_at": "2026-09-07T18:56:16Z"
 }
