@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T13:41:46Z",
+  "description": "Found while fixing fz-5xp.59.\n\n    extern \"C\" fn libc::sqrt(float) :: float\n\nThe `libc::` here is an fz MODULE PATH. It names where the function lives in\nfz's namespace, not where the symbol lives on the machine, and fz has no way to\nsay the second thing. The runtime therefore has to guess: `fz_extern_symbol_addr`\nsearches what the process has loaded and then a fixed list of standard\nlibraries (libm, libc) it opens itself.\n\nThat is a stand-in and should be named as one. It works because every foreign\nsymbol fz names today is in the C standard library. The first declaration of a\nsymbol in some other library -- libz, libsqlite3, a host's own .so -- has\nnowhere to say so and will not resolve.\n\nWHAT IT SHOULD BE: the declaration carries the library, and the runtime opens\nthat and nothing else. Something like\n\n    extern \"C\" from \"m\" fn libc::sqrt(float) :: float\n\nwith the AOT link line deriving `-lm` from the same fact rather than hardcoding\nit in aot_link.rs, which is the second place that currently knows.\n\nREMOVES: STANDARD_C_LIBRARIES in extern_variadic.rs, and the `-lm` on the\nnon-macOS branch of link_aot_artifact.",
+  "id": "fz-5xp.61",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "A foreign extern declaration cannot say which library it comes from",
+  "type": "task",
+  "updated_at": "2026-09-07T13:41:46Z"
+}
