@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T08:37:14Z",
+  "description": "Found by the cold review of fz-5xp.31. PRE-EXISTING (the code path is untouched\nby that change), and trivially reachable:\n\n    fn main(), do: dbg(-3.0)\n\n  interp -\u003e -3.0\n  run    -\u003e panic: cannot read raw i64 from non-integer value\n  build  -\u003e the same\n\nCAUSE. `Prim::UnOp(Neg)` in `src/compiler2/native_codegen/prim.rs` unconditionally\ndoes `as_raw_i64` then `ineg` -- there is no float arm, so `fn_ctx.rs`'s\n`as_raw_i64` aborts on a float. The interpreter negates by value and is fine.\n\nWHY IT IS P1 RATHER THAN \"someday\": fz-5xp.15 is Float formatting. Its oracle\nwill compare `Float.to_string(-3.0)` and friends against Elixir, and every\nnegative-float fixture in the epic from here on will hit this on two of the\nthree doors. It also means `behavior/extern_float_lanes` could not use a\nnegative input even though negatives are exactly where a sign-conversion bug in\nthe marshalling would show.\n\nDONE = `-3.0`, `-x` for a float `x`, and a float negation in a larger\nexpression all agree on interp, run and build, with a fixture that covers a\nnegative literal, a negated float variable, and a negated float returned from a\ncall. Check `UnOp(Neg)`'s sibling operators at the same time -- if `Neg` had no\nfloat arm, the others deserve a look.",
+  "id": "fz-5xp.33",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "[BUG] A negative float literal aborts run and build",
+  "type": "bug",
+  "updated_at": "2026-09-07T08:37:14Z"
+}
