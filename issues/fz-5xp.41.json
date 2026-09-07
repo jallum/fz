@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:14:12Z",
+  "description": "fz-5xp.15 asked for String.Chars with Elixir's five builtin impls. Four landed:\nAtom (with the `nil -\u003e \"\"` case), Binary, Integer, Float. LIST DID NOT.\n\n    to_string([1, 2])\n      elixir -\u003e \u003c\u003c1, 2\u003e\u003e      the list is a charlist of codepoints\n      fz     -\u003e no impl\n\n`String.Chars.List` is `List.to_string/1`, which is charlist-to-binary\nconversion, and Elixir's version is iodata-shaped rather than a flat map:\n\n    List.to_string([0x64, \"ee\", [~c\"p\"]])   # =\u003e \"deep\"\n\nnested lists and embedded binaries included.\n\nWHY IT WAS LEFT OUT rather than half-built: charlists are deferred across this\nproject (see the fz-g58 enum epic, which excludes them deliberately). Adding a\ncodepoints-only `List.to_string` would introduce a partial charlist notion in\none protocol impl while the rest of the library has none, and the partial\nversion would answer `[0x64, \"ee\"]` with a panic where Elixir answers \"dee\" --\na shape people actually write.\n\nNOT ON THE GOAL PROGRAM'S PATH. `Json.encode` renders a list structurally as\n`[...]`, never through `to_string`, and interpolating a charlist is not\nsomething the decoder or encoder does. So this does not block fz-5xp.17.\n\nDONE = either charlists arrive and `String.Chars.List` is `List.to_string/1`\nin full, or fz decides it has no charlists and the impl is deliberately absent\nwith that written down where a reader will find it. Both are defensible; the\ncurrent state -- silently missing one of five -- is not.\n\nBlocked behind whatever settles charlists.",
+  "id": "fz-5xp.41",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "String.Chars has four of Elixir's five impls: List is absent",
+  "type": "task",
+  "updated_at": "2026-09-07T09:14:12Z"
+}
