@@ -6,8 +6,7 @@
     "fz-tfn.41"
   ],
   "blocks": [
-    "fz-kdt.58",
-    "fz-tfn.39"
+    "fz-kdt.58"
   ],
   "closed_at": "2026-09-05T19:05:34Z",
   "close_reason": "Delivered164eb3940 after ticket-scoped cold review. Four relation products and request registry deleted; exact RuntimeDemand-owned slot facts share immutable joined values. Equal consumer work0/0/0; add/remove1eval/1displacement/0wait with exact slot attribution. Fresh binary verified after discarding stale cache evidence. Final library1843/0fail/6existing ignores, matrix531, CLI30, runtime210, doc/fmt/check/strictclippy green. Take/drop materialized696-\u003e500, callable5504-\u003e5292; deleted678evaluations/631settlements; operator398-\u003e378settlements. Three independent .12 backend baselines identical; operator early-prototype backend identical. Preceding CI gates push.",
@@ -20,5 +19,5 @@
   "status": "closed",
   "title": "Make root-scoped transport relations react to edge changes, not settlement waves",
   "type": "task",
-  "updated_at": "2026-09-05T19:07:36Z"
+  "updated_at": "2026-09-07T18:56:52Z"
 }
