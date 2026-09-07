@@ -4,8 +4,7 @@
     "fz-kdt.34",
     "fz-tfn.12",
     "fz-tfn.26",
-    "fz-tfn.30",
-    "fz-tfn.46"
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-kdt.114",
@@ -33,5 +32,5 @@
   "status": "in_progress",
   "title": "Make fact demand and subscriptions exact-edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-07T18:50:34Z"
+  "updated_at": "2026-09-07T18:55:53Z"
 }
