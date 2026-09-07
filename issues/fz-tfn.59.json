@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-kdt.188",
     "fz-tfn.21"
   ],
   "created": "2026-09-07T18:47:45Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Rebuild the recalculator stack above accepted PR #122",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:23Z"
+  "updated_at": "2026-09-07T18:56:24Z"
 }
