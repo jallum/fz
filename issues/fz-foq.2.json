@@ -9,9 +9,15 @@
   "id": "fz-foq.2",
   "labels": [],
   "parent": "fz-foq",
+  "comments": [
+    {
+      "text": "Premise was wrong: fixture_facts is ALREADY #[cfg(test)]-gated on main (compiler2/mod.rs declares it under #[cfg(test)]). My original scan looked for `pub fn` per file without checking whether the declaring module is gated, so canonical_call_edge_facts and render_canonical_call_edge_snapshot were false positives.\n\nSame false-positive class hit the telemetry cluster: src/telemetry/capture.rs and src/telemetry/public_trace.rs are also already gated modules, which is why events, events_named, count_by_kind and spans_named appeared in the list.\n\nRe-scoped to the one real residue below.",
+      "timestamp": "2026-09-07T02:30:08Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Gate fixture_facts behind cfg(test)",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:27Z"
+  "updated_at": "2026-09-07T02:30:08Z"
 }
