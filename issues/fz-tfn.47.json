@@ -4,7 +4,6 @@
     "fz-tfn.57"
   ],
   "blocks": [
-    "fz-tfn.39",
     "fz-tfn.56"
   ],
   "created": "2026-09-06T01:30:25Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Give product requests one exact lifecycle and trigger",
   "type": "bug",
-  "updated_at": "2026-09-07T18:56:33Z"
+  "updated_at": "2026-09-07T18:57:03Z"
 }
