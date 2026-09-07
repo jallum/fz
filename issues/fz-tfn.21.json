@@ -7,13 +7,13 @@
     "fz-kdt.213"
   ],
   "created": "2026-09-03T08:04:44Z",
-  "description": "## Goal\n\nDelete the unused engine-wide per-derivation scheduler substrate. Production jobs publish one answer owned by the job; no production JobEffects reports multiple derivations, while every read, claim, roster, hash and finality operation still pays for DerivationId machinery.\n\n## Decision\n\nfz-kdt.68's parked multi-answer experiment measured a 6–10 percent regression and has no production consumer. Current blocked-analysis observations show almost every blocked completion changes its partial answer, leaving little reusable answer work. The epic chooses deletion rather than another A/B implementation.\n\n## Work\n\nPin current single-answer scheduling semantics, then delete DerivationId, JobDerivation rosters, per-derivation dependency/claim maps, sole-vector construction, publisher wrappers where job identity suffices, withdrawal plumbing, telemetry and tests that exist only for the dormant abstraction. Preserve exact reads, waits, claims, retraction, rebasing, finality, wake attribution and failed-attempt ownership.\n\n## Acceptance\n\nProduction semantic facts, products, artifacts and runtime output remain exact. Scheduler allocations, hashing and completion work decrease. No experiment switch, counter, parked implementation or stale documentation remains. This lands before generic grounded support, source/failure ownership and exact-edge wait work so those features are built on the final publisher identity.",
+  "description": "## Status\n\nAbsorbed into fz-tfn.59 because stack creation and the first real implementation commit are one atomic boundary. A clean branch equal to PR #122 cannot create a meaningful new stacked PR, and a padding commit would violate the epic's no-debris rule.\n\n## Preserved requirement\n\nDelete the unused engine-wide DerivationId and JobDerivation scheduler substrate after proving production jobs have one job-owned answer. Preserve exact reads, waits, claims, retraction, rebasing, finality, wake attribution and failed-attempt ownership. Prove lower allocations, hashing and completion work; leave no experiment switch, counter or stale documentation.\n\nConsult fz-tfn.59 for the current stack, TDD, deletion, review, commit, PR and acceptance boundary. This description replaces the former standalone plan; comments and parked experiments are historical evidence only.",
   "id": "fz-tfn.21",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
   "status": "open",
-  "title": "Delete the unused per-derivation scheduler substrate",
+  "title": "Absorbed into fz-tfn.59",
   "type": "task",
-  "updated_at": "2026-09-07T18:56:59Z"
+  "updated_at": "2026-09-07T19:05:37Z"
 }
