@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.188",
-    "fz-kdt.46",
     "fz-tfn.6"
   ],
   "blocks": [
@@ -24,5 +23,5 @@
   "status": "open",
   "title": "Derive final InputDemand directly from source-owned bodies",
   "type": "task",
-  "updated_at": "2026-09-07T19:12:04Z"
+  "updated_at": "2026-09-07T19:12:05Z"
 }

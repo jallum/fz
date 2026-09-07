@@ -5,7 +5,6 @@
   ],
   "blocks": [
     "fz-kdt.114",
-    "fz-kdt.200",
     "fz-tfn.15",
     "fz-tfn.52",
     "fz-tfn.54",
@@ -31,5 +30,5 @@
   "status": "open",
   "title": "Make fact demand and subscriptions exact-edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-07T19:08:57Z"
+  "updated_at": "2026-09-07T19:12:05Z"
 }
