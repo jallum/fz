@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T14:47:25Z",
+  "description": "Found while adding fz-5xp.8's fixture.\n\n    dbg([[], [1]])   -\u003e  [#ptr\u003c0x1\u003e, [1]]   Elixir: [[], [1]]\n    dbg([])          -\u003e  []\n\nA standalone empty list is the `EMPTY_LIST` sentinel, bits `0x8`. A NESTED one\nis a LIST-tagged word whose address is null, bits `0x1`. Two representations of\none value, and `render_heap_value` only recognised the sentinel, so the other\nfell through to the raw-pointer fallback.\n\nThe rendering is fixed -- both forms print `[]` -- but that is the symptom. The\ndefect is that the empty list is denoted two ways, so every place that asks 'is\nthis the empty list' has to know both, and any place that checks only\n`== EMPTY_LIST` is wrong for the nested case. `heap_object_word` already\nnormalises `addr == 0` to `EMPTY_LIST`, so something on the element-storage\npath does not go through it.\n\nDONE = one representation, or one named predicate that every reader asks. Find\nwhat stores a nested `[]` as `0x1` and make it produce the sentinel, then the\nrenderer's second arm can go away with it.\n\nPre-existing; reproduces at 67e09d373.",
+  "id": "fz-5xp.63",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "The empty list has two representations, and only one of them renders",
+  "type": "bug",
+  "updated_at": "2026-09-07T14:47:25Z"
+}
