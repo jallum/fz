@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:45:00Z",
+  "description": "Found while building String.Chars for fz-5xp.15.\n\n    fnp kind(s :: binary), do: {:binary, s}\n    fnp kind(_other), do: :not_a_binary\n\n    kind(\u003c\u003c1::4\u003e\u003e)   -\u003e  {:binary, \u003c\u003c1::4\u003e\u003e}    on all three doors\n\nA four-bit bitstring satisfies a `:: binary` clause head. Elixir distinguishes\n`binary()` (byte-aligned) from `bitstring()`, and `is_binary/1` is false for\n`\u003c\u003c1::4\u003e\u003e`.\n\nThis matters because fz deliberately replaced Elixir's `is_*` guards with\ntype-annotated clause heads. That substitution is exact for `integer`, `float`,\n`atom` and the rest -- but for binaries it silently widens, and the annotation\nthat reads like `is_binary(x)` behaves like `is_bitstring(x)`.\n\nCONSEQUENCE, already hit: `String.Chars` promises `:: binary` and Elixir guards\nits BitString impl with `is_binary`. fz's impl could not express the guard and\nhad to call a runtime predicate (`fz_bitstring_is_binary`) instead. Without it\nthe impl returned a partial bitstring as a `binary`, and the damage surfaced at\nthe next `\u003c\u003e` as a byte-alignment abort inside `fz_binary_concat` -- far from\nthe call that was actually wrong.\n\nDONE = `binary` means byte-aligned, with `bitstring` available for the wider\ntype, so a `:: binary` clause head rejects `\u003c\u003c1::4\u003e\u003e` on all three doors and\n`String.Chars.Binary` can drop its runtime predicate. Check the other places\n`binary` is used as a bound while in there -- the extern wire type `binary`\nalready assumes byte alignment (`byte_aligned_binary_slice` asserts it), so\nthey may be the same fix.",
+  "id": "fz-5xp.42",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] fz's binary type does not exclude a non-byte-aligned bitstring",
+  "type": "bug",
+  "updated_at": "2026-09-07T09:45:00Z"
+}
