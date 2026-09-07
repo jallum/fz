@@ -6,6 +6,8 @@
   "blocks": [
     "fz-kdt.64"
   ],
+  "closed_at": "2026-09-07T22:44:17Z",
+  "close_reason": "Accepted in commit f191c53be after exact-hash cold review and all local gates",
   "created": "2026-08-30T20:02:56Z",
   "description": "## Goal\\n\\nPreserve a changed cumulative-contribution withdrawal movement direction from the authoritative removal point through fact change and scheduler dispatch.\\n\\nA changed withdrawal is a ground shift even when other publishers keep the aggregate present. Equal withdrawal is no content movement and wakes no current reader.\\n\\n## Accepted model\\n\\nContributionMap owns whether a publication changed. FactTable is the first layer that knows both that content changed and whether the completing publisher updated, rebased, or withdrew. It classifies that transition once as the closed crate-private ContentMovement of Ascent or Shift and carries it on the existing FactChange.\\n\\nScheduler consumes that typed movement directly. It no longer guesses direction from fact presence, revisions, cumulative/replacing key shape, or the completing job rebase flag. Existing Wake.shift telemetry serializes the authoritative scheduler decision; no telemetry schema or parallel state was added.\\n\\nChanged removal of one publisher from a still-present cumulative aggregate is Shift. Equal removal is absent from the changed frontier and remains quiet. First contentful cumulative appearance and ordinary widening remain Ascent. Replacing changes, last contentful withdrawal, and changed conclusions from a rebased publisher remain Shift. Bottom presence and withdrawal preserve their non-content semantics.\\n\\n## Boundary\\n\\nThis is only the existing classification correction. It does not enable AnalyzeActivation narrowing, add support bookkeeping, introduce a queue, or establish a new termination policy. The bounded ReturnType and ActivationInputs support cutover remains fz-kdt.64.\\n\\n## Proof\\n\\nThe production-boundary regression uses real ActivationInputs: removing one of two unequal publishers keeps the aggregate present at a new revision, wakes its exact reader once with shift=true, and marks the reader rebased. Scheduler and FactTable tests separately pin changed and equal withdrawals, cumulative ascent, last withdrawal, bottom, replacement, settlement, and deterministic routing.\\n\\nFresh ticket-scoped cold adversarial review approved exact base 4b3eb3c86d59b301813d6577506a0ced9a26e029 and binary diff SHA-256 50cef8f676d64057ca90a8bc102e7e679235536de05a7292c8f096f55de5aa2e with no findings.\\n\\nGreen gates: 1,973 library tests with 6 existing ignored; 642 serial fixture-matrix cases; 30 fz2 CLI tests; workspace all-target/all-feature check; strict Clippy with warnings denied; formatting and diff checks.\\n\\n## Result\\n\\nDirection is classified once where withdrawal is known and routed without reconstruction. The obsolete scheduler inference is deleted. fz-kdt.64 may now rely on exact ground-shift causality without importing support or narrowing policy into this ticket.",
   "id": "fz-kdt.82",
@@ -18,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Propagate cumulative withdrawals as typed ground shifts",
   "type": "bug",
-  "updated_at": "2026-09-07T22:43:50Z"
+  "updated_at": "2026-09-07T22:44:17Z"
 }
