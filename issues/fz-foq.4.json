@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-foq.1"
+    "fz-foq.1",
+    "fz-foq.2"
   ],
   "blocks": [],
   "created": "2026-09-07T02:21:25Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Move remaining unit-test-only methods behind cfg(test)",
   "type": "task",
-  "updated_at": "2026-09-07T02:21:26Z"
+  "updated_at": "2026-09-07T02:21:27Z"
 }
