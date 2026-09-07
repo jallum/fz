@@ -5,8 +5,7 @@
   ],
   "blocks": [
     "fz-tfn.24",
-    "fz-tfn.27",
-    "fz-tfn.39"
+    "fz-tfn.27"
   ],
   "closed_at": "2026-09-05T23:26:12Z",
   "close_reason": "Completed in 6e34f41c1; deterministic ordered RED/GREEN, two full8thread matrices534/0, strict clippy/fmt, fresh scoped coldreview approved exact75762cde6fb018ea4555746db794b6c50847cf28ec85a90fb89723a1130529ad.",
@@ -19,5 +18,5 @@
   "status": "closed",
   "title": "Make readiness EOF failure classification deterministic under parallel fixture load",
   "type": "bug",
-  "updated_at": "2026-09-05T23:45:34Z"
+  "updated_at": "2026-09-07T18:57:01Z"
 }
