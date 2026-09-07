@@ -228,38 +228,38 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4233, 11, 21, 430),
-        "co-output certification removes 263 separate executable-fact readiness resumes; scope and module work remain exact"
+        (4153, 11, 21, 410),
+        "fz-kdt.182 removes 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities; scope and module work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1468,
-        "direct macro definition waits and product wakes must stay within their exact measured work",
+        1448,
+        "fz-kdt.182 removes twenty changed-revision wakes for redundant list-union executable identities; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1138,
-        "macro products require no separate macro-readiness producer expansion",
+        1131,
+        "fz-kdt.182 removes seven blocked expansions with the absorbed executable identities; macro products require no separate readiness producer",
     );
     assert_eq!(
-        *demand_completions, 1285,
-        "the exact RuntimeDemand scheduler-completion multiset must remain deterministic",
+        *demand_completions, 1241,
+        "fz-kdt.182 removes 44 RuntimeDemand completions for absorbed list-union identities; the retained scheduler-completion multiset remains exact",
     );
     assert_eq!(
-        *demand_wake_starts, 1046,
-        "the exact RuntimeDemand changed-revision wake multiset must remain deterministic",
+        *demand_wake_starts, 1009,
+        "fz-kdt.182 removes 37 changed-revision RuntimeDemand wakes with absorbed list-union identities; the retained wake multiset remains exact",
     );
     assert_eq!(
         *demand_wake_causes.borrow(),
-        [58, 239, 151, 598],
-        "the seven additional demand resumes are moved Current RuntimeDemandInputs edges, not readiness-only or unexplained work",
+        [58, 232, 147, 572],
+        "fz-kdt.182 removes list-union identity demand resumes from exact moved-input causes, never from readiness-only or unexplained work",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        311,
-        "the exact RuntimeDemand and construction-target key frontier must remain deterministic",
+        304,
+        "fz-kdt.182 removes seven absorbed identities from the RuntimeDemand and construction-target key frontier",
     );
     assert_eq!(
         (
@@ -269,8 +269,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 268, 0, 0, 0),
-        "the root and 265 callee analyses must keep one shared frontier with no unsanctioned or scanning path",
+        (2, 259, 0, 0, 0),
+        "fz-kdt.182 removes nine absorbed analyses while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path",
     );
 
     let world = compiler.world();

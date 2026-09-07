@@ -89,6 +89,10 @@ The keying and join logic lean on a few `Types` methods, each with a distinct jo
 two callers contribute [list(int)] to one activation:
   refine_widen(list(int), list(int)) -> list(int)   (same id, equality short-circuits)
   joined value == previous value -> slot revision unchanged -> no subscriber wakes
+
+empty evidence then contributes to that same list:
+  union(empty_list(), list(int)) -> list(int)       (contained list clause is absorbed at intern)
+  activation key == previous key -> no executable or revision is minted
 ```
 
 ## Ownership boundary

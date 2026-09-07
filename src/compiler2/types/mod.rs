@@ -49,7 +49,7 @@ pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_v
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
-use dnf::{dnf_intersect_with, tuple_clause_subsumed};
+use dnf::{dnf_intersect_with, list_clause_subsumed, tuple_clause_subsumed};
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
@@ -210,12 +210,13 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The interned-DNF invariant: a descriptor entering the arena never
-    /// carries a duplicate clause on any axis, nor a provably-empty or
-    /// subsumed tuple clause. `Types::intern` establishes it by canonicalizing
-    /// the axes; this sweep verifies it for every intern in debug builds, so
-    /// any construction route leaking garbage clauses fails loudly instead of
-    /// accumulating.
+    /// The cheap debug half of the interned-DNF invariant: descriptors carry
+    /// no exact duplicate clause on any axis and no provably-empty or subsumed
+    /// tuple clause. `Types::intern` additionally absorbs typed list
+    /// containment through the memoized comparison cache. Repeating those
+    /// semantic comparisons here through raw descriptors would create a second
+    /// uncached authority, so list hygiene is proved at the canonicalizer's
+    /// typed boundary tests instead.
     #[cfg(debug_assertions)]
     fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
@@ -239,9 +240,9 @@ impl TypeInterner {
     }
 }
 
-/// `A ∨ A = A` on the four axes that carry no absorption pass of their own.
+/// `A ∨ A = A` on the three axes that carry no absorption pass of their own.
 ///
-/// The tuples axis gets the stronger emptiness+subsumption treatment; the rest
+/// The tuple and list axes get stronger subsumption treatment; the rest
 /// get idempotence, which is the rule the ACTIVATION KEY depends on. A key is
 /// built by erasing what the key language cannot address — closure brands
 /// above all — and erasure runs IN PLACE, so a union that legitimately kept one
@@ -270,6 +271,22 @@ fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
         kept += 1;
     }
     clauses.truncate(kept);
+}
+
+fn absorb_subsumed_clauses<T>(clauses: &mut Vec<Conj<T>>, mut subsumed: impl FnMut(&Conj<T>, &Conj<T>) -> bool) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let input = std::mem::take(clauses);
+    let mut out = Vec::with_capacity(input.len());
+    for clause in input {
+        if out.iter().any(|kept| subsumed(&clause, kept)) {
+            continue;
+        }
+        out.retain(|kept| !subsumed(kept, &clause));
+        out.push(clause);
+    }
+    *clauses = out;
 }
 
 #[cfg(debug_assertions)]
@@ -339,18 +356,19 @@ impl Types {
     /// afterwards and the schedule would still be choosing which clause lives.
     ///
     /// ABSORPTION and IDEMPOTENCE follow, and both are order-preserving filters
-    /// (`canonicalize_tuple_axis` keeps survivors in input order;
+    /// (the tuple/list canonicalizers keep survivors in input order;
     /// `dedupe_exact_clauses` keeps the first occurrence), so what reaches the
     /// interner index is still sorted.
     ///
     /// One pass suffices because the composition is idempotent: re-interning an
     /// already-interned descriptor sorts an already-sorted list to itself, finds
-    /// no empty or subsumed tuple clause left to drop and no exact duplicate
-    /// left to collapse, and so hashes to the descriptor already in the index.
+    /// no empty or subsumed tuple clause or subsumed list clause left to drop,
+    /// and no exact duplicate left to collapse, so it hashes to the descriptor
+    /// already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
         self.order_clauses(&mut d);
         self.canonicalize_tuple_axis(&mut d);
-        dedupe_exact_clauses(&mut d.lists);
+        self.canonicalize_list_axis(&mut d);
         dedupe_exact_clauses(&mut d.resources);
         dedupe_exact_clauses(&mut d.funcs);
         dedupe_exact_clauses(&mut d.maps);
@@ -475,23 +493,19 @@ impl Types {
     /// substitution) with one pass, and keeps garbage from accumulating across
     /// fixpoint iterations or doubling `dnf_neg` factors downstream.
     fn canonicalize_tuple_axis(&self, d: &mut Descr) {
-        if d.tuples.is_empty() {
-            return;
-        }
-        let clauses = std::mem::take(&mut d.tuples);
-        let mut out: Vec<Conj<TupleSig>> = Vec::with_capacity(clauses.len());
-        for c in clauses {
-            if self.tuple_clause_provably_empty(&c) {
-                continue;
-            }
-            let cached_subtype = |x: &Ty, y: &Ty| self.is_subtype(x, y);
-            if out.iter().any(|kept| tuple_clause_subsumed(&c, kept, cached_subtype)) {
-                continue;
-            }
-            out.retain(|kept| !tuple_clause_subsumed(kept, &c, cached_subtype));
-            out.push(c);
-        }
-        d.tuples = out;
+        d.tuples.retain(|clause| !self.tuple_clause_provably_empty(clause));
+        absorb_subsumed_clauses(&mut d.tuples, |clause, sibling| {
+            tuple_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
+        });
+    }
+
+    /// Absorb list clauses whose denotation is contained in a sibling. The
+    /// plain-positive relation is exact for the list model: empty membership
+    /// and non-empty element containment are its only two dimensions.
+    fn canonicalize_list_axis(&self, d: &mut Descr) {
+        absorb_subsumed_clauses(&mut d.lists, |clause, sibling| {
+            list_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
+        });
     }
 
     fn tuple_clause_provably_empty(&self, c: &Conj<TupleSig>) -> bool {

@@ -13059,7 +13059,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     // the strong component rather than one body. It is the same class as the
     // 91 corpus executables the returned axis adds that gain no distinct
     // published return (against 36 that do), dominated by `List.reduce_*`
-    // minting fz-kdt.182 `empty_list()`/`list(tau)` rungs across the
+    // minting `empty_list()`/`list(tau)` rungs across the
     // cont<->step cycle: fz-kdt.213 owns removing it, so the 2 below is a
     // RECORD of a known-unbought split and not a law. What the test is FOR is
     // unchanged: recursion is seen through the generated lambda at all. Read
@@ -18826,7 +18826,8 @@ const ASCENT_RUNG_FIXTURES: &[&str] = &[
 /// contains it. It exists because `list_element_type([])` is `none`, so `[]`
 /// never converges with `list(τ)`, and a slot that keeps its element therefore
 /// keys the accumulator's first call apart from every later one. That is
-/// fz-kdt.124's ladder and fz-kdt.182 owns the duplicate executables it mints.
+/// fz-kdt.124's ladder. The distinct empty/list inputs remain honest keys;
+/// fz-kdt.182 removes only redundant union representatives of a later rung.
 ///
 /// What THIS gate holds is the boundary fz-kdt.183 drew and fz-kdt.199 widened
 /// by one axis. A slot BOTH axes leave at `Ignore` is FREIGHT: the collapse

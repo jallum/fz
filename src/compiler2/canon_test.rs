@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::canon::{canon_backend_program, function_label};
 use super::dump::DumpStage;
-use super::identity::{ExecutableNeed, FunctionId, RootId};
+use super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, TyCanon, Types};
 use super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
@@ -73,6 +73,34 @@ fn drive_fixture(name: &str, text: &str) -> Compiler2<ConfiguredTelemetry> {
 
 fn equivalent(types: &Types, left: Ty, right: Ty) -> bool {
     types.is_subtype(&left, &right) && types.is_subtype(&right, &left)
+}
+
+fn equivalent_executable_keys(types: &Types, program: &super::BackendProgram) -> Vec<(ExecutableKey, ExecutableKey)> {
+    let executables = program
+        .executables()
+        .iter()
+        .map(|executable| (&executable.key, executable.key.activation.inputs(types)))
+        .collect::<Vec<_>>();
+    let mut duplicates = Vec::new();
+    for (index, (left_key, left_inputs)) in executables.iter().enumerate() {
+        for (right_key, right_inputs) in &executables[index + 1..] {
+            if left_key.activation.root != right_key.activation.root
+                || left_key.activation.function != right_key.activation.function
+                || left_key.need != right_key.need
+            {
+                continue;
+            }
+            if left_inputs.len() == right_inputs.len()
+                && left_inputs
+                    .iter()
+                    .zip(right_inputs)
+                    .all(|(left, right)| equivalent(types, *left, *right))
+            {
+                duplicates.push(((*left_key).clone(), (*right_key).clone()));
+            }
+        }
+    }
+    duplicates
 }
 
 /// `canon(a) == canon(b)` exactly when `a` and `b` are mutually subtype, over
@@ -401,6 +429,17 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// was rejected because it added 3,173 work-graph applies to remove only 89
 /// product evaluations. Stdout remained byte-identical on all three doors over
 /// this historical 597-fixture corpus.
+///
+/// Re-pinned DOWNWARD by fz-kdt.182, which makes the intern boundary absorb a
+/// plain list clause contained in its sibling. `empty_list() | list(int)` now
+/// reuses `list(int)`'s `Ty`, so re-derived evidence cannot mint another
+/// executable identity. `enum_map_family` falls 153 -> 149 and both take/drop
+/// twins 237 -> 230; the other six pins hold. A typed census over the current
+/// 607-source, 478-backend corpus finds 34 fewer mutually-subtype executable
+/// identities, exactly the aggregate executable-count reduction. Rendered
+/// backend diffs are display corroboration only. Normalized
+/// interp/run/build/AOT behavior is byte-identical, while work-graph applies
+/// fall by 352 and product evaluations by 786.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -417,7 +456,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            153,
+            149,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
@@ -447,23 +486,30 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
             // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
             // and the wrapper surfaces they ground stop sharing.
-            237,
+            230,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            237,
+            230,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
         compiler
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+        let program = compiler.retained_backend_program(root);
         assert_eq!(
-            compiler.retained_backend_program(root).executables().len(),
+            program.executables().len(),
             executables,
             "{name}: the emitted executable inventory moved off its target-fixture pin; \
              re-measure, name the cause, and re-pin"
+        );
+        let duplicates = equivalent_executable_keys(compiler.world().types(), &program);
+        assert!(
+            duplicates.is_empty(),
+            "{name}: equivalent activation inputs minted {} duplicate executable keys: {duplicates:?}",
+            duplicates.len(),
         );
     }
 }

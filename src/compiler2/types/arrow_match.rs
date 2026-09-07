@@ -1790,12 +1790,11 @@ mod pinned_verdicts {
     // `([int], [], (any, [int]) -> [int])`.
     //
     // `b` has TWO readable covariant occurrences here -- the seed `[]` and the
-    // GROUND reducer's result `[int]` -- so the join is complete and the answer
-    // is `[] | [int]`. That is the same SET as `[int]` (`[] <: [int]`), and the
-    // pin asserts so; the union interns as a distinct `Ty` only because
-    // `Types::union` does not absorb a subsumed member, which is fz-kdt.182 and
-    // predates this. Before fz-kdt.120 the veto dropped `b`'s `[]` occurrence
-    // and the join read `[int]` alone, which is why the literal moves.
+    // GROUND reducer's result `[int]` -- so the join is complete. Because `[]`
+    // contributes no values beyond `list(int)`, the intern boundary absorbs
+    // that clause and the answer has the existing `[int]` identity. Before
+    // fz-kdt.120 the veto dropped `b`'s `[]` occurrence; the same display then
+    // hid that the inference had ignored real evidence.
     #[test]
     fn a3_reducer_parameter_widening() {
         let mut t = Types::new();
@@ -1811,16 +1810,13 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, b, reducer], &b, &no_bounds(), &[list_int, empty, ground]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], [] | [int], (int, [] | [int]) -> [] | [int]] result=[] | [int]",
+            "Known params=[[int], [int], (int, [int]) -> [int]] result=[int]",
             "A3"
         );
         let ArrowMatch::Known { result, .. } = &v else {
             unreachable!("A3 answers Known");
         };
-        assert!(
-            t.is_equivalent(result, &list_int),
-            "the joined result is the SAME SET as [int]; only the interning differs (fz-kdt.182)"
-        );
+        assert_eq!(*result, list_int, "the complete join must reuse the one list identity");
     }
 
     // A4. A variable in a CONTRAVARIANT spot of the RESULT:
@@ -2348,18 +2344,16 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "A14");
     }
 
-    // A15 (pre-existing, fz-kdt.182). `union([], [int])` interns distinctly
-    // from `[int]` though the two denote the same set.
+    // A15 (fz-kdt.182). `union([], [int])` adds no values to `[int]`, so both
+    // arrival orders reuse the existing interned identity.
     #[test]
-    fn a15_empty_list_union_is_not_normalised() {
+    fn a15_empty_list_union_reuses_the_list_identity() {
         let mut t = Types::new();
         let int = t.int();
         let list_int = t.list(int);
         let empty = t.empty_list();
-        let joined = t.union(empty, list_int);
-        assert_eq!(t.display(&joined), "[] | [int]");
-        assert!(joined != list_int, "identity differs");
-        assert!(t.is_equivalent(&joined, &list_int), "denotation does not");
+        assert_eq!(t.union(empty, list_int), list_int);
+        assert_eq!(t.union(list_int, empty), list_int);
     }
 
     // A16 (pre-existing, fz-kdt.181). `intersect` DELETES a union member whose
