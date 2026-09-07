@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.79"
+  ],
   "created": "2026-09-07T19:55:54Z",
   "description": "## What breaks\n\nA `\"\"\"` heredoc lexes, parses, compiles and then answers `\"\"`. The content is dropped with no diagnostic, on every door.\n\n```\nfn main() do\n  a = \"\"\"\nhello\n\"\"\"\n  dbg(a)\n  dbg(Kernel.byte_size(a))\nend\n```\n\n`interp`, `run` and `build` all print:\n\n```\n\"\"\n0\n```\n\nIndentation is not the cause; the heredoc above has none to strip. A plain `\"plain\"` on the next line is unaffected, so it is the heredoc form specifically.\n\nBoth doors agree, so this is in the front end rather than a door disagreement.\n\n## Why it matters more than it looks\n\nThis is a silently wrong answer, not a refusal. A heredoc is the natural way to write a paragraph of text, and a program that uses one gets an empty string with nothing to say something went wrong.\n\n## The related gap, which is NOT this bug\n\n`@doc \"\"\" ... \"\"\"` is a separate limitation, and it fails loudly:\n\n```\nerror[parse/expected-token]: compiler2 quoted front door does not yet parse Binary([...]) at item position\n```\n\nThe attribute parser at `src/compiler2/frontdoor.rs:168` handles `@doc`/`@moduledoc`, and `@doc \"one line\"` works; a heredoc at that position is not consumed by the attribute and reaches the item parser on its own. The bytes in that diagnostic are the heredoc's real content, so the lexer produced the right token -- which is a useful clue for this bug too, since the content survives lexing at item position and is lost by the time an expression evaluates.\n\nFixing the attribute form is what would let the runtime library carry Elixir-shaped docs with examples instead of one-line summaries. Worth its own ticket once this one is understood.",
   "id": "fz-5xp.78",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A heredoc string silently evaluates to the empty binary",
   "type": "task",
-  "updated_at": "2026-09-07T19:55:54Z"
+  "updated_at": "2026-09-07T20:04:58Z"
 }
