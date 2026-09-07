@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T09:09:09Z",
+  "description": "causal::Cause (Initial/Content/Readiness/Uncaused) and scheduler::WorkStartReason (Ignition/ChangedRevisionWake/ActivationFrontier/BlockedWaiterExpansion/Unclassified) are the same question answered twice, in two vocabularies, by two components at two times.\n\nThe tell: Uncaused and Unclassified are both the no-sanctioned-reason bucket, and both are asserted zero by separate mechanisms -- unsanctioned_work_starts() == 0 and 'zero uncaused evaluations' on the target fixtures. One invariant, two proofs, two models that must be kept in agreement by hand.\n\nDelete Cause; the report reads the emitted reason. Reconcile the two zero-assertions into one.\n\nWatch for a genuine distinction before merging: Readiness (settledness flipped, no revision moved) may not map cleanly onto a single WorkStartReason. If it is a real second axis, keep it as one -- do not flatten two different invariants into a lookalike.",
+  "id": "fz-0am.3",
+  "labels": [],
+  "parent": "fz-0am",
+  "priority": 2,
+  "status": "open",
+  "title": "Fold Cause into one vocabulary for why work ran",
+  "type": "task",
+  "updated_at": "2026-09-07T09:09:09Z"
+}
