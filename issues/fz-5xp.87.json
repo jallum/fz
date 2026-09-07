@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T21:34:54Z",
+  "description": "## The warnings are legitimate\n\nEvery `type/no-matching-clause` warning the runtime library emits is correct, and the smallest case shows why:\n\n```\nfn f([]), do: 0\nfn f([_h | _t]), do: 1\n```\n\nwarns. A reader sees an exhaustive match -- every list is empty or a cons -- but the parameter has no declared domain, so it is `any`, and `f(:atom)` really does match no clause and really would halt with `:function_clause`.\n\nDeclaring the domain silences it completely:\n\n```\n@spec f([a]) :: integer\nfn f([]), do: 0\nfn f([_h | _t]), do: 1\n```\n\nZero warnings. The compiler was right both times.\n\n## The correlation is exact\n\nEvery warned helper in `lib/enum.fz` has no `@spec`: `map_list`, `filter_list`, `flat_map_list`, `map_reduce_list`, `scan_first`, `scan_list`, `intersperse_list`, `intersperse_tail`, `map_join_list`, `map_join_tail`, `map_intersperse_list`, `map_intersperse_tail`. The helpers beside them that do carry one -- `with_index_list`, `reverse_list`, `map_every_list` -- do not warn.\n\nThe same holds in `lib/json.fz` and `lib/map.fz`: `decode_done`, `elements`, `escape`, `fraction`, `pairs`, `reverse` all warn and all lack a spec.\n\n## What to do\n\nDeclare the domains. This is not warning suppression -- an undeclared parameter genuinely admits values the clauses do not handle, and writing the spec is what makes the function total rather than what hides that it is not.\n\n`Json.encode!/1` is the one exception and needs deciding separately: it declares `@spec encode!(any) :: binary` and its domain really is wider than its clauses, since `any` includes tuples and pids it cannot encode. Either the spec narrows to what JSON can represent, or a final clause says what happens to the rest.\n\n## Acceptance\n\n- Every private helper in the runtime library declares its parameter and result types.\n- The library compiles with no `type/no-matching-clause` warning, or each surviving one names a function whose domain is genuinely wider than its clauses.\n- The fixture diagnostics goldens shrink accordingly.",
+  "id": "fz-5xp.87",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "The runtime library's clause-coverage warnings are all missing domain declarations",
+  "type": "task",
+  "updated_at": "2026-09-07T21:34:54Z"
+}
