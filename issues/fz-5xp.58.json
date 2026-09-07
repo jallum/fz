@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-07T12:30:21Z",
+  "description": "CI RED on Linux; passes on macOS.\n\n    thread 'main' panicked at cranelift-jit/src/backend.rs:243:\n    can't resolve symbol fz_bitstring_is_binary\n\n    matrix::to_string::run                  FAILED\n    matrix::to_string_bitstring_panics::run FAILED\n\nfz_bitstring_is_binary is declared in RUNTIME_SYMBOLS (src/extern_contract.rs:43)\nbut is absent from the ~80 hand-written builder.symbol(..) lines in\nsrc/ir_codegen/backend.rs. On macOS the JIT falls back to dlsym over the process\nimage and finds the no_mangle export anyway; a Linux executable does not export\nits symbols to dlsym, so there the same program dies.\n\nWHY IT KEPT PASSING LOCALLY: this is a platform-dependent accident, not a\ntolerance. Every symbol missing from that list is a landmine that only goes off\non Linux, and the six-target local gate cannot see any of them.\n\nTHE SHAPE (fz-5xp.21): RUNTIME_SYMBOLS was made the single provenance authority\nfor extern symbols in fz-5xp.3, and this list is a second copy of the same fact\nthat has already drifted. The fix is not to add one line -- it is to drive the\nJIT registration FROM the authority, so a symbol declared there is registered by\nconstruction and a symbol that is not declared cannot be registered.\n\nNeeds a test that fails for the right reason: a symbol in RUNTIME_SYMBOLS with\nno JIT registration must be a compile-time or startup error, not a runtime\npanic on one platform.",
+  "id": "fz-5xp.58",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 1,
+  "status": "open",
+  "title": "The JIT's symbol table is a second, hand-maintained copy of RUNTIME_SYMBOLS, and it is already missing one",
+  "type": "bug",
+  "updated_at": "2026-09-07T12:30:21Z"
+}
