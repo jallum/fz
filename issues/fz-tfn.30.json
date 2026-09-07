@@ -8,7 +8,6 @@
     "fz-kdt.169",
     "fz-kdt.182",
     "fz-kdt.214",
-    "fz-kdt.30",
     "fz-kdt.32",
     "fz-kdt.4",
     "fz-kdt.46",
@@ -48,5 +47,5 @@
   "status": "closed",
   "title": "Stack recalculator work on semantic-correctness PR #110",
   "type": "task",
-  "updated_at": "2026-09-07T18:55:45Z"
+  "updated_at": "2026-09-07T18:55:47Z"
 }
