@@ -8,9 +8,7 @@
     "fz-tfn.30",
     "fz-tfn.31"
   ],
-  "blocks": [
-    "fz-tfn.39"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-06T00:01:41Z",
   "close_reason": "Completed in ad0ac47d3. Fresh cold_tfn24_work approved final exact diff4190f4995100e0a8104777cbae4046944d240a0f568eaeaf32d4b68e2344e9f5 without findings. All local gates and commit hooks green; matching-door actual work, zero unchanged/unrelated demand work, full causal/artifact/codegen proof and release distribution recorded. Push queued behind .29 CI; no push gate bypass.",
   "created": "2026-09-03T11:37:33Z",
@@ -22,5 +20,5 @@
   "status": "closed",
   "title": "Restore range-map work budget after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-06T00:40:48Z"
+  "updated_at": "2026-09-07T18:57:00Z"
 }
