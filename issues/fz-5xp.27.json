@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.62"
+  ],
   "created": "2026-09-07T05:55:44Z",
   "description": "A map keyed by a tuple or a list never matches on lookup, on all three doors.\n\n  tup = %{{:x, 1} =\u003e :tuple_key}\n  tup[{:x, 1}]      elixir :tuple_key    fz interp/run/build nil\n\n  lk = %{[1, 2] =\u003e :listkey}\n  lk[[1, 2]]        elixir :listkey      fz interp/run/build nil\n\nThe map RENDERS correctly (`%{{:x, 1} =\u003e :tuple_key}`), so construction is fine\nand it is the lookup that fails. Binary and integer keys look up correctly\n(integers modulo the separate panic ticket). The doors agree with each other and\ndisagree with the oracle, so this is one implementation being wrong rather than\na divergence.\n\nPre-existing; found while reviewing fz-5xp.4. Compound keys are ordinary in\nElixir and this epic adds a real `Map` (fz-5xp.12), so the lookup path needs to\nhandle a heap-allocated key by structural identity, not by raw word.",
   "id": "fz-5xp.27",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Map lookup never matches a tuple or list key",
   "type": "bug",
-  "updated_at": "2026-09-07T05:55:44Z"
+  "updated_at": "2026-09-08T19:51:09Z"
 }
