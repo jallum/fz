@@ -7,9 +7,15 @@
   "id": "fz-5xp.42",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "fz-5xp.87 adds a three-door behavior fixture for the current distinction in ca10f62f9: Json.encode!(\u003c\u003c1::4\u003e\u003e) now panics explicitly with JSON.encode!: binary is not byte-aligned. This ticket remains open because binary still includes non-byte-aligned bitstrings in the type system; the explicit runtime boundary is evidence, not the type fix.",
+      "timestamp": "2026-09-08T20:21:10Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] fz's binary type does not exclude a non-byte-aligned bitstring",
   "type": "bug",
-  "updated_at": "2026-09-07T09:45:00Z"
+  "updated_at": "2026-09-08T20:21:10Z"
 }
