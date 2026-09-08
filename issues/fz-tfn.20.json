@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.40"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-tfn.63"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Reclaim unowned immutable source versions",
   "type": "task",
-  "updated_at": "2026-09-08T17:38:56Z"
+  "updated_at": "2026-09-08T23:27:00Z"
 }

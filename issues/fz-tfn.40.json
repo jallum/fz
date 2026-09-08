@@ -5,8 +5,7 @@
   ],
   "blocks": [
     "fz-kdt.36.1",
-    "fz-tfn.13",
-    "fz-tfn.20"
+    "fz-tfn.13"
   ],
   "created": "2026-09-05T17:03:31Z",
   "description": "## Goal\n\nSeparate immutable executable content identity from diagnostic provenance after the atomic source-owner boundary exists. A location-only source replacement updates current diagnostics while preserving equal backend/native content allocation and generation.\n\n## Authority\n\nExecutable products own semantic/runtime content. Exact source-version owners retain diagnostic locations. Consumers request the projection they need; do not omit spans from equality while returning an old span-bearing object, and do not add a second artifact/source mirror.\n\n## TDD\n\nUse explicit replace_source for formatting-only change, content change, current error span, retained old diagnostic/artifact and macro-generated provenance. Prove zero native codegen and no unchanged macro-result consumer wake for location-only change, exact relevant movement for content change, and bounded retained provenance.\n\n## Deletion and acceptance\n\nDelete span-coupled executable equality, duplicate provenance mirrors, replacement adapters and stale docs. Same-version artifacts remain exact; current diagnostics name the current immutable source version. fz-tfn.57 is prerequisite; fz-tfn.20 later frees versions with no owner.",
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Separate diagnostic provenance from retained executable content identity",
   "type": "bug",
-  "updated_at": "2026-09-08T23:26:54Z"
+  "updated_at": "2026-09-08T23:27:00Z"
 }
