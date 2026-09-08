@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.36.2"
+  ],
   "blocks": [],
   "created": "2026-09-07T21:36:57Z",
   "description": "## Goal\n\nRender clause-coverage warnings from typed reachable failure evidence so the diagnostic names an actual uncovered input and offers a remedy that matches the construct and the demanded program.\n\n## Correct premise\n\nAfter fz-kdt.36.1 and fz-kdt.36.2, coverage is not checked against an invented undeclared-any or whole-contract domain. A warning exists only because a demanded function-head or local-dispatch input row can reach Dispatch Fail. The diagnostic must explain that reachable failure.\n\n## Strategy\n\nExtend the authoritative typed dispatch reachability result only as far as needed to retain a deterministic canonical failure witness or failure row. Preserve argument correlation and branch-local refinements; do not reconstruct a witness from syntax, union parameter columns, enumerate type products, or expose raw Ty ids. Store semantic evidence independently from source-version spans and render through the warning-fact provenance projection.\n\n## TDD\n\nProve:\n\n- a function-head warning names the reachable uncovered argument row and the parameter position/shape that escapes;\n- case and with-else warnings name the reachable uncovered subject;\n- correlated tuple/list rows remain correlated in the witness;\n- guarded fallthrough is explained as a possible guard-false path when appropriate;\n- function help uses function-clause syntax and distinguishes fixing the caller/domain from deliberately adding a final clause;\n- case/with help uses the correct arm syntax;\n- quicksort remains warning-free and receives no invented missing-spec advice;\n- witness rendering is canonical across process, FIFO/LIFO, and stress permutation;\n- location-only replacement changes only provenance.\n\n## Removal\n\nDelete the generic every-input wording and unconditional wildcard help, obsolete undeclared-domain guidance, witness reconstruction helpers, and old diagnostics goldens. Update diagnostic, pattern-matching, and user-facing guides in the same commit. Full focused, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Clause coverage diagnostics: render canonical reachable failure witnesses",
   "type": "bug",
-  "updated_at": "2026-09-08T23:26:20Z"
+  "updated_at": "2026-09-08T23:26:57Z"
 }
