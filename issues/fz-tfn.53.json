@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-tfn.61"
+    "fz-tfn.61",
+    "fz-tfn.62"
   ],
   "blocks": [
     "fz-tfn.46"
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Publish validated source contributions as one typed batch",
   "type": "bug",
-  "updated_at": "2026-09-08T04:04:44Z"
+  "updated_at": "2026-09-08T12:07:20Z"
 }
