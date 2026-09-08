@@ -7,9 +7,15 @@
   "id": "fz-5xp.96",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Verified 2026-09-08: reproduced by restoring the unescaped #{x} in StringChars' moduledoc and compiling a trivial program. The compiler emits parse/expected-token naming runtime:StringChars.fz:20:14. Not silent.",
+      "timestamp": "2026-09-08T12:05:14Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A doc attribute whose heredoc interpolates is rejected by node type, not by explanation",
   "type": "task",
-  "updated_at": "2026-09-08T12:05:13Z"
+  "updated_at": "2026-09-08T12:05:14Z"
 }
