@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-tfn.59"
   ],
@@ -12,7 +12,7 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Give every source one stable owner and immutable version",
   "type": "task",
   "updated_at": "2026-09-08T03:29:38Z"
