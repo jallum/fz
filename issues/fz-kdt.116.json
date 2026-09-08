@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-5xp.27"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Separate semantic absence from zero-lane transport; make ABI value layouts the sole construction-shape authority",
   "type": "task",
-  "updated_at": "2026-09-08T21:37:28Z"
+  "updated_at": "2026-09-08T21:37:50Z"
 }
