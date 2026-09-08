@@ -7,9 +7,15 @@
   "id": "fz-5xp.90",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Delivered in 10596c1eb. Heap construction now carries the process Node, and both map-key comparators delegate atom pairs to the same zero-copy Node::cmp_atom_names authority as term comparison. The new three-door fixture pins Kernel.compare, Enum.sort, Map.keys/values/to_list, binary-search-backed stats lookups, and per-door allocation counters; pre/post allocation snapshots are byte-identical. Updated Map user docs, semantic-authority docs, and intended name-ordered stats-map goldens. Gates: fmt/check, clippy -D warnings, 1982 lib tests + 226 runtime tests, 651 fixture matrix, 30 CLI tests, AOT variadic test, doctests.",
+      "timestamp": "2026-09-08T19:18:08Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "[BUG] Atoms order by name in the term order and by intern id in a map, so map iteration order is program-dependent",
   "type": "task",
-  "updated_at": "2026-09-08T18:53:41Z"
+  "updated_at": "2026-09-08T19:18:08Z"
 }
