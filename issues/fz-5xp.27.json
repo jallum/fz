@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-kdt.116",
     "fz-kdt.17"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Make one strict structural comparator own every map-key operation",
   "type": "bug",
-  "updated_at": "2026-09-08T21:36:16Z"
+  "updated_at": "2026-09-08T21:37:28Z"
 }
