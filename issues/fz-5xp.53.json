@@ -7,9 +7,15 @@
   "id": "fz-5xp.53",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Superseded and delivered by fz-5xp.87 in ca10f62f9. Every private runtime helper now has an explicit domain, the fixture matrix enforces that invariant, the full 658-case matrix has no runtime-source no-matching-clause diagnostics, and the 15 diagnostics sidecars made empty by the fix were deleted.",
+      "timestamp": "2026-09-08T20:21:08Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Runtime-library coverage warnings leak into every fixture that touches them",
   "type": "task",
-  "updated_at": "2026-09-07T11:15:38Z"
+  "updated_at": "2026-09-08T20:21:08Z"
 }
