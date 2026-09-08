@@ -699,23 +699,38 @@ lowers one complete body and creates wrappers only for positioned owners whose
 callable facts with no construction, so lowering does not rejoin boundary
 publications to recover first-class eligibility.
 
-A value whose positioned layout settled to `Nothing` carries no runtime lanes.
-Its lexical capture metadata can still be consumed by a callable wrapper.
-Backend lowering applies the lane-absence proof once, in the
-shared backend lowering: every fresh construction step
+A value whose materialized layout is `Nothing` with an `Absent` carrier is
+semantically absent. Its lexical capture metadata can still be consumed by a
+callable wrapper. `BackendLowerer` reads this proof from
+`AbiReadyExecutable::value_layouts`, the same table consumed by the runtimes.
+That table includes clause parameters' semantic input layouts; lowering does
+not derive a second table from transport positions. Every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
 when its own value is proven absent — a closure the plan proves is never invoked
 is never built, on any path. Runtime consumers therefore read an artifact that
 already carries no dead construction. The proof is derived once, in lowering;
 the runtimes honor it rather than re-derive it for constructions — an `Omitted`
-step binds an absent value in both runtimes, and call-argument encoding elides
-any position whose layout carries no reprs, so an absent operand is skipped by
-the same fact that omitted its construction. The same proof holds at the other
-end of a body: a return contract whose layout publishes no lanes has nothing to
-encode, so a value tail returning through it reads no value at all
+step binds an explicit absent value in both runtimes.
+
+ABI width is a separate question. `BackendValueLayout::publishes_no_lanes`
+means its repr list is empty. `Nothing`/`Absent`, exact zero-capture callables,
+and recursively zero-width tuples can all satisfy that rule; only `Nothing`
+is a semantically absent shape. Call-argument encoding elides zero-lane
+positions without reading operands. A return contract whose layout publishes
+no lanes likewise needs no operand to encode
 (`return_lane_vars` in `jobs/native.rs`, the `BackendTail::Value` arm in
-`ir_interp/backend.rs`).
+`ir_interp/backend.rs`). When the interpreter has no return operand binding,
+it decodes the zero-lane contract to retain any tuple or callable structure.
+
+The interpreter environment supplies a third kind of evidence. A missing
+lane-free callee input permits its exact direct target to run; an explicit
+`BackendBoundValue::Absent`, installed by `BackendStep::Omitted`, does not.
+`bind_executable_inputs` leaves lane-free non-tuple inputs missing, while
+zero-lane tuple inputs retain a concrete `Transport` binding for structural
+captures and projections. Entry selection materializes only
+`ExecutableDispatch::required_input_ordinals`; unused structural inputs can
+contain absent fields and stay decomposed for the body.
 
 Root membership is a distinct dependency relation, not a read of every member's
 value. Each backend producer commits its exact executable and schema membership

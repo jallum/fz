@@ -32,8 +32,7 @@ use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutco
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
 use super::super::transport::{
-    BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol, PhysicalLaneSource, ShapeDescr, ShapeId,
-    TransportPosition,
+    BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol, PhysicalLaneSource, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -301,8 +300,7 @@ pub(crate) fn produce_backend_executable_product(
             Some((*value, wrapper.identity.clone()))
         })
         .collect();
-    let value_shapes = executable_value_shapes(&abi);
-    let mut lowerer = BackendLowerer::new(world, tel, root, value_shapes, return_endpoints, constructions);
+    let mut lowerer = BackendLowerer::new(world, tel, root, &abi.value_layouts, return_endpoints, constructions);
     let lowered = lower_backend_body(&mut lowerer, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
     let boxed_apply_requirements =
@@ -336,27 +334,6 @@ pub(crate) fn produce_backend_executable_product(
     }
     let backend = Rc::new(backend);
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
-}
-
-fn executable_value_shapes(abi: &AbiReadyExecutable) -> HashMap<ValueId, ShapeId> {
-    let mut shapes = HashMap::new();
-    for position in abi.transport.value_positions.iter() {
-        let TransportPosition::Value { value, .. } = position else {
-            continue;
-        };
-        let shape = abi.transport.layout_at(position).map(|layout| layout.structural);
-        let previous = shapes.insert(*value, shape);
-        assert!(
-            previous.is_none(),
-            "transport should publish one local value position for {:?} in {:?}",
-            value,
-            abi.transport.executable
-        );
-    }
-    shapes
-        .into_iter()
-        .filter_map(|(value, shape)| Some((value, shape?)))
-        .collect()
 }
 
 fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
@@ -825,7 +802,7 @@ struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     world: &'a mut World,
     telemetry: &'tel T,
     root_id: RootId,
-    value_shapes: HashMap<ValueId, ShapeId>,
+    value_layouts: &'a HashMap<ValueId, super::super::artifact::BackendValueLayout>,
     return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
     constructions: HashMap<ValueId, TransportPosition>,
 }
@@ -835,7 +812,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         world: &'a mut World,
         telemetry: &'tel T,
         root_id: RootId,
-        value_shapes: HashMap<ValueId, ShapeId>,
+        value_layouts: &'a HashMap<ValueId, super::super::artifact::BackendValueLayout>,
         return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
         constructions: HashMap<ValueId, TransportPosition>,
     ) -> Self {
@@ -843,7 +820,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             world,
             telemetry,
             root_id,
-            value_shapes,
+            value_layouts,
             return_endpoints,
             constructions,
         }
@@ -1041,10 +1018,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         })
     }
 
-    fn value_is_proven_runtime_absent(&self, value: ValueId) -> bool {
-        self.value_shapes
-            .get(&value)
-            .is_some_and(|shape| matches!(self.world.shape(*shape), ShapeDescr::Nothing))
+    fn value_is_proven_semantically_absent(&self, value: ValueId) -> bool {
+        self.value_layouts.get(&value).is_some_and(|layout| {
+            self.world.shape(layout.structural).is_semantically_absent()
+                && matches!(layout.carrier, super::super::transport::TransportCarrier::Absent)
+        })
     }
 
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
@@ -1056,7 +1034,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     /// allocates; fz-kdt.111: a predicate closure a shared `Enum` body proves
     /// it never invokes, whose ignored capture the eager interp still read).
     fn construction_step_or_omitted(&self, value: ValueId, step: BackendStep) -> BackendStep {
-        if self.value_is_proven_runtime_absent(value) {
+        if self.value_is_proven_semantically_absent(value) {
             BackendStep::Omitted { value }
         } else {
             step
@@ -1352,8 +1330,52 @@ mod tests {
     use crate::compiler2::artifact::BackendValueLayout;
     use crate::compiler2::identity::ExecutableNeed;
     use crate::compiler2::pull::TransportCarrier;
-    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, LaneId};
+    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, LaneId, ShapeDescr};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn named_function_construction_uses_the_materialized_value_layout() {
+        let mut world = World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "dead_named_ref", 0);
+        let key = ExecutableKey {
+            activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], world.types_mut()),
+            need: ExecutableNeed::Value,
+        };
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let ty = world.types_mut().int();
+        let value = ValueId::from_u32(0);
+        let mut executable = BackendExecutable::for_test(key, ty, nothing);
+        let abi = Rc::make_mut(&mut executable.abi);
+        abi.value_layouts.insert(
+            value,
+            BackendValueLayout {
+                structural: nothing,
+                carrier: TransportCarrier::Absent,
+                tys: Box::default(),
+                reprs: Box::default(),
+            },
+        );
+        assert!(
+            abi.transport.value_positions.is_empty(),
+            "the materialized value table is sufficient without a second shape derivation"
+        );
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut lowerer = BackendLowerer::new(
+            &mut world,
+            &tel,
+            RootId::for_test(0),
+            &abi.value_layouts,
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let lowered = lowerer
+            .lower_step(&LoweredStep::FunctionRef { value, function })
+            .unwrap();
+        assert!(
+            matches!(lowered, BackendStep::Omitted { value: omitted } if omitted == value),
+            "a named FunctionRef settled to Nothing must not execute a construction"
+        );
+    }
 
     #[test]
     fn resolve_return_flow_rejects_divergence_contradictions() {

@@ -105,6 +105,14 @@ pub struct BackendValueLayout {
     pub reprs: Box<[AbiValueRepr]>,
 }
 
+impl BackendValueLayout {
+    /// ABI width only: a zero-capture callable or a recursive tuple can
+    /// publish no lanes while retaining a semantic value.
+    pub fn publishes_no_lanes(&self) -> bool {
+        self.reprs.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendReturnLayout {
     pub layout: BackendValueLayout,

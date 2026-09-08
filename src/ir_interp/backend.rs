@@ -518,15 +518,13 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
             let clause_index = match &executable.abi.materialized.entry_dispatch {
                 None => 0,
                 Some(dispatch) => {
-                    let dispatch_inputs = semantic_inputs
-                        .iter()
-                        .map(|input| {
-                            input
-                                .as_ref()
-                                .map(|value| materialize_backend_value(transport, runtime.cur_proc(), value))
-                                .transpose()
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut dispatch_inputs = vec![None; semantic_inputs.len()];
+                    for ordinal in dispatch.required_input_ordinals() {
+                        dispatch_inputs[ordinal] = semantic_inputs[ordinal]
+                            .as_ref()
+                            .map(|value| materialize_backend_value(transport, runtime.cur_proc(), value))
+                            .transpose()?;
+                    }
                     select_clause(runtime, types, transport, program, module, dispatch, &dispatch_inputs)?.ok_or_else(
                         || {
                             format!(
@@ -836,16 +834,20 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     })?;
     let transition = match &entry.tail {
         BackendTail::Value { value, dest } => {
-            // fz-kdt.111: honor the return contract's own absence proof, the way
-            // native's `return_lane_vars` does. Transport publishes no lane for a
-            // demand-ignored input, so `bind_executable_inputs` leaves it out of
-            // the env entirely; returning it is only ever reached when the return
-            // contract publishes no lanes either, so there is nothing to encode
-            // and nothing to read. Any other env miss is still a real fault.
+            // Zero-lane return contracts need no environment read. This is ABI
+            // width, not semantic absence; decoding retains tuple/callable shape.
             let returns_no_lanes =
-                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.reprs.is_empty();
+                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.publishes_no_lanes();
             let result = if returns_no_lanes && !env.contains_key(value) {
-                BackendBoundValue::Absent
+                decode_transport_layout(
+                    transport,
+                    &[],
+                    TransportLayout {
+                        structural: executable.abi.return_layout.layout.structural,
+                        carrier: executable.abi.return_layout.layout.carrier,
+                    },
+                    &mut 0,
+                )?
             } else {
                 env_get_value(&env, *value)?
             };
@@ -936,10 +938,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             dest,
             ..
         } => {
-            let callee_value = env_get_value(&env, *callee);
-            let missing_direct_callee = callee_value.is_err();
+            let callee_value = env.get(callee).cloned();
+            let missing_direct_callee = callee_value.is_none();
             let (fn_id, _capture_shape, capture_lanes) = match callee_value {
-                Ok(BackendBoundValue::Transport { shape, lanes })
+                Some(BackendBoundValue::Transport { shape, lanes })
                     if matches!(transport.interners().shape(shape), ShapeDescr::Callable(_)) =>
                 {
                     let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
@@ -951,7 +953,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     })?;
                     (FnId(function.as_u32()), Some(shape), lanes)
                 }
-                Ok(other) => {
+                Some(other) => {
                     let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
                     let (fn_id, captures) = match materialized {
                         AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
@@ -967,13 +969,14 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     };
                     (fn_id, None, captures)
                 }
-                Err(error) => {
+                None => {
                     let Some(target) = target else {
                         return Err(format!(
-                            "closure call executable={:?} function={} callsite={} callee_value={}: {error}",
+                            "closure call executable={:?} function={} callsite={} callee_value={}: backend value {} is unbound",
                             executable.key,
                             executable.key.activation.function.as_u32(),
                             callsite.as_u32(),
+                            callee.as_u32(),
                             callee.as_u32()
                         ));
                     };
@@ -1015,7 +1018,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     .abi
                     .semantic_inputs
                     .iter()
-                    .any(|input| input.semantic_index < capture_inputs_end && !input.layout.reprs.is_empty())
+                    .any(|input| input.semantic_index < capture_inputs_end && !input.layout.publishes_no_lanes())
             {
                 return Err(format!(
                     "closure call executable={:?} function={} callsite={} omitted callee value {} but target {:?} needs semantic inputs",
@@ -1426,7 +1429,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         .iter()
                         .copied()
                         .zip(wrapper.captures.iter())
-                        .filter(|(_, capture)| !capture.layout.reprs.is_empty())
+                        .filter(|(_, capture)| !capture.layout.publishes_no_lanes())
                         .map(|(capture, _)| env_get(transport, runtime.cur_proc(), env, capture))
                         .collect::<Result<Vec<_>, _>>()?;
                     construction_callable_value(runtime.cur_proc(), program, construction, types, &physical_captures)?
@@ -1720,7 +1723,7 @@ fn delivered_env(
         }
     }
     for capture in &entry.captures {
-        if capture.layout.reprs.is_empty() {
+        if capture.layout.publishes_no_lanes() {
             continue;
         }
         next.insert(capture.value, env_get_value(env, capture.value)?);
@@ -1846,7 +1849,7 @@ fn capture_backend_continuation_env(
         .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
     let mut captured = HashMap::with_capacity(entry.captures.len() + entry.reusable_cons_captures.len());
     for capture in &entry.captures {
-        if capture.layout.reprs.is_empty() {
+        if capture.layout.publishes_no_lanes() {
             continue;
         }
         let value = env_get_value(env, capture.value).map_err(|error| {
@@ -1952,7 +1955,13 @@ fn bind_executable_inputs(
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
     for input in &executable.abi.semantic_inputs {
-        let value = if input.layout.reprs.is_empty() {
+        // Missing lane-free callees preserve exact-target control evidence.
+        // Tuples still carry structure needed by exact closure environments.
+        let value = if input.layout.publishes_no_lanes()
+            && !matches!(
+                transport.interners().shape(input.layout.structural),
+                ShapeDescr::Tuple(_)
+            ) {
             None
         } else {
             Some(decode_transport_layout(
@@ -2150,7 +2159,7 @@ fn construction_callable_value(
     let capture_count = wrapper
         .captures
         .iter()
-        .filter(|capture| !capture.layout.reprs.is_empty())
+        .filter(|capture| !capture.layout.publishes_no_lanes())
         .count();
     if captures.len() != capture_count {
         return Err(format!(
@@ -2284,7 +2293,7 @@ impl ConstructionInputEncoder<'_> {
             .wrapper
             .captures
             .iter()
-            .filter(|capture| !capture.layout.reprs.is_empty())
+            .filter(|capture| !capture.layout.publishes_no_lanes())
             .count();
         if self.wrapper.captures.len() != self.member.capture_semantic_inputs.len()
             || captures.len() != physical_capture_count
@@ -2310,7 +2319,7 @@ impl ConstructionInputEncoder<'_> {
                     self.wrapper.identity, self.target.key
                 )
             })?;
-            if !capture.layout.reprs.is_empty()
+            if !capture.layout.publishes_no_lanes()
                 && slot
                     .replace(physical_captures.next().ok_or_else(|| {
                         format!(
@@ -2360,7 +2369,7 @@ impl ConstructionInputEncoder<'_> {
                         self.wrapper.identity, self.target.key, binding.semantic_index
                     )
                 })?;
-            if input.layout.reprs.is_empty() {
+            if input.layout.publishes_no_lanes() {
                 continue;
             }
             let value = match semantic_values[binding.semantic_index] {
@@ -2477,7 +2486,7 @@ fn encode_call_args(
         .iter()
         .filter(|binding| binding.semantic_index >= semantic_start)
     {
-        if binding.layout.reprs.is_empty() {
+        if binding.layout.publishes_no_lanes() {
             continue;
         }
         let arg_offset = binding.semantic_index - semantic_start;
@@ -2521,19 +2530,23 @@ fn bind_delivered_value(
     delivered: Option<&BackendBoundValue>,
     layout: &crate::compiler2::BackendReturnLayout,
 ) -> Result<Option<BackendBoundValue>, String> {
-    match transport.interners().shape(layout.layout.structural) {
-        ShapeDescr::Nothing if matches!(layout.layout.carrier, TransportCarrier::Absent) => Ok(None),
-        _ => {
-            let delivered = delivered.ok_or_else(|| {
-                format!(
-                    "backend entry {} expected a delivered value but none was provided",
-                    entry_id.as_u32()
-                )
-            })?;
-            Ok(Some(project_backend_value_for_contract(
-                transport, program, proc, delivered, layout,
-            )?))
-        }
+    if transport
+        .interners()
+        .shape(layout.layout.structural)
+        .is_semantically_absent()
+        && matches!(layout.layout.carrier, TransportCarrier::Absent)
+    {
+        Ok(None)
+    } else {
+        let delivered = delivered.ok_or_else(|| {
+            format!(
+                "backend entry {} expected a delivered value but none was provided",
+                entry_id.as_u32()
+            )
+        })?;
+        Ok(Some(project_backend_value_for_contract(
+            transport, program, proc, delivered, layout,
+        )?))
     }
 }
 
@@ -2662,7 +2675,7 @@ fn encode_runtime_input_binding(
     input: &crate::compiler2::BackendSemanticInputLayout,
     lanes: &mut Vec<AnyValue>,
 ) -> Result<(), String> {
-    if input.layout.reprs.is_empty() {
+    if input.layout.publishes_no_lanes() {
         return Ok(());
     }
     encode_transport_layout(
@@ -3218,6 +3231,301 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
+        let mut world = crate::compiler2::World::new();
+        let mut transport = TransportStore::new();
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "zero_lane", 3);
+        let zero_capture = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "zero_capture", 0);
+        let callable = transport
+            .interners_mut()
+            .intern_callable(crate::compiler2::transport::CallableDescr {
+                function: Some(zero_capture),
+                arity: 0,
+                capture_tys: Box::default(),
+                capture_layouts: Box::default(),
+            });
+        let callable = transport.interners_mut().intern_shape(ShapeDescr::Callable(callable));
+        let empty_tuple = tuple_shape(&mut transport, &[]);
+        let tuple = tuple_shape(&mut transport, &[empty_tuple, callable]);
+        let ty = world.types_mut().any();
+        let key = ExecutableKey {
+            activation: crate::compiler2::ActivationKey::from_inputs(
+                crate::compiler2::RootId::for_test(0),
+                function,
+                &[ty; 3],
+                world.types_mut(),
+            ),
+            need: crate::compiler2::ExecutableNeed::Value,
+        };
+        let mut executable = BackendExecutable::for_test(key, ty, nothing);
+        let empty_layout = executable.abi.return_layout.layout.clone();
+        Rc::make_mut(&mut executable.abi).semantic_inputs = [nothing, callable, tuple]
+            .into_iter()
+            .enumerate()
+            .map(|(semantic_index, structural)| {
+                let mut layout = empty_layout.clone();
+                layout.structural = structural;
+                crate::compiler2::BackendSemanticInputLayout { semantic_index, layout }
+            })
+            .collect();
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        let bound = bind_executable_inputs(&transport, world.types(), &mut runtime, &executable, &[])
+            .expect("zero physical lanes");
+        assert!(bound[0].is_none(), "Nothing inputs remain missing control evidence");
+        assert!(
+            bound[1].is_none(),
+            "a lane-free exact callee retains direct-target fallback"
+        );
+        assert!(
+            matches!(&bound[2], Some(BackendBoundValue::Transport { shape, lanes }) if *shape == tuple && lanes.is_empty()),
+            "a recursive zero-lane tuple is a concrete structural value"
+        );
+        for (index, input) in executable.abi.semantic_inputs.iter().enumerate() {
+            assert!(input.layout.publishes_no_lanes());
+            assert_eq!(
+                transport
+                    .interners()
+                    .shape(input.layout.structural)
+                    .is_semantically_absent(),
+                index == 0
+            );
+            let layout = crate::compiler2::BackendReturnLayout {
+                layout: input.layout.clone(),
+                diverges: false,
+            };
+            let result = bind_delivered_value(
+                &transport,
+                &empty_backend_program(),
+                std::ptr::null_mut(),
+                crate::compiler2::ControlEntryId::from_u32(0),
+                None,
+                &layout,
+            );
+            assert_eq!(
+                result.is_ok(),
+                index == 0,
+                "only Nothing/Absent permits a missing delivery"
+            );
+            let mut lane_index = 0;
+            let decoded = decode_transport_layout(
+                &transport,
+                &[],
+                TransportLayout::structural(input.layout.structural),
+                &mut lane_index,
+            )
+            .unwrap();
+            assert_eq!(
+                matches!(decoded, BackendBoundValue::Absent),
+                index == 0,
+                "zero lanes do not imply semantic absence"
+            );
+            assert_eq!(
+                encode_for_layout(
+                    &transport,
+                    std::ptr::null_mut(),
+                    &BackendBoundValue::Absent,
+                    input.layout.structural
+                )
+                .is_ok(),
+                index == 0,
+                "an absent value cannot satisfy a zero-lane tuple or callable contract"
+            );
+        }
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        for structural in [callable, tuple] {
+            Rc::make_mut(&mut executable.abi).return_layout.layout.structural = structural;
+            let entries = [BackendEntry {
+                span: crate::source::Span::DUMMY,
+                origin: crate::compiler2::BackendEntryOrigin::Branch,
+                params: Vec::new(),
+                captures: Vec::new(),
+                reusable_cons_captures: Vec::new(),
+                steps: Vec::new(),
+                tail: BackendTail::Value {
+                    value: ValueId::from_u32(99),
+                    dest: ControlDestination::Return,
+                },
+            }];
+            let result = step_eval_entry(
+                &mut runtime,
+                world.types_mut(),
+                &transport,
+                &crate::telemetry::ConfiguredTelemetry::new(),
+                &empty_backend_program(),
+                &Module::default(),
+                &Rc::new(executable.clone()),
+                &entries,
+                crate::compiler2::ControlEntryId::from_u32(0),
+                HashMap::new(),
+                Vec::new(),
+            );
+            assert!(
+                matches!(result, Ok(BackendEvalTransition::Done(_))),
+                "a zero-lane return decodes its concrete contract without reading the missing value"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_missing_callee_selects_the_exact_direct_target() {
+        let mut world = crate::compiler2::World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "exact_target", 0);
+        let key = ExecutableKey {
+            activation: crate::compiler2::ActivationKey::from_inputs(
+                crate::compiler2::RootId::for_test(0),
+                function,
+                &[],
+                world.types_mut(),
+            ),
+            need: crate::compiler2::ExecutableNeed::Value,
+        };
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let ty = world.types_mut().int();
+        let executable = Rc::new(BackendExecutable::for_test(key.clone(), ty, nothing));
+        let mut program = BackendProgram::empty(key.clone());
+        program.add_executable(executable.clone(), world.types());
+        let callee = ValueId::from_u32(0);
+        let entries = [BackendEntry {
+            span: crate::source::Span::DUMMY,
+            origin: crate::compiler2::BackendEntryOrigin::Branch,
+            params: Vec::new(),
+            captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
+            steps: Vec::new(),
+            tail: BackendTail::ClosureCall {
+                value: ValueId::from_u32(1),
+                callsite: crate::compiler2::CallSiteId::from_u32(0),
+                callee,
+                target: Some(key.clone()),
+                args: Vec::new(),
+                dest: ControlDestination::Return,
+                return_flow: None,
+            },
+        }];
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        let transport = TransportStore::new();
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut invoke = |env| {
+            step_eval_entry(
+                &mut runtime,
+                world.types_mut(),
+                &transport,
+                &tel,
+                &program,
+                &Module::default(),
+                &executable,
+                &entries,
+                crate::compiler2::ControlEntryId::from_u32(0),
+                env,
+                Vec::new(),
+            )
+        };
+        assert!(
+            matches!(invoke(HashMap::new()), Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key)
+        );
+        let explicit_absence = invoke(HashMap::from([(callee, BackendBoundValue::Absent)]));
+        assert!(
+            matches!(explicit_absence, Err(error) if error.contains("absent and cannot be materialized")),
+            "an explicit absent binding cannot select the missing-callee fallback"
+        );
+    }
+
+    #[test]
+    fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
+        use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        let mut world = crate::compiler2::World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "ignore_tuple", 1);
+        let ty = world.types_mut().any();
+        let key = ExecutableKey {
+            activation: crate::compiler2::ActivationKey::from_inputs(
+                crate::compiler2::RootId::for_test(0),
+                function,
+                &[ty],
+                world.types_mut(),
+            ),
+            need: crate::compiler2::ExecutableNeed::Value,
+        };
+        let mut transport = TransportStore::new();
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let tuple = tuple_shape(&mut transport, &[nothing]);
+        let mut executable = BackendExecutable::for_test(key, ty, nothing);
+        let abi = Rc::make_mut(&mut executable.abi);
+        let mut layout = abi.return_layout.layout.clone();
+        layout.structural = tuple;
+        abi.semantic_inputs = Box::new([crate::compiler2::BackendSemanticInputLayout {
+            semantic_index: 0,
+            layout,
+        }]);
+        let dispatch = ExecutableDispatch::new(
+            pattern_dispatch_from_source(SourcePatternRows {
+                input_count: 1,
+                rows: vec![PatternRow {
+                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 0,
+                }],
+            })
+            .unwrap(),
+            vec![0],
+        );
+        assert!(dispatch.required_input_ordinals().is_empty());
+        Rc::make_mut(&mut abi.materialized).entry_dispatch = Some(dispatch);
+        let value = ValueId::from_u32(0);
+        let result_value = ValueId::from_u32(1);
+        executable.body = BackendBody::Clauses {
+            clauses: vec![crate::compiler2::BackendClause {
+                span: crate::source::Span::DUMMY,
+                params: vec![value],
+                projections: Vec::new(),
+                entry: crate::compiler2::ControlEntryId::from_u32(0),
+            }],
+            entries: vec![BackendEntry {
+                span: crate::source::Span::DUMMY,
+                origin: crate::compiler2::BackendEntryOrigin::Clause,
+                params: Vec::new(),
+                captures: Vec::new(),
+                reusable_cons_captures: Vec::new(),
+                steps: vec![
+                    ProgramStep::AssertTuple {
+                        source: value,
+                        arity: 1,
+                    },
+                    ProgramStep::Const {
+                        value: result_value,
+                        literal: crate::ground_value::GroundValue::Int(42),
+                    },
+                ],
+                tail: BackendTail::Value {
+                    value: result_value,
+                    dest: ControlDestination::Return,
+                },
+            }],
+            generated: Vec::new(),
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        let result = step_backend_executable(
+            &mut runtime,
+            world.types_mut(),
+            &transport,
+            &crate::telemetry::ConfiguredTelemetry::new(),
+            &empty_backend_program(),
+            &Module::default(),
+            Rc::new(executable),
+            Vec::new(),
+            Vec::new(),
+        );
+        let result = result.unwrap_or_else(|error| panic!("entry dispatch must reach its body: {error}"));
+        assert!(
+            matches!(result, BackendEvalTransition::Done(value) if value.as_i64() == Some(42)),
+            "dispatch must preserve the partial tuple for its body without trying to box its absent field"
+        );
+    }
 
     #[test]
     fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_lookup() {

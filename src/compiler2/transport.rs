@@ -164,6 +164,14 @@ pub enum ShapeDescr {
     Callable(CallableId),
 }
 
+impl ShapeDescr {
+    /// Semantic absence excludes callable and tuple structures, even when
+    /// their complete physical representation has zero lanes.
+    pub fn is_semantically_absent(&self) -> bool {
+        matches!(self, Self::Nothing)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportValue<Lane> {
     Absent,

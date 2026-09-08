@@ -38,6 +38,10 @@ struct BackendContinuation {
 }
 
 #[derive(Debug, Clone)]
+/// An explicit `Absent` binding records an omitted semantic value. It is not
+/// an environment miss: missing lane-free inputs can authorize an exact
+/// direct closure target, while `Absent` cannot be called. A `Transport`
+/// tuple or callable retains its structure even when `lanes` is empty.
 enum BackendBoundValue {
     Absent,
     Runtime(AnyValue),
