@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-08T23:58:44Z",
+  "close_reason": "Superseded: fz-5xp.87 delivered the full scope in ca10f62f9",
   "created": "2026-09-06T16:26:38Z",
   "description": "## Resolution\n\nThis ticket has no remaining implementation scope. fz-5xp.87 delivered the complete runtime-helper domain work in commit `ca10f62f9`: the named Enum helpers and the corresponding Json, Map, and Range private helpers received explicit correlated contracts, obsolete diagnostics goldens were removed, and the library/fixture gates passed.\n\nThose contracts remain useful source-owned semantic documentation. They are not the authority for clause-coverage warnings and are not required to suppress them. Demand-driven coverage and removal of the old whole-contract/source checker are owned by fz-kdt.36.\n\nClose this ticket as superseded by the already-delivered fz-5xp.87 scope. Do not add another commit, warning exception, or activation-derived contract.",
   "id": "fz-tfn.58",
   "labels": [],
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Runtime helper domains: superseded by fz-5xp.87",
   "type": "bug",
-  "updated_at": "2026-09-08T23:58:43Z"
+  "updated_at": "2026-09-08T23:58:44Z"
 }
