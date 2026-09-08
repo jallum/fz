@@ -30,7 +30,9 @@ fn fresh_task() -> Process {
 }
 
 fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
-    let bits = task.heap.alloc_closure_slots(0, 1, 0);
+    let bits = task
+        .heap
+        .alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let p = any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
     unsafe {
         write(p.add(8) as *mut u64, stub as u64);

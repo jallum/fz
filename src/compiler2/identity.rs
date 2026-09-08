@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -36,6 +37,10 @@ impl ModuleId {
 pub struct FunctionId(u32);
 
 impl FunctionId {
+    pub fn denotation(self) -> fz_runtime::any_value::ClosureDenotationId {
+        fz_runtime::any_value::ClosureDenotationId::user(self.0)
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
@@ -295,15 +300,105 @@ struct FunctionKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GeneratedFunctionKey {
     owner: FunctionId,
-    span: Span,
+    occurrence: crate::ast::LambdaOccurrence,
     arity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
     pub module: ModuleId,
-    pub name: String,
+    pub origin: FunctionOrigin,
     pub arity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionOrigin {
+    Named {
+        module: Option<crate::modules::identity::ModuleName>,
+        name: String,
+    },
+    Generated {
+        owner: Arc<FunctionRef>,
+        occurrence: crate::ast::LambdaOccurrence,
+    },
+}
+
+impl FunctionRef {
+    pub fn source_name(&self) -> Option<&str> {
+        match &self.origin {
+            FunctionOrigin::Named { name, .. } => Some(name),
+            FunctionOrigin::Generated { .. } => None,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.source_name().expect("a named function has a source identifier")
+    }
+
+    pub fn lexical_owner(&self) -> &Self {
+        match &self.origin {
+            FunctionOrigin::Named { .. } => self,
+            FunctionOrigin::Generated { owner, .. } => owner.lexical_owner(),
+        }
+    }
+
+    pub fn is_named(&self, name: &str) -> bool {
+        self.source_name() == Some(name)
+    }
+
+    pub fn is_generated(&self) -> bool {
+        matches!(self.origin, FunctionOrigin::Generated { .. })
+    }
+
+    pub fn display_name(&self) -> String {
+        match self.source_name() {
+            Some(name) => name.to_string(),
+            None => self.label(),
+        }
+    }
+
+    pub fn semantic_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (&self.origin, &other.origin) {
+            (
+                FunctionOrigin::Named {
+                    module: left_module,
+                    name: left,
+                },
+                FunctionOrigin::Named {
+                    module: right_module,
+                    name: right,
+                },
+            ) => left_module.cmp(right_module).then_with(|| left.cmp(right)),
+            (FunctionOrigin::Named { .. }, FunctionOrigin::Generated { .. }) => Ordering::Less,
+            (FunctionOrigin::Generated { .. }, FunctionOrigin::Named { .. }) => Ordering::Greater,
+            (
+                FunctionOrigin::Generated {
+                    owner: left,
+                    occurrence: left_occurrence,
+                },
+                FunctionOrigin::Generated {
+                    owner: right,
+                    occurrence: right_occurrence,
+                },
+            ) => left
+                .semantic_cmp(right)
+                .then_with(|| left_occurrence.cmp(right_occurrence)),
+        }
+        .then_with(|| self.arity.cmp(&other.arity))
+    }
+
+    pub fn label(&self) -> String {
+        match &self.origin {
+            FunctionOrigin::Named { module, name } => match module {
+                Some(module) => format!("{module}.{name}/{}", self.arity),
+                None => format!("{name}/{}", self.arity),
+            },
+            FunctionOrigin::Generated { owner, occurrence } => {
+                format!("{}#lambda@{}/{}", owner.label(), occurrence.as_u32(), self.arity)
+            }
+        }
+    }
 }
 
 /// The identity of a named type: its owning module, source name, and arity.
@@ -493,17 +588,6 @@ impl ModuleMap {
         update_if_changed(module, next)
     }
 
-    pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
-        let id = ModuleId(self.slots.len() as u32);
-        self.slots.push(ModuleState::Defined {
-            source: ModuleSource::empty(code),
-            base: namespace,
-            interface: ModuleInterface::default(),
-        });
-        self.names.push(None);
-        id
-    }
-
     pub fn get(&self, id: ModuleId) -> &ModuleState {
         self.slots
             .get(id.0 as usize)
@@ -521,7 +605,7 @@ impl ModuleMap {
 #[derive(Debug, Default)]
 pub struct FunctionMap {
     slots: Vec<FunctionState>,
-    refs: Vec<FunctionRef>,
+    refs: Vec<Arc<FunctionRef>>,
     by_key: HashMap<FunctionKey, FunctionId>,
     generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
 }
@@ -531,7 +615,13 @@ impl FunctionMap {
         Self::default()
     }
 
-    pub fn reference(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
+    pub fn reference(
+        &mut self,
+        module: ModuleId,
+        module_name: Option<crate::modules::identity::ModuleName>,
+        name: impl Into<String>,
+        arity: usize,
+    ) -> FunctionId {
         let name = name.into();
         let key = FunctionKey {
             module,
@@ -543,23 +633,43 @@ impl FunctionMap {
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
-        self.refs.push(FunctionRef { module, name, arity });
+        self.refs.push(Arc::new(FunctionRef {
+            module,
+            origin: FunctionOrigin::Named {
+                module: module_name,
+                name,
+            },
+            arity,
+        }));
         self.by_key.insert(key, id);
         id
     }
 
-    pub fn reference_generated(&mut self, owner: FunctionId, module: ModuleId, span: Span, arity: usize) -> FunctionId {
-        let key = GeneratedFunctionKey { owner, span, arity };
+    pub fn reference_generated(
+        &mut self,
+        owner: FunctionId,
+        module: ModuleId,
+        occurrence: crate::ast::LambdaOccurrence,
+        arity: usize,
+    ) -> FunctionId {
+        let key = GeneratedFunctionKey {
+            owner,
+            occurrence,
+            arity,
+        };
         if let Some(id) = self.generated_by_key.get(&key) {
             return *id;
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
-        self.refs.push(FunctionRef {
+        self.refs.push(Arc::new(FunctionRef {
             module,
-            name: format!("#lambda:{}:{}-{}", owner.as_u32(), span.start, span.end),
+            origin: FunctionOrigin::Generated {
+                owner: Arc::clone(&self.refs[owner.0 as usize]),
+                occurrence,
+            },
             arity,
-        });
+        }));
         self.generated_by_key.insert(key, id);
         id
     }
@@ -619,13 +729,17 @@ impl FunctionMap {
             .expect("function ids should be known before reading reverse references")
     }
 
+    pub fn shared_reference_for(&self, id: FunctionId) -> Arc<FunctionRef> {
+        Arc::clone(&self.refs[id.0 as usize])
+    }
+
     /// The reverse reference for `id`, or `None` when `id` is not a known
     /// function slot. Unlike [`reference_for`](Self::reference_for) this does
     /// not assume the id is in range, so a caller decoding an id of uncertain
     /// provenance (e.g. a packed closure-surface var) can probe it safely.
     #[cfg(test)]
     pub fn try_reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
-        self.refs.get(id.0 as usize)
+        self.refs.get(id.0 as usize).map(Arc::as_ref)
     }
 }
 

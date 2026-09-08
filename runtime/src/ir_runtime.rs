@@ -28,9 +28,9 @@ use crate::any_value::debug::render_value;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, EMPTY_LIST_BITS, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING,
     TAG_FWD, TAG_LIST, TAG_MASK, TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value,
-    closure_captured_count, closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, object_size, procbin_addr_from_tagged,
-    struct_addr_from_tagged, struct_schema_id,
+    closure_captured_count, closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, object_size,
+    procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -614,7 +614,7 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
-// Closures are schema-backed environments with a raw code pointer at +8.
+// Closures carry source denotation, a self-describing environment, and code at +8.
 // Invocation is a call_indirect through that code pointer; captures are
 // ordinary env fields read and written through the runtime accessors.
 
@@ -629,16 +629,19 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(
     process: *mut Process,
+    denotation: u32,
     arity: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
 ) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    let bits =
-        (unsafe { &mut *process })
-            .heap
-            .alloc_closure_slots(arity as u16, captured_count as usize, halt_kind as u16);
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
+        crate::any_value::ClosureDenotationId::from_runtime_word(denotation),
+        arity as u16,
+        captured_count as usize,
+        halt_kind as u16,
+    );
     let addr = closure_addr_from_tagged(bits).expect("new closure bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
@@ -679,11 +682,13 @@ pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u
     if !p.halt_cont_singletons[slot].is_null() {
         return heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8);
     }
-    let closure_schema = p.heap.closure_schema_id(0);
     let mut buf = AlignedClosureStorage::zeroed();
     let base = buf.as_ptr();
     unsafe {
-        std::ptr::write(base as *mut u32, closure_schema);
+        std::ptr::write(
+            base as *mut u32,
+            crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
+        );
         std::ptr::write(base.add(4) as *mut u32, closure_flags_pack(0, kind as u16) as u32);
         std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
     }
@@ -2000,9 +2005,9 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
         Err(err) => {
             let addr = value.closure_addr().expect("fz_closure_get_capture_ref closure");
             panic!(
-                "fz_closure_get_capture_ref idx={} schema_id={} captured_count={} code_ptr={:#x}: {:?}",
+                "fz_closure_get_capture_ref idx={} denotation={:?} captured_count={} code_ptr={:#x}: {:?}",
                 index,
-                unsafe { closure_schema_id(addr) },
+                unsafe { closure_denotation(addr) },
                 unsafe { closure_captured_count(addr) },
                 unsafe { closure_fn_ptr(addr) },
                 err
@@ -2149,9 +2154,12 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
     let count = unsafe { lazy_cont_count(ptr) };
     // A continuation is applied to exactly the one value it receives.
-    let bits = (unsafe { &mut *process })
-        .heap
-        .alloc_closure_slots(CONT_ARITY, count, 0);
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
+        crate::any_value::ClosureDenotationId::INTERNAL,
+        CONT_ARITY,
+        count,
+        0,
+    );
     let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };

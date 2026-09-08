@@ -640,6 +640,11 @@ fn package_backend_construction_wrappers(
                 .collect::<Result<Box<_>, FatalError>>()?;
             Ok(Rc::new(BackendConstructionWrapper {
                 identity: positioned.position.clone(),
+                denotation: world
+                    .callable(construction.callable)
+                    .function
+                    .expect("construction names a source function")
+                    .denotation(),
                 callable: construction.callable,
                 captures,
                 call_arity,
@@ -1482,6 +1487,7 @@ mod tests {
                 value: callee,
             };
             let wrapper = Rc::new(BackendConstructionWrapper {
+                denotation: executable.key.activation.function.denotation(),
                 identity,
                 callable: CallableId::for_test(0),
                 captures: Box::default(),

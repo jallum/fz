@@ -34,7 +34,7 @@ pub struct ModuleInterfaceCallable {
 
 impl ModuleInterfaceCallable {
     pub fn matches_name_arity(&self, name: &str, arity: usize) -> bool {
-        self.reference.name == name && self.reference.arity == arity
+        self.reference.name() == name && self.reference.arity == arity
     }
 
     pub fn namespace_symbol(&self) -> NamespaceSymbol {
@@ -208,7 +208,10 @@ mod tests {
             function: FunctionId::from_fn_id(crate::fz_ir::FnId(id)),
             reference: FunctionRef {
                 module: ModuleId::GLOBAL,
-                name: name.to_string(),
+                origin: super::super::identity::FunctionOrigin::Named {
+                    module: None,
+                    name: name.to_string(),
+                },
                 arity,
             },
             kind,

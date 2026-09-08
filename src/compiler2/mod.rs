@@ -126,6 +126,8 @@ mod artifact_test;
 #[cfg(test)]
 mod canon_test;
 #[cfg(test)]
+mod closure_denotation_test;
+#[cfg(test)]
 mod code_test;
 #[cfg(test)]
 mod compiler2_test;

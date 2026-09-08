@@ -578,7 +578,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 .retained_backend_program(root)
                 .executables()
                 .iter()
-                .filter(|executable| compiler.world().function_ref(executable.key.activation.function).name == "leaf")
+                .filter(|executable| {
+                    compiler
+                        .world()
+                        .function_ref(executable.key.activation.function)
+                        .is_named("leaf")
+                })
                 .map(|executable| executable.key.clone())
                 .collect::<Vec<_>>()
         })
@@ -639,13 +644,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     }
     let reached_names = observed_runtime_demand_readers
         .iter()
-        .map(|executable| {
-            compiler
-                .world()
-                .function_ref(executable.activation.function)
-                .name
-                .as_str()
-        })
+        .map(|executable| compiler.world().function_ref(executable.activation.function).name())
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(
         reached_names,
@@ -659,8 +658,8 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 compiler
                     .world()
                     .function_ref(executable.activation.function)
-                    .name
-                    .clone(),
+                    .name()
+                    .to_string(),
             )
             .or_default() += 1;
     }
@@ -765,7 +764,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .product_executable_inventory(main)
         .expect("main inventory before replacing its reached callee")
         .iter()
-        .filter(|executable| compiler.world().function_ref(executable.activation.function).name == "leaf")
+        .filter(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .is_named("leaf")
+        })
         .cloned()
         .collect::<Vec<_>>();
     assert!(!retired_leaf_executables.is_empty());
@@ -780,13 +784,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .expect("replacement root inventory");
     let names = inventory
         .iter()
-        .map(|executable| {
-            compiler
-                .world()
-                .function_ref(executable.activation.function)
-                .name
-                .as_str()
-        })
+        .map(|executable| compiler.world().function_ref(executable.activation.function).name())
         .collect::<std::collections::HashSet<_>>();
     assert!(names.contains("main") && names.contains("replacement"));
     assert!(

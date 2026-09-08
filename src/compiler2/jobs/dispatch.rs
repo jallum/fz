@@ -392,7 +392,7 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Receive { .. }
         | Expr::Match(_, _)
         | Expr::Block(_)
-        | Expr::Lambda(_)
+        | Expr::Lambda { .. }
         | Expr::Quote(_)
         | Expr::Unquote(_) => Err(expr.span),
     }

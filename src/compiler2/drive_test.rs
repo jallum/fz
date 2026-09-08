@@ -63,7 +63,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
     requests.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: None,
-        text: "\n\nfn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+        text: "fn main(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     assert!(
@@ -501,7 +501,7 @@ impl TypeReferenceCapture {
         telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
             &["fz", "compiler2", "type", "references", "function", "recorded"],
             move |_, _, _, world, function| {
-                let name = world.function_ref(*function).name.clone();
+                let name = world.function_ref(*function).display_name();
                 records.borrow_mut().extend(
                     world
                         .function_type_refs(*function)
@@ -2708,13 +2708,13 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         .into_iter()
         .filter(|record| {
             !matches!(
-                record.function_ref.name.as_str(),
+                record.function_ref.name(),
                 "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
             )
         })
         .map(|record| {
             (
-                record.function_ref.name.clone(),
+                record.function_ref.display_name(),
                 record.arity,
                 function_module_name(&record, &modules),
                 function_fq_name(&record, &modules),
@@ -2763,7 +2763,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
                     .is_none_or(|function_ref| {
                         matches!(
-                            function_ref.name.as_str(),
+                            function_ref.name(),
                             "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
                         )
                     })
@@ -3690,7 +3690,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         .cloned()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -3888,7 +3888,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -8661,7 +8661,10 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         .executables()
         .iter()
         .find(|executable| {
-            compiler.world().function_ref(executable.key.activation.function).name == "count_result"
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("count_result")
                 && executable.abi.materialized.runtime_demand.input_demands.first() == Some(&exact_result)
         })
         .expect("the selected count-result clause should need only the integer payload");
@@ -8679,7 +8682,10 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         .executables()
         .iter()
         .filter(|executable| {
-            compiler.world().function_ref(executable.key.activation.function).name == "count"
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("count")
                 && executable
                     .abi
                     .materialized
@@ -9021,6 +9027,36 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 }
 
 #[test]
+fn with_else_lowering_copies_retain_one_source_lambda_denotation() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("with_else_denotation.fz".into()),
+        text: "fn make(a, b) do\n  with :ok <- a, :ok <- b do\n    :ok\n  else\n    _ -> fn () -> 42 end\n  end\nend\nfn main() do\n  dbg(make(:bad, :ok))\n  dbg(make(:ok, :bad))\n  0\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    let denotations = functions
+        .all()
+        .into_iter()
+        .filter(|record| record.function_ref.is_generated() && record.function_ref.lexical_owner().is_named("make"))
+        .map(|record| record.function_id.denotation())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        denotations.len(),
+        1,
+        "lowering the same else AST for each failed binding must not mint new source denotations: {denotations:?}"
+    );
+}
+
+#[test]
 fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and_jit() {
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
@@ -9049,20 +9085,13 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
         .all()
         .into_iter()
         .filter(|record| {
-            record
-                .function_ref
-                .name
-                .strip_prefix("#lambda:0:")
-                .is_some_and(|range| {
-                    range.split_once('-').is_some_and(|(start, end)| {
-                        start
-                            .parse::<usize>()
-                            .ok()
-                            .zip(end.parse::<usize>().ok())
-                            .and_then(|(start, end)| source.get(start..end))
-                            .is_some_and(|body| body.contains("x < 4"))
-                    })
-                })
+            if !record.function_ref.is_generated() {
+                return false;
+            }
+            let span = compiler.world().function_surface(record.function_id).span;
+            source
+                .get(span.start as usize..span.end as usize)
+                .is_some_and(|body| body.contains("x < 4"))
         })
         .map(|record| record.function_id)
         .collect::<HashSet<_>>();
@@ -9263,11 +9292,17 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(cl_sid, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
+        .find(|(cl_sid, _, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
         .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
     let body_ptr = compiled
         .fn_ptr(native_callable_boundary.wrapper_fn)
         .expect("compiled JIT module should publish the dtor wrapper body address");
+    assert_eq!(native_callable_boundary.denotation, lambda_id.denotation());
+    assert_eq!(
+        static_target.4,
+        lambda_id.denotation(),
+        "static publication must retain source denotation, not its callable-boundary identity",
+    );
     assert_ne!(
         static_target.2, body_ptr,
         "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
@@ -11606,9 +11641,11 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             &["fz", "compiler2", "work_graph", "applied"],
             move |_, _, _, world, completion| {
                 if let Job::DeriveRuntimeDemand(executable) = &completion.job {
-                    let name = world.function_ref(executable.activation.function).name.clone();
-                    if ["left", "right", "count", "even", "odd", "main"].contains(&name.as_str()) {
-                        run_sink.borrow_mut().push((executable.clone(), name));
+                    let Some(name) = world.function_ref(executable.activation.function).source_name() else {
+                        return;
+                    };
+                    if ["left", "right", "count", "even", "odd", "main"].contains(&name) {
+                        run_sink.borrow_mut().push((executable.clone(), name.to_string()));
                     }
                 }
             },
@@ -11702,7 +11739,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
                     FactUse::Current(FactKey::CallableConstructionTarget(key)) if key.owner == *executable
                 )
             }) {
-                construction_owners.insert(world.function_ref(executable.activation.function).name.clone());
+                construction_owners.insert(world.function_ref(executable.activation.function).display_name());
             }
             assert_eq!(
                 actual_peers, expected_peers,
@@ -11782,7 +11819,12 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
         .retained_backend_program(root)
         .executables()
         .iter()
-        .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
+        .find(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("main")
+        })
         .expect("the main executable should reach the backend")
         .key
         .clone();
@@ -11803,7 +11845,7 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
     assert!(
         callable_dependencies
             .iter()
-            .all(|function| { compiler.world().function_ref(*function).name.starts_with("#lambda:") })
+            .all(|function| { compiler.world().function_ref(*function).is_generated() })
     );
 }
 
@@ -12910,7 +12952,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
                 modules
                     .try_qualified_name(record.module_id)
                     .unwrap_or_else(|| format!("<unnamed:{}>", record.module_id.as_u32())),
-                record.function_ref.name,
+                record.function_ref.display_name(),
                 record.arity,
             )
         })
@@ -12997,7 +13039,7 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     let edge_names = |function: FunctionId| {
         callees(function)
             .into_iter()
-            .map(|callee| compiler.world().function_ref(callee).name.clone())
+            .map(|callee| compiler.world().function_ref(callee).display_name())
             .collect::<BTreeSet<_>>()
     };
     let names = |names: [&str; 2]| names.map(str::to_string).into_iter().collect::<BTreeSet<_>>();
@@ -15209,8 +15251,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         functions
             .all()
             .into_iter()
-            .filter(|record| record.function_ref.name != "__info__")
-            .all(|record| record.function_ref.name != "func"),
+            .filter(|record| !record.function_ref.is_named("__info__"))
+            .all(|record| !record.function_ref.is_named("func")),
         "root definition should not eagerly define the nested user function",
     );
 
@@ -15236,7 +15278,7 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let function_defined = functions
         .all()
         .into_iter()
-        .find(|record| record.function_ref.name == "func")
+        .find(|record| record.function_ref.is_named("func"))
         .expect("nested function.defined event");
     assert_eq!(
         function_module_name(&function_defined, &modules),
@@ -15328,7 +15370,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15352,7 +15394,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15713,7 +15755,7 @@ end
                     .metadata
                     .get("function_ref")
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
-                    .is_none_or(|function_ref| function_ref.name != "tagged")
+                    .is_none_or(|function_ref| !function_ref.is_named("tagged"))
             }),
         "the short alias form should not expand the remote macro",
     );
@@ -15777,7 +15819,7 @@ end
                     .metadata
                     .get("function_ref")
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
-                    .is_none_or(|function_ref| function_ref.name != "twice")
+                    .is_none_or(|function_ref| !function_ref.is_named("twice"))
             }),
         "remote macros must not expand unless the current source scope required them",
     );
@@ -15930,7 +15972,7 @@ fn compiler2_import_all_waits_for_module_interface() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15997,7 +16039,7 @@ fn compiler2_import_except_waits_for_module_interface() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -16277,7 +16319,7 @@ impl FunctionCapture {
         self.defs
             .borrow()
             .values()
-            .find(|record| record.function_ref.name == name && record.arity == arity)
+            .find(|record| record.function_ref.is_named(name) && record.arity == arity)
             .map(|record| record.function_id)
             .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
     }
@@ -16312,7 +16354,7 @@ impl SourceNoteCapture {
         self.notes
             .borrow()
             .iter()
-            .filter(|function_ref| function_ref.name == name && function_ref.arity == arity)
+            .filter(|function_ref| function_ref.is_named(name) && function_ref.arity == arity)
             .count()
     }
 }
@@ -17299,7 +17341,7 @@ pub(crate) fn function_id_in_module(
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == name
+            record.function_ref.is_named(name)
                 && record.arity == arity
                 && modules.try_qualified_name(record.module_id).as_deref() == Some(module_name)
         })
@@ -17319,12 +17361,12 @@ pub(crate) fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
 
 fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
     if function.module_id == ModuleId::GLOBAL {
-        function.function_ref.name.clone()
+        function.function_ref.display_name()
     } else {
         format!(
             "{}.{}",
             modules.qualified_name(function.module_id),
-            function.function_ref.name
+            function.function_ref.display_name()
         )
     }
 }
@@ -17715,7 +17757,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
             .iter()
             .map(|activation| {
                 (
-                    world.function_ref(activation.function).name.clone(),
+                    world.function_ref(activation.function).display_name(),
                     activation
                         .inputs(world.types())
                         .iter()
@@ -18742,22 +18784,13 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
         .all()
         .into_iter()
         .find(|record| {
-            record
-                .function_ref
-                .name
-                .strip_prefix("#lambda:0:")
-                .is_some_and(|range| {
-                    range.split_once('-').is_some_and(|(start, end)| {
-                        start
-                            .parse::<usize>()
-                            .ok()
-                            .zip(end.parse::<usize>().ok())
-                            .and_then(|(start, end)| {
-                                include_str!("../../fixtures2/00279_enum_find_find_value.fz").get(start..end)
-                            })
-                            .is_some_and(|source| source.contains("x > 2"))
-                    })
-                })
+            if !record.function_ref.is_generated() {
+                return false;
+            }
+            let span = compiler.world().function_surface(record.function_id).span;
+            include_str!("../../fixtures2/00279_enum_find_find_value.fz")
+                .get(span.start as usize..span.end as usize)
+                .is_some_and(|body| body.contains("x > 2"))
         })
         .expect("find predicate producer should be indexed")
         .function_id;

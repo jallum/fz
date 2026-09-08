@@ -1957,9 +1957,9 @@ fn call_reaches_no_target(
     let callee = world.function_ref(callee);
     let module = world.module_name(callee.module).unwrap_or("").to_string();
     let qualified = if module.is_empty() {
-        callee.name.clone()
+        callee.display_name()
     } else {
-        format!("{module}.{}", callee.name)
+        format!("{module}.{}", callee.display_name())
     };
     let diagnostic = Diagnostic::error(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,

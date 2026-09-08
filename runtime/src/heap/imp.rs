@@ -203,10 +203,6 @@ impl Heap {
         p
     }
 
-    pub(crate) fn closure_schema_id(&mut self, captured_count: usize) -> u32 {
-        self.schemas.borrow_mut().closure_env(captured_count)
-    }
-
     pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
         let p = range.struct_addr()?;
         let schema_id = unsafe { struct_schema_id(p.cast_const()) };
@@ -737,25 +733,10 @@ impl Heap {
         self.alloc_bitstring(&owned, buf_bits - byte_offset * 8)
     }
 
-    /// Closure layout: `schema_id`, header word, raw code pointer, then
-    /// schema-backed capture fields.
-    pub fn alloc_closure_slots(&mut self, arity: u16, captured_count: usize, halt_kind: u16) -> u64 {
-        let schema_id = self.closure_schema_id(captured_count);
-        self.alloc_closure_slots_with_schema(schema_id, arity, captured_count, halt_kind)
-    }
-
-    /// Allocate a closure's slots writing `schema_id` verbatim instead of
-    /// registering a `ClosureEnv{n}` schema. For scheduler scaffolding
-    /// closures (entry thunks, synthetic main inners) whose `schema_id` is
-    /// never consulted: captures are accessed by offset, GC sizes and traces
-    /// them by `captured_count` (the closure `flags`), and they are never
-    /// rendered. Registering a `ClosureEnv` schema for them would only perturb
-    /// the schema-id space the AOT runtime must keep identical to compile time
-    /// (and the schema ids interpreter and codegen render). Scaffolding mints
-    /// pass a placeholder `schema_id`.
-    pub fn alloc_closure_slots_with_schema(
+    /// Denotation, layout header, code pointer, then captures and their kind bytes.
+    pub fn alloc_closure_slots(
         &mut self,
-        schema_id: u32,
+        denotation: crate::any_value::ClosureDenotationId,
         arity: u16,
         captured_count: usize,
         halt_kind: u16,
@@ -767,7 +748,7 @@ impl Heap {
         let total = closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
-            write(p as *mut u32, schema_id);
+            write(p as *mut u32, denotation.as_u32());
             write(
                 p.add(4) as *mut u32,
                 closure_header_word(captured_count as u16, halt_kind, arity),
@@ -782,6 +763,7 @@ impl Heap {
 
     pub fn alloc_closure(
         &mut self,
+        denotation: crate::any_value::ClosureDenotationId,
         arity: u16,
         captured_count: usize,
         halt_kind: u16,
@@ -789,7 +771,7 @@ impl Heap {
         captures: &[AnyValue],
     ) -> u64 {
         assert!(captures.len() <= captured_count, "too many closure captures");
-        let bits = self.alloc_closure_slots(arity, captured_count, halt_kind);
+        let bits = self.alloc_closure_slots(denotation, arity, captured_count, halt_kind);
         let p = closure_addr_from_tagged(bits).expect("new closure ptr");
         unsafe {
             write(p.add(8) as *mut u64, fn_ptr);
@@ -1016,7 +998,7 @@ impl Heap {
     }
 
     /// Register a schema in this heap's registry, returning its id. Codegen
-    /// uses this to register tuple-arity / closure / record schemas at JIT
+    /// uses this to register tuple-arity / record schemas at JIT
     /// compile time so the tracer can walk their typed fields.
     pub fn register_schema(&self, schema: Schema) -> u32 {
         self.schemas.borrow_mut().register(schema)

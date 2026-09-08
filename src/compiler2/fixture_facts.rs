@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 
-use crate::fz_ir::FnId;
 use crate::source::Span;
 
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
@@ -221,25 +220,7 @@ fn canonical_function_label(world: &World, function: FunctionId, labels: &mut Ha
     if let Some(label) = labels.get(&function) {
         return label.clone();
     }
-    let function_ref = world.function_ref(function);
-    let label = match parse_generated_lambda(function_ref.name.as_str()) {
-        Some(generated) => {
-            let owner = FunctionId::from_fn_id(FnId(generated.owner));
-            let owner_label = canonical_function_label(world, owner, labels);
-            format!(
-                "{owner_label}::lambda[{}]/{}",
-                provenance_span_label(generated.start, generated.end),
-                function_ref.arity
-            )
-        }
-        None => {
-            let base = match world.module_name(function_ref.module) {
-                Some(module) if !module.is_empty() => format!("{module}.{}", function_ref.name),
-                _ => function_ref.name.clone(),
-            };
-            format!("{base}/{}", function_ref.arity)
-        }
-    };
+    let label = world.function_ref(function).label();
     labels.insert(function, label.clone());
     label
 }
@@ -265,27 +246,6 @@ fn span_label(span: Span) -> String {
     } else {
         format!("@{}-{}", span.start, span.end)
     }
-}
-
-struct GeneratedLambda {
-    owner: u32,
-    start: u32,
-    end: u32,
-}
-
-fn parse_generated_lambda(name: &str) -> Option<GeneratedLambda> {
-    let rest = name.strip_prefix("#lambda:")?;
-    let (owner, rest) = rest.split_once(':')?;
-    let (start, end) = rest.split_once('-')?;
-    Some(GeneratedLambda {
-        owner: owner.parse().ok()?,
-        start: start.parse().ok()?,
-        end: end.parse().ok()?,
-    })
-}
-
-fn provenance_span_label(start: u32, end: u32) -> String {
-    format!("@{}-{}", start, end)
 }
 
 /// Consume a `closure[...]` capture tag (balanced on `[`/`]`, since a

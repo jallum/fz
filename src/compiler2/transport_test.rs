@@ -75,7 +75,7 @@ fn transport_consumers_share_one_typed_semantic_order() {
     let list = types.list(int);
     let non_empty = types.non_empty_list(int);
     let mut functions = FunctionMap::new();
-    let function = functions.reference(ModuleId::GLOBAL, "ordered", 1);
+    let function = functions.reference(ModuleId::GLOBAL, None, "ordered", 1);
     let root = RootId::for_test(0);
     let keys = [list, non_empty].map(|input| ExecutableKey {
         activation: ActivationKey::from_inputs(root, function, &[input], &mut types),
@@ -235,7 +235,7 @@ fn transport_descriptors_share_across_root_positions() {
     let mut types = Types::new();
     let int = types.int();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut store = TransportStore::new();
     let interners = store.interners_mut();
 
@@ -297,7 +297,7 @@ fn transport_boundary_descriptors_are_interned_contracts() {
     let mut types = Types::new();
     let int = types.int();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut interners = TransportInterners::default();
 
     let lane = interners.intern_lane(LaneDescr {
@@ -331,7 +331,7 @@ fn transport_callable_descriptors_include_ordered_capture_layouts() {
     let int = types.int();
     let atom = types.atom();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut interners = TransportInterners::default();
 
     let int_lane = interners.intern_lane(LaneDescr {
@@ -382,7 +382,7 @@ fn transport_callable_descriptors_keep_elided_capture_groundings_distinct() {
     let int = types.int();
     let atom = types.atom();
     let mut functions = FunctionMap::new();
-    let apply = functions.reference(ModuleId::GLOBAL, "apply", 1);
+    let apply = functions.reference(ModuleId::GLOBAL, None, "apply", 1);
     let mut interners = TransportInterners::default();
 
     let int_capture = interners.intern_callable(CallableDescr {

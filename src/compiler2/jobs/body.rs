@@ -606,7 +606,7 @@ fn collect_local_dispatch_requirements(
                 collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
             }
         }
-        Expr::Lambda(_) => {}
+        Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1010,7 +1010,7 @@ fn collect_unquote_dispatch_requirements(
             }
             Ok(())
         }
-        Expr::Lambda(_)
+        Expr::Lambda { .. }
         | Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1193,7 +1193,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             | Expr::Cond(_)
             | Expr::With(_, _, _)
             | Expr::Receive { .. }
-            | Expr::Lambda(_) => Err(emit_job_diagnostic(
+            | Expr::Lambda { .. } => Err(emit_job_diagnostic(
                 self.lowerer.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
@@ -1857,7 +1857,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 self.lower_with(expr.span, bindings, body, else_clauses, env, steps)
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
-            Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
+            Expr::Lambda { occurrence, clauses } => self.lower_lambda(*occurrence, expr.span, clauses, env, steps),
             Expr::Quote(inner) => QuoteLowerer::new(self, env, steps).lower(inner),
             Expr::Unquote(_) => Err(emit_job_diagnostic(
                 self.telemetry,
@@ -2604,13 +2604,15 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower_lambda(
         &mut self,
+        occurrence: crate::ast::LambdaOccurrence,
         span: Span,
         clauses: &[LambdaClause],
         env: &HashMap<String, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
+        let value = self.fresh_value();
         let surface = FunctionSurface {
-            name: format!("#lambda:{}:{}-{}", self.owner.as_u32(), span.start, span.end),
+            name: "#lambda".to_string(),
             name_span: span,
             clauses: clauses
                 .iter()
@@ -2642,7 +2644,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             .collect::<Vec<_>>();
 
         let (function, changed) = super::super::drive::ExecutionContext::new(self.world, self.telemetry)
-            .define_generated_function(self.owner, self.namespace, capture_params, surface);
+            .define_generated_function(self.owner, occurrence, self.namespace, capture_params, surface);
         self.generated.push(FactKey::FunctionDefined(function));
         if changed {
             self.generated_changed.push(FactKey::FunctionDefined(function));
@@ -2650,7 +2652,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();
-        let value = self.fresh_value();
         steps.push(ExprStep::Lambda {
             value,
             function,
@@ -4084,7 +4085,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
                 collect_expr_free_names(&expr.node, bound, free);
             }
         }
-        Expr::Lambda(clauses) => {
+        Expr::Lambda { clauses, .. } => {
             for clause in clauses {
                 let mut lambda_bound = bound.clone();
                 for param in &clause.params {
@@ -4277,7 +4278,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Receive { .. } => "Receive",
         Expr::Match(_, _) => "Match",
         Expr::Block(_) => "Block",
-        Expr::Lambda(_) => "Lambda",
+        Expr::Lambda { .. } => "Lambda",
         Expr::Quote(_) => "Quote",
         Expr::Unquote(_) => "Unquote",
     }

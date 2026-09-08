@@ -107,23 +107,9 @@ pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram)
     inverse(&canon.wrapper_order(program))
 }
 
-/// A function's stable label: `Module.name/arity`.
-///
-/// Generated lambdas are minted with a name that embeds their OWNER's raw
-/// `FunctionId` (`#lambda:{owner}:{start}-{end}`, see
-/// `FunctionTable::reference_generated`), which is a mint-order index and so
-/// cannot appear in a canonical rendering. The owner is resolved to its own
-/// label instead, which also keeps the result injective: the generated key is
-/// exactly (owner, span, arity), and all three survive here.
+/// Render the function interner's typed origin without raw mint IDs.
 pub(crate) fn function_label(world: &World, function: FunctionId) -> String {
-    let reference = world.function_ref(function);
-    let (name, arity) = (reference.name.clone(), reference.arity);
-    let module = world.module_name(reference.module).unwrap_or_default().to_string();
-    match parse_generated_name(&name) {
-        Some((owner, start, end)) => format!("{}#lambda@{start}-{end}/{arity}", function_label(world, owner)),
-        None if module.is_empty() => format!("{name}/{arity}"),
-        None => format!("{module}.{name}/{arity}"),
-    }
+    world.function_ref(function).label()
 }
 
 #[cfg(test)]
@@ -137,17 +123,6 @@ fn stable_closure_alpha_label(world: &World, id: TypeVarId) -> Option<String> {
         ClosureSurfacePos::Arg(_) => return None,
     };
     Some(format!("closure({}:{slot})", function_label(world, function)))
-}
-
-fn parse_generated_name(name: &str) -> Option<(FunctionId, u32, u32)> {
-    let rest = name.strip_prefix("#lambda:")?;
-    let (owner, span) = rest.split_once(':')?;
-    let (start, end) = span.split_once('-')?;
-    Some((
-        FunctionId::from_fn_id(crate::fz_ir::FnId(owner.parse().ok()?)),
-        start.parse().ok()?,
-        end.parse().ok()?,
-    ))
 }
 
 /// An indented line sink. Every renderer below appends whole lines, so the

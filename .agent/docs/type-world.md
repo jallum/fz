@@ -102,3 +102,9 @@ everything outside the type module — facts, keys, analysis — sees only `Ty` 
 the comparisons the interner caches. Naming sits outside this boundary entirely: the
 kernel is handed symbols and returns symbols, and the question "what does this source
 name denote?" is answered before a `Ty` ever reaches it.
+
+Callable literals follow that rule too. `World` registers the same immutable
+typed `FunctionRef` that its function interner owns before a literal can name it.
+Clause and activation comparisons read that origin's module/name/arity or
+generated owner/source-occurrence fields. These are source identity data, not
+rendered labels; the kernel never decodes a display string to discover a callable.

@@ -18,7 +18,7 @@ pub const TAG_LIST: u64 = 0x1;
 pub const TAG_MAP: u64 = 0x2;
 /// Heap tuple/struct; schema-driven typed fields, pinned in vrx.0.2.
 pub const TAG_STRUCT: u64 = 0x3;
-/// Heap closure; schema-driven typed captures, pinned in vrx.0.2.
+/// Heap closure; denotation header and self-describing typed capture slots.
 pub const TAG_CLOSURE: u64 = 0x4;
 /// Heap inline bitstring; bit length prefix plus padded bytes.
 pub const TAG_BITSTRING: u64 = 0x5;
@@ -473,7 +473,7 @@ mod any_value_ref_tests {
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
         let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8).heap_addr().expect("bitstring addr");
-        let closure_bits = heap.alloc_closure(0, 0, 0, 0xfeed, &[]);
+        let closure_bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0xfeed, &[]);
         let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
         let procbin_addr = heap
             .alloc_bitstring(&[0u8; 65], 65 * 8)
@@ -755,8 +755,35 @@ pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 ///
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
-pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
-    unsafe { ptr::read(addr as *const u32) }
+pub unsafe fn closure_denotation(addr: *const u8) -> ClosureDenotationId {
+    ClosureDenotationId(unsafe { ptr::read(addr as *const u32) })
+}
+
+/// A World-global source function identity. The execution code word is independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ClosureDenotationId(u32);
+
+impl ClosureDenotationId {
+    pub const INTERNAL: Self = Self(u32::MAX);
+
+    pub fn user(index: u32) -> Self {
+        assert_ne!(index, u32::MAX, "user function identity space exhausted");
+        Self(index)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_runtime_word(word: u32) -> Self {
+        Self(word)
+    }
+
+    pub fn user_index(self) -> u32 {
+        assert_ne!(self, Self::INTERNAL, "internal continuation is not a user closure");
+        self.0
+    }
 }
 
 /// # Safety
@@ -1405,7 +1432,7 @@ mod any_value_test;
 pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_schema_id, list_addr_from_tagged,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
         map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
         struct_schema_id,
     };
@@ -1792,14 +1819,13 @@ pub mod debug {
     }
 
     /// Elixir renders a fun as `#Function<index.uniq/arity>`: an opaque
-    /// identity followed by the arity. `#fn<env_schema/arity>` is the same
-    /// shape — the env schema stands in for the opaque identity (fz-gk4
-    /// follow-up: source-derived), and the arity is the fun's own.
+    /// identity followed by the arity. `#fn<denotation/arity>` reports the
+    /// source function identity independently of code and capture storage.
     fn render_closure(bits: u64) -> String {
         let p = closure_addr_from_tagged(bits).unwrap();
-        let schema_id = unsafe { closure_schema_id(p) };
+        let denotation = unsafe { closure_denotation(p) }.user_index();
         let arity = unsafe { closure_arity(p) };
-        format!("#fn<{}/{}>", schema_id, arity)
+        format!("#fn<{denotation}/{arity}>")
     }
 
     fn render_list(proc: *mut Process, bits: u64) -> String {

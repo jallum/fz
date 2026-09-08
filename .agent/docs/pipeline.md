@@ -535,6 +535,14 @@ roots whose memos read it, including dormant and nested-active roots; first/last
 reader transitions update that index without a dependency census. Equal
 reproduction preserves generations, and unrelated products remain valid.
 
+Closure construction likewise separates identity from representation. A backend
+wrapper carries `FunctionId::denotation()` from its source callable; the native
+boundary, static singleton, and interpreter materialization retain that same
+typed word. Neither a transport position nor a specialized code entry mints a
+new denotation. The closure's own kind bytes describe capture storage without a
+schema registration. Internal scheduler continuations use a distinct typed
+sentinel, never a user function identity.
+
 Runtime demand is what makes that line precise for *representation*. A semantic
 fact — an activation, a callsite summary, an exact callable surface — is
 evidence about what the program *means*; it is never an obligation to

@@ -255,7 +255,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     assert_eq!(compiler.run_root_interp(root), Ok(0));
     let (main, abi) = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "main")
+        .find(|(key, _)| compiler.world().function_ref(key.activation.function).is_named("main"))
         .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
         .unwrap();
     let super::body::LoweredBody::Clauses { entries, .. } = &abi.materialized.body else {
@@ -265,7 +265,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         .iter()
         .find_map(|entry| match &entry.tail {
             super::body::LoweredTail::DirectCall { value, callee, .. }
-                if compiler.world().function_ref(*callee).name == "value" =>
+                if compiler.world().function_ref(*callee).is_named("value") =>
             {
                 Some(*value)
             }
@@ -345,7 +345,12 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let forward = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "forward")
+        .find(|(key, _)| {
+            compiler
+                .world()
+                .function_ref(key.activation.function)
+                .is_named("forward")
+        })
         .map(|(key, _)| key.clone())
         .unwrap();
     let slot = InputSlot {
@@ -380,7 +385,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_absent(&compiler, &relations.borrow());
     let retained = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "apply")
+        .find(|(key, _)| compiler.world().function_ref(key.activation.function).is_named("apply"))
         .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
         .unwrap();
     let retained_owner = retained

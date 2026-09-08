@@ -86,29 +86,6 @@ impl Schema {
         }
     }
 
-    /// Closure environment schema. Payload offset 0 is the raw code pointer
-    /// and is never traced. Captures are ordinary `AnyValue` fields starting
-    /// at payload offset 8, so closure environments use the same field
-    /// access and GC tracing machinery as tuples.
-    pub fn closure_env(captures: usize) -> Self {
-        let mut fields = Vec::with_capacity(captures + 1);
-        fields.push(FieldDescriptor {
-            offset: 0,
-            kind: FieldKind::RawBytes(8),
-            name: None,
-        });
-        fields.extend((0..captures).map(|i| FieldDescriptor {
-            offset: 8 + (i * 8) as u32,
-            kind: FieldKind::AnyValue,
-            name: None,
-        }));
-        Self {
-            name: format!("ClosureEnv{}", captures),
-            size: ((captures + 1) * 8) as u32,
-            fields,
-        }
-    }
-
     pub fn value_field_count(&self) -> usize {
         self.fields
             .iter()
@@ -168,14 +145,6 @@ impl SchemaRegistry {
         let id = self.schemas.len() as u32;
         self.schemas.push(schema);
         id
-    }
-
-    pub fn closure_env(&mut self, captures: usize) -> u32 {
-        let name = format!("ClosureEnv{}", captures);
-        if let Some((id, _)) = self.schemas.iter().enumerate().find(|(_, schema)| schema.name == name) {
-            return id as u32;
-        }
-        self.register(Schema::closure_env(captures))
     }
 
     pub fn range(&mut self) -> u32 {

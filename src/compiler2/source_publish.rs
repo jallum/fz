@@ -1213,7 +1213,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(callables
             .iter()
             .filter(|callable| matches!(callable.kind, InterfaceCallableKind::Macro))
-            .filter(|callable| !denied.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
+            .filter(|callable| !denied.contains(&(callable.reference.name(), callable.reference.arity)))
             .cloned()
             .collect())
     }
@@ -1292,7 +1292,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 }
                 callables
                     .iter()
-                    .filter(|callable| !deny.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
+                    .filter(|callable| !deny.contains(&(callable.reference.name(), callable.reference.arity)))
                     .cloned()
                     .collect()
             } else {
@@ -1516,7 +1516,7 @@ fn module_info_pairs(
         .filter(|callable| keep(callable.kind))
         .map(|callable| {
             builder.tuple(&[
-                builder.atom(&callable.reference.name),
+                builder.atom(callable.reference.name()),
                 builder.int(callable.reference.arity as i64),
             ])
         })
@@ -1835,7 +1835,11 @@ fn find_callable<'a>(
 }
 
 fn bind_callable(world: &mut World, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
-    world.bind_namespace(scope, callable.reference.name.clone(), callable.namespace_symbol())
+    world.bind_namespace(
+        scope,
+        callable.reference.name().to_string(),
+        callable.namespace_symbol(),
+    )
 }
 
 fn reference_declared_protocol_module(world: &mut World, current_module: ModuleId, name: &ModuleName) -> ModuleId {

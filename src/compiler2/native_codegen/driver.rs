@@ -153,6 +153,7 @@ fn collect_static_closure_targets(
     u32, /* arity */
     FuncId,
     u32, /* halt_kind */
+    fz_runtime::any_value::ClosureDenotationId,
 )> {
     let mut targets = BTreeMap::new();
     for (&boundary_id, boundary) in surface
@@ -168,12 +169,12 @@ fn collect_static_closure_targets(
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef).halt_kind();
         let arity = boundary.arg_reprs.len() as u32;
-        targets.insert(boundary_id, (arity, body_fid, halt_kind));
+        targets.insert(boundary_id, (arity, body_fid, halt_kind, boundary.denotation));
     }
 
     targets
         .into_iter()
-        .map(|(sid, (arity, body_fid, halt_kind))| (sid, arity, body_fid, halt_kind))
+        .map(|(sid, (arity, body_fid, halt_kind, denotation))| (sid, arity, body_fid, halt_kind, denotation))
         .collect()
 }
 
@@ -746,6 +747,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
         let boundary_id = boundary.id().as_u32();
         let next = NativeCallableBoundarySurface {
             boundary_id: boundary.id(),
+            denotation: boundary.denotation,
             identity_fn: boundary.identity_fn,
             shape: boundary.shape.clone(),
             target_fn: boundary.wrapper_fn,
@@ -926,7 +928,6 @@ pub(crate) fn compile_with_backend_surface<
     emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &runtime)?;
 
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    user_schemas.borrow_mut().closure_env(0);
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
         collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
     let named_schema_ids = {

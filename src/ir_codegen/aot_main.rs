@@ -32,6 +32,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         u32, /* arity */
         FuncId,
         u32, /* halt_kind */
+        fz_runtime::any_value::ClosureDenotationId,
     )],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
@@ -124,13 +125,15 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 .call(reg_named_fref, &[proc_v, named_schemas_addr, named_schemas_len_v]);
         }
 
-        for (cl_sid, arity, body_func_id, halt_kind) in static_closure_targets {
+        for (cl_sid, arity, body_func_id, halt_kind, denotation) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
             let arity_v = b.ins().iconst(types::I32, *arity as i64);
             let body_addr = fn_addr(jmod, *body_func_id, &mut b);
             let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
+            let denotation_v = b.ins().iconst(types::I32, denotation.as_u32() as i64);
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
-            b.ins().call(reg_fref, &[proc_v, cl_sid_v, arity_v, body_addr, hk_v]);
+            b.ins()
+                .call(reg_fref, &[proc_v, cl_sid_v, arity_v, body_addr, hk_v, denotation_v]);
         }
 
         // Register the drain-dtor entry shim so the AOT run-queue loop

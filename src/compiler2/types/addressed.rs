@@ -642,8 +642,8 @@ mod tests {
         });
         let closure = t.closure_lit(ClosureTarget(8), vec![shared_address, nested], 1);
 
-        t.name_callable(ClosureTarget(7), "nested/1");
-        t.name_callable(ClosureTarget(8), "outer/1");
+        t.define_test_callable(ClosureTarget(7), "nested", 1);
+        t.define_test_callable(ClosureTarget(8), "outer", 1);
         let root = RootId::for_test(1);
         let function = FunctionId::for_test(2);
         let key = ActivationKey::from_inputs(root, function, &[closure], &mut t);
@@ -699,7 +699,7 @@ mod tests {
                 let _ = t.float();
             }
             let generic = var(&mut t, 91);
-            t.name_callable(target, "pkg::map/1");
+            t.define_test_callable(target, "pkg::map", 1);
             let closure = t.closure_lit(target, vec![generic], 1);
             let activation =
                 ActivationKey::from_inputs(RootId::for_test(3), FunctionId::for_test(4), &[closure], &mut t);

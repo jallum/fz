@@ -154,7 +154,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             extern_ids.insert(index, id);
             extern_decls.push(ExternDecl {
                 id,
-                fz_name: world.function_ref(executable.key.activation.function).name.clone(),
+                fz_name: world.function_ref(executable.key.activation.function).display_name(),
                 symbol: signature.symbol.clone(),
                 params: signature.params.clone(),
                 variadic: signature.variadic,
@@ -218,6 +218,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             });
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
+                denotation: wrapper.denotation,
                 identity_fn,
                 callable: wrapper.callable,
                 shape,
@@ -276,7 +277,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                 executable,
                                 &format!(
                                     "{}__e{}",
-                                    self.world.function_ref(executable.key.activation.function).name,
+                                    self.world
+                                        .function_ref(executable.key.activation.function)
+                                        .display_name(),
                                     index
                                 ),
                                 FnCategory::User,
@@ -761,7 +764,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let fn_id = self.executable_fns[index];
         let name = format!(
             "{}__e{}",
-            self.world.function_ref(executable.key.activation.function).name,
+            self.world
+                .function_ref(executable.key.activation.function)
+                .display_name(),
             index
         );
         let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
@@ -829,7 +834,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let fn_id = self.executable_fns[index];
         let name = format!(
             "{}__e{}",
-            self.world.function_ref(executable.key.activation.function).name,
+            self.world
+                .function_ref(executable.key.activation.function)
+                .display_name(),
             index
         );
         let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
@@ -887,7 +894,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 executable,
                 &format!(
                     "{}__clause_{}",
-                    self.world.function_ref(executable.key.activation.function).name,
+                    self.world
+                        .function_ref(executable.key.activation.function)
+                        .display_name(),
                     clause_index
                 ),
                 FnCategory::MultiClauseCont,
@@ -964,7 +973,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let entry = &entries[entry_id.as_u32() as usize];
         let base_name = format!(
             "{}__e{}",
-            self.world.function_ref(executable.key.activation.function).name,
+            self.world
+                .function_ref(executable.key.activation.function)
+                .display_name(),
             executable_index
         );
         let (entry_name, entry_category) = match &entry.origin {

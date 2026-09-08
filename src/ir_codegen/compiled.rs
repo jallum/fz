@@ -34,7 +34,7 @@ pub struct CompiledModule {
     pub(crate) diagnostics: Diagnostics,
     /// Zero-capture closure-target spec singletons resolved to code addresses
     /// at JIT-finalize time.
-    pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32)>,
+    pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32, fz_runtime::any_value::ClosureDenotationId)>,
     /// Tail-CC `fz_entry_thunk(self) -> i64` body.
     pub(crate) entry_thunk_addr: *const u8,
     /// Tail-CC `fz_main_trampoline(self, cont) -> i64` body.
@@ -181,7 +181,7 @@ impl CompiledModule {
 
 #[cfg(test)]
 impl CompiledModule {
-    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
+    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32, fz_runtime::any_value::ClosureDenotationId)] {
         &self.static_closure_targets
     }
 
@@ -217,7 +217,7 @@ pub struct CompiledMetadata {
     pub named_schemas: Vec<(String, Vec<String>)>,
     pub diagnostics: Diagnostics,
     pub main_fn_id: Option<FnId>,
-    pub static_closure_targets: Vec<(u32, u32, FuncId, u32)>,
+    pub static_closure_targets: Vec<(u32, u32, FuncId, u32, fz_runtime::any_value::ClosureDenotationId)>,
     pub entry_thunk_id: FuncId,
     pub main_trampoline_id: FuncId,
     pub drain_dtor_entry_id: FuncId,

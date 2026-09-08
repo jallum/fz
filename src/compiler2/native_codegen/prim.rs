@@ -2511,7 +2511,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let halt_repr = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
-    let cl_ptr = body.alloc_closure(arity_v, nc_v, hk_v, body_addr);
+    let cl_ptr = body.alloc_closure(boundary.denotation, arity_v, nc_v, hk_v, body_addr);
     for (i, cv) in captured.iter().enumerate() {
         match closure_capture_for_var_as(body, var_env, cv.0, boundary.capture_reprs[i]) {
             ClosureCapture::RefWord(value) => body.store_closure_capture_ref_word(cl_ptr, i, value),

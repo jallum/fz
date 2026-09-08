@@ -98,8 +98,12 @@ Built on `canon(Ty)`, by four rules:
 
 - **interned ids expand** to what they describe. A `ShapeId` becomes its
   descriptor tree, bottoming out in lanes (a type plus a class) and callables (a
-  function label plus capture types); a `FunctionId` becomes `Module.name/arity`;
-  a `Span`'s code id becomes the submission's name.
+  function label plus capture types); a `FunctionId` renders its typed
+  `FunctionOrigin`: `Module.name/arity` for named functions, or the shared owner
+  label followed by `#lambda@<source-occurrence>/arity` for generated lambdas.
+  Both canonical artifacts and fixture call-edge reports use this same renderer;
+  no consumer parses a generated display name back into identity.
+  A `Span`'s code id becomes the submission's name.
 - **program-wide positions are re-sorted** on an id-free key: an executable's
   function, input types and need; a wrapper's callable, arity, return form and
   member boundaries. The renderer assigns ordinals to `ExecutableKey` and

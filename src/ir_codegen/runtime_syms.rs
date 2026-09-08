@@ -107,7 +107,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_matcher_eq_bytes" => (&[I64, I64, I64], &[I32]),
         "fz_matcher_map_get" => (&[I64, I64], &[I64]),
         "fz_matcher_map_get_ref" => (&[I64, I64, I64], &[I64]),
-        "fz_alloc_closure" => (&[I64, I32, I32, I32, I64], &[I64]),
+        "fz_alloc_closure" => (&[I64, I32, I32, I32, I32, I64], &[I64]),
         "fz_closure_code_ref" => (&[I64], &[I64]),
         "fz_closure_halt_kind_ref" => (&[I64], &[I32]),
         "fz_materialize_cont" => (&[I64, I64], &[I64]),

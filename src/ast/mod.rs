@@ -132,7 +132,10 @@ pub enum Expr {
     // clauses, mirroring Elixir's `fn`. A single unguarded clause lowers and
     // evals directly; multi-clause and guarded forms desugar to a
     // pattern-matrix lambda in fz-g58.15 (Arc 3).
-    Lambda(Vec<LambdaClause>),
+    Lambda {
+        occurrence: LambdaOccurrence,
+        clauses: Vec<LambdaClause>,
+    },
 
     // macro support (fz-ul4.10):
     /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
@@ -190,8 +193,20 @@ pub struct MatchClause {
     pub span: Span,
 }
 
-/// fz-g58.2.5 — one clause of an anonymous `fn`: `params [when guard] -> body`.
-/// A `fn` carries a non-empty `Vec<LambdaClause>` (see `Expr::Lambda`).
+/// One lambda occurrence in a decoded source function, retained through cloning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LambdaOccurrence(u32);
+
+impl LambdaOccurrence {
+    pub(crate) fn from_u32(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LambdaClause {
     pub params: Vec<Spanned<Pattern>>,

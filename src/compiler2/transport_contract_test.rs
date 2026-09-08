@@ -1430,12 +1430,7 @@ end
     let demanded_lambda_inputs = session
         .demanded_executables()
         .iter()
-        .filter(|executable| {
-            world
-                .function_ref(executable.activation.function)
-                .name
-                .starts_with("#lambda:")
-        })
+        .filter(|executable| world.function_ref(executable.activation.function).is_generated())
         .map(|executable| {
             world
                 .activation_inputs_joined(&executable.activation)
@@ -2908,14 +2903,14 @@ fn main(), do: make_pairer()
         .iter()
         .filter_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1).then_some(&demand.return_demand)
+            (function_ref.is_generated() && function_ref.arity == 1).then_some(&demand.return_demand)
         })
         .collect::<Vec<_>>();
     let lambda_return_predicates = runtime_demands
         .keys()
         .filter_map(|executable| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1)
+            (function_ref.is_generated() && function_ref.arity == 1)
                 .then(|| world.activation_return(&executable.activation))
                 .flatten()
         })
@@ -3009,7 +3004,7 @@ fn main(), do: make()
         .iter()
         .filter(|executable| {
             let function_ref = world.function_ref(executable.activation.function);
-            function_ref.name.starts_with("#lambda:")
+            function_ref.is_generated()
                 && function_ref.arity == 2
                 && executable.activation.input_len(world.types()) == 2
         })
@@ -3123,7 +3118,7 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name == "identity")
+                .is_some_and(|function| world.function_ref(function).is_named("identity"))
         })
         .collect::<Vec<_>>();
     let [construction] = constructions.as_slice() else {
@@ -3311,7 +3306,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             .materialized_executables()
             .any(|(executable, _)| {
                 let function = world.function_ref(executable.activation.function);
-                function.name == "main" && function.arity == 0
+                function.is_named("main") && function.arity == 0
             }),
         "product materialization should include main/0"
     );
@@ -3322,7 +3317,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             .materialized_executables()
             .any(|(executable, _)| {
                 let function = world.function_ref(executable.activation.function);
-                function.name == "+" && function.arity == 2
+                function.is_named("+") && function.arity == 2
             }),
         "product materialization should include Kernel.+/2"
     );
@@ -4065,7 +4060,7 @@ fn main(), do: make(41).(1)
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name.starts_with("#lambda:"))
+                .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
                 && construction.members.len() == 1
         })
@@ -4227,7 +4222,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
     let mut whole_value_lanes = 0;
     let mut sunk = Vec::new();
     for executable in program.executables().iter() {
-        let name = &world.function_ref(executable.key.activation.function).name;
+        let name = &world.function_ref(executable.key.activation.function).display_name();
         let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
             let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
                 return 0;
@@ -4282,7 +4277,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
 /// specialization, and which position within it.
 fn owner_position_label(world: &World, position: &TransportPosition) -> String {
     let activation = &position.executable().activation;
-    let name = &world.function_ref(activation.function).name;
+    let name = &world.function_ref(activation.function).display_name();
     let what = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => format!("input#{semantic_index}"),
         TransportPosition::ExecutableReturn { .. } => "return".to_string(),
@@ -4531,12 +4526,12 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
                 };
                 demoted.push(format!(
                     "{}#{} {:?} -> {}#{}",
-                    world.function_ref(executable.key.activation.function).name,
+                    world.function_ref(executable.key.activation.function).display_name(),
                     caller,
                     callsite,
                     world
                         .function_ref(program.executables()[callee].key.activation.function)
-                        .name,
+                        .display_name(),
                     callee,
                 ));
             }
@@ -4777,7 +4772,7 @@ fn main(), do: make(41).(1)
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name.starts_with("#lambda:"))
+                .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
         })
         .expect("ignored-input lambda should retain its lexical capture fact");
@@ -4931,10 +4926,9 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
             }
             let function_name = world
                 .function_ref(position.executable().activation.function)
-                .name
-                .clone();
+                .source_name()?;
             function_name.contains("reduce_while").then_some((
-                function_name,
+                function_name.to_string(),
                 position.clone(),
                 layout.structural,
                 *callable,
@@ -4967,8 +4961,8 @@ fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
             matches!(positioned.position, TransportPosition::Value { .. })
                 && world
                     .function_ref(positioned.position.executable().activation.function)
-                    .name
-                    == "make"
+                    .source_name()
+                    == Some("make")
                 && !positioned.owner.callable_facts.is_empty()
         })
         .collect::<Vec<_>>();
@@ -5292,9 +5286,9 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
         executable_membership(&world, session)
             .iter()
             .filter_map(|sym| {
-                let name = world.function_ref(sym.activation.function).name.clone();
+                let name = world.function_ref(sym.activation.function).source_name()?;
                 (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?"))
-                    .then(|| (name, sym.activation.input.to_vec()))
+                    .then(|| (name.to_string(), sym.activation.input.to_vec()))
             })
             .collect()
     };
@@ -5336,7 +5330,7 @@ fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize
         .iter()
         .find(|key| {
             let function_ref = world.function_ref(key.activation.function);
-            function_ref.name == name && function_ref.arity == arity
+            function_ref.is_named(name) && function_ref.arity == arity
         })
         .map(|key| executable_symbol_for(world, key))
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
@@ -5775,7 +5769,7 @@ fn upstream_input_demand_for_function(
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name == name && function_ref.arity == arity)
+            (function_ref.is_named(name) && function_ref.arity == arity)
                 .then(|| demand.input_demands.get(semantic_index).cloned())
                 .flatten()
         })
@@ -6019,7 +6013,7 @@ fn exact_tuple_field_tys_for_surface(world: &mut World, ty: Ty, arity: usize) ->
 
 fn function_is(world: &World, function: super::FunctionId, name: &str, arity: usize) -> bool {
     let function_ref = world.function_ref(function);
-    function_ref.name == name && function_ref.arity == arity
+    function_ref.is_named(name) && function_ref.arity == arity
 }
 
 fn resume_shapes_for(plan: &super::BackendProgram, executable: &super::transport::ExecutableSymbol) -> Vec<ShapeId> {
@@ -6359,6 +6353,22 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         !wrappers.is_empty(),
         "the fixture must retain actual construction wrappers"
     );
+    let mut denotations = std::collections::HashSet::new();
+    let mut shared_denotation = false;
+    for wrapper in &wrappers {
+        shared_denotation |= !denotations.insert(wrapper.denotation);
+        for member in &wrapper.members {
+            assert_eq!(
+                wrapper.denotation,
+                member.target.activation.function.denotation(),
+                "specialized code and transport position cannot mint a closure denotation",
+            );
+        }
+    }
+    assert!(
+        shared_denotation,
+        "different construction wrappers must exercise one retained source denotation",
+    );
     let descents = wrappers
         .windows(2)
         .filter(|pair| {
@@ -6420,7 +6430,7 @@ end
                 TransportPosition::ExecutableInput {
                     executable,
                     semantic_index: 2,
-                } if world.function_ref(executable.activation.function).name == "reduce_cont"
+                } if world.function_ref(executable.activation.function).is_named("reduce_cont")
             )
         })
         .map(|(position, layout)| (position.clone(), layout))

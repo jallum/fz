@@ -1826,7 +1826,9 @@ fn emit_spec_violation(
             codes::SPEC_VIOLATION,
             format!(
                 "call to `{}/{}` violates its @spec for arguments ({})",
-                function_ref.name, function_ref.arity, observed
+                function_ref.display_name(),
+                function_ref.arity,
+                observed
             ),
             span,
         )

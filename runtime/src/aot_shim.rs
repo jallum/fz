@@ -313,8 +313,8 @@ extern "C" fn aot_make_resource_hook(
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
 /// in the order baked into the `fz_aot_tuple_arities` data symbol. Codegen
-/// first registers `ClosureEnv0`, then iterates arities in sorted order; this
-/// fn registers in that same order so the schema ids match what was iconst'd
+/// iterates arities in sorted order; this function registers in that same order
+/// so the schema ids match what was iconst'd
 /// into the emitted CLIF.
 ///
 /// `arities` may be null (no tuples in program); `len` is the element
@@ -333,7 +333,6 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
     // `sched_of` reads `proc.ctx`, which must not alias the live &mut below.
     let halt_cont_bodies = unsafe { (*sched_of(proc)).halt_cont_bodies };
     let process = unsafe { &mut *proc };
-    process.heap.closure_schema_id(0);
     if len > 0 {
         assert!(
             !arities.is_null(),
@@ -391,10 +390,17 @@ pub extern "C" fn fz_aot_register_static_closure(
     arity: u32,
     code_addr: *const u8,
     halt_kind: u32,
+    denotation: u32,
 ) {
     assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(cl_sid, arity, code_addr, halt_kind)]);
+    process.init_static_closures(&[(
+        cl_sid,
+        arity,
+        code_addr,
+        halt_kind,
+        crate::any_value::ClosureDenotationId::user(denotation),
+    )]);
 }
 
 /// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the

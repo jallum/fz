@@ -202,7 +202,8 @@ fn deep_copy_strict_closure(
     let halt_kind = unsafe { closure_halt_kind(sp as *const u8) };
     let fn_ptr = unsafe { closure_fn_ptr(sp as *const u8) };
     let arity = unsafe { closure_arity(sp as *const u8) };
-    let new_bits = dst_heap.alloc_closure_slots(arity, captured_count, halt_kind);
+    let denotation = unsafe { crate::any_value::closure_denotation(sp) };
+    let new_bits = dst_heap.alloc_closure_slots(denotation, arity, captured_count, halt_kind);
     let dp = closure_addr_from_tagged(new_bits).expect("new closure ptr");
     forwarding.insert(sp, dp);
     unsafe { write(dp.add(8) as *mut u64, fn_ptr) };

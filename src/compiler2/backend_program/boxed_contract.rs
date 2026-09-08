@@ -287,6 +287,7 @@ mod tests {
 
     fn wrapper(key: &ExecutableKey, arity: usize, return_form: BackendCallableReturn) -> BackendConstructionWrapper {
         BackendConstructionWrapper {
+            denotation: key.activation.function.denotation(),
             identity: TransportPosition::ExecutableReturn {
                 executable: ExecutableSymbol {
                     activation: ActivationSymbol {

@@ -21,6 +21,45 @@ fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
 }
 
+#[test]
+fn closure_allocation_does_not_change_struct_schema_identity() {
+    let registry = empty_registry();
+    let mut heap = Heap::new(SIZE_TABLE[0], Rc::clone(&registry));
+    heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 1, 2, 0);
+    assert_eq!(
+        registry.borrow_mut().register(Schema::tuple_of_arity(2)),
+        0,
+        "closure capture layout must not consume a struct schema identity",
+    );
+}
+
+#[test]
+#[should_panic(expected = "internal continuation is not a user closure")]
+fn internal_continuation_cannot_render_as_a_user_closure() {
+    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let bits = heap.alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, 0, 0, 0);
+    crate::any_value::debug::render_value(null_mut(), heap_root(bits));
+}
+
+#[test]
+fn closure_denotation_survives_cross_heap_copy_and_gc() {
+    let mut source = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], empty_registry());
+    let bits = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
+    let closure = closure_addr_from_tagged(bits).expect("source closure");
+    unsafe { closure_capture_set(closure, 0, AnyValue::int(42)) };
+    let copied = deep_copy_slot(heap_root(bits), &source, &mut destination, &mut HashMap::new());
+    let mut roots = [copied];
+    destination.gc_with_extra_root_slots(&mut null_mut(), &mut roots);
+    let moved = roots[0].heap_addr().expect("copied closure");
+    assert_eq!(
+        unsafe { crate::any_value::closure_denotation(moved) },
+        crate::any_value::ClosureDenotationId::user(73),
+        "copying and moving a closure must preserve its semantic header word verbatim",
+    );
+    assert_eq!(unsafe { closure_capture_value(moved, 0) }, AnyValue::int(42));
+}
+
 fn heap_root(bits: u64) -> AnyValue {
     AnyValue::decode_tagged_heap_bits(bits).expect("tagged heap root")
 }
@@ -69,7 +108,7 @@ fn alloc_stats_record_heap_allocations_by_kind() {
     let _ = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let _ = h.alloc_bitstring(b"abc", 24);
     let _ = h.alloc_bitstring(&[0; SHARED_BIN_THRESHOLD_BYTES + 1], 65 * 8);
-    let _ = h.alloc_closure_slots(0, 1, 0);
+    let _ = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let _ = h.box_any_value_ref(AnyValue::int(42));
     let _ = h.alloc(16);
 
@@ -192,6 +231,7 @@ fn any_value_ref_closure_capture_reads_are_ported() {
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("child addr");
     let closure_bits = h.alloc_closure(
+        crate::any_value::ClosureDenotationId::user(0),
         0,
         2,
         0,
@@ -348,7 +388,7 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
         Ok(child_addr)
     );
 
-    let closure_bits = h.alloc_closure_slots(0, 2, 0);
+    let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 2, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
     h.write_closure_capture_ref(closure_ref, 0, scalar_ref)
@@ -387,7 +427,7 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
     h.write_struct_field_ref(struct_ref, 0, child_list_ref)
         .expect("write struct field");
 
-    let closure_bits = h.alloc_closure_slots(0, 1, 0);
+    let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
     h.write_closure_capture_ref(closure_ref, 0, child_map_ref)
@@ -864,6 +904,7 @@ fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
     let closure_child_addr = list_addr_from_tagged(closure_child_bits).unwrap();
     let map_bits = h.alloc_map_slots(&[(AnyValue::atom(7), AnyValue::heap_ptr(map_child_addr, ValueKind::LIST))]);
     let closure_bits = h.alloc_closure(
+        crate::any_value::ClosureDenotationId::user(0),
         0,
         2,
         0,
@@ -898,7 +939,7 @@ fn process_root_gc_forwards_runnable_closure_and_process_roots() {
     let mut h = Heap::new(1024, empty_registry());
     let captured_bits = alloc_int_list_cons(&mut h, 10, EMPTY_LIST);
     let mailbox_bits = alloc_int_list_cons(&mut h, 20, EMPTY_LIST);
-    let closure_bits = h.alloc_closure_slots(0, 1, 0);
+    let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let old_closure = closure_addr_from_tagged(closure_bits).unwrap();
     let old_capture = list_addr_from_tagged(captured_bits).unwrap();
     let old_mailbox = list_addr_from_tagged(mailbox_bits).unwrap();
@@ -1007,7 +1048,14 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     src.write_field_slot(struct_p, 0, heap_root(list_bits));
     src.write_field_slot(struct_p, 8, AnyValue::int(11));
 
-    let closure_bits = src.alloc_closure(0, 1, 0, 0x1234, &[heap_root(list_bits)]);
+    let closure_bits = src.alloc_closure(
+        crate::any_value::ClosureDenotationId::user(0),
+        0,
+        1,
+        0,
+        0x1234,
+        &[heap_root(list_bits)],
+    );
 
     let bitstring_p = src.alloc_bitstring(b"abc", 24).heap_addr().expect("bitstring");
 
@@ -1363,7 +1411,14 @@ fn map_layout_size_correct() {
 #[test]
 fn closure_layout_zero_captures() {
     let mut h = Heap::new(1024, empty_registry());
-    let bits = h.alloc_closure(42, 0, 2, 0xfeed_beef, &[]);
+    let bits = h.alloc_closure(
+        crate::any_value::ClosureDenotationId::user(0),
+        42,
+        0,
+        2,
+        0xfeed_beef,
+        &[],
+    );
     assert_eq!(bits & TAG_MASK, TAG_CLOSURE);
     assert_eq!(object_size(bits), 16);
     let p = closure_addr_from_tagged(bits).unwrap();
@@ -1376,7 +1431,14 @@ fn closure_layout_zero_captures() {
 fn closure_layout_n_captures() {
     let mut h = Heap::new(1024, empty_registry());
     let captures = [AnyValue::int(10), AnyValue::int(20)];
-    let bits = h.alloc_closure(7, captures.len(), 1, 0x1234, &captures);
+    let bits = h.alloc_closure(
+        crate::any_value::ClosureDenotationId::user(0),
+        7,
+        captures.len(),
+        1,
+        0x1234,
+        &captures,
+    );
     assert_eq!(object_size(bits), 48);
     let p = closure_addr_from_tagged(bits).unwrap();
     assert_eq!(unsafe { closure_captured_count(p) }, 2);
@@ -1389,7 +1451,7 @@ fn closure_layout_n_captures() {
 #[test]
 fn closure_forwarding_marker() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let bits = h.alloc_closure(12, 0, 0, 0x7777, &[]);
+    let bits = h.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 12, 0, 0, 0x7777, &[]);
     let old = closure_addr_from_tagged(bits).unwrap();
     let mut root = bits as *mut u8;
     h.gc(&mut root);
@@ -1413,14 +1475,6 @@ fn strict_heap_decoder_accepts_static_closure_pointer() {
 
     assert_eq!(value.kind(), ValueKind::CLOSURE);
     assert_eq!(value.raw(), storage.as_ptr() as u64);
-}
-
-#[test]
-fn closure_slots_use_capture_schema() {
-    let mut h = Heap::new(1024, empty_registry());
-    let bits = h.alloc_closure_slots(99, 0, 0);
-    let p = closure_addr_from_tagged(bits).unwrap();
-    assert_eq!(unsafe { closure_captured_count(p) }, 0);
 }
 
 #[test]

@@ -266,24 +266,17 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
     );
 }
 
-/// fz-kdt.105 — every closure literal the compile interns names a callable the
-/// owner labelled.
-///
-/// Canonical clause order compares closure literals by their stable
-/// `Module.name/arity` label, never by the mint-order `FnId` behind them. That
-/// only holds if the label table is COMPLETE: an unlabelled callable falls back
-/// to raw-id order, which would quietly reintroduce the cross-version movement
-/// the label discipline exists to prevent. `World` names each callable as it
-/// mints the id, and this is the sweep that says the two mint sites are all of
-/// them.
+/// Every closure literal has a typed origin shared by the function interner.
+/// A missing origin could silently fall back to storage's standalone raw-id
+/// order. World registers at both mint sites, before any literal can name it.
 #[test]
-fn every_closure_literal_names_a_labelled_callable() {
+fn every_closure_literal_has_a_registered_origin() {
     for (name, text) in TARGETS {
         let compiler = drive_fixture(name, text);
-        let unnamed = compiler.world().types().unnamed_callables();
+        let unregistered = compiler.world().types().unregistered_callables();
         assert!(
-            unnamed.is_empty(),
-            "{name}: closure literals over unlabelled callables {unnamed:?} would order by raw FnId"
+            unregistered.is_empty(),
+            "{name}: closure literals over unregistered callables {unregistered:?} would order by raw FnId"
         );
     }
 }

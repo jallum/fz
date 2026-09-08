@@ -64,7 +64,7 @@ end
         "canonical labels should not leak raw generated function ids: {snapshot}",
     );
     assert!(
-        snapshot.contains("::lambda[@"),
+        snapshot.contains("#lambda@"),
         "generated lambdas should still keep stable owner-relative provenance: {snapshot}",
     );
 }
@@ -122,10 +122,10 @@ end
     let snapshot = product_call_edge_snapshot(source);
 
     // The returned closure's argument and return vars carry owner-relative
-    // provenance (`<owner>::lambda[@span]/arity:a{pos}`, `:r`), keyed on the
-    // lambda's name/arity + source span + position — never the raw id.
+    // provenance, keyed on its typed owner's structural source occurrence,
+    // never its source span or raw id.
     assert!(
-        snapshot.contains("add/1::lambda[@16-33]/1:a0") && snapshot.contains("add/1::lambda[@16-33]/1:r"),
+        snapshot.contains("add/1#lambda@0/1:a0") && snapshot.contains("add/1#lambda@0/1:r"),
         "closure-surface vars should render by owner-relative provenance + position: {snapshot}"
     );
     assert!(

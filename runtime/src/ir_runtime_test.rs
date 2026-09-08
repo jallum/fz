@@ -186,7 +186,9 @@ fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
 #[test]
 fn yield_mid_flight_report_stashes_runnable_closure() {
     with_process(|process| {
-        let bits = process.heap.alloc_closure_slots(0, 0, 0);
+        let bits = process
+            .heap
+            .alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0);
         let closure_addr = closure_addr_from_tagged(bits).expect("closure addr");
         let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
             .expect("closure ref")

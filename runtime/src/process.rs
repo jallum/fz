@@ -84,9 +84,6 @@ pub struct Process {
     /// success vs fault reporting.
     pub exit_fault: Option<u32>,
     pub bs_builder: Option<BitWriter>,
-    // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
-    // construction is inlined at codegen; capture storage is schema-backed,
-    // and invocation is a direct call_indirect through the closure code ptr.
     /// Node-global state shared by every Process in this execution context:
     /// the atom table and the per-fn frame-size table. Cloned (`Rc`) into each
     /// process, so spawn is a pointer copy, not a table copy. The atom table is
@@ -359,9 +356,10 @@ pub struct CompiledModuleConsts {
     pub bs_tuple_arity3_schema: Option<u32>,
     pub static_closure_targets: Vec<(
         u32,       /* cl_sid */
-        u32,       /* fn_id */
+        u32,       /* arity */
         *const u8, /* code_ptr */
         u32,       /* halt_kind */
+        crate::any_value::ClosureDenotationId,
     )>,
     pub halt_cont_body_addrs: [*const u8; 4],
 }
@@ -433,17 +431,7 @@ impl Process {
         if !consts.static_closure_targets.is_empty() {
             p.init_static_closures(&consts.static_closure_targets);
         }
-        // Only seed halt-cont singletons when real body addrs are present.
-        // `init_halt_cont_singletons` registers the `ClosureEnv0` schema even
-        // for null addrs; running it on the empty/minimal paths would register
-        // that schema at process setup and shift the compile-time-baked schema
-        // ids the AOT runtime registry must match. Guarding keeps the bare
-        // `Process::new`/interpreter/AOT-setup registries identical to a fresh
-        // registry (only the JIT `make_process`, which supplies real addrs,
-        // seeds them).
-        if consts.halt_cont_body_addrs.iter().any(|a| !a.is_null()) {
-            p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
-        }
+        p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
         p
     }
 
@@ -477,19 +465,19 @@ impl Process {
             u32,       /* arity */
             *const u8, /* code_ptr */
             u32,       /* halt_kind */
+            crate::any_value::ClosureDenotationId,
         )],
     ) {
         // Size table by max cl_sid encountered.
-        let max = targets.iter().map(|(s, _, _, _)| *s).max().unwrap_or(0) as usize;
+        let max = targets.iter().map(|(s, _, _, _, _)| *s).max().unwrap_or(0) as usize;
         if self.static_closures.len() < max + 1 {
             self.static_closures.resize(max + 1, null_mut());
         }
-        let closure_schema = self.heap.closure_schema_id(0);
-        for (cl_sid, arity, code_ptr, halt_kind) in targets {
+        for (cl_sid, arity, code_ptr, halt_kind, denotation) in targets {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                write(base as *mut u32, closure_schema);
+                write(base as *mut u32, denotation.as_u32());
                 write(
                     base.add(4) as *mut u32,
                     closure_header_word(0, *halt_kind as u16, *arity as u16),
@@ -507,7 +495,6 @@ impl Process {
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
     pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 4]) {
-        let closure_schema = self.heap.closure_schema_id(0);
         for (slot, addr) in body_addrs.iter().enumerate() {
             if addr.is_null() {
                 continue;
@@ -515,7 +502,10 @@ impl Process {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                write(base as *mut u32, closure_schema);
+                write(
+                    base as *mut u32,
+                    crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
+                );
                 // A continuation is applied to exactly the one value it
                 // receives, so its arity is 1.
                 write(base.add(4) as *mut u32, closure_header_word(0, slot as u16, 1));

@@ -1424,7 +1424,7 @@ fn write_callsite_summary(
         write_str_lit(out, "name");
         out.push(':');
         let function_ref = world.function_ref(function);
-        write_str_lit(out, &function_ref.name);
+        write_str_lit(out, &function_ref.display_name());
         out.push(',');
         write_str_lit(out, "arity");
         out.push(':');
@@ -1712,7 +1712,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "name");
         out.push(':');
-        write_str_lit(out, &function.name);
+        write_str_lit(out, &function.display_name());
         out.push(',');
         write_str_lit(out, "arity");
         out.push(':');

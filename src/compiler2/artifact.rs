@@ -63,6 +63,7 @@ impl<T: Copy> CallTarget<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionWrapper {
     pub identity: TransportPosition,
+    pub denotation: fz_runtime::any_value::ClosureDenotationId,
     pub callable: CallableId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub call_arity: usize,
@@ -880,6 +881,7 @@ pub(crate) struct NativeBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
+    pub denotation: fz_runtime::any_value::ClosureDenotationId,
     pub identity_fn: FnId,
     /// The callable LAYOUT this boundary mints: function, capture types and
     /// physical capture lanes. Several boundaries can mint one layout -- one

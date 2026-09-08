@@ -136,6 +136,7 @@ fn inventory_fixture(count: u32) -> NativeProgram {
 fn inventory_boundary(identity: u32, wrapper: u32) -> super::artifact::NativeCallableBoundary {
     use super::artifact::{BackendCallableReturn, NativeCallableBoundary, NativeCallableBoundaryId};
     NativeCallableBoundary {
+        denotation: fz_runtime::any_value::ClosureDenotationId::user(0),
         id: NativeCallableBoundaryId(identity),
         identity_fn: FnId(identity),
         callable: super::transport::CallableId::for_test(identity),

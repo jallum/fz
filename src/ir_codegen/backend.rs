@@ -424,12 +424,12 @@ impl Backend for JitBackend {
         // Resolve each zero-cap closure-target stub_func_id to its
         // finalized code address. `make_process` writes these into the
         // off-heap singleton's `code_ptr` slot at +8.
-        let static_closure_targets: Vec<(u32, u32, *const u8, u32)> = meta
+        let static_closure_targets: Vec<(u32, u32, *const u8, u32, fz_runtime::any_value::ClosureDenotationId)> = meta
             .static_closure_targets
             .iter()
-            .map(|(cl_sid, fn_id, stub_fid, halt_kind)| {
+            .map(|(cl_sid, fn_id, stub_fid, halt_kind, denotation)| {
                 let ptr = jmod.get_finalized_function(*stub_fid);
-                (*cl_sid, *fn_id, ptr, *halt_kind)
+                (*cl_sid, *fn_id, ptr, *halt_kind, *denotation)
             })
             .collect();
         let entry_thunk_addr = jmod.get_finalized_function(meta.entry_thunk_id);
@@ -531,7 +531,10 @@ impl Backend for AotBackend {
             .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
 
         // Trailing i32 carries halt_kind.
-        let reg_sig = sig1(&[types::I64, types::I32, types::I32, types::I64, types::I32], &[]);
+        let reg_sig = sig1(
+            &[types::I64, types::I32, types::I32, types::I64, types::I32, types::I32],
+            &[],
+        );
         let reg_id = self
             .omod
             .declare_function("fz_aot_register_static_closure", Linkage::Import, &reg_sig)

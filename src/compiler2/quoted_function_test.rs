@@ -15,6 +15,58 @@ fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
 }
 
 #[test]
+fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
+    let root = grouped_function_root(
+        "lambda_occurrences.fz",
+        "fn choose(0), do: {fn () -> fn () -> 1 end end, fn () -> 2 end}\nfn choose(1), do: fn () -> 3 end\n",
+    );
+    fn occurrences(surface: &crate::function_surface::FunctionSurface) -> [crate::ast::LambdaOccurrence; 4] {
+        let Expr::Tuple(items) = &surface.clauses[0].body.node else {
+            panic!("tuple body")
+        };
+        let Expr::Lambda {
+            occurrence: outer,
+            clauses,
+        } = &items[0].node
+        else {
+            panic!("outer lambda")
+        };
+        let Expr::Lambda { occurrence: inner, .. } = &clauses[0].body.node else {
+            panic!("nested lambda")
+        };
+        let Expr::Lambda {
+            occurrence: sibling, ..
+        } = &items[1].node
+        else {
+            panic!("sibling lambda")
+        };
+        let Expr::Lambda {
+            occurrence: next_clause,
+            ..
+        } = &surface.clauses[1].body.node
+        else {
+            panic!("next clause lambda")
+        };
+        [*outer, *inner, *sibling, *next_clause]
+    }
+    let decoded = derive_function_surface(&root).expect("decode source");
+    let first = occurrences(&decoded);
+    assert_eq!(
+        first.iter().copied().collect::<std::collections::HashSet<_>>().len(),
+        4,
+        "nested lambdas, siblings, and grouped clauses are distinct source occurrences"
+    );
+    let cloned = decoded.clone();
+    assert_ne!(decoded.clauses.as_ptr(), cloned.clauses.as_ptr());
+    assert_eq!(first, occurrences(&cloned), "lowering clones retain source identity");
+    assert_eq!(
+        first,
+        occurrences(&derive_function_surface(&root).expect("retry decode")),
+        "retrying unchanged source does not mint new occurrences"
+    );
+}
+
+#[test]
 fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_parser() {
     let source = r#"
 @spec pack(integer) :: binary

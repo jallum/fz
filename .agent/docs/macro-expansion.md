@@ -44,6 +44,16 @@ item macro           changes surrounding scope     => eager
 body-local macro     changes only one function     => lazy
 ```
 
+Lambda identity comes from a typed source occurrence assigned once during final
+function decoding, not a lowered value or quoted metadata. Two macro expansions
+with identical spans (including missing metadata) therefore define distinct
+lambdas. Generated functions retain their
+typed owner chain; `__ENV__.function` and quoted lexical context reflect the
+enclosing named source function, never an internal generated display name.
+The existing recursive decoder assigns occurrences across the grouped function's
+clauses; unchanged decoding retries reproduce them. AST cloning preserves them,
+so duplicating a `with`-else branch in lowering cannot split one denotation.
+
 There is one important sub-case inside the eager bucket — and one origin
 exception:
 

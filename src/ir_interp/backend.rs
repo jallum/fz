@@ -954,7 +954,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 Ok(other) => {
                     let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
                     let (fn_id, captures) = match materialized {
-                        AnyValue::FnRef(fn_id, _) => (fn_id, Vec::new()),
+                        AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
                             format!(
                                 "closure call executable={:?} function={} callsite={} callee_value={}: {error}",
@@ -1400,6 +1400,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     BackendBoundValue::Runtime(AnyValue::FnRef(
                         FnId(function.as_u32()),
                         callable_value_arity(program, *function, 0),
+                        function.denotation(),
                     ))
                 };
                 env.insert(*value, bound);
@@ -1443,6 +1444,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     BackendBoundValue::Runtime(make_closure(
                         runtime,
                         function.as_u32(),
+                        function.denotation(),
                         callable_value_arity(program, *function, captures.len()),
                         env_values(transport, runtime.cur_proc(), env, captures)?,
                     )?)
@@ -2160,9 +2162,9 @@ fn construction_callable_value(
     let fn_id = construction_wrapper_identity_fn(index)?;
     let arity = wrapper.call_arity as u16;
     let value = if captures.is_empty() {
-        AnyValue::FnRef(fn_id, arity)
+        AnyValue::FnRef(fn_id, arity, wrapper.denotation)
     } else {
-        make_closure_on_proc(proc, fn_id.0, arity, captures.to_vec())?
+        make_closure_on_proc(proc, fn_id.0, wrapper.denotation, arity, captures.to_vec())?
     };
     Ok(BackendBoundValue::Runtime(value))
 }
@@ -2438,9 +2440,9 @@ fn materialize_transport_value(
             }
             let arity = callable.arity;
             if lanes.is_empty() {
-                Ok(AnyValue::FnRef(FnId(function.as_u32()), arity))
+                Ok(AnyValue::FnRef(FnId(function.as_u32()), arity, function.denotation()))
             } else {
-                make_closure_on_proc(proc, function.as_u32(), arity, lanes.to_vec())
+                make_closure_on_proc(proc, function.as_u32(), function.denotation(), arity, lanes.to_vec())
             }
         }
     }
@@ -2852,7 +2854,7 @@ fn direct_callable_capture_lanes(
         other => {
             let materialized = materialize_backend_value(transport, proc, other)?;
             let (fn_id, words) = match materialized {
-                AnyValue::FnRef(fn_id, _) => (fn_id, Vec::new()),
+                AnyValue::FnRef(fn_id, _, _) => (fn_id, Vec::new()),
                 other => unpack_closure(other.value(proc)?)?,
             };
             // The word is a CONSTRUCTION, not a function: a wrapper's word
@@ -2977,11 +2979,12 @@ fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyVal
 fn make_closure_on_proc(
     proc: *mut Process,
     code: u32,
+    denotation: fz_runtime::any_value::ClosureDenotationId,
     arity: u16,
     captures: Vec<AnyValue>,
 ) -> Result<AnyValue, String> {
     let heap = &mut unsafe { &mut *proc }.heap;
-    let bits = heap.alloc_closure_slots(arity, captures.len(), 0);
+    let bits = heap.alloc_closure_slots(denotation, arity, captures.len(), 0);
     let p = closure_addr_from_tagged(bits).expect("new backend closure ptr");
     unsafe { std::ptr::write(p.add(8) as *mut u64, code as u64) };
     for (index, value) in captures.iter().enumerate() {
@@ -2996,10 +2999,11 @@ fn make_closure_on_proc(
 fn make_closure(
     runtime: &mut IrInterpRuntime,
     code: u32,
+    denotation: fz_runtime::any_value::ClosureDenotationId,
     arity: u16,
     captures: Vec<AnyValue>,
 ) -> Result<AnyValue, String> {
-    make_closure_on_proc(runtime.cur_proc(), code, arity, captures)
+    make_closure_on_proc(runtime.cur_proc(), code, denotation, arity, captures)
 }
 
 fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(

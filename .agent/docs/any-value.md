@@ -245,7 +245,7 @@ List cons (16 bytes): head payload word
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
                       -- ENTRIES ARE SORTED BY KEY, see below
-Closure:              schema id + header word, code pointer,
+Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
 
@@ -254,10 +254,17 @@ the environment facts the collector sizes and traces by. Its high half is
 `arity`: the closure's user-visible parameter count, supplied by the callable
 boundary that decides the call surface. The two halves answer different
 questions and must not be confused. Arity is fixed by the source, so it is what
-a rendered fun reports (`#fn<env_schema/arity>`, matching Elixir's
+a rendered fun reports (`#fn<denotation/arity>`, matching Elixir's
 `#Function<index.uniq/arity>`); the environment half moves whenever demand
 elides a capture or inlining folds one away, which is why rendering it produced
 goldens that changed without the program changing.
+
+`ClosureDenotationId` is the owning World's `FunctionId` projected into the
+runtime. Code pointers, construction wrappers, captures, and schema allocation
+do not mint identities. Allocation, static publication, deep copy, and GC retain
+that same word. Closures have no `ClosureEnv` schema; their own count and kind
+bytes describe storage. Scheduler-only closures carry the typed `INTERNAL`
+sentinel, which user rendering rejects.
 
 ### A map is a flat SORTED array
 

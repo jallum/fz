@@ -33,6 +33,7 @@ fn atom_order(program: &BackendProgram) -> Vec<&str> {
 
 fn with_wrapper(backend: &Rc<BackendExecutable>) -> Rc<BackendExecutable> {
     let wrapper = BackendConstructionWrapper {
+        denotation: backend.key.activation.function.denotation(),
         identity: backend.abi.transport.return_position.clone(),
         callable: CallableId::for_test(0),
         captures: Box::default(),

@@ -1080,19 +1080,21 @@ impl World {
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        let id = self.functions.reference(module, name, arity);
-        self.name_callable(id);
+        let module_name = self
+            .modules
+            .name(module)
+            .map(|name| ModuleName::parse_dotted(name).expect("source module path"));
+        let id = self.functions.reference(module, module_name, name, arity);
+        self.share_callable_origin(id);
         id
     }
 
-    /// Hand the type lattice the stable name behind a freshly minted function
-    /// id, so a closure literal over it can be ordered canonically without
-    /// touching the mint-order `FnId` (see `types::order`). Naming at the mint
-    /// is what makes the table complete: no literal can name a function that
-    /// was never referenced.
-    fn name_callable(&mut self, id: FunctionId) {
-        let label = super::function_label(self, id);
-        self.types.name_callable(ClosureTarget(id.as_u32()), label);
+    /// Share a minted function's typed origin with the type lattice before any
+    /// literal can name it. The function interner owns uniqueness, not a scan of
+    /// rendered callable labels.
+    fn share_callable_origin(&mut self, id: FunctionId) {
+        self.types
+            .define_callable_origin(ClosureTarget(id.as_u32()), self.functions.shared_reference_for(id));
     }
 
     /// Holds a `@type` declaration's unresolved decl — parsed body plus the
@@ -1699,7 +1701,7 @@ impl World {
             .expect("provider-boundary functions should belong to a named module");
         Mfa::new(
             ModuleName::parse_dotted(module_name).expect("compiler2 module names should be valid module paths"),
-            function_ref.name.clone(),
+            function_ref.name().to_string(),
             function_ref.arity,
         )
     }
@@ -1840,7 +1842,7 @@ impl World {
             .unwrap_or_default();
         let function_scope = scope
             .function_id()
-            .map(|function| vec![self.function_ref(function).name.clone()])
+            .map(|function| vec![self.function_ref(function).lexical_owner().name().to_string()])
             .unwrap_or_default();
         QuotedLexicalContext::new(kind, module, function_scope).with_namespace_id(scope.namespace().as_u32())
     }
@@ -1871,8 +1873,11 @@ impl World {
     ) -> Result<AnyValueRef, QuotedSourceError> {
         let function = match scope.function_id() {
             Some(function) => {
-                let function_ref = self.function_ref(function);
-                builder.tuple(&[builder.atom(&function_ref.name), builder.int(function_ref.arity as i64)])?
+                let function_ref = self.function_ref(function).lexical_owner();
+                builder.tuple(&[
+                    builder.atom(function_ref.name()),
+                    builder.int(function_ref.arity as i64),
+                ])?
             }
             None => builder.nil(),
         };
@@ -1954,7 +1959,7 @@ impl World {
         }
         let mut best = None;
         for callable in self.module_interface(module).callables() {
-            if callable.reference.name != name {
+            if callable.reference.name() != name {
                 continue;
             }
             let Some(score) = callable_match_score(callable.reference.arity, callable.variadic, arity) else {
@@ -1994,7 +1999,7 @@ impl World {
                 .module_interface(module)
                 .callables()
                 .iter()
-                .filter(|callable| callable.reference.name == local_name && callable.variadic)
+                .filter(|callable| callable.reference.name() == local_name && callable.variadic)
                 .map(|callable| callable.reference.arity)
                 .min();
         }
@@ -2395,7 +2400,11 @@ impl World {
                 key: UnresolvedIssueKey::Function(function),
                 diagnostic: Diagnostic::error(
                     codes::RESOLVE_UNKNOWN_FUNCTION,
-                    format!("function `{}/{}` is not defined", function_ref.name, function_ref.arity),
+                    format!(
+                        "function `{}/{}` is not defined",
+                        function_ref.display_name(),
+                        function_ref.arity
+                    ),
                     Span::DUMMY,
                 ),
             });
@@ -2433,7 +2442,7 @@ impl World {
                     .expectations()
                     .iter()
                     .find(|expectation| {
-                        expectation.name == function_ref.name && expectation.arity == function_ref.arity
+                        expectation.name == function_ref.name() && expectation.arity == function_ref.arity
                     })
                     .and_then(|expectation| expectation.requester.as_ref())
                     .map(|requester| requester.span)
@@ -2445,7 +2454,9 @@ impl World {
                 codes::RESOLVE_UNKNOWN_IMPORT,
                 format!(
                     "module `{}` does not export `{}/{}`",
-                    module_name, function_ref.name, function_ref.arity
+                    module_name,
+                    function_ref.name(),
+                    function_ref.arity
                 ),
                 span,
             ),
@@ -2539,7 +2550,7 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
         .iter()
         .map(|form| match form {
             ScopeForm::Function(function)
-                if function.name == function_ref.name && function.arity == function_ref.arity =>
+                if function_ref.is_named(&function.name) && function.arity == function_ref.arity =>
             {
                 FunctionSurfaceMatch::Certain
             }
@@ -2575,7 +2586,9 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
 /// the caller falls back to another candidate's span instead.
 fn function_form_span(source: &QuotedCodeSource, function_ref: &FunctionRef) -> Option<Span> {
     source.surface.forms.iter().find_map(|form| match form {
-        ScopeForm::Function(function) if function.name == function_ref.name && function.arity == function_ref.arity => {
+        ScopeForm::Function(function)
+            if function_ref.is_named(&function.name) && function.arity == function_ref.arity =>
+        {
             Some(function.span)
         }
         _ => None,
@@ -2586,7 +2599,7 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
     matches!(
         reserved_source_definition(source).ok().flatten(),
         Some(ReservedSourceDefinition::Function { name, arity, .. })
-            if name == function_ref.name && arity == function_ref.arity
+            if function_ref.is_named(&name) && arity == function_ref.arity
     )
 }
 
@@ -2605,7 +2618,7 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
 fn item_macro_call_match(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
     match reserved_source_definition(source) {
         Ok(Some(ReservedSourceDefinition::Function { name, arity, .. })) => {
-            if name == function_ref.name && arity == function_ref.arity {
+            if function_ref.is_named(&name) && arity == function_ref.arity {
                 FunctionSurfaceMatch::Certain
             } else {
                 FunctionSurfaceMatch::None
@@ -3069,6 +3082,7 @@ impl World {
     pub(crate) fn define_generated_function(
         &mut self,
         owner: FunctionId,
+        occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
         capture_params: Vec<String>,
         surface: FunctionSurface,
@@ -3077,8 +3091,8 @@ impl World {
         let owner_module = self.functions.reference_for(owner).module;
         let id = self
             .functions
-            .reference_generated(owner, owner_module, surface.span, surface.arity());
-        self.name_callable(id);
+            .reference_generated(owner, owner_module, occurrence, surface.arity());
+        self.share_callable_origin(id);
         let fn_source = FunctionSource {
             code: owner_source.code,
             owner_module: owner_source.owner_module,
@@ -3190,7 +3204,11 @@ impl World {
             .unwrap_or(Span::DUMMY);
         Diagnostic::error(
             codes::RESOLVE_DUPLICATE_FUNCTION,
-            format!("`{}/{}` is already defined", function_ref.name, function_ref.arity),
+            format!(
+                "`{}/{}` is already defined",
+                function_ref.display_name(),
+                function_ref.arity
+            ),
             span,
         )
     }
@@ -3486,13 +3504,14 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     pub(crate) fn define_generated_function(
         &mut self,
         owner: FunctionId,
+        occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
         capture_params: Vec<String>,
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
         let (id, changed) = self
             .world
-            .define_generated_function(owner, namespace, capture_params, surface);
+            .define_generated_function(owner, occurrence, namespace, capture_params, surface);
         if changed {
             self.emit_generated_function_defined(&id, &owner);
         }

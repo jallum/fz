@@ -25,6 +25,20 @@ found was the same shape, and in each the count was knowable before the bug was:
 
 ## The table
 
+**Closure denotation** — owner `World::FunctionMap`. Named functions have a
+typed module/name/arity origin; generated lambdas have their shared owner's
+origin and a `LambdaOccurrence` assigned in final quoted-function decoding's
+existing recursive traversal. Immutable AST clones preserve that occurrence,
+including the `with` lowering that emits its `else` at each failed binding.
+Source spans are diagnostic metadata, so repeated metadata-identical
+macro expansions cannot alias definitions. `FunctionId::denotation` projects the
+same World identity into interpreter, JIT, and AOT closure headers. Specializing
+code or changing capture layout does not change it. The ID answers equality of
+source denotations, not order: `FunctionRef::semantic_cmp` compares typed origins
+and numeric arity. `Types` shares these immutable origins with `FunctionMap`;
+neither canonical labels nor generated display names are comparator inputs.
+Runtime closure comparison remains the separate fz-5xp.27 cutover.
+
 **Truthiness** — owner `fz_truthy_ref` (`runtime/src/ir_runtime.rs`). The rule is
 "every value is true except `false` and `nil`". `fn_ctx::truthy_ref` and
 `receive::emit_truthy_cmp` call it; the interpreter's `AnyValue::is_truthy`

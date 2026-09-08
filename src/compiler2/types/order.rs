@@ -45,12 +45,11 @@
 //!
 //! # Version stability, and the one residual
 //!
-//! A closure literal orders by its owner's stable LABEL (`Module.name/arity`),
-//! never by its raw `FnId`, which is a mint-order index that shifts whenever the
-//! source gains or loses a function. Named functions therefore order stably
-//! across unrelated edits in OTHER files; a lambda's label embeds its byte
-//! span, so an edit above it in the SAME file still relabels it -- the
-//! stability bought here is cross-file and within-compile, not universal. Structural address vars likewise order by
+//! A closure literal orders by its owner's shared typed source origin, never a
+//! rendered label or raw `FnId`. Named origins contain module/name/arity;
+//! generated origins contain their owner's origin and structural source occurrence.
+//! Unrelated functions and diagnostic-span changes cannot alter their order.
+//! Structural address vars likewise order by
 //! their `AddrStep` path rather than by the id interned for it.
 //!
 //! The residual: a FREE type var (bit 31 clear — a closure-surface var, a
@@ -73,11 +72,11 @@ use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{Ty, TyCtx, TypeVarId};
 
-/// The stable label of every callable a closure literal can name, keyed by the
-/// `FnId` the literal carries. `World` fills this in as it mints function ids;
+/// The shared typed origin of every callable a closure literal can name, keyed
+/// by the `FnId` the literal carries. `World` registers it when minting ids;
 /// a `Types` built standalone (unit tests) leaves it empty and falls back to id
 /// order, which is deterministic within one instance but not across versions.
-pub(super) type CallableLabels = HashMap<FnId, Arc<str>>;
+pub(super) type CallableOrigins = HashMap<FnId, Arc<crate::compiler2::identity::FunctionRef>>;
 
 /// A signature that knows its own place in the canonical order. One impl per
 /// DNF axis, so the clause and axis walks below are written once.
@@ -87,7 +86,7 @@ trait OrderedSig: Sized {
 
 pub(super) struct ClauseOrder<'a> {
     cx: TyCtx<'a>,
-    labels: &'a CallableLabels,
+    origins: &'a CallableOrigins,
     purpose: OrderPurpose,
 }
 
@@ -98,10 +97,10 @@ enum OrderPurpose {
 }
 
 impl<'a> ClauseOrder<'a> {
-    pub(super) fn new(cx: TyCtx<'a>, labels: &'a CallableLabels) -> Self {
+    pub(super) fn new(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
         Self {
             cx,
-            labels,
+            origins,
             purpose: OrderPurpose::Storage,
         }
     }
@@ -111,10 +110,10 @@ impl<'a> ClauseOrder<'a> {
     /// field structurally. Storage canonicalization deliberately puts the
     /// literal first so equal-callable clauses group together; the two orders
     /// answer different questions and must not be conflated.
-    pub(super) fn for_activation(cx: TyCtx<'a>, labels: &'a CallableLabels) -> Self {
+    pub(super) fn for_activation(cx: TyCtx<'a>, origins: &'a CallableOrigins) -> Self {
         Self {
             cx,
-            labels,
+            origins,
             purpose: OrderPurpose::Activation,
         }
     }
@@ -237,7 +236,7 @@ impl<'a> ClauseOrder<'a> {
         }
     }
 
-    /// Activation identities order only by their registered stable labels.
+    /// Activation identities order only by their registered typed origins.
     /// Storage canonicalization retains its local-id fallback because types can
     /// be interned before an owner exists; activation comparison asserts the
     /// stronger owner contract instead of caching a mint-order tie-break.
@@ -246,18 +245,24 @@ impl<'a> ClauseOrder<'a> {
             return Ordering::Equal;
         }
         if matches!(self.purpose, OrderPurpose::Activation) {
-            let a_label = self.labels.get(&a).expect("activation callable has a registered label");
-            let b_label = self.labels.get(&b).expect("activation callable has a registered label");
-            let order = a_label.cmp(b_label);
+            let a_origin = self
+                .origins
+                .get(&a)
+                .expect("activation callable has a registered origin");
+            let b_origin = self
+                .origins
+                .get(&b)
+                .expect("activation callable has a registered origin");
+            let order = a_origin.semantic_cmp(b_origin);
             assert_ne!(
                 order,
                 Ordering::Equal,
-                "distinct activation callables must have distinct stable labels"
+                "distinct activation callables must have distinct typed origins"
             );
             order
         } else {
-            match (self.labels.get(&a), self.labels.get(&b)) {
-                (Some(x), Some(y)) => x.cmp(y).then_with(|| a.0.cmp(&b.0)),
+            match (self.origins.get(&a), self.origins.get(&b)) {
+                (Some(x), Some(y)) => x.semantic_cmp(y).then_with(|| a.0.cmp(&b.0)),
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
                 (None, None) => a.0.cmp(&b.0),

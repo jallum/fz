@@ -19,7 +19,7 @@ use crate::fz_ir::{
 
 fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (RootId, FunctionId, ActivationKey) {
     let mut functions = FunctionMap::new();
-    let function = functions.reference(ModuleId::GLOBAL, "main", 0);
+    let function = functions.reference(ModuleId::GLOBAL, None, "main", 0);
     let mut roots = RootMap::new();
     let root = roots.define(RootEntry {
         function,
@@ -82,6 +82,7 @@ fn backend_program_rejects_duplicate_construction_owners() {
     };
     let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
     let wrapper = std::rc::Rc::new(super::artifact::BackendConstructionWrapper {
+        denotation: key.activation.function.denotation(),
         identity: super::transport::TransportPosition::Value {
             executable: member.abi.transport.executable.clone(),
             value: super::ValueId::from_u32(0),
@@ -193,6 +194,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             effects: EffectSummary::default(),
         }],
         callable_boundaries: vec![NativeCallableBoundary {
+            denotation: fz_runtime::any_value::ClosureDenotationId::user(0),
             id: NativeCallableBoundaryId(0),
             identity_fn,
             callable: CallableId::for_test(0),
@@ -378,6 +380,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             },
         ],
         callable_boundaries: vec![NativeCallableBoundary {
+            denotation: fz_runtime::any_value::ClosureDenotationId::user(0),
             id: NativeCallableBoundaryId(0),
             identity_fn,
             callable: CallableId::for_test(0),
