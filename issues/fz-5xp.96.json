@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-08T12:17:32Z",
   "created": "2026-09-07T22:15:28Z",
   "description": "## What happens\n\nA heredoc is a string literal, so it interpolates. `@doc` and `@moduledoc` need a literal string, so a doc that *describes* interpolation stops being one:\n\n```\n  @moduledoc \"\"\"\n  ... every interpolated value, since `\"a#{x}b\"` lexes to ...\n  \"\"\"\n```\n\nThat heredoc lexes to a `Concat` expression rather than a binary, and the front door refuses it. Two messages, depending on where the attribute sits:\n\n```\nerror[parse/expected-token]: compiler2 quoted front door expected protocol callback or attribute, got Concat\n  --\u003e runtime:StringChars.fz:20:14\n20 |   @moduledoc \"\"\"\n   |              ^^^\n\nerror[parse/expected-token]: compiler2 quoted front door does not yet parse Concat at item position\n```\n\n## What is right about this\n\nThe refusal, and the span. It points at the `\"\"\"` that opened the heredoc, in the right file, at the right line. Nothing is silent and nothing miscompiles.\n\n## What is wrong\n\nThe message names an internal node type. `Concat` is not a word in the language the author is writing; nothing connects it to the `#{...}` a few lines below, which is the actual cause and is not itself underlined. An author who has just written a paragraph of prose has no reason to suspect their documentation was parsed as an expression.\n\n\"does not yet parse\" makes it worse in the other direction: it reads as an unimplemented feature, inviting the author to wait for support, when an interpolating doc attribute is not something that should ever be supported -- `@doc` takes a literal by definition.\n\n## Acceptance\n\n- An attribute given an interpolated string says so: that `@doc`/`@moduledoc` takes a literal string, that this one interpolates, and that `\\#{` escapes the sigil in prose that describes it.\n- The span covers the interpolation, not only the opening delimiter, when one is present.\n- A fixture pins the diagnostic.\n\n## Correction\n\nThis ticket previously claimed the module compiled silently and that two fixtures changed behaviour with nothing reported. That was wrong, and the error was mine: I diagnosed from fixture symptoms without ever compiling a program against the broken library, so I never saw the diagnostic the compiler was already emitting. The fixtures failed because the library module failed to parse, which is the system working. Re-priced from P1 to P3 accordingly.",
   "id": "fz-5xp.96",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A doc attribute whose heredoc interpolates is rejected by node type, not by explanation",
   "type": "task",
-  "updated_at": "2026-09-08T12:17:31Z"
+  "updated_at": "2026-09-08T12:17:32Z"
 }
