@@ -172,6 +172,19 @@ impl FrontDoorParser {
                         return Err(self.error(format!("expected string literal after `@{}`, got {:?}", name, other)));
                     }
                 };
+                // The lexer desugars `#{...}` into `fragment <> Kernel.to_string(x) <> ...`
+                // before the parser sees it, so an interpolating doc string arrives as a
+                // binary followed by `<>`. Taking the binary alone would silently keep the
+                // first fragment and leave the rest at item position, where it is rejected
+                // for being a `Concat` -- true, and useless to whoever wrote the prose.
+                // Documentation that describes interpolation contains one, so say that.
+                if self.peek_is(&Tok::Concat) {
+                    return Err(self.error(format!(
+                        "`@{name}` takes a literal string, and this one interpolates: \
+                         a `#{{...}}` in the text is evaluated, not shown. Write `\\#{{` to \
+                         keep the sigil as prose."
+                    )));
+                }
                 (name, value)
             }
             Tok::Ident(name) if name == "spec" => {

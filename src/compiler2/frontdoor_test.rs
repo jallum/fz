@@ -466,6 +466,48 @@ fn compiler2_frontdoor_call_no_comma_do_keyword_is_rejected() {
 }
 
 #[test]
+fn compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name() {
+    // A heredoc is a string literal, so it interpolates, and the lexer
+    // desugars an interpolation into `fragment <> Kernel.to_string(x) <> ...`
+    // at the token level. `@doc` then consumes only the FIRST fragment and the
+    // rest of the concatenation is left at item position, where it is rejected
+    // for being a `Concat` -- a word from the compiler's vocabulary, not the
+    // author's, and pointing away from the `#{...}` that caused it.
+    //
+    // Documentation that describes interpolation naturally contains one, so
+    // the diagnostic has to name the cause and the escape (fz-5xp.96).
+    for (label, source) in [
+        (
+            "moduledoc",
+            "defmodule M do\n  @moduledoc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+        ),
+        (
+            "doc",
+            "defmodule M do\n  @doc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
+            .expect_err("an interpolating doc attribute should be rejected");
+        assert!(
+            error.msg.contains("interpolat"),
+            "{label} should be rejected for interpolating, not for a node type; got `{}`",
+            error.msg
+        );
+        assert!(
+            error.msg.contains("literal"),
+            "{label} should say a doc attribute takes a literal string; got `{}`",
+            error.msg
+        );
+        assert!(
+            error.msg.contains("\\#{"),
+            "{label} should name the escape that suppresses interpolation; got `{}`",
+            error.msg
+        );
+    }
+}
+
+#[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)
