@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-08T20:21:08Z",
+  "close_reason": "Delivered by fz-5xp.87 in ca10f62f9",
   "created": "2026-09-07T11:15:38Z",
   "description": "Noticed four times in one session, each time as a false alarm during a gate.\n\n`Map.reverse/2`, `Range.reverse/2` and friends are private list helpers whose\nclauses the coverage checker cannot prove exhaustive:\n\n    fnp reverse([], acc), do: acc\n    fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])\n\n    warning[type/no-matching-clause]: `fn` clauses don't cover every input\n      --\u003e runtime:Map.fz:191:3\n\nTwo costs.\n\nThe warning is emitted into the diagnostics of every USER program that reaches\none, so a fixture inherits noise about library internals it did not write and\ncannot fix.\n\nAnd because diagnostics goldens embed SOURCE LINE NUMBERS, adding any function\nto a runtime-library module reblesses every fixture that touches it. Four times\nthis session a gate reported \"3 to 6 fixtures failed\" and the whole delta was a\nline number moving because code was added above the warning. Each needed a diff\nto establish it was nothing -- and one time in the same session a similar-looking\n\"goldens moved\" WAS a real 25-fixture breakage, so the noise is not free.\n\nTWO WAYS OUT, not exclusive:\n\n  * make the helpers provably exhaustive, or annotate the parameter so the\n    checker can see a list is the only input. That removes the warning at its\n    source, which is where it belongs -- a library function should not warn the\n    caller about itself;\n  * stop pinning absolute line numbers for diagnostics that arise in\n    runtime-library source. The fixture cares that the warning happened, not\n    which line of a library it came from.\n\nThe first is the real fix. Elixir's own `List` helpers do not warn their\ncallers, and neither should fz's.",
   "id": "fz-5xp.53",
@@ -14,7 +16,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Runtime-library coverage warnings leak into every fixture that touches them",
   "type": "task",
   "updated_at": "2026-09-08T20:21:08Z"
