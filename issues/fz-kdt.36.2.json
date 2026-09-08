@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.36.1"
+  ],
   "blocks": [],
   "created": "2026-09-08T23:25:18Z",
   "description": "## Goal\n\nMake reached local case and with-else dispatches publish coverage warning support from the same typed semantic walk, then delete the source-AST coverage authority.\n\n## Model\n\nA lowered local Dispatch already calls calculate_dispatch_reachability with the value types reaching that site. Retain the failure result under a stable semantic match-site identity and contribute warning support only when that local dispatch is reached in the activation. Join source location and construct wording through the provenance boundary, not through executable identity.\n\nAnalyze the miss entry only when typed reachability says failure is possible. A case miss and an uncovered with-else miss halt and may warn. A with expression without else returns its failed value and is not this diagnostic. A receive miss means keep searching/waiting and never becomes no-matching-clause evidence.\n\n## TDD\n\nProve first:\n\n- case :a with only an :a arm is warning-free;\n- a reached :a | :b subject with only an :a arm warns and removing the :b-producing path retracts it;\n- with-else follows the same typed rule;\n- a nested match inside an unreachable function clause or branch creates no warning work or fact;\n- guarded rows retain the real guard-false fallthrough path;\n- two activations supporting one local site have OR support and exact last-support retraction;\n- location-only replacement moves diagnostic provenance without changing lowered/semantic/product identity;\n- receive behavior and diagnostics are unchanged;\n- deterministic ordering and zero unchanged/unrelated work hold.\n\n## Required cutover and deletion\n\nExtend the final warning-fact model from fz-kdt.36.1; do not add a local diagnostic store. Remove source_diagnostics::check_match_clauses, its AST walk, guard-normalization diagnostic shortcuts, and production is_inexhaustive/plan_for_analysis once no semantic consumer remains. Delete duplicate diagnostic plan construction and the single-clause/guard escape-hatch tests that existed only for the untyped pass.\n\nUpdate pattern-matching, semantic-fixpoint, pipeline, fixtures, and user guide documentation in the same commit. Full focused, causal, replacement, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Local dispatch: derive case and with warnings from typed semantic reachability",
   "type": "bug",
-  "updated_at": "2026-09-08T23:25:18Z"
+  "updated_at": "2026-09-08T23:26:56Z"
 }

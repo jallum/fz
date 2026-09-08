@@ -4,7 +4,9 @@
     "fz-tfn.40",
     "fz-tfn.47"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.36.2"
+  ],
   "created": "2026-09-08T23:24:57Z",
   "description": "## Goal\n\nReplace function-head coverage side effects with one live warning-fact vertical slice driven by settled EntryReachability for demanded activations.\n\n## Model\n\nAnalyzeActivation already evaluates each correlated ActivationInputs row through calculate_dispatch_reachability and stores the OR of failure reachability in EntryReachability. Publish warning support from that existing answer under the owning root, activation publisher, semantic function-head site, and diagnostic code. Multiple activations may support the same source warning; removing one preserves it and removing the last retracts it.\n\nThe warning fact is an output of demanded semantic analysis. It must never demand an activation, enumerate functions, enumerate contract arrows, or scan roots. The retained request observes current settled warning facts through the exact lifecycle from fz-tfn.47 and joins them with provenance from fz-tfn.40. Semantic identity and source location remain separate.\n\nContracts participate only where ordinary reached-call contract application refines or rejects an ActivationInputs row. There is no contracted/uncontracted coverage fork.\n\n## TDD\n\nProve first:\n\n- quicksort append/2 and qsort/1 produce no warning facts or rendered warnings;\n- a reached non-list row that can hit Dispatch Fail produces exactly one warning;\n- removing that caller retracts the warning; re-adding it restores the same semantic identity with current provenance;\n- two activations/roots supporting one site retain the warning until the last support leaves;\n- an unobserved @spec overload produces no coverage work or warning;\n- a broad demanded boundary remains conservative because its actual input row is any;\n- guarded fallthrough follows typed reachability;\n- a cold function produces no coverage work, fact, diagnostic, or dependency;\n- unchanged request and unrelated replacement perform zero warning/semantic/product work;\n- FIFO, LIFO, and permuted publication produce identical facts and rendering.\n\n## Required cutover and deletion\n\n- Remove source_diagnostics::check_function_clauses and the DefineFunction function-head warning path.\n- Remove contract_has_reachable_fail, FunctionContract::input_domain_rows if it has no remaining semantic consumer, and the EntryDispatch wait added solely for whole-contract coverage.\n- Remove declared-domain exhaustiveness tests/docs that assert unobserved contract members are checked.\n- Do not add a warning side map, warning queue, root scan, diagnostic retry registry, or a second support graph.\n\nUpdate pattern-matching, semantic-fixpoint, pipeline, and warning-fact documentation in the same commit. Full focused, causal, replacement, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
   "id": "fz-kdt.36.1",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Function heads: publish supported warnings from typed activation reachability",
   "type": "bug",
-  "updated_at": "2026-09-08T23:26:55Z"
+  "updated_at": "2026-09-08T23:26:56Z"
 }
