@@ -10,6 +10,7 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
@@ -314,6 +315,23 @@ impl Node {
         self.atoms.borrow().name(id).map(str::to_owned)
     }
 
+    /// Compare atom ids by their node-global names without cloning either
+    /// name. Production values always name registered atoms. Keeping unknown
+    /// ids after named atoms, ordered by id, gives bare-Heap tests a total
+    /// fallback without making program atom order depend on intern order.
+    pub fn cmp_atom_names(&self, left_id: u32, right_id: u32) -> Ordering {
+        if left_id == right_id {
+            return Ordering::Equal;
+        }
+        let atoms = self.atoms.borrow();
+        match (atoms.name(left_id), atoms.name(right_id)) {
+            (Some(left), Some(right)) => left.as_bytes().cmp(right.as_bytes()),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left_id.cmp(&right_id),
+        }
+    }
+
     pub fn atom_names(&self) -> Vec<String> {
         self.atoms.borrow().by_id.clone()
     }
@@ -378,7 +396,7 @@ impl Process {
             // promotes to a higher size_class on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
-            heap: Heap::new(SIZE_TABLE[0], schemas),
+            heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
             ctx: null_mut(),
             halt_value: 0,
             exit_fault: None,

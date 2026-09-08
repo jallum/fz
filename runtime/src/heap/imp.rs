@@ -24,6 +24,7 @@ use crate::any_value::{
     struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::process::Node;
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -69,6 +70,10 @@ pub fn closure_capture_ref(closure: AnyValueRef, idx: usize) -> Result<AnyValueR
 
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
+        Self::with_node(capacity, schemas, Rc::new(Node::empty()))
+    }
+
+    pub fn with_node(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>, node: Rc<Node>) -> Self {
         assert!(
             capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
@@ -86,6 +91,7 @@ impl Heap {
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
+            node,
             schemas,
             pressure: AtomicBool::new(false),
             // Default: half the block. Tunable per-Process for tests that
@@ -348,7 +354,7 @@ impl Heap {
     /// wrong. Last key wins, matching Elixir.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
         let mut sorted: Vec<(AnyValueRef, AnyValueRef)> = entries.to_vec();
-        sorted.sort_by(|a, b| map_key_cmp_refs(a.0, b.0));
+        sorted.sort_by(|a, b| map_key_cmp_refs(&self.node, a.0, b.0));
         let mut entries: Vec<(AnyValueRef, AnyValueRef)> = Vec::with_capacity(sorted.len());
         for (key, value) in sorted {
             if let Some((last_key, last_value)) = entries.last_mut()
@@ -394,7 +400,7 @@ impl Heap {
     /// merge sort costs on an ordered run.
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
         let mut sorted: Vec<(AnyValue, AnyValue)> = entries.to_vec();
-        sorted.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
+        sorted.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
         let mut entries: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(sorted.len());
         for (key, value) in sorted {
             // Last one wins, matching Elixir and the sibling builders.
@@ -489,7 +495,7 @@ impl Heap {
                 AnyValue::decode_parts(value_raw, value_kind.tag()).expect("map destination value"),
             ));
         }
-        entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
+        entries.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
         let mut deduped: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             if let Some((last_key, last_value)) = deduped.last_mut()
@@ -595,7 +601,7 @@ impl Heap {
             entries.push((key, value));
         }
 
-        entries.sort_by(|a, b| map_key_cmp_refs(a.0, b.0));
+        entries.sort_by(|a, b| map_key_cmp_refs(&self.node, a.0, b.0));
         self.alloc_map_refs_bits(&entries)
     }
 
@@ -645,7 +651,7 @@ impl Heap {
         if !replaced {
             entries.push((key, value));
         }
-        entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
+        entries.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
         self.alloc_map_slots(&entries)
     }
 
@@ -941,7 +947,7 @@ impl Heap {
         while low < high {
             let middle = low + (high - low) / 2;
             let (entry_key, entry_value) = unsafe { map_entry_refs(addr, middle) };
-            match map_key_cmp_refs(entry_key, key) {
+            match map_key_cmp_refs(&self.node, entry_key, key) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => return Ok(Some(entry_value)),
@@ -963,7 +969,7 @@ impl Heap {
         while low < high {
             let middle = low + (high - low) / 2;
             let (entry_key, _) = unsafe { map_entry(addr, middle) };
-            match map_key_cmp_any(entry_key, key) {
+            match map_key_cmp_any(&self.node, entry_key, key) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => {

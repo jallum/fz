@@ -2405,9 +2405,7 @@ fn cmp_atom_names(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
         return 0;
     }
     let proc = unsafe { &*process };
-    let a_name = proc.node.atom_name(a_id).unwrap_or_default();
-    let b_name = proc.node.atom_name(b_id).unwrap_or_default();
-    match a_name.as_bytes().cmp(b_name.as_bytes()) {
+    match proc.node.cmp_atom_names(a_id, b_id) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Greater => 1,
         std::cmp::Ordering::Equal => 0,

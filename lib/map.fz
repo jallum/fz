@@ -8,7 +8,10 @@ defmodule Map do
   `filter/2`, and `split/2` each do one pass and one allocation instead --
   reach for one of those when a call site touches more than one key.
 
-  See the note below for how key order compares to Elixir's.
+  Iteration follows fz key order. Binary keys sort by content, as in Elixir.
+  Atom keys sort by name, using the same order as `Kernel.compare/2` and
+  `Enum.sort/1`; Elixir orders atoms by VM identity instead, so atom-keyed map
+  iteration can differ between the two runtimes.
   """
 
   # A map is a flat sorted array. Structural sharing does not transfer:
@@ -19,11 +22,9 @@ defmodule Map do
   # `get` is a binary search, which needs the array's order to agree with its
   # key equality, and every map to actually be sorted.
   #
-  # Iteration order is by key. For binary keys that matches Elixir exactly.
-  # For atom keys it cannot: Elixir orders atoms by an internal identity fz
-  # does not share, so `Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there
-  # and `[:a, :b, :c]` here. JSON object keys are binaries, so decoded objects
-  # order the same way in both.
+  # Iteration order is by fz key order. Atom keys use the node's name order,
+  # shared with Kernel.compare/2; binary keys use content order. JSON object
+  # keys are binaries, so decoded objects order the same way in fz and Elixir.
 
   extern "C" fn fz_map_count(any) :: integer
   extern "C" fn fz_map_entry_key(any, integer) :: any

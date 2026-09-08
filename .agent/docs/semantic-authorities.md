@@ -62,10 +62,11 @@ question from the op, so a call site cannot get it wrong.
 (`runtime/src/ir_runtime.rs`), shared since fz-5xp.18 and TOTAL since
 fz-5xp.8: every pair of values has an order, Erlang's
 `number < atom < reference < fun < port < pid < tuple < map < list < bitstring`.
-It takes the process, because atoms order by NAME and the name table lives on
-the node — ids are handed out in first-seen order, so ordering by id would
-depend on which atom the program mentioned first. Equality took a process
-already; ordering was the odd one out.
+For the atom category it delegates to `Node::cmp_atom_names`, the single owner
+of atom name order. Atom ids are handed out in first-seen order, so ordering by
+id would depend on which atom the program mentioned first. Ordinary comparison
+reaches the node through its process; each process heap shares that same node so
+map ordering asks the same question without ambient process state (fz-5xp.90).
 
 `guard_cmp` (`ir_interp/dispatch_exec.rs`) has integer and float fast paths and
 then delegates; `fz_value_cmp_raw_const` exists so codegen can compare a ref
@@ -130,6 +131,14 @@ search misses what a linear scan finds (fz-5xp.48). Both raw writers
 pre-sort — `compiler2/source.rs` did, with a comparator that ordered binary keys
 by address, and the result was discarded by the re-sort. A second authority
 whose answer is thrown away is still a second authority.
+
+The map comparator owns map category order and key identity, but atom ordering
+is not a private restatement: it delegates to `Node::cmp_atom_names`. `Heap`
+carries the process's node as construction data, so allocation, mutation, and
+binary-search lookup cannot accidentally use intern-id order. Consequently
+`Map.keys/1`, `Map.values/1`, and `Map.to_list/1` agree with `Kernel.compare/2`
+and `Enum.sort/1` for atom keys regardless of which atom the program mentioned
+first (fz-5xp.90).
 
 **Binary representation** — owner `ValueKind::BINARY_REPRS`
 (`runtime/src/any_value.rs`). Inline `Bitstring` below

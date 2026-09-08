@@ -1,0 +1,38 @@
+#---
+# purpose: "atom-keyed map iteration uses the same name order as the language term order"
+#---
+#
+# The allocation snapshot is part of the ordering contract. Comparing atom
+# names must not materialize fz strings or otherwise change the map/list shape
+# of these operations. The pre-fix and post-fix snapshots are byte-identical:
+#
+# - native: map `0/0`, list cons `34/544`, struct `3/96`, scalar box `7/112`;
+# - interpreter: map `3/144`, list cons `30/480`, struct `3/96`, scalar box
+#   `10/160`.
+#
+# Each pair is `allocs/bytes`. Native escape analysis keeps the maps out of the
+# process heap; the interpreter materializes them. The fixed atom-list input to
+# `Enum.sort/1` is deliberate: feeding it `Map.keys/1` would change merge-sort's
+# work-list shape when the bug is fixed and would confound comparator cost with
+# a different input order.
+fn main() do
+  map = %{z: 1, a: 2, m: 3}
+
+  dbg(Kernel.compare(:z, :a))
+  dbg(Enum.sort([:z, :a, :m]))
+  dbg(Map.keys(map))
+  dbg(Map.values(map))
+  dbg(Map.to_list(map))
+
+  stats = Process.heap_alloc_stats()
+  dbg({
+    stats[:map_allocs],
+    stats[:map_bytes],
+    stats[:list_cons_allocs],
+    stats[:list_cons_bytes],
+    stats[:struct_allocs],
+    stats[:struct_bytes],
+    stats[:scalar_box_allocs],
+    stats[:scalar_box_bytes]
+  })
+end

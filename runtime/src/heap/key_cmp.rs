@@ -5,6 +5,7 @@ use crate::any_value::AnyValueRef;
 use crate::any_value::{AnyValue, ValueKind};
 use crate::ir_runtime::cmp_bitstring;
 use crate::procbin::bitstring_like_eq;
+use crate::process::Node;
 use std::cmp::Ordering;
 
 pub(super) fn same_value_ref(a: AnyValueRef, b: AnyValueRef) -> bool {
@@ -32,7 +33,7 @@ pub(super) fn same_any_value(a: AnyValue, b: AnyValue) -> bool {
 /// The `AnyValue` sibling of [`map_key_cmp_refs`], and it has to agree with it:
 /// the two order the same array from different construction paths, and the
 /// interpreter and the JIT each reach one of them.
-pub(super) fn map_key_cmp_any(a: AnyValue, b: AnyValue) -> Ordering {
+pub(super) fn map_key_cmp_any(node: &Node, a: AnyValue, b: AnyValue) -> Ordering {
     let category = map_key_category_any(a).cmp(&map_key_category_any(b));
     if category != Ordering::Equal {
         return category;
@@ -41,6 +42,9 @@ pub(super) fn map_key_cmp_any(a: AnyValue, b: AnyValue) -> Ordering {
         let ap = a.heap_object_word().expect("bitstring key lhs") as *mut u8;
         let bp = b.heap_object_word().expect("bitstring key rhs") as *mut u8;
         return cmp_bitstring(ap, bp).cmp(&0);
+    }
+    if a.kind() == ValueKind::ATOM && b.kind() == ValueKind::ATOM {
+        return node.cmp_atom_names(a.raw() as u32, b.raw() as u32);
     }
     a.kind().tag().cmp(&b.kind().tag()).then_with(|| {
         if a.kind() == ValueKind::INT {
@@ -91,13 +95,18 @@ pub(super) fn map_key_category_ref(value: AnyValueRef) -> u8 {
 /// Other heap keys -- lists, tuples, maps -- are still ordered by address and
 /// still compared by address, so they agree with each other but not with
 /// structural equality. That is fz-5xp.27, a wider fix than this one.
-pub(super) fn map_key_cmp_refs(a: AnyValueRef, b: AnyValueRef) -> Ordering {
+pub(super) fn map_key_cmp_refs(node: &Node, a: AnyValueRef, b: AnyValueRef) -> Ordering {
     let category = map_key_category_ref(a).cmp(&map_key_category_ref(b));
     if category != Ordering::Equal {
         return category;
     }
     if is_bitstring_like_ref(a) && is_bitstring_like_ref(b) {
         return bitstring_content_cmp_refs(a, b);
+    }
+    if a.tag() == ValueKind::ATOM && b.tag() == ValueKind::ATOM {
+        let left_id = a.load_atom().expect("atom key lhs") as u32;
+        let right_id = b.load_atom().expect("atom key rhs") as u32;
+        return node.cmp_atom_names(left_id, right_id);
     }
     (a.tag().tag()).cmp(&b.tag().tag()).then_with(|| {
         if a.tag() == ValueKind::INT {
