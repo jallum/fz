@@ -7,9 +7,15 @@
   "id": "fz-5xp.86",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Fixed in 5d0068d69. Newline-delimited expression, item, and clause sequences now require either a physical newline or their enclosing terminator; the diagnostic is emitted at the unexpected second token. The keyword-list parser now leaves a trailing newline to the enclosing block unless its own comma or delimiter follows. The first full matrix caught no_parens_keyword as a counterexample; a focused preservation test was added before correcting that ownership. Final gates: fmt and diff checks clean; clippy workspace/all-targets with -D warnings; 1981/0/6ig fz lib, 225/0 runtime lib, 645/0 fixture matrix, 30/0 fz2_cli, 1/0 AOT integration, doctests green.",
+      "timestamp": "2026-09-08T18:20:19Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "[BUG] Juxtaposed expressions on one line are accepted and all but the first discarded",
   "type": "task",
-  "updated_at": "2026-09-08T17:34:58Z"
+  "updated_at": "2026-09-08T18:20:19Z"
 }
