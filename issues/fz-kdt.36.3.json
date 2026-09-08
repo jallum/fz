@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.36.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.36.4"
+  ],
   "created": "2026-09-08T23:25:39Z",
   "description": "## Goal\n\nMove the remaining non-coverage warning producer onto supported diagnostic facts and delete the global warning-once queue and flush lifecycle.\n\n## Scope\n\nThe remaining production warning is type/numeric-literal-widened from type resolution. Its evidence belongs to the exact demanded resolution attempt and immutable source provenance that observed the numeric literal. Reproduction replaces the attempt contribution; loss of demand or accepted-source replacement retracts it; independent supporters preserve it.\n\nRendering reads the current settled diagnostic projection. A cached unchanged request still receives the current warning snapshot without rerunning resolution, while an unrelated edit wakes nothing.\n\n## TDD\n\nProve first:\n\n- first demanded numeric-literal type resolution publishes one warning fact;\n- an undemanded declaration stays cold and produces none;\n- identical requests return the current warning without new jobs, wakes, allocations, or telemetry emission from producers;\n- relevant replacement removes, moves, or restores the warning exactly;\n- rejected replacement preserves the accepted warning and provenance;\n- two demanders retain shared warning support until the last leaves;\n- location-only replacement updates only diagnostic provenance;\n- ordering is deterministic under FIFO/LIFO/permutation.\n\n## Required deletion\n\nDelete World.reported_warnings, World.warning_diagnostics, WarningDiagnosticKey, clear_reported_warnings, note_warning_once, emit_warning_once, flush_reported_warnings, and every drive/product-drive warning flush. Warning rendering must not be a queue drain, side effect, retry registry, or whole-World scan. Keep Diagnostic as presentation data, not authority.\n\nUpdate resolver, diagnostic, fact-engine, pipeline, telemetry, and user-facing documentation in the same commit. Full focused, causal, replacement, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
   "id": "fz-kdt.36.3",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Warning lifecycle: migrate resolver warnings and delete the global warning queue",
   "type": "bug",
-  "updated_at": "2026-09-08T23:26:57Z"
+  "updated_at": "2026-09-08T23:26:58Z"
 }

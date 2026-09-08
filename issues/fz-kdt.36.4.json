@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.36.3"
+  ],
   "blocks": [],
   "created": "2026-09-08T23:26:01Z",
   "description": "## Goal\n\nProve the warning-fact cutover complete, remove every alternate authority and temporary affordance, and leave exact causal measurements and documentation for the long-lived recalculator.\n\n## Acceptance signal\n\nAcross focused programs and the complete fixture/CLI matrix:\n\n- every rendered warning has a current supported warning fact and exact source-version provenance;\n- every warning fact is produced only by demanded source/semantic work;\n- removing the last semantic/source/request support retracts the fact and rendered warning;\n- unchanged requests return the same diagnostic snapshot with zero producer evaluations, wakes, allocations, deep copies, or changed revisions;\n- unrelated source replacement causes zero warning, semantic, product, backend, or native movement;\n- relevant semantic replacement moves only the exact dependent warning facts and products;\n- location-only replacement changes diagnostic provenance while preserving semantic/backend/native content identity and generation;\n- cold functions, unobserved contract alternatives, and unreachable local matches remain absent from work and fact inventories;\n- FIFO, LIFO, and stress permutation produce byte-identical canonical warning snapshots.\n\nRecord telemetry budgets for warning fact publication, replacement, retraction, rendering, and cache hits. Tests assert both presence and absence.\n\n## Removal census\n\nRequire zero production references to source-time/whole-contract clause coverage, is_inexhaustive, warning-once registries, warning queues/flushes, duplicate pattern plans for diagnostics, root/function scans, diagnostic retry maps, and transition adapters. Remove obsolete goldens and tests rather than reblessing them blindly. Remove any temporary counters, compatibility code, or fixtures introduced by the child tickets.\n\nUpdate northstar, agent docs, guides, fixture documentation, and ticket cross-references to state the final ownership model. Full deterministic, library, fixture-matrix, CLI, AOT, docs, formatting, check, and strict workspace/all-target Clippy gates pass. Fresh ticket-scoped cold adversarial review precedes one commit and close.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Warning facts closeout: prove exact reuse, retraction, and zero alternate authority",
   "type": "task",
-  "updated_at": "2026-09-08T23:26:01Z"
+  "updated_at": "2026-09-08T23:26:58Z"
 }
