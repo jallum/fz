@@ -9,9 +9,15 @@
   "id": "fz-5xp.98",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Delivered in 63e327ab5. Type-backed dispatch reachability now carries branch-local empty/cons facts separately from refined root types. For an already-proper-list projection, not-empty proves cons and not-cons proves empty, so [] / [single] / [first, second | tail] closes Fail while the same rows over any still leave non-list values uncovered. Added focused graph and end-to-end diagnostic proofs; the deliberately partial neighbor still emits exactly one warning. Updated both pattern authorities. Gates: fmt/check, clippy -D warnings, workspace libs 1984+226, fixture matrix 651/651 unblessed, fz2_cli 30, aot_variadic_open 1, doctests green. No existing diagnostic golden moved.",
+      "timestamp": "2026-09-08T19:49:19Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "[BUG] Clause coverage rejects the total zero/one/two-plus list partition",
   "type": "bug",
-  "updated_at": "2026-09-08T19:35:13Z"
+  "updated_at": "2026-09-08T19:49:19Z"
 }
