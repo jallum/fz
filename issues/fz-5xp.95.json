@@ -7,9 +7,15 @@
   "id": "fz-5xp.95",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Root cause: Enum.sort/2 sent its Enumerable directly into list-only merge-sort helpers. A Range therefore reached split_sort_list/3, which had no matching clause and settled as a non-returning call. Activation analysis correctly kept that return absent while the fixpoint climbed, but executable projection failed to close settled absence into the empty type, so a structurally retained DeliveredResume reached transport without a payload type. The fix materializes Enum.sort/2 through to_list/1 and records settled non-returning direct and closure call results as none at the semantic-to-executable boundary. Regressions cover Range sort/1 and sort/2 on interp/JIT/AOT plus direct and closure non-returning non-tail calls preserving function_clause. Docs now describe the settled-bottom rule and the Enum example exercises a Range. Gates: cargo fmt check; cargo clippy workspace/all-targets with warnings denied; workspace lib tests 1982 + runtime 225; fixture matrix 648; fz2_cli 30; aot_variadic_open 1; doctests green. Commit 8e17e016f.",
+      "timestamp": "2026-09-08T18:52:11Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "[BUG] Enum.sort/1 on a Range panics the compiler: a resume payload value must have an analyzed type",
   "type": "task",
-  "updated_at": "2026-09-08T18:21:00Z"
+  "updated_at": "2026-09-08T18:52:11Z"
 }
