@@ -10,9 +10,15 @@
   "id": "fz-5xp.84",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Delivered by 4d5285826 (fz-5xp.97): lib/enum.fz now carries a @moduledoc and 77 @doc blocks across its 62 distinct public function names, each with a verified ## Examples block. Note this landed BEFORE .83's re-layout rather than after, so the docs will move with the functions when .83 runs; nothing needs rewriting, only relocating.",
+      "timestamp": "2026-09-08T12:15:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Enum: document every public function",
   "type": "task",
-  "updated_at": "2026-09-07T20:05:02Z"
+  "updated_at": "2026-09-08T12:15:11Z"
 }
