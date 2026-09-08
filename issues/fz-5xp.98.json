@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.87"
+  ],
   "created": "2026-09-08T19:34:46Z",
   "description": "GOAL: a declared proper-list domain is recognized as exhausted by [], [single], and [first, second | rest]. SIGNAL: a compiler2 diagnostic test for that exact three-row function emits no type/no-matching-clause warning, while a genuinely partial neighbor still warns. CURRENT: @spec split_sort_list([any], [any], [any]) :: {[any], [any]} still warns on the final [left_head, right_head | tail] clause. The simpler [] / [head | tail] domain is already proven total. STRATEGY: follow the output-contract loop from the declared [any] input through SourcePatternRows/is_inexhaustive, identify the first lost list-tail fact, repair the pattern decision model rather than add a wildcard clause, and retain the smaller total/partial proofs. Found while delivering fz-5xp.87; blocks its zero-false-warning acceptance.",
   "id": "fz-5xp.98",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] Clause coverage rejects the total zero/one/two-plus list partition",
   "type": "bug",
-  "updated_at": "2026-09-08T19:34:46Z"
+  "updated_at": "2026-09-08T19:34:57Z"
 }
