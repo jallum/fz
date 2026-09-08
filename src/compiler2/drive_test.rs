@@ -18076,6 +18076,37 @@ end
 }
 
 #[test]
+fn compiler2_declared_list_domain_recognizes_zero_one_and_two_plus_as_total() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "list_length_partition_exhaustiveness.fz",
+        r#"
+@spec total([any]) :: integer
+fn total([]), do: 0
+fn total([_single]), do: 1
+fn total([_first, _second | _tail]), do: 2
+
+@spec missing_one([any]) :: integer
+fn missing_one([]), do: 0
+fn missing_one([_first, _second | _tail]), do: 2
+
+fn main(), do: {total([:a]), missing_one([])}
+"#,
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|(source, diagnostic)| (source.as_str(), diagnostic.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "list_length_partition_exhaustiveness.fz",
+            "`fn` clauses don't cover every input",
+        )],
+        "only the genuinely partial list partition should warn: {diagnostics:?}",
+    );
+}
+
+#[test]
 fn compiler2_bounded_contract_domains_drive_function_head_exhaustiveness() {
     let diagnostics = no_matching_clause_diagnostics(
         "bounded_contract_exhaustiveness.fz",
