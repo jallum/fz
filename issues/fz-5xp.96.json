@@ -11,11 +11,15 @@
     {
       "text": "Verified 2026-09-08: reproduced by restoring the unescaped #{x} in StringChars' moduledoc and compiling a trivial program. The compiler emits parse/expected-token naming runtime:StringChars.fz:20:14. Not silent.",
       "timestamp": "2026-09-08T12:05:14Z"
+    },
+    {
+      "text": "Done in aa00b0d8e. @doc/@moduledoc now detect the trailing Concat and name the cause and the escape. Test compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name pins both attributes, proven fail-at-HEAD. Span narrowing NOT done: the lexer gives every synthesised interpolation token the literal's span, so pointing at the #{...} is a lexer change; left out deliberately rather than silently. Gate green: lib 1979/0, matrix 642/0, aot 30/0, cli 225/0, doc, clippy, fmt.",
+      "timestamp": "2026-09-08T12:17:31Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A doc attribute whose heredoc interpolates is rejected by node type, not by explanation",
   "type": "task",
-  "updated_at": "2026-09-08T12:05:14Z"
+  "updated_at": "2026-09-08T12:17:31Z"
 }
