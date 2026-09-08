@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-08T12:15:10Z",
   "created": "2026-09-07T22:05:18Z",
   "description": "## What happens\n\nCompiling almost any program prints `type/no-matching-clause` warnings that name runtime-library sources rather than the user's program:\n\n```\nwarning[type/no-matching-clause]: `fn` clauses don't cover every input\n  --\u003e runtime:Range.fz:113:3\n113 |   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])\n```\n\nThe clauses in question are the standard list-accumulator pair:\n\n```\nfnp reverse([], acc), do: acc\nfnp reverse([head | tail], acc), do: reverse(tail, [head | acc])\n```\n\nThose two cover every list. They do not cover every `any`, and the parameter is unannotated, so the declared-domain check is right on its own terms -- `reverse(:atom, [])` really has no clause. But the function is private, its only callers pass lists, and nothing outside the module can reach it with anything else.\n\nThe same pattern recurs: `Map.reverse/2`, `Enum.reverse_list/2`, several in `Json`.\n\n## Why it matters\n\nWarnings are errors in this project when they are something we control, and these are ours. They are also load-bearing noise: 24 of the fixture `expected.diagnostics` goldens pin them, so the library's warnings are part of the contract the suite checks, and any comment edit that shifts a line number churns them.\n\n## Two ways out\n\n- Narrow a private function's parameter domain to what its callers actually pass, so an unannotated `fnp` reached only with lists is checked against lists. This is the \"correct by construction\" answer and removes the warnings rather than hiding them.\n- Annotate the parameters in the library. Cheaper, and honest, but it treats the symptom in sixteen files instead of the cause in one.\n\nThe first also shrinks the goldens, which is a good independent signal that the noise is gone.",
   "id": "fz-5xp.92",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "The runtime library's own private helpers emit no-matching-clause warnings, pinned in 24 fixture goldens",
   "type": "task",
-  "updated_at": "2026-09-08T12:15:09Z"
+  "updated_at": "2026-09-08T12:15:10Z"
 }
