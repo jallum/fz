@@ -4,7 +4,6 @@
     "fz-tfn.40"
   ],
   "blocks": [
-    "fz-tfn.60",
     "fz-tfn.63"
   ],
   "created": "2026-09-03T08:01:25Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Reclaim unowned immutable source versions",
   "type": "task",
-  "updated_at": "2026-09-08T17:38:54Z"
+  "updated_at": "2026-09-08T17:38:56Z"
 }
