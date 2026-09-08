@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T22:09:03Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "[BUG] Enum.sort/1 on a Range panics the compiler: a resume payload value must have an analyzed type",
   "type": "task",
-  "updated_at": "2026-09-07T22:09:03Z"
+  "updated_at": "2026-09-08T18:21:00Z"
 }
