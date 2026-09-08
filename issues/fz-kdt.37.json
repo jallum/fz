@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.36.4"
+  ],
   "blocks": [],
   "created": "2026-08-25T01:42:58Z",
   "description": "## Goal\n\nWarn when demanded semantic work proves that precision was lost to `any` at either of two exact sites:\n\n1. an actual reached parameter row encounters `any` where an applied non-`any` contract should constrain it; or\n2. a reached struct-pattern analysis must default a field to `any` because the struct has no declared field type.\n\nExplicitly declared `any` is not a loss and must not warn. Cold declarations, clauses, struct patterns, and unobserved contract alternatives do no work and emit no evidence.\n\n## Architecture prerequisite\n\nfz-kdt.36.4 must land first. This ticket is a new consumer of that final model, not an extension of the deleted warning accumulator.\n\nA demanded semantic producer contributes typed warning evidence through its ordinary `AttemptOutcome`/`JobEffects` and the existing World fact ledger. Identity is the typed semantic function/parameter or struct/field site, never diagnostic text, span, rendered type, or encounter order. The existing retained diagnostic product joins exact current source-version provenance. Do not add an emitter side effect, warning map, dedup registry, queue, scan, retry path, second support graph, or second snapshot cache.\n\nBefore adding either diagnostic, verify that the observed `any` is not itself a semantic bug that should be fixed instead. A warning must describe an intentional conservative boundary, not normalize lost evidence.\n\n## TDD\n\nProve first:\n\n- the demanded parameter-loss repro produces one typed warning at the exact parameter/call provenance and still executes correctly;\n- a reached struct pattern without field types produces one field-default warning;\n- restoring precise evidence retracts the warning; removing the last demand retracts it; independent support survives;\n- explicit `any` does not warn;\n- cold/unreachable examples produce zero work, evidence, dependencies, or diagnostics;\n- identical requests preserve fact and diagnostic-product allocation/generation with zero producer/product work or deep copy;\n- unrelated and location-only replacement obey exact movement boundaries;\n- FIFO, LIFO, and permutation produce identical evidence and rendering.\n\nCensus the library and fixtures before acceptance. File separate blocking correctness tickets for genuine precision loss; do not suppress, whitelist, or reclassify those cases.\n\n## Acceptance and removal\n\nAdd stable typed warning kinds and actionable rendering through the final diagnostic projection. Update semantic, spec, struct, warning, and user guides. Remove all ticket probes and census scaffolding unless retained as durable production-boundary tests or telemetry. Full focused, causal, replacement, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Warn when declared parameters or struct fields silently degrade to any",
   "type": "task",
-  "updated_at": "2026-09-08T23:58:41Z"
+  "updated_at": "2026-09-08T23:58:42Z"
 }

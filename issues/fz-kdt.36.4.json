@@ -5,6 +5,7 @@
     "fz-kdt.36.3"
   ],
   "blocks": [
+    "fz-kdt.37",
     "fz-tfn.20"
   ],
   "created": "2026-09-08T23:26:01Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Warning facts closeout: prove exact reuse, retraction, and zero alternate authority",
   "type": "task",
-  "updated_at": "2026-09-08T23:57:26Z"
+  "updated_at": "2026-09-08T23:58:42Z"
 }
