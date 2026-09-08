@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T21:34:54Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "The runtime library's clause-coverage warnings are all missing domain declarations",
   "type": "task",
-  "updated_at": "2026-09-07T21:34:54Z"
+  "updated_at": "2026-09-08T19:19:40Z"
 }
