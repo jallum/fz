@@ -7,9 +7,15 @@
   "id": "fz-5xp.94",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "fz-5xp.87 partially advances this ticket in ca10f62f9: Json.encode!/1 now ends in an explicit JSON.encode!: unsupported value panic instead of a raw function_clause, with interp/run/build coverage. This ticket remains open: the message still does not render the offending value, and integer or other non-binary map keys can still emit invalid JSON.",
+      "timestamp": "2026-09-08T20:21:09Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] Json.encode! emits invalid JSON for a non-binary map key and halts without a message for an atom",
   "type": "task",
-  "updated_at": "2026-09-07T22:08:38Z"
+  "updated_at": "2026-09-08T20:21:09Z"
 }
