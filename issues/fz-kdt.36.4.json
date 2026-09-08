@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-5xp.88",
     "fz-kdt.36.3"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Warning facts closeout: prove exact reuse, retraction, and zero alternate authority",
   "type": "task",
-  "updated_at": "2026-09-08T23:26:58Z"
+  "updated_at": "2026-09-08T23:26:59Z"
 }
