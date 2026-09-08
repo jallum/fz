@@ -7,9 +7,15 @@
   "id": "fz-5xp.92",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Duplicate of fz-5xp.87, which reaches the same warnings and names the actual fix (declare the parameter domain), with fz-5xp.88 covering the misleading wording. I filed this without checking the board first. Closing in favour of those two; the only thing here not already there is the count of affected goldens, 24, which .87 can use as its acceptance signal.",
+      "timestamp": "2026-09-08T12:15:09Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The runtime library's own private helpers emit no-matching-clause warnings, pinned in 24 fixture goldens",
   "type": "task",
-  "updated_at": "2026-09-07T22:05:18Z"
+  "updated_at": "2026-09-08T12:15:09Z"
 }
