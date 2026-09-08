@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-08T12:07:10Z",
+  "description": "## Goal\n\nResolve each callable name exactly once at its legitimate source boundary, then retain the typed FunctionId through quote, macro execution, unquote, expansion, and lowering. Source spelling and qualified names exist only before resolution and for diagnostics/display.\n\n## Correct model\n\nA call target is either unresolved source syntax paired with its exact lexical owner, or an already-resolved FunctionId. Once resolved, no later phase may stringify, qualify, parse, look up, reconstruct, or globally search for that identity. Literal code inside quote retains its definition binding; unquoted caller code retains its caller binding; dynamically constructed quoted source enters the ordinary resolver once.\n\nWorld remains the one identity and namespace authority. Quoted transport may carry a typed World identity, but it must not introduce a side table, namespace snapshot, canonical-name authority, fallback resolver, or parallel binding store.\n\n## TDD signal\n\nStart from the requester-first cross-source macro case exposed during fz-tfn.53: App binds FutureMacros only as F, requires F.twice/1, and the provider macro quotes a call to its own double/1 helper. It must resume after the provider arrives, return 42, and lower the helper call to the exact provider FunctionId.\n\nAlso prove provider-first separate submission; a caller binding the spelling FutureMacros to a different module cannot redirect the quoted helper; and an unquoted caller-local reference retains caller scope while the quoted helper retains definition scope. Assert identities with lowered/function captures, not rendered names. Preserve macro inspection/composition behavior and deterministic unchanged/unrelated zero work.\n\n## Strategy and deletion\n\nDelete quoted_callable_name and every canonical module.function string used as post-resolution authority. Delete downstream generated-call module-path re-resolution and any workaround that adds provider names to caller namespaces or globally falls back from failed lexical lookup. Collapse quote call lowering onto the existing typed callable identity used by ordinary lowering; keep spelling/span only for diagnostics.\n\nUpdate quoted-source and macro-expansion documentation to state the single-resolution invariant. Full focused/library/fixture/CLI gates, formatting, check, strict Clippy, and a fresh ticket-scoped cold adversarial review precede one commit and close. No compatibility path or construction debris remains.",
+  "id": "fz-tfn.62",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 1,
+  "status": "open",
+  "title": "Keep callable identity through quoted source; delete canonical-name re-resolution",
+  "type": "bug",
+  "updated_at": "2026-09-08T12:07:10Z"
+}
