@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.17"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make one strict structural comparator own every map-key operation",
   "type": "bug",
-  "updated_at": "2026-09-08T20:09:53Z"
+  "updated_at": "2026-09-08T21:01:28Z"
 }
