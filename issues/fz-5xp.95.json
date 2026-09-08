@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-08T18:52:12Z",
   "created": "2026-09-07T22:09:03Z",
   "description": "## Reproduction\n\n```\nfn main(), do: dbg(Enum.sort(1..3))\n```\n\n```\nthread 'main' panicked at src/compiler2/jobs/transport.rs:1448:9:\na resume payload value must have an analyzed type: ValueId(4) in executable\nExecutableKey { activation: ActivationKey { root: RootId(0), function: FunctionId(0), arrow: Ty(33) }, need: Value }\n```\n\nIdentical on `interp` and `run`, so it is upstream of the doors -- the program never finishes compiling. This is a compiler panic with a backtrace, not a diagnostic: no span, no source location, nothing naming `Enum.sort` or the range.\n\n## Not the whole `Enumerable` half\n\nOther `Enumerable.t(a)`-typed functions take a range without complaint:\n\n```\nEnum.filter(1..10, fn x -\u003e x \u003e 5 end)   #=\u003e [6, 7, 8, 9, 10]\nEnum.take(1..10, 3)                     #=\u003e [1, 2, 3]\n```\n\nSo the fault is specific to the `sort` family rather than to ranges reaching `Enum`, which narrows it considerably.\n\n## Why P1\n\nEvery other bug this epic has turned up was a wrong answer or a refusal. This one is an unhandled panic on a program a user would reasonably write, and `Enum.sort/1` over a range is not an exotic call. The assertion at `transport.rs:1448` is a real invariant -- a resume payload without an analyzed type -- so something upstream is publishing a resume edge whose value never got a type, and finding that is the fix. A loud panic is the right failure over a silent miscompile, but a diagnostic naming the call would be better than a backtrace either way.\n\n## Found how\n\nVerifying doc examples for `Enum.sort/1`. The example was written against a range first, which crashed; the doc that shipped uses a list instead, so the library's own documentation does not exercise this path.",
   "id": "fz-5xp.95",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "[BUG] Enum.sort/1 on a Range panics the compiler: a resume payload value must have an analyzed type",
   "type": "task",
-  "updated_at": "2026-09-08T18:52:11Z"
+  "updated_at": "2026-09-08T18:52:12Z"
 }
