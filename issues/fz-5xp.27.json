@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.17"
+  ],
   "blocks": [
     "fz-tfn.62"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "[BUG] Make one strict structural comparator own every map-key operation",
   "type": "bug",
-  "updated_at": "2026-09-08T20:04:56Z"
+  "updated_at": "2026-09-08T20:04:57Z"
 }
