@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-08T17:38:44Z",
+  "description": "## Goal\n\nTreat every valid quoted literal returned by a macro as quoted source directly, whether the runtime value is immediate or heap-backed. A macro returning quote do: 42 yields the valid quoted AST root 42; the compiler must not reject it merely because RuntimeValue represents it inline.\n\n## Correct model\n\nQuoted source is a language value plus the one heap that owns any referenced storage. QuotedSourceRoot accepts immediate AnyValue values and heap references uniformly. Preserve the macro result into that root exactly once at the runtime-to-source boundary. Do not synthesize a block, list, tuple, reference wrapper, reconstructed AST, scalar side channel, or second quoted representation.\n\nExpression-position macro expansion may yield integer, float, atom, boolean, nil, binary, list, tuple, or map source according to the ordinary quoted decoder. A scalar returned where definitions are required is still invalid there, but it must reach the ordinary item/surface diagnostic rather than being mislabeled non-source.\n\n## TDD signal\n\nPin zero-argument and argument-bearing macros returning quoted integer, float, atom, boolean, and nil literals. Prove the exact values through interpreter and native doors, nested quote/unquote, retained macro products, and cross-source provider order. Prove item-level scalar output receives the exact non-definition diagnostic and source span. Unchanged requests reuse the same quoted/product allocation and generation; unrelated edits perform no requested-root work.\n\n## Strategy and deletion\n\nCollapse the macro return boundary onto one lossless RuntimeValue-to-AnyValueRef/root conversion in the result-owning heap. Delete the reference-only non-source classification, scalar exclusions, compensating fixtures, wrappers, and documentation implying quoted roots must be heap references. Preserve malformed runtime-value diagnostics and heap lifetime safety.\n\nUpdate quoted-source and macro-expansion documentation. Full focused/library/fixture/CLI gates, formatting, check, strict Clippy, deterministic reuse signals, and a fresh ticket-scoped cold adversarial review precede one commit and close. No compatibility path or construction debris remains.",
+  "id": "fz-tfn.63",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 4,
+  "status": "open",
+  "title": "Accept immediate runtime values as quoted source roots",
+  "type": "bug",
+  "updated_at": "2026-09-08T17:38:44Z"
+}
