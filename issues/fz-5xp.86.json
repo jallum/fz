@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T20:06:16Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "[BUG] Juxtaposed expressions on one line are accepted and all but the first discarded",
   "type": "task",
-  "updated_at": "2026-09-07T20:18:02Z"
+  "updated_at": "2026-09-08T17:34:58Z"
 }
