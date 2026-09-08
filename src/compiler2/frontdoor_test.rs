@@ -1,9 +1,32 @@
-use super::parse_quoted_program;
 use super::source_test::assert_quoted_mentions;
-use crate::compiler2::CodeId;
 use crate::modules::runtime_library;
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
+
+#[derive(Debug)]
+struct ParsedQuoted {
+    root: super::QuotedSourceRoot,
+    sources: crate::source::SourceMap,
+}
+
+impl std::ops::Deref for ParsedQuoted {
+    type Target = super::QuotedSourceRoot;
+
+    fn deref(&self) -> &Self::Target {
+        &self.root
+    }
+}
+
+fn parse_quoted_program(
+    source_name: impl AsRef<str>,
+    source_text: &str,
+    tel: &ConfiguredTelemetry,
+) -> Result<ParsedQuoted, super::FrontDoorError> {
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(source_name.as_ref()), source_text);
+    let root = super::parse_quoted_program(&sources, version, tel)?;
+    Ok(ParsedQuoted { root, sources })
+}
 
 fn head_name(node: &super::QuotedAstNode) -> String {
     node.head.atom_name().expect("ast head atom")
@@ -20,8 +43,8 @@ fn map_value<'a>(
         .unwrap_or_else(|| panic!("quoted map should contain `{key}`"))
 }
 
-fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
-    super::token_payload::decode_tokens(cursor)
+fn token_kinds(cursor: &super::QuotedSourceCursor, sources: &crate::source::SourceMap) -> Vec<Tok> {
+    super::token_payload::decode_tokens(cursor, sources)
         .expect("decode token payload")
         .into_iter()
         .map(|token| token.tok)
@@ -32,7 +55,7 @@ fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
 /// `{head_name, meta, [head, [{:do, body}]]}` -> `body`.
 fn fn_do_body(root: &super::QuotedSourceRoot) -> super::QuotedSourceCursor {
     let items = root.cursor().list_items().expect("top-level items");
-    let fn_node = items[0].ast_node().expect("fn cursor").expect("fn node");
+    let fn_node = items[0].trusted_ast_node().expect("fn cursor").expect("fn node");
     fn_node.tail.list_items().expect("fn args")[1]
         .list_items()
         .expect("fn kw list")[0]
@@ -47,7 +70,6 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
     let root = parse_quoted_program(
         "surface.fz",
         "alias Helpers.Tools, as: Tools\nrequire Helpers.Tools\nimport Helpers.Tools, only: [twice: 1]\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -55,14 +77,22 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 3);
     assert_eq!(
-        head_name(&items[0].ast_node().expect("alias cursor").expect("alias node")),
+        head_name(&items[0].trusted_ast_node().expect("alias cursor").expect("alias node")),
         "alias"
     );
     assert_eq!(
-        head_name(&items[1].ast_node().expect("require cursor").expect("require node")),
+        head_name(
+            &items[1]
+                .trusted_ast_node()
+                .expect("require cursor")
+                .expect("require node")
+        ),
         "require"
     );
-    let import = items[2].ast_node().expect("import cursor").expect("import node");
+    let import = items[2]
+        .trusted_ast_node()
+        .expect("import cursor")
+        .expect("import node");
     assert_eq!(head_name(&import), "import");
 
     let import_args = import.tail.list_items().expect("import args");
@@ -79,10 +109,13 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
 fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let source = "defmodule App do\n  require Helpers\n  defmodule Tools do\n    import Helpers, except: [twice: 1]\n  end\nend\n";
-    let root = parse_quoted_program("app.fz", source, CodeId::ZERO, &tel).expect("quoted parse");
+    let root = parse_quoted_program("app.fz", source, &tel).expect("quoted parse");
 
     let top = root.cursor().list_items().expect("top-level items");
-    let app = top[0].ast_node().expect("app cursor").expect("app defmodule node");
+    let app = top[0]
+        .trusted_ast_node()
+        .expect("app cursor")
+        .expect("app defmodule node");
     assert_eq!(head_name(&app), "defmodule");
 
     let app_body = app.tail.list_items().expect("app args")[1]
@@ -92,7 +125,10 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
         .expect("app do tuple")[1]
         .list_items()
         .expect("app body items");
-    let require = app_body[0].ast_node().expect("require cursor").expect("require node");
+    let require = app_body[0]
+        .trusted_ast_node()
+        .expect("require cursor")
+        .expect("require node");
     let require_lexical = require
         .meta
         .map_value("__fz_lexical__")
@@ -109,7 +145,7 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
     );
 
     let tools = app_body[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("tools cursor")
         .expect("tools defmodule node");
     let tools_body = tools.tail.list_items().expect("tools args")[1]
@@ -120,7 +156,7 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
         .list_items()
         .expect("tools body items");
     let import = tools_body[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("nested import cursor")
         .expect("nested import node");
     let import_lexical = import
@@ -156,43 +192,41 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
 #[test]
 fn compiler2_frontdoor_encodes_type_ascriptions_as_token_payloads() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "typed.fz",
-        "fn pack(x :: integer), do: x :: list(integer)\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("quoted parse");
+    let root = parse_quoted_program("typed.fz", "fn pack(x :: integer), do: x :: list(integer)\n", &tel)
+        .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
-    let function = items[0].ast_node().expect("function cursor").expect("function node");
+    let function = items[0]
+        .trusted_ast_node()
+        .expect("function cursor")
+        .expect("function node");
     let function_args = function.tail.list_items().expect("function args");
     let head = function_args[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("function head cursor")
         .expect("function head node");
     let head_args = head.tail.list_items().expect("head args");
     let annotated_param = head_args[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("annotated param cursor")
         .expect("annotated param node");
     assert_eq!(head_name(&annotated_param), "::");
     let param_parts = annotated_param.tail.list_items().expect("annotated param parts");
     assert_eq!(
-        token_kinds(&param_parts[1]),
+        token_kinds(&param_parts[1], &root.sources),
         vec![Tok::Ident("integer".to_string())],
         "parameter annotation rhs should stay as a token payload",
     );
 
     let body_kw = function_args[1].list_items().expect("function kw list");
     let body_expr = body_kw[0].tuple_items().expect("do keyword tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("body ascription cursor")
         .expect("body ascription node");
     assert_eq!(head_name(&body_expr), "::");
     let body_parts = body_expr.tail.list_items().expect("body ascription parts");
     assert_eq!(
-        token_kinds(&body_parts[1]),
+        token_kinds(&body_parts[1], &root.sources),
         vec![
             Tok::Ident("list".to_string()),
             Tok::LParen,
@@ -209,7 +243,6 @@ fn compiler2_frontdoor_surface_root_is_real_quoted_source_not_old_ast() {
     let root = parse_quoted_program(
         "surface.fz",
         "require Helpers\nimport Helpers, except: [twice: 1]\ndefmodule App do\n  require Helpers\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -225,7 +258,6 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
     let root = parse_quoted_program(
         "macro_inc.fz",
         include_str!("../../fixtures2/behavior/macro_inc.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -233,24 +265,24 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 3);
     assert_eq!(
-        head_name(&items[0].ast_node().expect("macro cursor").expect("macro node")),
+        head_name(&items[0].trusted_ast_node().expect("macro cursor").expect("macro node")),
         "defmacro"
     );
     assert_eq!(
-        head_name(&items[1].ast_node().expect("macro cursor").expect("macro node")),
+        head_name(&items[1].trusted_ast_node().expect("macro cursor").expect("macro node")),
         "defmacro"
     );
     assert_eq!(
-        head_name(&items[2].ast_node().expect("fn cursor").expect("fn node")),
+        head_name(&items[2].trusted_ast_node().expect("fn cursor").expect("fn node")),
         "fn"
     );
 
-    let macro_node = items[0].ast_node().expect("macro cursor").expect("macro node");
+    let macro_node = items[0].trusted_ast_node().expect("macro cursor").expect("macro node");
     let macro_args = macro_node.tail.list_items().expect("macro args");
     let quote_node = macro_args[1].list_items().expect("macro kw")[0]
         .tuple_items()
         .expect("macro do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("quote cursor")
         .expect("quote node");
     assert_eq!(head_name(&quote_node), "quote");
@@ -259,13 +291,18 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
         .expect("quote kw")[0]
         .tuple_items()
         .expect("quote do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("quote body cursor")
         .expect("quote body node");
     assert_eq!(head_name(&quote_body), "+");
     let quote_args = quote_body.tail.list_items().expect("quote body args");
     assert_eq!(
-        head_name(&quote_args[0].ast_node().expect("unquote cursor").expect("unquote node")),
+        head_name(
+            &quote_args[0]
+                .trusted_ast_node()
+                .expect("unquote cursor")
+                .expect("unquote node")
+        ),
         "unquote"
     );
 }
@@ -276,17 +313,19 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
     let root = parse_quoted_program(
         "guarded_clause.fz",
         "fn positive(n), do: n > 0\nfn wanted(n) when positive(n), do: n\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 2);
-    let wanted = items[1].ast_node().expect("wanted cursor").expect("wanted node");
+    let wanted = items[1]
+        .trusted_ast_node()
+        .expect("wanted cursor")
+        .expect("wanted node");
     assert_eq!(head_name(&wanted), "fn");
     let head = wanted.tail.list_items().expect("wanted args")[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("wanted head cursor")
         .expect("wanted head node");
     assert_eq!(
@@ -305,17 +344,12 @@ fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_k
     // always appends a fresh `[do: ...]` argument for a parenthesized call; it
     // never rewrites an existing argument in place.
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "keyword_paren_do.fz",
-        "echo(label: :work) do\n  42\nend\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("quoted parse");
+    let root =
+        parse_quoted_program("keyword_paren_do.fz", "echo(label: :work) do\n  42\nend\n", &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
-    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    let call = items[0].trusted_ast_node().expect("call cursor").expect("call node");
     assert_eq!(head_name(&call), "echo");
     let args = call.tail.list_items().expect("call args");
     assert_eq!(
@@ -348,17 +382,12 @@ fn compiler2_frontdoor_no_parens_call_keyword_args_plus_trailing_do_appends_seco
     // path or from Elixir, which never folds a trailing `do` block into a
     // preceding keyword-list argument.
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "keyword_no_paren_do.fz",
-        "echo label: :work do\n  42\nend\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("quoted parse");
+    let root = parse_quoted_program("keyword_no_paren_do.fz", "echo label: :work do\n  42\nend\n", &tel)
+        .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
-    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    let call = items[0].trusted_ast_node().expect("call cursor").expect("call node");
     assert_eq!(head_name(&call), "echo");
     let args = call.tail.list_items().expect("call args");
     assert_eq!(
@@ -393,14 +422,12 @@ fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
     let no_parens = parse_quoted_program(
         "keyword_no_paren_do_parity.fz",
         "echo a, b: 1, c: 2 do\n  42\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse (no parens)");
     let parens = parse_quoted_program(
         "keyword_paren_do_parity.fz",
         "echo(a, b: 1, c: 2) do\n  42\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse (parens)");
@@ -408,7 +435,7 @@ fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
     for (label, root) in [("no-parens", &no_parens), ("parens", &parens)] {
         let items = root.cursor().list_items().expect("top-level items");
         assert_eq!(items.len(), 1, "{label}: one top-level call");
-        let call = items[0].ast_node().expect("call cursor").expect("call node");
+        let call = items[0].trusted_ast_node().expect("call cursor").expect("call node");
         assert_eq!(head_name(&call), "echo", "{label}: call head");
         let args = call.tail.list_items().expect("call args");
         assert_eq!(
@@ -435,12 +462,11 @@ fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
 #[test]
 fn compiler2_frontdoor_paren_call_comma_do_keyword_attaches_do_argument() {
     let tel = ConfiguredTelemetry::new();
-    let root =
-        parse_quoted_program("keyword_comma_do.fz", "echo(:work), do: 42\n", CodeId::ZERO, &tel).expect("quoted parse");
+    let root = parse_quoted_program("keyword_comma_do.fz", "echo(:work), do: 42\n", &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
-    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    let call = items[0].trusted_ast_node().expect("call cursor").expect("call node");
     assert_eq!(head_name(&call), "echo");
     let args = call.tail.list_items().expect("call args");
     assert_eq!(args.len(), 2, "comma `do:` appends a fresh do keyword-list argument");
@@ -455,8 +481,8 @@ fn compiler2_frontdoor_paren_call_comma_do_keyword_attaches_do_argument() {
 fn compiler2_frontdoor_call_no_comma_do_keyword_is_rejected() {
     for (label, source) in [("paren", "echo(:work) do: 42\n"), ("no-parens", "echo :work do: 42\n")] {
         let tel = ConfiguredTelemetry::new();
-        let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
-            .expect_err("no-comma `do:` call surface should be rejected");
+        let error =
+            parse_quoted_program(label, source, &tel).expect_err("no-comma `do:` call surface should be rejected");
         assert!(
             error.msg.contains("without a newline") && error.msg.contains("KwKey(\"do\")"),
             "{label} no-comma `do:` surface should be rejected at the sequence boundary; got `{}`",
@@ -487,8 +513,8 @@ fn compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name() {
         ),
     ] {
         let tel = ConfiguredTelemetry::new();
-        let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
-            .expect_err("an interpolating doc attribute should be rejected");
+        let error =
+            parse_quoted_program(label, source, &tel).expect_err("an interpolating doc attribute should be rejected");
         assert!(
             error.msg.contains("interpolat"),
             "{label} should be rejected for interpolating, not for a node type; got `{}`",
@@ -510,12 +536,11 @@ fn compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name() {
 #[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)
-        .expect("quoted parse");
+    let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
-    let test_call = items[0].ast_node().expect("test cursor").expect("test call");
+    let test_call = items[0].trusted_ast_node().expect("test cursor").expect("test call");
     assert_eq!(head_name(&test_call), "test");
     let args = test_call.tail.list_items().expect("test args");
     assert_eq!(args[0].atom_name().expect("test name atom"), "name");
@@ -536,7 +561,6 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let cross = parse_quoted_program(
         "cross_module_macro.fz",
         include_str!("../../fixtures2/behavior/cross_module_macro.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("cross-module macro parse");
@@ -547,7 +571,6 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let pipe_case = parse_quoted_program(
         "pipe_headless_case.fz",
         include_str!("../../fixtures2/behavior/pipe_headless_case.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("pipe/headless-case parse");
@@ -558,7 +581,6 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let fn_ref = parse_quoted_program(
         "fn_ref.fz",
         include_str!("../../fixtures2/behavior/fn_ref_ampersand.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("fn-ref parse");
@@ -569,7 +591,6 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let lambda_sugars = parse_quoted_program(
         "lambda_sugars.fz",
         include_str!("../../fixtures2/behavior/lambda_sugars.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("lambda sugar parse");
@@ -584,7 +605,7 @@ fn compiler2_frontdoor_parses_multiline_call_args_and_newline_pipe() {
     let root = parse_quoted_program(
         "multiline-call.fz",
         "fn main() do\n  finish(loop(\n    [1, 2, 3],\n    {:cont, 0},\n    fn (entry, inner) -> {:cont, entry + inner} end\n  ))\n  |> dbg()\nend\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("multiline call args and newline pipe parse");
     assert_quoted_mentions(&root, &["finish", "loop", "|>", "dbg"]);
@@ -596,7 +617,6 @@ fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
     let root = parse_quoted_program(
         "assignment-newline.fz",
         "fn main() do\n  x =\n    41\n  x + 1\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("assignment rhs after newline parse");
@@ -619,11 +639,13 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_operator() {
     let root = parse_quoted_program(
         "operator-trailing-newline.fz",
         "fn main() do\n  1 +\n    2\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("trailing operator newline parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(head_name(&body), "+", "newline after `+` must continue the expression");
     let args = body.tail.list_items().expect("+ args");
     assert_eq!(args.len(), 2);
@@ -640,11 +662,13 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
     let root = parse_quoted_program(
         "dot-trailing-newline.fz",
         "fn main() do\n  cfg.\n    value\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("trailing dot newline parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(
         head_name(&body),
         ".",
@@ -652,7 +676,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
     );
     let tail = body.tail.list_items().expect(". tail");
     assert_eq!(tail.len(), 2);
-    let target = tail[0].ast_node().expect("target cursor").expect("target node");
+    let target = tail[0].trusted_ast_node().expect("target cursor").expect("target node");
     assert_eq!(head_name(&target), "cfg");
     assert_eq!(tail[1].atom_name().expect("field atom"), "value");
 }
@@ -669,11 +693,13 @@ fn compiler2_frontdoor_continues_alias_path_across_newline_after_dot() {
     let root = parse_quoted_program(
         "alias-path-trailing-newline.fz",
         "fn main() do\n  Foo.\n    Bar\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("trailing dot newline in alias path parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(
         head_name(&body),
         "__aliases__",
@@ -705,11 +731,13 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
     let root = parse_quoted_program(
         "lowercase-field-after-dotted-newline.fz",
         "fn main() do\n  Foo.\n    bar\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("lowercase field after dotted newline parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(
         head_name(&body),
         ".",
@@ -717,7 +745,10 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
     );
     let tail = body.tail.list_items().expect(". tail");
     assert_eq!(tail.len(), 2);
-    let receiver = tail[0].ast_node().expect("receiver cursor").expect("receiver node");
+    let receiver = tail[0]
+        .trusted_ast_node()
+        .expect("receiver cursor")
+        .expect("receiver node");
     assert_eq!(
         head_name(&receiver),
         "__aliases__",
@@ -750,19 +781,24 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
     let root = parse_quoted_program(
         "capture-target-trailing-newline.fz",
         "fn main() do\n  &Foo.\n    bar/1\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("trailing dot newline in capture target parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(head_name(&body), "&", "capture wraps the `/` arity node");
     let capture_args = body.tail.list_items().expect("& args");
     assert_eq!(capture_args.len(), 1);
-    let slash = capture_args[0].ast_node().expect("slash cursor").expect("slash node");
+    let slash = capture_args[0]
+        .trusted_ast_node()
+        .expect("slash cursor")
+        .expect("slash node");
     assert_eq!(head_name(&slash), "/");
     let slash_args = slash.tail.list_items().expect("/ args");
     assert_eq!(slash_args.len(), 2);
-    let dot = slash_args[0].ast_node().expect("dot cursor").expect("dot node");
+    let dot = slash_args[0].trusted_ast_node().expect("dot cursor").expect("dot node");
     assert_eq!(
         head_name(&dot),
         ".",
@@ -770,7 +806,10 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
     );
     let dot_tail = dot.tail.list_items().expect(". tail");
     assert_eq!(dot_tail.len(), 2);
-    let target = dot_tail[0].ast_node().expect("target cursor").expect("target node");
+    let target = dot_tail[0]
+        .trusted_ast_node()
+        .expect("target cursor")
+        .expect("target node");
     assert_eq!(head_name(&target), "__aliases__");
     assert_eq!(dot_tail[1].atom_name().expect("field atom"), "bar");
     assert_eq!(slash_args[1].int_value().expect("arity"), 1);
@@ -787,19 +826,20 @@ fn compiler2_frontdoor_continues_upper_path_across_newline_after_dot() {
     // dots must consume trailing eol like every other dot-consuming site:
     // `import Foo.\n  Bar` must parse as the single alias path `[Foo, Bar]`.
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "upper-path-trailing-newline.fz",
-        "import Foo.\n  Bar\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("trailing dot newline in upper path parse");
+    let root = parse_quoted_program("upper-path-trailing-newline.fz", "import Foo.\n  Bar\n", &tel)
+        .expect("trailing dot newline in upper path parse");
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
-    let import = items[0].ast_node().expect("import cursor").expect("import node");
+    let import = items[0]
+        .trusted_ast_node()
+        .expect("import cursor")
+        .expect("import node");
     assert_eq!(head_name(&import), "import");
     let import_args = import.tail.list_items().expect("import args");
-    let alias = import_args[0].ast_node().expect("alias cursor").expect("alias node");
+    let alias = import_args[0]
+        .trusted_ast_node()
+        .expect("alias cursor")
+        .expect("alias node");
     assert_eq!(
         head_name(&alias),
         "__aliases__",
@@ -821,23 +861,26 @@ fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
     // two statements (`eoe`-separated), not one: the block wraps them as
     // `__block__` with two independent children.
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "block-separation.fz",
-        "fn main() do\n  a\n  b\nend\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("block separation parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let root = parse_quoted_program("block-separation.fz", "fn main() do\n  a\n  b\nend\n", &tel)
+        .expect("block separation parse");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(head_name(&body), "__block__");
     let stmts = body.tail.list_items().expect("block items");
     assert_eq!(stmts.len(), 2);
     assert_eq!(
-        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        head_name(&stmts[0].trusted_ast_node().expect("first cursor").expect("first node")),
         "a"
     );
     assert_eq!(
-        head_name(&stmts[1].ast_node().expect("second cursor").expect("second node")),
+        head_name(
+            &stmts[1]
+                .trusted_ast_node()
+                .expect("second cursor")
+                .expect("second node")
+        ),
         "b"
     );
 }
@@ -848,7 +891,6 @@ fn compiler2_frontdoor_rejects_a_second_expression_without_a_statement_separator
     let error = parse_quoted_program(
         "juxtaposed-expressions.fz",
         "fn main() do\n  a = 1 2\n  dbg(a)\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect_err("two expressions without a newline between them must be rejected");
@@ -876,18 +918,25 @@ fn compiler2_frontdoor_keeps_a_newline_after_no_parens_keyword_arguments_as_the_
     let root = parse_quoted_program(
         "keyword-statement-separation.fz",
         "fn main() do\n  echo x: 1\n  echo y: 2\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("a no-parens keyword call must leave its trailing newline for the block grammar");
 
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(head_name(&body), "__block__");
     let statements = body.tail.list_items().expect("block statements");
     assert_eq!(statements.len(), 2);
     for statement in statements {
         assert_eq!(
-            head_name(&statement.ast_node().expect("statement cursor").expect("statement node")),
+            head_name(
+                &statement
+                    .trusted_ast_node()
+                    .expect("statement cursor")
+                    .expect("statement node")
+            ),
             "echo"
         );
     }
@@ -904,11 +953,13 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
     let root = parse_quoted_program(
         "leading-operator-new-statement.fz",
         "fn main() do\n  a\n  -b\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("leading operator new-statement parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(
         head_name(&body),
         "__block__",
@@ -917,10 +968,13 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
     let stmts = body.tail.list_items().expect("block items");
     assert_eq!(stmts.len(), 2);
     assert_eq!(
-        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        head_name(&stmts[0].trusted_ast_node().expect("first cursor").expect("first node")),
         "a"
     );
-    let second = stmts[1].ast_node().expect("second cursor").expect("second node");
+    let second = stmts[1]
+        .trusted_ast_node()
+        .expect("second cursor")
+        .expect("second node");
     assert_eq!(head_name(&second), "-", "leading `-` parses as the unary operator");
     let unary_args = second.tail.list_items().expect("unary - args");
     assert_eq!(
@@ -929,7 +983,12 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
         "unary `-` takes exactly one argument, not `a` and `b`"
     );
     assert_eq!(
-        head_name(&unary_args[0].ast_node().expect("operand cursor").expect("operand node")),
+        head_name(
+            &unary_args[0]
+                .trusted_ast_node()
+                .expect("operand cursor")
+                .expect("operand node")
+        ),
         "b"
     );
 }
@@ -946,11 +1005,13 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
     let root = parse_quoted_program(
         "leading-struct-new-statement.fz",
         "fn main() do\n  a\n  %Foo{x: 1}\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("leading struct-literal new-statement parse");
-    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    let body = fn_do_body(&root)
+        .trusted_ast_node()
+        .expect("body cursor")
+        .expect("body node");
     assert_eq!(
         head_name(&body),
         "__block__",
@@ -959,10 +1020,13 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
     let stmts = body.tail.list_items().expect("block items");
     assert_eq!(stmts.len(), 2);
     assert_eq!(
-        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        head_name(&stmts[0].trusted_ast_node().expect("first cursor").expect("first node")),
         "a"
     );
-    let second = stmts[1].ast_node().expect("second cursor").expect("second node");
+    let second = stmts[1]
+        .trusted_ast_node()
+        .expect("second cursor")
+        .expect("second node");
     assert_eq!(
         head_name(&second),
         "%",
@@ -974,7 +1038,10 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
         2,
         "struct node is `%(alias, map)`, not infix `%(a, Foo)`"
     );
-    let alias = struct_args[0].ast_node().expect("alias cursor").expect("alias node");
+    let alias = struct_args[0]
+        .trusted_ast_node()
+        .expect("alias cursor")
+        .expect("alias node");
     assert_eq!(head_name(&alias), "__aliases__");
     assert_eq!(
         alias.tail.list_items().expect("alias segments")[0]
@@ -983,7 +1050,12 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
         "Foo"
     );
     assert_eq!(
-        head_name(&struct_args[1].ast_node().expect("map cursor").expect("map node")),
+        head_name(
+            &struct_args[1]
+                .trusted_ast_node()
+                .expect("map cursor")
+                .expect("map node")
+        ),
         "%{}"
     );
 }
@@ -994,7 +1066,7 @@ fn compiler2_frontdoor_parses_keyword_list_macro_heads() {
     let root = parse_quoted_program(
         "macro-heads.fz",
         "defmacro test(name_atom, [do: body]) do\n  {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("keyword list macro heads parse");
     assert_quoted_mentions(&root, &["defmacro", "test", "switching_macro", "do"]);
@@ -1006,7 +1078,6 @@ fn compiler2_frontdoor_parses_with_expressions() {
     let root = parse_quoted_program(
         "with.fz",
         "fn main(v) do\n  with {:ok, x} <- v do x else :err -> 0 end\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted with parse");
@@ -1022,7 +1093,6 @@ fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
     let root = parse_quoted_program(
         "cond_capture.fz",
         "fn main() do\n  cond do\n    false -> &Kernel.+/2\n    true -> &+/2\n  end\nend\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -1038,7 +1108,7 @@ fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     let root = parse_quoted_program(
         "surface.fz",
         "@moduledoc \"docs\"\n@type t :: integer\n@spec run(integer) :: integer\ndefstruct [name, age]\ndefprotocol Enumerable do\n  @doc \"reduce docs\"\n  fn reduce(xs, acc)\nend\ndefimpl Enumerable, for: List do\n  fn reduce(xs, acc), do: acc\nend\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("quoted parse");
 
@@ -1056,7 +1126,7 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
     let root = parse_quoted_program(
         "shapes.fz",
         "fn shapes(x :: integer, ref) do\n  literal = %{2 => x, a: 1}\n  updated = %{literal | a: 2, b: 3}\n  point = %Point{x: x, y: 1}\n  bytes = <<104, 105>>\n  case x do\n    %{name: n} -> n\n    {:ok, s} when s == \"hi\" -> s\n    [h | _] -> h\n    ^ref -> ref\n    <<len, payload::binary-size(len), rest::binary>> -> len\n  end\nend\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("quoted parse");
 
@@ -1068,20 +1138,23 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
 #[test]
 fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
     let tel = ConfiguredTelemetry::new();
-    let root =
-        parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", CodeId::ZERO, &tel).expect("quoted parse");
+    let root = parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
-    let main = items[0].ast_node().expect("main cursor").expect("main node");
+    let main = items[0].trusted_ast_node().expect("main cursor").expect("main node");
     let body = main.tail.list_items().expect("main args")[1]
         .list_items()
         .expect("main kw")[0]
         .tuple_items()
         .expect("main do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
-    let callee = body.head.ast_node().expect("callee cursor").expect("callee node");
+    let callee = body
+        .head
+        .trusted_ast_node()
+        .expect("callee cursor")
+        .expect("callee node");
 
     assert_eq!(
         head_name(&callee),
@@ -1089,7 +1162,10 @@ fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
         "postfix bracket access should quote through an Access.get remote callee, like Elixir",
     );
     let callee_tail = callee.tail.list_items().expect("callee tail");
-    let access = callee_tail[0].ast_node().expect("access cursor").expect("access alias");
+    let access = callee_tail[0]
+        .trusted_ast_node()
+        .expect("access cursor")
+        .expect("access alias");
     assert_eq!(head_name(&access), "__aliases__");
     assert_eq!(
         access.tail.list_atom_names().expect("access segments"),
@@ -1099,7 +1175,7 @@ fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
     let args = body.tail.list_items().expect("access args");
     assert_eq!(args.len(), 2);
     assert_eq!(
-        head_name(&args[0].ast_node().expect("base cursor").expect("base var")),
+        head_name(&args[0].trusted_ast_node().expect("base cursor").expect("base var")),
         "m"
     );
     assert_eq!(args[1].atom_name().expect("map key"), "a");
@@ -1109,21 +1185,16 @@ fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
 fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
     let tel = ConfiguredTelemetry::new();
 
-    let prelude = parse_quoted_program(
-        "runtime:runtime.fz",
-        runtime_library::prelude_source(),
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("runtime prelude quoted parse");
+    let prelude = parse_quoted_program("runtime:runtime.fz", runtime_library::prelude_source(), &tel)
+        .expect("runtime prelude quoted parse");
     // Runtime prelude should quote operator import filters directly.
     assert_quoted_mentions(&prelude, &["import", "+", "dbg"]);
 
     for (name, source) in runtime_library::module_sources() {
-        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
+        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
             .unwrap_or_else(|error| panic!("runtime module `{name}` should quote directly: {error}"));
         let module = root.cursor().list_items().expect("runtime module top-level items")[0]
-            .ast_node()
+            .trusted_ast_node()
             .expect("runtime module cursor")
             .expect("runtime module node");
         let head = head_name(&module);
@@ -1136,7 +1207,6 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
     parse_quoted_program(
         "receive_selective_refs.fz",
         include_str!("../../fixtures2/behavior/receive_selective_refs.fz"),
-        CodeId::ZERO,
         &tel,
     )
     .expect("receive selective refs quoted parse");
@@ -1148,7 +1218,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
         "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\nfn run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("quoted parse");
     // Bootstrap-shaped surface should quote extern/control/lambda forms
@@ -1158,7 +1228,10 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 2);
 
-    let extern_node = items[0].ast_node().expect("extern cursor").expect("extern node");
+    let extern_node = items[0]
+        .trusted_ast_node()
+        .expect("extern cursor")
+        .expect("extern node");
     assert_eq!(head_name(&extern_node), "extern");
     let extern_args = extern_node.tail.list_items().expect("extern args");
     assert_eq!(extern_args[0].utf8_binary_text().expect("extern abi text"), "C");
@@ -1184,27 +1257,30 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
         "true"
     );
 
-    let run_node = items[1].ast_node().expect("run cursor").expect("run node");
+    let run_node = items[1].trusted_ast_node().expect("run cursor").expect("run node");
     let run_args = run_node.tail.list_items().expect("run args");
     let if_node = run_args[1].list_items().expect("run kw")[0]
         .tuple_items()
         .expect("run do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("if cursor")
         .expect("if node");
     assert_eq!(head_name(&if_node), "if");
 
     let if_args = if_node.tail.list_items().expect("if args");
-    let cond_call = if_args[0].ast_node().expect("if cond cursor").expect("if cond node");
+    let cond_call = if_args[0]
+        .trusted_ast_node()
+        .expect("if cond cursor")
+        .expect("if cond node");
     let cond_head = cond_call
         .head
-        .ast_node()
+        .trusted_ast_node()
         .expect("closure-call head cursor")
         .expect("closure-call head");
     assert_eq!(head_name(&cond_head), ".");
     let if_kw = if_args[1].list_items().expect("if kw list");
     let do_branch = if_kw[0].tuple_items().expect("if do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("receive cursor")
         .expect("receive node");
     assert_eq!(head_name(&do_branch), "receive");
@@ -1215,22 +1291,22 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
         .list_items()
         .expect("receive clauses");
     let clause = do_clauses[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("receive clause cursor")
         .expect("receive clause");
     assert_eq!(head_name(&clause), "->");
     let lambda_call = clause.tail.list_items().expect("receive clause args")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("lambda call cursor")
         .expect("lambda call");
     let lambda_dot = lambda_call
         .head
-        .ast_node()
+        .trusted_ast_node()
         .expect("lambda callee cursor")
         .expect("lambda callee");
     assert_eq!(head_name(&lambda_dot), ".");
     let lambda = lambda_dot.tail.list_items().expect("lambda dot args")[0]
-        .ast_node()
+        .trusted_ast_node()
         .expect("lambda root cursor")
         .expect("lambda root");
     assert_eq!(head_name(&lambda), "fn");
@@ -1242,7 +1318,6 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
     let root = parse_quoted_program(
         "extern_call.fz",
         "fn main(), do: libc::open(path, flags, mode :: integer)\n",
-        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -1250,12 +1325,12 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
 
-    let main_node = items[0].ast_node().expect("main cursor").expect("main node");
+    let main_node = items[0].trusted_ast_node().expect("main cursor").expect("main node");
     let main_args = main_node.tail.list_items().expect("main args");
     let body = main_args[1].list_items().expect("main kw")[0]
         .tuple_items()
         .expect("main do tuple")[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("call cursor")
         .expect("call node");
     assert_eq!(head_name(&body), "libc::open");
@@ -1263,7 +1338,7 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
     let call_args = body.tail.list_items().expect("call args");
     assert_eq!(call_args.len(), 3);
     let typed_arg = call_args[2]
-        .ast_node()
+        .trusted_ast_node()
         .expect("typed arg cursor")
         .expect("typed arg node");
     assert_eq!(
@@ -1276,13 +1351,8 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
 #[test]
 fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "operator_head.fz",
-        "fn left + right, do: left + right\n",
-        CodeId::ZERO,
-        &tel,
-    )
-    .expect("quoted parse");
+    let root =
+        parse_quoted_program("operator_head.fz", "fn left + right, do: left + right\n", &tel).expect("quoted parse");
     // Operator-headed function definitions should quote directly.
     assert_quoted_mentions(&root, &["fn", "+"]);
 }
@@ -1293,30 +1363,33 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let root = parse_quoted_program(
         "extern_surface.fz",
         "extern \"C\" fn fz_spawn(() -> any) :: pid\nextern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
-        CodeId::ZERO, &tel,
+        &tel,
     )
     .expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level externs");
     assert_eq!(items.len(), 2);
 
-    let first = items[0].ast_node().expect("first extern cursor").expect("first extern");
+    let first = items[0]
+        .trusted_ast_node()
+        .expect("first extern cursor")
+        .expect("first extern");
     let first_args = first.tail.list_items().expect("first extern args");
     let first_options = first_args[1].map_entries().expect("first extern options");
     let first_params = map_value(&first_options, "params").list_items().expect("first params");
     assert_eq!(
-        token_kinds(&first_params[0]),
+        token_kinds(&first_params[0], &root.sources),
         vec![Tok::LParen, Tok::RParen, Tok::Arrow, Tok::Ident("any".to_string())],
         "extern parameter signatures should be quoted as token payloads"
     );
 
     let second = items[1]
-        .ast_node()
+        .trusted_ast_node()
         .expect("second extern cursor")
         .expect("second extern");
     let second_args = second.tail.list_items().expect("second extern args");
     let second_options = second_args[1].map_entries().expect("second extern options");
     assert_eq!(
-        token_kinds(map_value(&second_options, "return")),
+        token_kinds(map_value(&second_options, "return"), &root.sources),
         vec![
             Tok::Ident("resource".to_string()),
             Tok::LParen,
@@ -1331,7 +1404,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let constraint = constraints[0].tuple_items().expect("constraint keyword");
     assert_eq!(constraint[0].atom_name().expect("constraint name"), "t");
     assert_eq!(
-        token_kinds(&constraint[1]),
+        token_kinds(&constraint[1], &root.sources),
         vec![
             Tok::Ident("integer".to_string()),
             Tok::Bar,

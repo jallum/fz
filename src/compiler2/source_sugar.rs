@@ -6,25 +6,28 @@
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use super::source::{QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use crate::source::SourceMap;
 
 pub(crate) fn rewrite_source_sugar(
     owner: &QuotedSourceRoot,
     node: &QuotedAstNode,
+    sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     if !is_list_like(&node.tail) {
         return Ok(None);
     }
-    let Ok(head) = node.head.atom_name() else {
+    if node.head.root().tag() != ValueKind::ATOM {
         return Ok(None);
-    };
+    }
+    let head = node.head.atom_name()?;
     let args = node.tail.list_items()?;
     match head.as_str() {
-        "|>" if args.len() == 2 => rewrite_pipe(owner, node, &args),
-        "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0]),
+        "|>" if args.len() == 2 => rewrite_pipe(owner, node, &args, sources),
+        "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0], sources),
         "-" if args.len() == 1 => rewrite_unary_minus(owner, node, &args[0]),
-        "fn" => rewrite_lambda(owner, node, &args),
+        "fn" => rewrite_lambda(owner, node, &args, sources),
         "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if args.len() == 2 => {
-            rewrite_operator(owner, node, head.as_str(), &args)
+            rewrite_operator(owner, node, head.as_str(), &args, sources)
         }
         _ => Ok(None),
     }
@@ -34,10 +37,11 @@ fn rewrite_pipe(
     owner: &QuotedSourceRoot,
     node: &QuotedAstNode,
     args: &[QuotedSourceCursor],
+    sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     let lhs = args[0].root();
     let rhs = &args[1];
-    let Some(rhs_node) = rhs.ast_node()? else {
+    let Some(rhs_node) = rhs.ast_node(sources)? else {
         return Ok(None);
     };
     if !is_list_like(&rhs_node.tail) {
@@ -45,7 +49,8 @@ fn rewrite_pipe(
     }
 
     let rhs_args = roots(&rhs_node.tail.list_items()?);
-    if rhs_node.head.atom_name().as_deref() == Ok("case") {
+    let is_case = rhs_node.head.root().tag() == ValueKind::ATOM && rhs_node.head.atom_name()? == "case";
+    if is_case {
         if rhs_args.len() != 1 {
             return Ok(None);
         }
@@ -101,6 +106,7 @@ fn rewrite_operator(
     node: &QuotedAstNode,
     op: &str,
     args: &[QuotedSourceCursor],
+    sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     let builder = owner.builder();
     let left = args[0].root();
@@ -112,7 +118,7 @@ fn rewrite_operator(
         "<>" => remote_call(&builder, "Kernel.fz_binary_concat", meta, &[left, right])?,
         ".." => remote_call(&builder, "Range.new", meta, &[left, right, builder.int(1)])?,
         "//" => {
-            let Some((first, last)) = range_parts(&args[0])? else {
+            let Some((first, last)) = range_parts(&args[0], sources)? else {
                 return Ok(None);
             };
             remote_call(&builder, "Range.new", meta, &[first, last, right])?
@@ -127,11 +133,18 @@ fn rewrite_operator(
     Ok(Some(rewritten))
 }
 
-fn range_parts(cursor: &QuotedSourceCursor) -> Result<Option<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn range_parts(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<(AnyValueRef, AnyValueRef)>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Ok(None);
     };
-    if node.head.atom_name().as_deref() != Ok("..") && node.head.atom_name().as_deref() != Ok("Range.new") {
+    if node.head.root().tag() != ValueKind::ATOM {
+        return Ok(None);
+    }
+    let head = node.head.atom_name()?;
+    if head != ".." && head != "Range.new" {
         return Ok(None);
     }
     let args = node.tail.list_items()?;
@@ -145,8 +158,9 @@ fn rewrite_capture(
     owner: &QuotedSourceRoot,
     node: &QuotedAstNode,
     body: &QuotedSourceCursor,
+    sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
-    if is_function_ref_payload(body)? {
+    if is_function_ref_payload(body, sources)? {
         return Ok(None);
     }
 
@@ -161,8 +175,8 @@ fn rewrite_capture(
         return Ok(Some(capture_lambda(&builder, arity as usize, body, meta)?));
     }
 
-    let arity = max_capture_arg(body)?.unwrap_or(0);
-    let body = replace_capture_args(&builder, body, meta)?.0;
+    let arity = max_capture_arg(body, sources)?.unwrap_or(0);
+    let body = replace_capture_args(&builder, body, meta, sources)?.0;
     Ok(Some(capture_lambda(&builder, arity, body, meta)?))
 }
 
@@ -170,17 +184,18 @@ fn rewrite_lambda(
     owner: &QuotedSourceRoot,
     node: &QuotedAstNode,
     clauses: &[QuotedSourceCursor],
+    sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
-    if !lambda_source_sugar_shape(clauses)? {
+    if !lambda_source_sugar_shape(clauses, sources)? {
         return Ok(None);
     }
-    if lambda_is_direct_clause(clauses)? {
+    if lambda_is_direct_clause(clauses, sources)? {
         return Ok(None);
     }
 
     let mut decoded = Vec::with_capacity(clauses.len());
     for clause in clauses {
-        decoded.push(lambda_clause(clause)?);
+        decoded.push(lambda_clause(clause, sources)?);
     }
     let Some(arity) = decoded.first().map(|clause| clause.params.len()) else {
         return Ok(None);
@@ -224,12 +239,12 @@ fn rewrite_lambda(
     Ok(Some(named_call(&builder, "fn", meta, &[clause])?))
 }
 
-fn lambda_source_sugar_shape(clauses: &[QuotedSourceCursor]) -> Result<bool, QuotedSourceError> {
+fn lambda_source_sugar_shape(clauses: &[QuotedSourceCursor], sources: &SourceMap) -> Result<bool, QuotedSourceError> {
     for clause in clauses {
-        let Some(node) = clause.ast_node()? else {
+        let Some(node) = clause.ast_node(sources)? else {
             return Ok(false);
         };
-        if node.head.atom_name().as_deref() != Ok("->") {
+        if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "->" {
             return Ok(false);
         }
     }
@@ -243,15 +258,15 @@ struct LambdaClauseSource {
     meta: AnyValueRef,
 }
 
-fn lambda_is_direct_clause(clauses: &[QuotedSourceCursor]) -> Result<bool, QuotedSourceError> {
+fn lambda_is_direct_clause(clauses: &[QuotedSourceCursor], sources: &SourceMap) -> Result<bool, QuotedSourceError> {
     let [clause] = clauses else {
         return Ok(false);
     };
-    Ok(lambda_clause(clause)?.guard.is_none())
+    Ok(lambda_clause(clause, sources)?.guard.is_none())
 }
 
-fn lambda_clause(cursor: &QuotedSourceCursor) -> Result<LambdaClauseSource, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn lambda_clause(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<LambdaClauseSource, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Err(QuotedSourceError::new("lambda clause expected quoted AST"));
     };
     if node.head.atom_name()? != "->" {
@@ -263,7 +278,7 @@ fn lambda_clause(cursor: &QuotedSourceCursor) -> Result<LambdaClauseSource, Quot
     };
     let params = params.list_items()?;
     if params.len() == 1
-        && let Some(when) = params[0].ast_node()?
+        && let Some(when) = params[0].ast_node(sources)?
         && when.head.atom_name()? == "when"
     {
         let args = when.tail.list_items()?;
@@ -285,20 +300,23 @@ fn lambda_clause(cursor: &QuotedSourceCursor) -> Result<LambdaClauseSource, Quot
     })
 }
 
-fn is_function_ref_payload(cursor: &QuotedSourceCursor) -> Result<bool, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn is_function_ref_payload(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Ok(false);
     };
-    Ok(node.head.atom_name().as_deref() == Ok("/") && is_list_like(&node.tail))
+    if node.head.root().tag() != ValueKind::ATOM {
+        return Ok(false);
+    }
+    Ok(node.head.atom_name()? == "/" && is_list_like(&node.tail))
 }
 
-fn max_capture_arg(cursor: &QuotedSourceCursor) -> Result<Option<usize>, QuotedSourceError> {
-    if let Some(index) = capture_arg_index(cursor)? {
+fn max_capture_arg(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<usize>, QuotedSourceError> {
+    if let Some(index) = capture_arg_index(cursor, sources)? {
         return Ok(Some(index));
     }
     let mut max = None;
     for child in child_cursors(cursor)? {
-        if let Some(index) = max_capture_arg(&child)? {
+        if let Some(index) = max_capture_arg(&child, sources)? {
             max = Some(max.map_or(index, |current: usize| current.max(index)));
         }
     }
@@ -309,8 +327,9 @@ fn replace_capture_args(
     builder: &QuotedSourceBuilder,
     cursor: &QuotedSourceCursor,
     meta: AnyValueRef,
+    sources: &SourceMap,
 ) -> Result<(AnyValueRef, bool), QuotedSourceError> {
-    if let Some(index) = capture_arg_index(cursor)? {
+    if let Some(index) = capture_arg_index(cursor, sources)? {
         return Ok((variable(builder, capture_arg_name(index), meta)?, true));
     }
 
@@ -320,7 +339,7 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                let (root, item_changed) = replace_capture_args(builder, &item, meta)?;
+                let (root, item_changed) = replace_capture_args(builder, &item, meta, sources)?;
                 changed |= item_changed;
                 out.push(root);
             }
@@ -335,7 +354,7 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                let (root, item_changed) = replace_capture_args(builder, &item, meta)?;
+                let (root, item_changed) = replace_capture_args(builder, &item, meta, sources)?;
                 changed |= item_changed;
                 out.push(root);
             }
@@ -350,8 +369,8 @@ fn replace_capture_args(
             let mut changed = false;
             let mut out = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                let (key, key_changed) = replace_capture_args(builder, &key, meta)?;
-                let (value, value_changed) = replace_capture_args(builder, &value, meta)?;
+                let (key, key_changed) = replace_capture_args(builder, &key, meta, sources)?;
+                let (value, value_changed) = replace_capture_args(builder, &value, meta, sources)?;
                 changed |= key_changed || value_changed;
                 out.push((key, value));
             }
@@ -365,11 +384,11 @@ fn replace_capture_args(
     }
 }
 
-fn capture_arg_index(cursor: &QuotedSourceCursor) -> Result<Option<usize>, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn capture_arg_index(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<usize>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Ok(None);
     };
-    if node.head.atom_name().as_deref() != Ok("&") || !is_list_like(&node.tail) {
+    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "&" || !is_list_like(&node.tail) {
         return Ok(None);
     }
     let args = node.tail.list_items()?;
@@ -467,4 +486,39 @@ fn capture_arg_name(index: usize) -> String {
 
 fn lambda_arg_name(index: usize) -> String {
     format!("__fz_lambda_arg_{index}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use fz_runtime::any_value::{AnyValueRef, ValueKind};
+
+    use super::{capture_arg_index, lambda_source_sugar_shape, range_parts};
+    use crate::compiler2::{QuotedSourceHeap, QuotedSourceMetadata};
+    use crate::source::SourceMap;
+
+    #[test]
+    fn sugar_shape_probes_propagate_invalid_atom_payloads() {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let builder = heap.builder();
+        let unknown_atom_id = u64::MAX;
+        let unknown_atom = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &unknown_atom_id)
+            .expect("stack scalar is a valid temporary atom carrier");
+        let node = builder
+            .ast_node(unknown_atom, &QuotedSourceMetadata::default(), builder.empty_list())
+            .expect("builder copies the scalar into its owned heap");
+        let root = builder.root(node).expect("quoted source root");
+        let cursor = root.cursor();
+        let sources = SourceMap::new();
+
+        for error in [
+            range_parts(&cursor, &sources).expect_err("range probe must propagate invalid atom"),
+            lambda_source_sugar_shape(std::slice::from_ref(&cursor), &sources)
+                .expect_err("lambda probe must propagate invalid atom"),
+            capture_arg_index(&cursor, &sources).expect_err("capture probe must propagate invalid atom"),
+        ] {
+            assert!(error.to_string().contains("unknown atom id"), "{error}");
+        }
+    }
 }

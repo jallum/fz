@@ -202,6 +202,10 @@ The agenda, dependency edges, fact claims, rebase flag, and finality state all
 use the same job identity. A job evaluates one answer over one read set, and
 every co-output shares that answer's cleanliness and finality. A changed read
 dirties all of the job's claims; a ground shift also marks the job rebased.
+Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
+text provenance stays in `SourceVersion` spans rather than becoming a second
+publisher identity. See
+[`quoted-source`](quoted-source.md#source-identity-and-provenance).
 
 Each fact use wakes a subscribed job once. Distinct causes retain distinct
 `Wake` records, including coalesced attempts to enqueue an already pending
@@ -423,7 +427,7 @@ Activation-bearing identities have one owner-supplied total order.
 `Types::cmp_activation_ty`. That operation reuses the type store's structural
 walk in activation mode: callable arguments, return, then literal; list
 emptiness and addressed variable paths remain explicit, and named literals use
-immutable owner-registered callable labels. It therefore distinguishes lattice
+immutable owner-registered typed callable identities. It therefore distinguishes lattice
 forms that display intentionally merges, including possibly-empty and
 non-empty lists, without allocating or parsing presentation text.
 `Job`, `FactKey`, `FactUse`, callsites, executables, completion reports,
@@ -440,7 +444,7 @@ structural comparison.
 
 The type store memoizes `ActivationArrow` verdicts by a normalized `(low Ty,
 high Ty)` pair; asking in the reverse direction reuses the inverse. Descriptors
-and structural addresses are immutable after interning, and callable labels
+and structural addresses are immutable after interning, and callable identities
 must be registered before comparison and cannot be renamed, so the entry lives
 for the owning `Types`/`World` lifetime with no invalidation path. Hit/miss
 counters exist only in tests. ClauseOrder's private storage-canonical relation

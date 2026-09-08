@@ -69,7 +69,7 @@ pub use body::{
 };
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
-pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
+pub use code::{CodeMap, CodeState, QuotedCodeSource, SourceOwner};
 pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
@@ -113,6 +113,7 @@ pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
 };
+pub(crate) use source::{META_SPAN_KEY, quoted_span_entries};
 pub(crate) use types::TyCanon;
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, Ty,

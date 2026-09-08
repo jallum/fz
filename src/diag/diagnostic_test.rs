@@ -1,8 +1,10 @@
 use super::*;
-use crate::source::{Id as CodeId, Span};
+use crate::source::{SourceMap, Span};
 
 fn s(start: u32, end: u32) -> Span {
-    Span::new(CodeId(0), start, end)
+    let mut sources = SourceMap::new();
+    let version = sources.add_code(Some("diagnostic-test.fz"), "0123456789abcdef");
+    Span::new(version, start, end)
 }
 
 #[test]

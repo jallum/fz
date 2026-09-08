@@ -159,7 +159,9 @@ mod tests {
         world.complete_job(
             first_job.clone(),
             JobEffects {
-                waits: vec![FactUse::current(FactKey::CodeScoped(super::super::CodeId::ZERO))],
+                waits: vec![FactUse::current(FactKey::CodeScoped(
+                    super::super::SourceOwner::for_test(0),
+                ))],
                 ..Default::default()
             },
         );

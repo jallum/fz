@@ -205,7 +205,7 @@ fn product_dependency_movement_attributes_only_its_exact_consumer() {
     ] {
         let mut events = ReplayEvents::default();
         events.applied(serde_json::json!({
-            "kind": "ScopeCode", "code_id": 1, "blocked": [wanted]
+            "kind": "ScopeCode", "source_owner": 1, "blocked": [wanted]
         }));
         let mut change = moved.clone();
         change["old_revision"] = serde_json::json!(3);
@@ -219,12 +219,12 @@ fn product_dependency_movement_attributes_only_its_exact_consumer() {
             serde_json::json!({
                 "step": {
                     "changed": [change], "movements": [moved],
-                    "wakes": [{"cause": wake, "job": {"kind": "ScopeCode", "code_id": 1},
+                    "wakes": [{"cause": wake, "job": {"kind": "ScopeCode", "source_owner": 1},
                         "disposition": "enqueued", "shift": false}], "blocked": []
                 }
             }),
         );
-        events.applied(serde_json::json!({"kind": "ScopeCode", "code_id": 1}));
+        events.applied(serde_json::json!({"kind": "ScopeCode", "source_owner": 1}));
         let report = CausalReport::derive(&events.0);
         let work = report.formula_totals();
         assert_eq!(

@@ -1300,8 +1300,12 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 };
                 env.insert(*value, BackendBoundValue::Runtime(acc));
             }
-            ProgramStep::Map { value, entries } => {
-                let mut map_bits = if entries.is_empty() {
+            ProgramStep::Map {
+                value,
+                entries,
+                quoted_span,
+            } => {
+                let mut map_bits = if entries.is_empty() || quoted_span.is_some() {
                     fz_map_empty(runtime.cur_proc())
                 } else {
                     0
@@ -1313,6 +1317,25 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         env_get(transport, runtime.cur_proc(), env, *key)?,
                         env_get(transport, runtime.cur_proc(), env, *item)?,
                         "backend map",
+                    )?;
+                }
+                if let Some(span) = quoted_span {
+                    let mut span_bits = fz_map_empty(runtime.cur_proc());
+                    for (key, value) in crate::compiler2::quoted_span_entries(*span) {
+                        span_bits = interp_map_put(
+                            runtime.cur_proc(),
+                            span_bits,
+                            AnyValue::Atom(runtime.node.intern_atom(key)),
+                            AnyValue::Int(value),
+                            "quoted span metadata",
+                        )?;
+                    }
+                    map_bits = interp_map_put(
+                        runtime.cur_proc(),
+                        map_bits,
+                        AnyValue::Atom(runtime.node.intern_atom(crate::compiler2::META_SPAN_KEY)),
+                        interp_value_from_ref_word(span_bits, "quoted span metadata")?,
+                        "quoted AST metadata",
                     )?;
                 }
                 env.insert(

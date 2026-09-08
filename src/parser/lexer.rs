@@ -3,7 +3,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
 
-use crate::source::{Id as CodeId, Span};
+use crate::source::{SourceVersion, Span};
 use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,7 +174,7 @@ pub struct Token {
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
-    code_id: CodeId,
+    source_version: SourceVersion,
     source_name: Option<Rc<str>>,
     /// fz-5xp.5 — one interpolated string literal lexes to SEVERAL tokens.
     /// `next_token` drains this before reading more source.
@@ -196,18 +196,15 @@ impl fmt::Display for LexError {
 }
 
 impl<'a> Lexer<'a> {
-    /// Test-only convenience: unit tests that only care about token shape,
-    /// not source identity, don't need to name a real `CodeId`.
-    #[cfg(test)]
-    pub fn with_source_name(src: &'a str, source_name: impl AsRef<str>) -> Self {
-        Self::with_code_id_and_source_name(src, CodeId(0), source_name)
-    }
-
-    pub fn with_code_id_and_source_name(src: &'a str, code_id: CodeId, source_name: impl AsRef<str>) -> Self {
+    pub fn with_source_version_and_name(
+        src: &'a str,
+        source_version: SourceVersion,
+        source_name: impl AsRef<str>,
+    ) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
-            code_id,
+            source_version,
             source_name: Some(Rc::from(source_name.as_ref())),
             pending: VecDeque::new(),
         }
@@ -224,7 +221,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn span_from(&self, start: usize) -> Span {
-        Span::new(self.code_id, start as u32, self.pos as u32)
+        Span::new(self.source_version, start as u32, self.pos as u32)
     }
 
     fn eat_while(&mut self, mut pred: impl FnMut(u8) -> bool) {
@@ -573,9 +570,9 @@ impl<'a> Lexer<'a> {
                 StringPart::Interpolation(range) => {
                     let source = from_utf8(&self.src[range.clone()])
                         .map_err(|e| self.err(format!("invalid UTF-8 in interpolation: {}", e)))?;
-                    let inner = Lexer::with_code_id_and_source_name(
+                    let inner = Lexer::with_source_version_and_name(
                         source,
-                        self.code_id,
+                        self.source_version,
                         self.source_name.as_deref().unwrap_or(""),
                     )
                     .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
@@ -689,7 +686,7 @@ impl<'a> Lexer<'a> {
         let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
         LexError {
             msg,
-            span: Span::new(self.code_id, start, end),
+            span: Span::new(self.source_version, start, end),
         }
     }
 
@@ -1069,7 +1066,7 @@ impl<'a> Lexer<'a> {
     /// Pratt loop stop at a bare `Newline` by construction, with no
     /// lookahead heuristic required downstream.
     pub fn tokenize<T: RawSpanTelemetry + ?Sized>(mut self, tel: &T) -> Result<Vec<Token>, LexError> {
-        let _span = start_lexer_pass(tel, &self.code_id, &self.source_name);
+        let _span = start_lexer_pass(tel, &self.source_version, &self.source_name);
         let mut out: Vec<Token> = Vec::new();
         loop {
             let t = self.next_token()?;
@@ -1081,7 +1078,7 @@ impl<'a> Lexer<'a> {
             }
             out.push(t);
             if done {
-                emit_tokens_built(tel, &self.code_id, &self.source_name, &out);
+                emit_tokens_built(tel, &self.source_version, &self.source_name, &out);
                 return Ok(out);
             }
         }
@@ -1090,16 +1087,16 @@ impl<'a> Lexer<'a> {
 
 fn start_lexer_pass<'a, T: RawSpanTelemetry + ?Sized>(
     tel: &'a T,
-    code: &CodeId,
+    code: &SourceVersion,
     source_name: &Option<Rc<str>>,
-) -> <T as RawSpanTelemetry>::Span2_0<'a, CodeId, Option<Rc<str>>> {
+) -> <T as RawSpanTelemetry>::Span2_0<'a, SourceVersion, Option<Rc<str>>> {
     use crate::telemetry::TelemetryExt;
     tel.raw_span2_0(LEX_PASS_NAME, code, source_name)
 }
 
 fn emit_tokens_built<T: Telemetry + ?Sized>(
     tel: &T,
-    code: &CodeId,
+    code: &SourceVersion,
     source_name: &Option<Rc<str>>,
     tokens: &Vec<Token>,
 ) {

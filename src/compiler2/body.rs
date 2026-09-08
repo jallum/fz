@@ -424,6 +424,7 @@ pub enum LoweredStep {
     Map {
         value: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
+        quoted_span: Option<Span>,
     },
     MapUpdate {
         value: ValueId,

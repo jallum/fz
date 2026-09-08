@@ -884,11 +884,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     tail: *tail,
                 },
             ),
-            LoweredStep::Map { value, entries } => self.construction_step_or_omitted(
+            LoweredStep::Map {
+                value,
+                entries,
+                quoted_span,
+            } => self.construction_step_or_omitted(
                 *value,
                 BackendStep::Map {
                     value: *value,
                     entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+                    quoted_span: *quoted_span,
                 },
             ),
             LoweredStep::MapUpdate { value, base, entries } => self.construction_step_or_omitted(

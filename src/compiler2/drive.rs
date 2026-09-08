@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
-use super::code::CodeId;
+use super::code::SourceOwner;
 use super::facts::{ClaimShape, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::ProductKey;
@@ -176,8 +176,8 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Job {
-    IndexCode(CodeId),
-    ScopeCode(CodeId),
+    IndexCode(SourceOwner),
+    ScopeCode(SourceOwner),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
     PublishFunctionSource(FunctionId),
@@ -260,8 +260,8 @@ fn job_order_rank(job: &Job) -> u8 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
-    CodeIndexed(CodeId),
-    CodeScoped(CodeId),
+    CodeIndexed(SourceOwner),
+    CodeScoped(SourceOwner),
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),

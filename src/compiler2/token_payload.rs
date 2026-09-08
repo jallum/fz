@@ -1,7 +1,7 @@
 use fz_runtime::any_value::AnyValueRef;
 
 use crate::parser::lexer::{Tok, Token};
-use crate::source::{Id as SourceId, Span};
+use crate::source::SourceMap;
 
 use super::source::{QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError};
 
@@ -13,11 +13,11 @@ pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> 
     builder.list(&encoded)
 }
 
-pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor) -> Result<Vec<Token>, QuotedSourceError> {
+pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<Token>, QuotedSourceError> {
     cursor
         .list_items()?
         .into_iter()
-        .map(|item| decode_token(&item))
+        .map(|item| decode_token(&item, sources))
         .collect()
 }
 
@@ -29,7 +29,7 @@ fn encode_token(builder: &QuotedSourceBuilder, token: &Token) -> Result<AnyValue
         builder.int(token.span.start as i64),
         builder.int(token.span.end as i64),
         builder.bool(token.space_before),
-        builder.int(token.span.code_id.0 as i64),
+        builder.int(token.span.source_version.as_u32() as i64),
     ])
 }
 
@@ -129,7 +129,7 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
     })
 }
 
-fn decode_token(cursor: &QuotedSourceCursor) -> Result<Token, QuotedSourceError> {
+fn decode_token(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Token, QuotedSourceError> {
     let fields = cursor.tuple_items()?;
     if fields.len() != 6 {
         return Err(QuotedSourceError::new(format!(
@@ -142,10 +142,13 @@ fn decode_token(cursor: &QuotedSourceCursor) -> Result<Token, QuotedSourceError>
     let start = decode_u32(&fields[2], "token start")?;
     let end = decode_u32(&fields[3], "token end")?;
     let space_before = decode_bool(&fields[4], "token space_before")?;
-    let code_id = decode_u32(&fields[5], "token code_id")?;
+    let source_version = decode_u32(&fields[5], "token source version")?;
+    let span = sources
+        .checked_span(source_version, start, end)
+        .ok_or_else(|| QuotedSourceError::new("encoded token span does not resolve in the source map"))?;
     Ok(Token {
         tok,
-        span: Span::new(SourceId(code_id), start, end),
+        span,
         space_before,
     })
 }

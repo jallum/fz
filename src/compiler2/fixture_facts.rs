@@ -39,10 +39,10 @@ pub(crate) fn canonical_call_edge_facts(
     root: RootId,
     inventory: &[ActivationKey],
 ) -> Vec<CanonicalCallEdgeFact> {
-    let root_code = world.function_definition(world.root_function(root)).0.code;
+    let root_code = world.function_definition(world.root_function(root)).0.owner;
     let mut labels = HashMap::new();
     let mut activations = inventory.to_vec();
-    activations.retain(|activation| world.function_definition(activation.function).0.code == root_code);
+    activations.retain(|activation| world.function_definition(activation.function).0.owner == root_code);
     activations.sort_by(|left, right| activation_cmp(world, left, right, &mut labels));
     activations.dedup();
 

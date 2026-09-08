@@ -120,10 +120,11 @@ descriptors, recursively, which terminates because a descriptor can only name
 `Ty`s interned before it. It is injective — ties happen only between identical
 clauses — because the interner is keyed by `Descr`, so distinct ids have
 distinct structure; a comparator that could tie two DIFFERENT clauses would hand
-the survivor back to arrival order. Closure literals order by the owner's stable
-`Module.name/arity` label (`Types::name_callable`, filled in by `World` as it
-mints each function id) and structural address vars by their `AddrStep` path,
-never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
+the survivor back to arrival order. Closure literals order by an owner-registered
+shared denotation (`Types::define_callable_origin`): typed module/name/arity for a
+named function, or recursive owner plus structural occurrence for a generated
+one. The displayed label is only a projection. Structural address vars order by
+their `AddrStep` path, never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
 deliberate: a tie broken by two FREE type vars falls back to mint order, and
 intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
 order) is a second dimension this pass does not touch.

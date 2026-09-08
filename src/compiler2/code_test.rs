@@ -1,17 +1,24 @@
-use super::{CodeId, CodeMap};
+use super::CodeMap;
 
 #[test]
 fn compiler2_code_text_is_total_for_defined_code() {
     let mut code = CodeMap::new();
-    let code_id = code.define(Some("main.fz".to_string()), "fn main(), do: 42\n".to_string());
+    let owner = code.define(Some("main.fz".to_string()), "fn main(), do: 42\n".to_string());
+    let version = code.version(owner).expect("submitted source has an immutable version");
 
-    assert_eq!(code.text(code_id), "fn main(), do: 42\n");
+    assert_eq!(code.source_map().borrow().name(version), Some("main.fz"));
+    assert_eq!(
+        code.source_map().borrow().code(version).bytes.as_ref(),
+        "fn main(), do: 42\n"
+    );
 }
 
 #[test]
-#[should_panic(expected = "code ids should have source text")]
-fn compiler2_code_text_panics_for_unknown_code_id() {
-    let code = CodeMap::new();
+fn compiler2_reserved_source_owner_does_not_materialize_a_version() {
+    let mut code = CodeMap::new();
+    let before = code.source_map().borrow().code_count();
+    let owner = code.reserve();
 
-    let _ = code.text(CodeId::ZERO);
+    assert_eq!(code.version(owner), None);
+    assert_eq!(code.source_map().borrow().code_count(), before);
 }

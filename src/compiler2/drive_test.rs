@@ -82,6 +82,48 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
         "the replaced owner's membership must not request its obsolete generated child"
     );
 }
+
+#[test]
+fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
+    fn generated_child(compiler: &Compiler2<ConfiguredTelemetry>, owner: FunctionId) -> FunctionId {
+        compiler
+            .world()
+            .job_outputs(&Job::LowerFunction(owner))
+            .into_iter()
+            .find_map(|fact| match fact {
+                FactKey::FunctionDefined(function) if function != owner => Some(function),
+                _ => None,
+            })
+            .expect("lowering publishes the generated closure definition")
+    }
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("closure_replacement.fz".into()),
+        text: "fn main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(41));
+    let owner = compiler.root_function(root);
+    let before = generated_child(&compiler, owner);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("closure_replacement.fz".into()),
+        text: "fn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let after = generated_child(&compiler, owner);
+
+    assert_eq!(
+        after, before,
+        "the same typed owner-relative occurrence remains one generated callable while its diagnostic version changes"
+    );
+}
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
@@ -389,13 +431,13 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
     // Unique `tkf_` names so the assertions ignore the runtime prelude's own
     // @types, which are noted in the same drive when the user scope pulls it.
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("types.fz".to_string()),
         text: include_str!("../../fixtures2/00002_types_top_level.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable",
     );
     assert_resolved(compiler.drive(), "second drive should scope and note the @types");
@@ -439,13 +481,13 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("refs.fz".to_string()),
         text: include_str!("../../fixtures2/00003_type_refs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable",
     );
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
@@ -616,13 +658,13 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("typedefs.fz".to_string()),
         text: include_str!("../../fixtures2/00004_typedefs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
@@ -717,13 +759,13 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("brand.fz".to_string()),
         text: include_str!("../../fixtures2/00005_brand.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should scope and note the brand");
@@ -770,7 +812,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
             "defprotocol Proof do\n",
@@ -793,7 +835,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "source should index protocol and owner modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -827,7 +869,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
@@ -837,7 +879,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
@@ -887,7 +929,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let outputs = OutputCapture::new();
     outputs.install(&tel);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("protocol_domain.fz".to_string()),
         include_str!("../../fixtures2/00006_protocol_domain.fz").to_string(),
     );
@@ -896,7 +938,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "first drive should index the protocol and impl owner modules",
     );
     let indexed = outputs
-        .take(Job::IndexCode(code_id))
+        .take(Job::IndexCode(source_owner))
         .expect("IndexCode job effects for the protocol-domain case");
     let module_ids = module_indexed_ids(&indexed);
     assert_eq!(
@@ -914,7 +956,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         .expect("indexed module id for the impl owner");
 
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "scoping the protocol source should be demandable",
     );
     assert_resolved(
@@ -1149,7 +1191,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         },
     );
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_defined_independence.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1168,7 +1210,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1254,7 +1296,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_duplicate_defstruct.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1270,7 +1312,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         "first drive should index the module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1317,8 +1359,8 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     // and `quoted_surface::build_form` recognizes the `:defstruct` head the
     // same way it would from source. When that macro's body writes the
     // fields as a literal (no `__fz_span__` key in its `meta` map), every
-    // expansion gets `Span::DUMMY` (`quoted_surface::span_from_meta`'s
-    // no-span fallback) -- so invoking the SAME macro twice in one module
+    // expansion gets `Span::DUMMY` (the validated AST read's no-span result)
+    // -- so invoking the SAME macro twice in one module
     // produces two `StructDef`s that are not just same-span but
     // byte-IDENTICAL whenever the macro's argument repeats. Before this
     // guard, `publish_struct_def`'s content-comparison gate (fz-rh2.17.5.6.8.1)
@@ -1330,7 +1372,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
         concat!(
             "defmacro make_struct(fields) do\n",
@@ -1350,7 +1392,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         "first drive should index the module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1450,7 +1492,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
     // (x, y) rather than the literal, reversed write order (y, x).
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_out_of_order.fz".to_string()),
         concat!(
             "defmodule Q do\n",
@@ -1469,7 +1511,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1537,7 +1579,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_unknown_field.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1556,7 +1598,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1604,7 +1646,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_out_of_order_unknown_field.fz".to_string()),
         concat!(
             "defmodule Q do\n",
@@ -1623,7 +1665,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1869,7 +1911,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
             "extern \"C\" fn takes(p :: %NotAStruct{x: integer}) :: integer\n",
@@ -1885,7 +1927,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         "first drive should index the code",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1937,7 +1979,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     let bodies = LoweredBodyCapture::new();
     bodies.install(&tel);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_pattern_out_of_order.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -1956,7 +1998,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2035,7 +2077,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -2053,7 +2095,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2099,7 +2141,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_pattern_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -2117,7 +2159,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2165,7 +2207,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
@@ -2183,7 +2225,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2231,7 +2273,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "end\n",
     )
     .to_string();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("zero_field_struct_literal_non_struct.fz".to_string()),
         source.clone(),
     );
@@ -2240,7 +2282,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2298,7 +2340,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_pattern_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
@@ -2316,7 +2358,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2364,7 +2406,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "end\n",
     )
     .to_string();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("zero_field_struct_pattern_non_struct.fz".to_string()),
         source.clone(),
     );
@@ -2373,7 +2415,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2690,7 +2732,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string();
 
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: source,
     });
@@ -2703,11 +2745,11 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
 
     assert_resolved(compiler.drive(), "first drive should index quicksort plus foo");
 
-    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    let indexed_stop = outputs.stop(Job::IndexCode(source_owner));
     assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for quicksort plus foo"
     );
     assert_resolved(compiler.drive(), "second drive should define quicksort plus foo");
@@ -2798,7 +2840,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     );
     assert_eq!(
         outputs
-            .stops_matching(|job| matches!(job, Job::IndexCode(id) if *id == code_id))
+            .stops_matching(|job| matches!(job, Job::IndexCode(id) if *id == source_owner))
             .len(),
         1,
         "indexing should close one IndexCode job span for the user submission"
@@ -2824,7 +2866,9 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should not emit redundant fact.published telemetry"
     );
 
-    let outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
+    let outputs = outputs
+        .take(Job::IndexCode(source_owner))
+        .expect("IndexCode job effects");
     assert_eq!(
         outputs
             .iter()
@@ -2850,7 +2894,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "top-level quicksort indexing should not discover nested modules"
     );
     assert!(
-        outputs.contains(&presence(FactKey::CodeIndexed(code_id), true)),
+        outputs.contains(&presence(FactKey::CodeIndexed(source_owner), true)),
         "IndexCode outputs should include the final code-indexed fact"
     );
 }
@@ -2872,7 +2916,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let _code_id = compiler.submit_code(CodeSubmission {
+    let _source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
@@ -3124,7 +3168,7 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
         "a tiny root should publish each required source surface once",
     );
 
-    let prelude_code = crate::compiler2::CodeId::ZERO;
+    let prelude_code = compiler.world().runtime_prelude();
     for code in [prelude_code, user_code] {
         let published = outputs
             .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == code))
@@ -3169,12 +3213,12 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("macro_inc.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n\ndefmacro forward_define(source) do\n  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))\nend\n"
             .to_string(),
     });
-    assert!(compiler.demand(Job::ScopeCode(code_id)));
+    assert!(compiler.demand(Job::ScopeCode(source_owner)));
     assert_resolved(
         compiler.drive(),
         "scoping should publish the macro source without lowering it",
@@ -3198,7 +3242,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
     let node = expanded
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("expanded cursor")
         .expect("expanded AST node");
     assert_eq!(node.head.atom_name().expect("expanded head"), "+");
@@ -3218,7 +3262,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
     let var_node = quoted
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("quoted variable cursor")
         .expect("quoted variable AST node");
     assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
@@ -3248,12 +3292,12 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("macro should return a quoted compiler-service call");
     let forwarded_node = forwarded
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded cursor")
         .expect("forwarded AST node");
     let callee = forwarded_node
         .head
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded callee")
         .expect("forwarded callee node");
     assert_eq!(
@@ -3274,18 +3318,23 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         "unquote(source) should splice the grouped source fragment itself, not re-render it",
     );
 
-    let long_doc_source = parse_quoted_program(
-        "long_doc_forwarded.fz",
-        r#"
+    let long_doc_text = r#"
 @doc "Removes the first matching left-side item for each item in the right list."
 @spec subtract([a], [a]) :: [a]
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-        "#,
-        crate::compiler2::CodeId::ZERO,
-        compiler.telemetry(),
-    )
-    .expect("long-doc quoted parse");
+        "#;
+    let long_doc_owner = compiler.submit_code(CodeSubmission {
+        name: Some("long_doc_forwarded.fz".into()),
+        text: long_doc_text.into(),
+    });
+    let long_doc_version = compiler
+        .world()
+        .source_version(long_doc_owner)
+        .expect("long-doc version");
+    let source_map = compiler.world().source_map();
+    let long_doc_source = parse_quoted_program(&source_map.borrow(), long_doc_version, compiler.telemetry())
+        .expect("long-doc quoted parse");
     let long_doc_items = long_doc_source.cursor().list_items().expect("long-doc items");
     let long_doc_group = long_doc_source
         .interned_list_subroot(&long_doc_items.iter().map(|item| item.root()).collect::<Vec<_>>())
@@ -3295,7 +3344,7 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         .expect("macro should forward long-doc grouped source");
     let forwarded_long_doc_node = forwarded_long_doc
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded long-doc cursor")
         .expect("forwarded long-doc AST node");
     let forwarded_long_doc_args = forwarded_long_doc_node
@@ -3308,23 +3357,24 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         "unquote(source) should preserve procbin-backed grouped source fragments by identity too",
     );
     let forwarded_group = long_doc_group.subroot(forwarded_long_doc_args[0].root());
-    crate::compiler2::quoted_function::derive_function_surface(&forwarded_group)
+    crate::compiler2::quoted_function::derive_function_surface(&forwarded_group, &source_map.borrow())
         .expect("forwarded long-doc grouped source should still decode");
 
-    let module_source = parse_quoted_program(
-        "forwarded_module.fz",
-        r#"
+    let module_text = r#"
 defmodule M do
   @doc "Removes the first matching left-side item for each item in the right list."
   @spec subtract([a], [a]) :: [a]
   fn subtract(left, []), do: left
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
-        "#,
-        crate::compiler2::CodeId::ZERO,
-        compiler.telemetry(),
-    )
-    .expect("module quoted parse");
+        "#;
+    let module_owner = compiler.submit_code(CodeSubmission {
+        name: Some("forwarded_module.fz".into()),
+        text: module_text.into(),
+    });
+    let module_version = compiler.world().source_version(module_owner).expect("module version");
+    let module_source =
+        parse_quoted_program(&source_map.borrow(), module_version, compiler.telemetry()).expect("module quoted parse");
     let module_items = module_source.cursor().list_items().expect("module items");
     assert_eq!(module_items.len(), 1, "test module should have one top-level form");
     let forwarded_module = compiler
@@ -3332,7 +3382,7 @@ end
         .expect("macro should forward a whole module source node");
     let forwarded_module_node = forwarded_module
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded module cursor")
         .expect("forwarded module AST node");
     let forwarded_module_args = forwarded_module_node.tail.list_items().expect("forwarded module args");
@@ -3344,8 +3394,9 @@ end
     let forwarded_module_root = module_source
         .interned_list_subroot(&[forwarded_module_args[0].root()])
         .expect("wrap forwarded module form as a top-level source list");
-    let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(&forwarded_module_root)
-        .expect("forwarded whole-module source should still read as scope surface");
+    let forwarded_module_surface =
+        crate::compiler2::quoted_surface::read_scope_surface(&forwarded_module_root, &source_map.borrow())
+            .expect("forwarded whole-module source should still read as scope surface");
     let nested_surface = match forwarded_module_surface
         .forms
         .first()
@@ -3356,9 +3407,11 @@ end
                 .source
                 .interned_list_subroot(&[macro_call.source.root()])
                 .expect("wrap forwarded compiler fragment as a grouped source list");
-            let compiler_fragment =
-                crate::compiler2::quoted_surface::read_compiler_fragment_surface(&compiler_fragment_root)
-                    .expect("forwarded macro-call source should still decode as compiler fragment");
+            let compiler_fragment = crate::compiler2::quoted_surface::read_compiler_fragment_surface(
+                &compiler_fragment_root,
+                &source_map.borrow(),
+            )
+            .expect("forwarded macro-call source should still decode as compiler fragment");
             let module_form = match compiler_fragment
                 .forms
                 .first()
@@ -3367,7 +3420,7 @@ end
                 crate::compiler2::quoted_surface::ScopeForm::Module(module) => module,
                 other => panic!("expected compiler fragment module form, got {other:?}"),
             };
-            crate::compiler2::quoted_surface::read_module_body_surface(module_form)
+            crate::compiler2::quoted_surface::read_module_body_surface(module_form, &source_map.borrow())
                 .expect("forwarded module body should still decode")
         }
         other => panic!("expected forwarded module form, got {other:?}"),
@@ -3380,7 +3433,7 @@ end
         crate::compiler2::quoted_surface::ScopeForm::MacroCall(function) => function,
         other => panic!("expected grouped function macro call, got {other:?}"),
     };
-    crate::compiler2::quoted_function::derive_function_surface(&function.source)
+    crate::compiler2::quoted_function::derive_function_surface(&function.source, &source_map.borrow())
         .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
 }
 
@@ -3584,7 +3637,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
     });
@@ -3609,7 +3662,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
         outputs
             .stops_matching(|job| matches!(job, Job::ScopeCode(_)))
             .iter()
-            .any(|stop| stop.job == Job::ScopeCode(code_id)),
+            .any(|stop| stop.job == Job::ScopeCode(source_owner)),
         "the user code should scope even though runtime modules stay cold"
     );
     assert_eq!(
@@ -4027,14 +4080,14 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
         text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the exact fn-ref fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "fixture scope should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should define the importing module");
@@ -12631,7 +12684,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         "entry seeding should settle before later code arrives"
     );
 
-    let late_code_id = compiler.submit_code(CodeSubmission {
+    let late_source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00030_foo_42.fz").to_string(),
     });
@@ -12641,7 +12694,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
 
     let scope_outputs = outputs
-        .take(Job::ScopeCode(late_code_id))
+        .take(Job::ScopeCode(late_source_owner))
         .expect("late code ScopeCode job effects");
     // Scope publication is demand-addressed (fz-f98.14.5): the late ScopeCode
     // publishes CodeScoped and eagerly stashes foo/0's source, but does NOT
@@ -12650,7 +12703,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     assert!(
         scope_outputs
             .iter()
-            .any(|(fact, _)| *fact == FactKey::CodeScoped(late_code_id)),
+            .any(|(fact, _)| *fact == FactKey::CodeScoped(late_source_owner)),
         "late code should auto-scope without an explicit ScopeCode demand"
     );
     let foo_id = function_id(&functions, "foo", 0);
@@ -13154,14 +13207,14 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_clause_projections.fz".to_string()),
         text: include_str!("../../fixtures2/00033_clause_projections.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the clause fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs defined functions",
     );
     assert_resolved(compiler.drive(), "second drive should define the clause fixture");
@@ -13215,14 +13268,14 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
         text: include_str!("../../fixtures2/00034_lambda_capture.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the capture fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs a defined owner function"
     );
     assert_resolved(compiler.drive(), "second drive should define the capture fixture");
@@ -13287,14 +13340,14 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_local_match.fz".to_string()),
         text: include_str!("../../fixtures2/00035_local_match.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the local match fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs a defined function",
     );
     assert_resolved(compiler.drive(), "second drive should define the local match fixture");
@@ -13574,7 +13627,7 @@ fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivere
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("reusable_cons_continuation.fz".to_string()),
         text: r#"
 fn ping(x), do: x
@@ -13590,7 +13643,7 @@ end
 
     assert_resolved(compiler.drive(), "reusable-cons fixture should index cleanly");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "reusable-cons fixture still needs function definition before lowered-body inspection",
     );
     assert_resolved(
@@ -14499,14 +14552,14 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     guard_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helpers.fz".to_string()),
         text: include_str!("../../fixtures2/00036_guard_helpers.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper functions");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope helper definitions"
     );
     assert_resolved(compiler.drive(), "second drive should define helper functions");
@@ -14567,14 +14620,14 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     guard_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_destructure.fz".to_string()),
         text: include_str!("../../fixtures2/00037_guard_destructure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index destructuring helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope destructuring helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define destructuring helpers");
@@ -14626,14 +14679,14 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_cycle.fz".to_string()),
         text: include_str!("../../fixtures2/00038_guard_cycle.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index cyclic helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope cyclic helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define cyclic helpers");
@@ -14681,14 +14734,14 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helper_wider_than_caller.fz".to_string()),
         text: include_str!("../../fixtures2/00558_guard_helper_wider_than_caller.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the helper and its caller");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope the wider helper",
     );
     assert_resolved(compiler.drive(), "second drive should define the wider helper");
@@ -14725,14 +14778,14 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_impure.fz".to_string()),
         text: include_str!("../../fixtures2/00039_guard_impure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index impure helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope impure helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define impure helpers");
@@ -14780,7 +14833,7 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
         text: include_str!("../../fixtures2/00040_entry_dispatch_aliases.fz").to_string(),
     });
@@ -14791,11 +14844,11 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     );
     let module_ids = module_indexed_ids(
         &outputs
-            .take(Job::IndexCode(code_id))
+            .take(Job::IndexCode(source_owner))
             .expect("IndexCode job effects for module-scoped entry dispatch"),
     );
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope module contents before planning entry dispatch",
     );
     assert_resolved(compiler.drive(), "second drive should scope the root namespace");
@@ -14860,14 +14913,14 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00041_entry_dispatch_single.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the single-clause function");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "single-clause entry dispatch still needs a defined function surface",
     );
     assert_resolved(
@@ -14915,14 +14968,14 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
         text: include_str!("../../fixtures2/00042_blast_radius_v1.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper users");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scope_code should define helper users"
     );
     assert_resolved(compiler.drive(), "second drive should define helper users");
@@ -14963,7 +15016,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let wanted_plan_before = latest_entry_dispatch(&entry_defs, wanted_id);
     let other_plan_before = latest_entry_dispatch(&entry_defs, other_id);
 
-    let _code_id = compiler.submit_code(CodeSubmission {
+    let _source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
         text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
     });
@@ -15023,13 +15076,15 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/nested_modules.fz".to_string()),
         text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should only index the raw source");
-    let indexed_outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
+    let indexed_outputs = outputs
+        .take(Job::IndexCode(source_owner))
+        .expect("IndexCode job effects");
     assert_eq!(
         indexed_outputs
             .iter()
@@ -15039,11 +15094,11 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         "raw source indexing should discover each nested scope-shaping module definition once",
     );
 
-    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    let indexed_stop = outputs.stop(Job::IndexCode(source_owner));
     assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for nested modules"
     );
     assert_resolved(
@@ -15051,7 +15106,9 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         "second drive should expand root definition macros and discover nested modules from compiler fragments",
     );
 
-    let scoped_outputs = outputs.take(Job::ScopeCode(code_id)).expect("ScopeCode job effects");
+    let scoped_outputs = outputs
+        .take(Job::ScopeCode(source_owner))
+        .expect("ScopeCode job effects");
     assert_eq!(
         module_indexed_ids(&scoped_outputs).len(),
         3,
@@ -15152,16 +15209,20 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only.fz".to_string()),
         text: include_str!("../../fixtures2/00045_import_only.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-only scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-only modules");
@@ -15706,16 +15767,20 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
     outputs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_unknown.fz".to_string()),
         text: include_str!("../../fixtures2/00046_import_only_unknown.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-only unknown scope"
     );
     assert_resolved(
@@ -15749,16 +15814,20 @@ fn compiler2_import_all_waits_for_module_interface() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_all.fz".to_string()),
         text: include_str!("../../fixtures2/00047_import_all.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-all scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-all scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-all modules");
@@ -15816,16 +15885,20 @@ fn compiler2_import_except_waits_for_module_interface() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_except.fz".to_string()),
         text: include_str!("../../fixtures2/00048_import_except.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-except scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-except scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-except modules");
@@ -16599,7 +16672,10 @@ fn record_function_definition(
     let clauses = if from_source {
         world
             .pending_function_source(function_id)
-            .and_then(|source| crate::compiler2::quoted_function::derive_function_surface(&source.source).ok())
+            .and_then(|source| {
+                let source_map = world.source_map();
+                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
+            })
             .map_or(0, |surface| surface.clauses.len() as u64)
     } else {
         world.function_surface(function_id).clauses.len() as u64
@@ -18108,7 +18184,7 @@ fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(Strin
         .filter_map(|event| event.diagnostic)
         .filter(|diagnostic| diagnostic.code == codes::TYPE_NO_MATCHING_CLAUSE)
         .map(|diagnostic| {
-            let source = if diagnostic.primary.span.code_id.0 == user_code.as_u32() {
+            let source = if Some(diagnostic.primary.span.source_version) == world.source_version(user_code) {
                 source_name.to_string()
             } else {
                 "<runtime>".to_string()
@@ -18789,8 +18865,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[list], &mut types)),
     ];
     jobs.sort_by(|left, right| left.semantic_cmp(right, &types));
-    let shared = FactKey::CodeIndexed(crate::compiler2::CodeId::ZERO);
-    let writer = Job::IndexCode(crate::compiler2::CodeId::ZERO);
+    let shared = FactKey::CodeIndexed(crate::compiler2::SourceOwner::for_test(0));
+    let writer = Job::IndexCode(crate::compiler2::SourceOwner::for_test(0));
 
     let complete = |scheduler: &mut Scheduler<Job, FactKey>,
                     job: &Job,

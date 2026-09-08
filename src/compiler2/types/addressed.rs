@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(
             relative_order(ClosureTarget(17), false),
             relative_order(ClosureTarget(29), true),
-            "callable labels and structural capture addresses, not local mint ids, own the order"
+            "typed callable identities and structural capture addresses, not local mint ids, own the order"
         );
     }
 

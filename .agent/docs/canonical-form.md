@@ -8,7 +8,7 @@ id. It lives in `compiler2/canon.rs` (the artifact) on top of
 ## Why an id is not a comparand
 
 A `Ty` is a position in one `World`'s arena. So are `ShapeId`, `LaneId`,
-`CallableId`, `BoundaryId`, `FunctionId`, and `CodeId`. One extra incidental
+`CallableId`, `BoundaryId`, `FunctionId`, and `SourceOwner`. One extra incidental
 intern anywhere shifts every later id without changing what the program means,
 so id equality answers "is this the same *build*", never "do these mean the same
 *thing*". Across two processes it answers nothing at all.
@@ -105,7 +105,7 @@ Built on `canon(Ty)`, by four rules:
   label followed by `#lambda@<source-occurrence>/arity` for generated lambdas.
   Both canonical artifacts and fixture call-edge reports use this same renderer;
   no consumer parses a generated display name back into identity.
-  A `Span`'s code id becomes the submission's name.
+  A `Span`'s exact source version resolves to the submitted display name.
 - **program-wide positions are re-sorted** on an id-free key: an executable's
   function, input types and need; a wrapper's callable, arity, return form and
   member boundaries. The renderer assigns ordinals to `ExecutableKey` and

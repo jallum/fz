@@ -112,7 +112,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 atom_ids.insert(atom.to_string(), next);
             }
         }
-
         let mut module = ModuleBuilder::new();
         let executable_fns = program
             .executables()
@@ -1059,12 +1058,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::Map { value, entries } => {
+                BackendStep::Map {
+                    value,
+                    entries,
+                    quoted_span,
+                } => {
+                    if quoted_span.is_some() {
+                        self.ensure_quoted_span_atoms();
+                    }
                     let token = ctx.fresh_token();
                     let (map, _) = ctx.emit_let(Prim::DestMapBegin {
                         token,
                         base: None,
-                        extra: entries.len(),
+                        extra: entries.len() + usize::from(quoted_span.is_some()),
                     });
                     let mut token = token;
                     for (key, item) in entries {
@@ -1076,6 +1082,49 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             token,
                             key,
                             value,
+                            next,
+                        });
+                        token = next;
+                    }
+                    if let Some(span) = quoted_span {
+                        let span_token = ctx.fresh_token();
+                        let (span_map, _) = ctx.emit_let(Prim::DestMapBegin {
+                            token: span_token,
+                            base: None,
+                            extra: 3,
+                        });
+                        let mut span_token = span_token;
+                        for (key, value) in super::super::source::quoted_span_entries(*span) {
+                            let next = ctx.fresh_token();
+                            let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
+                                *self.atom_ids.get(key).expect("quoted metadata atom registered"),
+                            )));
+                            let (value, _) = ctx.emit_let(Prim::Const(Const::Int(value)));
+                            let _ = ctx.emit_let(Prim::DestMapPut {
+                                map: span_map,
+                                token: span_token,
+                                key,
+                                value,
+                                next,
+                            });
+                            span_token = next;
+                        }
+                        let (span_map, _) = ctx.emit_let(Prim::DestMapFreeze {
+                            map: span_map,
+                            token: span_token,
+                        });
+                        let next = ctx.fresh_token();
+                        let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
+                            *self
+                                .atom_ids
+                                .get(super::super::source::META_SPAN_KEY)
+                                .expect("quoted metadata atom registered"),
+                        )));
+                        let _ = ctx.emit_let(Prim::DestMapPut {
+                            map,
+                            token,
+                            key,
+                            value: span_map,
                             next,
                         });
                         token = next;
@@ -3441,6 +3490,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn atom_id(&self, name: &str) -> u32 {
         *self.atom_ids.get(name).expect("required atom should be interned")
+    }
+
+    fn ensure_quoted_span_atoms(&mut self) {
+        for atom in [
+            super::super::source::META_SPAN_KEY,
+            super::super::source::META_SPAN_START_KEY,
+            super::super::source::META_SPAN_LENGTH_KEY,
+            super::super::source::META_SPAN_VERSION_KEY,
+        ] {
+            if !self.atom_ids.contains_key(atom) {
+                self.atom_ids.insert(atom.to_string(), self.atom_ids.len() as u32);
+            }
+        }
     }
 
     fn native_callable_boundary_for_construction(

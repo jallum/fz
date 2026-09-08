@@ -118,7 +118,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let prefix = fixture_frontmatter_prefix_bytes(&fixture.source)
         .expect("fixture frontmatter prefix")
         .unwrap_or(0);
-    let root_code = world.function_definition(world.root_function(root_id)).0.code;
+    let root_code = world.function_definition(world.root_function(root_id)).0.owner;
     let inventory = executables
         .iter()
         .map(|executable| executable.activation.clone())
@@ -130,11 +130,11 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         .map(|executable| &executable.activation)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
-        .filter(|activation| world.function_definition(activation.function).0.code == root_code)
+        .filter(|activation| world.function_definition(activation.function).0.owner == root_code)
         .count() as u64;
     let local_executables = executables
         .iter()
-        .filter(|executable| world.function_definition(executable.activation.function).0.code == root_code)
+        .filter(|executable| world.function_definition(executable.activation.function).0.owner == root_code)
         .count() as u64;
     let mut metrics = BTreeMap::new();
     metrics.insert("semantic.activations".to_string(), local_activations);

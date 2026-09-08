@@ -1960,7 +1960,7 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     );
     let mut world = World::new();
     let root = RootId::for_test(88);
-    let code = super::CodeId::ZERO;
+    let code = super::SourceOwner::for_test(0);
     let left = FactKey::CodeIndexed(code);
     let right = FactKey::CodeScoped(code);
     let left_job = Job::IndexCode(code);

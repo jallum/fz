@@ -15,7 +15,7 @@ use crate::modules::identity::ModuleName;
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
-use super::code::CodeId;
+use super::code::SourceOwner;
 use super::drive::{FactKey, JobEffects, current_uses};
 use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName};
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
@@ -106,7 +106,7 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     telemetry: &'tel T,
     products: Option<&'world ProductSessions>,
     product_reads: Vec<ProductAddress>,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     current_module: ModuleId,
     namespace: Namespace,
     local_callables: HashMap<(String, usize), NamespaceSymbol>,
@@ -167,17 +167,17 @@ pub(crate) fn publish_scope(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     products: Option<&ProductSessions>,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     current_scope: ScopeSnapshot,
     surface: &ScopeSurface,
 ) -> Result<ScopePublication, FatalError> {
-    ScopeSession::new(world, tel, products, code_id, current_scope).publish(surface)
+    ScopeSession::new(world, tel, products, source_owner, current_scope).publish(surface)
 }
 
 pub(crate) fn publish_protocol_surface(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     module_id: ModuleId,
     namespace: Namespace,
     surface: &ScopeSurface,
@@ -237,7 +237,7 @@ pub(crate) fn publish_protocol_surface(
     let publication = publish_function_source(
         world,
         tel,
-        code_id,
+        source_owner,
         module_id,
         module_id,
         scope,
@@ -272,7 +272,7 @@ pub(crate) fn publish_protocol_impl_surface(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     products: Option<&ProductSessions>,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     impl_module: ModuleId,
     namespace: Namespace,
     source: &ProtocolImplSource,
@@ -281,7 +281,7 @@ pub(crate) fn publish_protocol_impl_surface(
         world,
         tel,
         products,
-        code_id,
+        source_owner,
         ScopeSnapshot::module(impl_module, namespace),
     );
     session.publish_resolved_protocol_impl(impl_module, source)?;
@@ -291,7 +291,7 @@ pub(crate) fn publish_protocol_impl_surface(
 pub(crate) fn discover_modules(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     parent_module: ModuleId,
     surface: &ScopeSurface,
     outputs: &mut Outputs,
@@ -301,23 +301,30 @@ pub(crate) fn discover_modules(
         match form {
             ScopeForm::Module(module) => {
                 let module_id = reference_declared_module(world, parent_module, &module.name);
-                let nested = read_module_body_surface(module)
+                let source_map = world.source_map();
+                let nested = read_module_body_surface(module, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
-                let revision =
-                    world.index_module_body(module_id, code_id, parent_module, module.source.clone(), nested.clone());
+                let revision = world.index_module_body(
+                    module_id,
+                    source_owner,
+                    parent_module,
+                    module.source.clone(),
+                    nested.clone(),
+                );
                 outputs.push(FactKey::ModuleIndexed(module_id));
                 if revision {
                     changed.push(FactKey::ModuleIndexed(module_id));
                 }
-                discover_modules(world, tel, code_id, module_id, &nested, outputs, changed)?;
+                discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
                 let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
-                let protocol_surface = read_protocol_body_surface(protocol)
+                let source_map = world.source_map();
+                let protocol_surface = read_protocol_body_surface(protocol, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(tel, "quoted protocol body read failed", &error))?;
                 let revision = world.index_protocol_module(
                     module_id,
-                    code_id,
+                    source_owner,
                     parent_module,
                     protocol.source.clone(),
                     protocol_surface,
@@ -328,23 +335,30 @@ pub(crate) fn discover_modules(
                 }
             }
             ScopeForm::MacroCall(macro_call) => {
-                let Some(definition) = reserved_source_definition(&macro_call.source)
+                let source_map = world.source_map();
+                let Some(definition) = reserved_source_definition(&macro_call.source, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(tel, "raw discovery reservation failed", &error))?
                 else {
                     continue;
                 };
-                let fragment = read_compiler_fragment_root(tel, &macro_call.source, "raw scope-definition fragment")?;
+                let fragment = read_compiler_fragment_root(
+                    tel,
+                    &macro_call.source,
+                    "raw scope-definition fragment",
+                    &source_map.borrow(),
+                )?;
                 let Some(fragment_form) = fragment.forms.first() else {
                     continue;
                 };
                 match (definition, fragment_form) {
                     (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
                         let module_id = reference_declared_module(world, parent_module, &module.name);
-                        let nested = read_module_body_surface(module)
+                        let source_map = world.source_map();
+                        let nested = read_module_body_surface(module, &source_map.borrow())
                             .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
                         let revision = world.index_module_body(
                             module_id,
-                            code_id,
+                            source_owner,
                             parent_module,
                             module.source.clone(),
                             nested.clone(),
@@ -353,16 +367,17 @@ pub(crate) fn discover_modules(
                         if revision {
                             changed.push(FactKey::ModuleIndexed(module_id));
                         }
-                        discover_modules(world, tel, code_id, module_id, &nested, outputs, changed)?;
+                        discover_modules(world, tel, source_owner, module_id, &nested, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
                         let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
-                        let protocol_surface = read_protocol_body_surface(protocol).map_err(|error| {
-                            emit_surface_read_error(tel, "quoted protocol body read failed", &error)
-                        })?;
+                        let protocol_surface =
+                            read_protocol_body_surface(protocol, &source_map.borrow()).map_err(|error| {
+                                emit_surface_read_error(tel, "quoted protocol body read failed", &error)
+                            })?;
                         let revision = world.index_protocol_module(
                             module_id,
-                            code_id,
+                            source_owner,
                             parent_module,
                             protocol.source.clone(),
                             protocol_surface,
@@ -387,11 +402,11 @@ pub(crate) fn record_function_type_refs(
     function: FunctionId,
     surface: &FunctionSurface,
 ) -> Result<(), FatalError> {
-    let (namespace, code, module) = {
+    let (namespace, owner, module) = {
         let source = world
             .function_source(function)
             .expect("function type refs should only be recorded after function source is noted");
-        (source.namespace, source.code, source.owner_module)
+        (source.namespace, source.owner, source.owner_module)
     };
     let mut refs = Vec::new();
     // The struct half of the same walk, recorded in one pass with the
@@ -406,17 +421,17 @@ pub(crate) fn record_function_type_refs(
     for attr in &surface.attrs {
         if let Attribute::Spec(spec) = attr {
             collect_spec_refs(world, tel, namespace, spec, &mut refs)?;
-            collect_spec_struct_obligations(world, tel, namespace, spec, code, module, &mut struct_refs)?;
+            collect_spec_struct_obligations(world, tel, namespace, spec, owner, module, &mut struct_refs)?;
         }
     }
     if let Some(extern_spec) = surface.extern_contract_decl() {
         collect_spec_refs(world, tel, namespace, &extern_spec, &mut refs)?;
-        collect_spec_struct_obligations(world, tel, namespace, &extern_spec, code, module, &mut struct_refs)?;
+        collect_spec_struct_obligations(world, tel, namespace, &extern_spec, owner, module, &mut struct_refs)?;
     }
     for clause in &surface.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
             collect_body_refs(world, tel, namespace, annotation, &mut refs)?;
-            collect_body_struct_obligations(world, tel, namespace, annotation, code, module, &mut struct_refs)?;
+            collect_body_struct_obligations(world, tel, namespace, annotation, owner, module, &mut struct_refs)?;
         }
     }
     super::drive::ExecutionContext::new(world, tel).record_function_type_refs(&function, refs);
@@ -432,7 +447,7 @@ fn collect_spec_struct_obligations(
     tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     spec: &SpecDecl,
-    code: CodeId,
+    owner: SourceOwner,
     module: ModuleId,
     struct_refs: &mut Vec<ModuleId>,
 ) -> Result<(), FatalError> {
@@ -442,20 +457,20 @@ fn collect_spec_struct_obligations(
         .chain(std::iter::once(&spec.result_body_tokens))
         .chain(spec.constraints.iter().map(|(_, bound)| bound))
     {
-        collect_body_struct_obligations(world, tel, scope, body, code, module, struct_refs)?;
+        collect_body_struct_obligations(world, tel, scope, body, owner, module, struct_refs)?;
     }
     Ok(())
 }
 
 /// The struct-obligation sibling of `collect_body_refs`: parses one
 /// type-expression body and records its `%Mod{...}` obligations at the body's
-/// own span, from the referencing function's `code`/`module`.
+/// own span, from the referencing function's `owner`/`module`.
 fn collect_body_struct_obligations(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     body: &TypeExprBody,
-    code: CodeId,
+    owner: SourceOwner,
     module: ModuleId,
     struct_refs: &mut Vec<ModuleId>,
 ) -> Result<(), FatalError> {
@@ -473,7 +488,7 @@ fn collect_body_struct_obligations(
         )
     })?;
     let requester = InterfaceRequester {
-        code,
+        owner,
         module,
         span: type_expr_body_span(body),
     };
@@ -489,7 +504,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         world: &'world mut World,
         telemetry: &'tel T,
         products: Option<&'world ProductSessions>,
-        code_id: CodeId,
+        source_owner: SourceOwner,
         current_scope: ScopeSnapshot,
     ) -> Self {
         Self {
@@ -497,7 +512,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             telemetry,
             products,
             product_reads: Vec::new(),
-            code_id,
+            source_owner,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
             local_callables: HashMap::new(),
@@ -643,12 +658,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 | ScopeForm::Struct(_)
                 | ScopeForm::ProtocolImpl(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
-                    let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
-                        emit_internal_surface_error(
-                            self.telemetry,
-                            format!("raw definition reservation failed: {error}"),
-                        )
-                    })?
+                    let source_map = self.world.source_map();
+                    let Some(definition) = reserved_source_definition(&macro_call.source, &source_map.borrow())
+                        .map_err(|error| {
+                            emit_internal_surface_error(
+                                self.telemetry,
+                                format!("raw definition reservation failed: {error}"),
+                            )
+                        })?
                     else {
                         continue;
                     };
@@ -753,7 +770,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let surface = read_compiler_fragment_root(self.telemetry, &service.source, "Fz.Compiler.define source")?;
+        let source_map = self.world.source_map();
+        let surface = read_compiler_fragment_root(
+            self.telemetry,
+            &service.source,
+            "Fz.Compiler.define source",
+            &source_map.borrow(),
+        )?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.telemetry,
@@ -812,7 +835,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let publication = publish_function_source(
             self.world,
             self.telemetry,
-            self.code_id,
+            self.source_owner,
             function_module,
             owner_module,
             namespace,
@@ -846,7 +869,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             discover_modules(
                 self.world,
                 self.telemetry,
-                self.code_id,
+                self.source_owner,
                 self.current_module,
                 surface,
                 &mut self.outputs,
@@ -898,7 +921,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::Module(module) => {
                 let module_id = reference_declared_module(self.world, self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
-                let body = read_module_body_surface(module)
+                let source_map = self.world.source_map();
+                let body = read_module_body_surface(module, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(self.telemetry, "module body read failed", &error))?;
                 self.register_protocol_impl_providers(module_id, &body)?;
                 Ok(None)
@@ -952,8 +976,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         // genuine duplicate, independent of whether its fields happen to
         // agree with the first. That content-independence matters because a
         // macro invoked twice from a literal (non-`unquote`) `defstruct`
-        // template carries no source span of its own (`span_from_meta`
-        // returns `Span::DUMMY` for a meta map without a `__fz_span__` key),
+        // template carries no source span of its own (the validated AST read
+        // returns absent provenance for a meta map without `__fz_span__`),
         // so two macro-emitted defstructs in one module compare
         // span-and-fields-EQUAL whenever the macro's argument happens to
         // repeat the same fields -- exactly the case the fields-comparison
@@ -1017,15 +1041,18 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 }
                 ScopeForm::Module(child) => {
                     let child_id = reference_declared_module(self.world, module, &child.name);
-                    let nested = read_module_body_surface(child).map_err(|error| {
+                    let source_map = self.world.source_map();
+                    let nested = read_module_body_surface(child, &source_map.borrow()).map_err(|error| {
                         emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                     })?;
                     self.register_protocol_impl_providers(child_id, &nested)?;
                 }
                 ScopeForm::MacroCall(macro_call) => {
-                    let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
-                        emit_surface_read_error(self.telemetry, "impl discovery reservation failed", &error)
-                    })?
+                    let source_map = self.world.source_map();
+                    let Some(definition) = reserved_source_definition(&macro_call.source, &source_map.borrow())
+                        .map_err(|error| {
+                            emit_surface_read_error(self.telemetry, "impl discovery reservation failed", &error)
+                        })?
                     else {
                         continue;
                     };
@@ -1035,6 +1062,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                                 self.telemetry,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
+                                &self.world.source_map().borrow(),
                             )?;
                             if let Some(ScopeForm::ProtocolImpl(impl_form)) = fragment.forms.first() {
                                 let impl_form = impl_form.clone();
@@ -1046,12 +1074,19 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                                 self.telemetry,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
+                                &self.world.source_map().borrow(),
                             )?;
                             if let Some(ScopeForm::Module(child)) = fragment.forms.first() {
                                 let child_id = reference_declared_module(self.world, module, &child.name);
-                                let nested = read_module_body_surface(child).map_err(|error| {
-                                    emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
-                                })?;
+                                let source_map = self.world.source_map();
+                                let nested =
+                                    read_module_body_surface(child, &source_map.borrow()).map_err(|error| {
+                                        emit_surface_read_error(
+                                            self.telemetry,
+                                            "nested module body read failed",
+                                            &error,
+                                        )
+                                    })?;
                                 self.register_protocol_impl_providers(child_id, &nested)?;
                             }
                         }
@@ -1310,7 +1345,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
 
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
         InterfaceRequester {
-            code: self.code_id,
+            owner: self.source_owner,
             module: self.current_module,
             span,
         }
@@ -1341,7 +1376,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
         let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
         let impl_module = self.world.reference_protocol_impl_module(protocol, target);
-        let body = read_protocol_impl_body_surface(form).map_err(|error| {
+        let source_map = self.world.source_map();
+        let body = read_protocol_impl_body_surface(form, &source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(
                 self.telemetry,
                 format!("quoted protocol impl body read failed: {error}"),
@@ -1351,7 +1387,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         // host. This edge keeps the implementation independently demandable.
         let revision = self.world.index_protocol_impl_module(
             impl_module,
-            self.code_id,
+            self.source_owner,
             protocol,
             form.source.clone(),
             ProtocolImplSource { protocol, target, body },
@@ -1573,7 +1609,7 @@ struct FunctionPublication {
 fn publish_function_source(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    code_id: CodeId,
+    source_owner: SourceOwner,
     function_module: ModuleId,
     owner_module: ModuleId,
     namespace: Namespace,
@@ -1589,7 +1625,7 @@ fn publish_function_source(
     // already made — is what every reference and protocol dispatch resolves
     // against, so it stays eager.
     let source = FunctionSource {
-        code: code_id,
+        owner: source_owner,
         owner_module,
         namespace,
         capture_params: Vec::new(),
@@ -1925,18 +1961,19 @@ mod identity_tests {
     #[test]
     fn module_reservation_and_definition_preserve_the_same_source_path() {
         let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let source =
-            super::super::parse_quoted_program("path.fz", "defmodule A.B do\nend\n", CodeId::ZERO, &tel).unwrap();
-        let raw = super::super::quoted_surface::read_scope_surface(&source).unwrap();
+        let mut sources = crate::source::SourceMap::new();
+        let version = sources.add_code(Some("path.fz"), "defmodule A.B do\nend\n");
+        let source = super::super::parse_quoted_program(&sources, version, &tel).unwrap();
+        let raw = super::super::quoted_surface::read_scope_surface(&source, &sources).unwrap();
         let ScopeForm::MacroCall(call) = &raw.forms[0] else {
             panic!("source module macro");
         };
         let Some(ReservedSourceDefinition::Module { name: reserved }) =
-            reserved_source_definition(&call.source).unwrap()
+            reserved_source_definition(&call.source, &sources).unwrap()
         else {
             panic!("reserved module");
         };
-        let expanded = super::super::quoted_surface::read_compiler_fragment_surface(&source).unwrap();
+        let expanded = super::super::quoted_surface::read_compiler_fragment_surface(&source, &sources).unwrap();
         let ScopeForm::Module(module) = &expanded.forms[0] else {
             panic!("decoded module");
         };

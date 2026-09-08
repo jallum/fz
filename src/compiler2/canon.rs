@@ -20,7 +20,7 @@
 //! Three rules make the rendering id-free:
 //!
 //! - INTERNED ids (`Ty`, `ShapeId`, `LaneId`, `CallableId`, `BoundaryId`,
-//!   `FunctionId`, `CodeId`) are expanded to what they describe;
+//!   `FunctionId`, `SourceOwner`) are expanded to what they describe;
 //! - PROGRAM-WIDE positions (the executable and construction-wrapper vectors)
 //!   are re-sorted on an id-free key, and every reference to them is remapped
 //!   through that order — in the RENDERING only, never by renumbering the real
@@ -981,7 +981,7 @@ impl ProgramCanon<'_> {
                 let tail = tail.map(|t| self.names.value(t)).unwrap_or_else(|| "[]".to_string());
                 format!("{head} = list [{items}] tail={tail}")
             }
-            BackendStep::Map { value, entries } => {
+            BackendStep::Map { value, entries, .. } => {
                 format!("{} = map {}", self.names.value(*value), self.value_pairs(entries))
             }
             BackendStep::MapUpdate { value, base, entries } => {
@@ -1360,8 +1360,9 @@ impl ProgramCanon<'_> {
         if span.is_dummy() {
             return "<generated>".to_string();
         }
-        let code = super::code::CodeId::from_source(span.code_id);
-        let name = self.world.code_name(code).unwrap_or("<anonymous>");
+        let source_map = self.world.source_map();
+        let source_map = source_map.borrow();
+        let name = source_map.name(span.source_version).unwrap_or("<anonymous>");
         format!("@{name}:{}-{}", span.start, span.end)
     }
 }

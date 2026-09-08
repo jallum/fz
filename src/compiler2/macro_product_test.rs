@@ -3,10 +3,241 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::exec::runtime::ProcessExitCapture;
 use crate::telemetry::ConfiguredTelemetry;
 
 use super::pull::{ProductKey, ProductRequestId, PullOutcome};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, ModuleId, RootSubmission, World};
+
+fn run_macro_program(text: String) -> Result<i64, String> {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("hostile-macro-span.fz".into()),
+        text,
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root)
+}
+
+fn run_macro_with_span_metadata(span_entries: &str) -> Result<i64, String> {
+    run_macro_program(format!(
+        "fn answer(), do: 42\ndefmacro forged() do\n  {{:answer, %{{__fz_span__: %{{{span_entries}}}}}, []}}\nend\nfn main(), do: forged()\n"
+    ))
+}
+
+#[test]
+fn macro_expansion_rejects_negative_quoted_span_offsets() {
+    assert!(
+        run_macro_with_span_metadata("start: -1, length: 1, source_version: 0").is_err(),
+        "malformed quoted provenance must not disappear into a fallback span"
+    );
+}
+
+#[test]
+fn macro_expansion_rejects_unregistered_quoted_source_versions() {
+    assert!(
+        run_macro_with_span_metadata("start: 0, length: 1, source_version: 4294967294").is_err(),
+        "integer-shaped provenance must resolve through the authoritative source map"
+    );
+}
+
+#[test]
+fn macro_expansion_rejects_malformed_nested_cond_clause_provenance() {
+    assert!(
+        run_macro_program(
+            r#"
+defmacro forged() do
+  clause = {:"->", %{__fz_span__: %{start: -1, length: 1, source_version: 0}}, [[true], 42]}
+  {:cond, %{}, [[{:do, [clause]}]]}
+end
+
+fn main(), do: forged()
+"#
+            .into(),
+        )
+        .is_err(),
+        "every structurally consumed AST wrapper must validate its own provenance"
+    );
+}
+
+#[test]
+fn macro_expansion_rejects_malformed_nested_remote_callee_provenance() {
+    assert!(
+        run_macro_program(
+            r#"
+defmacro forged() do
+  callee = {:., %{__fz_span__: %{start: -1, length: 1, source_version: 0}}, [{:__aliases__, %{}, [:Kernel]}, :+]}
+  {callee, %{}, [20, 22]}
+end
+
+fn main(), do: forged()
+"#
+            .into(),
+        )
+        .is_err(),
+        "nested callable wrappers must cross the same validated AST boundary"
+    );
+}
+
+#[test]
+fn source_less_item_macro_output_round_trips_without_fabricated_provenance() {
+    let tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("source-less-item-macro.fz".into()),
+        text: r#"
+defmacro make_answer() do
+  generated = {:generated, %{}, nil}
+  quoted = {:quote, %{}, [[{:do, generated}]]}
+  source = {:fn, %{}, [{:answer, %{}, []}, [{:do, quoted}]]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+make_answer()
+fn main() do
+  {_, meta, _} = answer()
+  if meta == %{}, do: 42, else: 0
+end
+"#
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    compiler.run_root_jit(root).expect("native source-less quote execution");
+    assert_eq!(
+        exits.last().expect("native source-less quote exit").halt_value,
+        42,
+        "interpreter and native quote construction must both omit absent span metadata"
+    );
+}
+
+#[test]
+fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    let definition_owner = compiler.submit_code(CodeSubmission {
+        name: Some("definition.fz".into()),
+        text: "defmodule Helpers do\n  defmacro inc(x) do\n    quote do: unquote(x) + 1\n  end\nend\n".into(),
+    });
+    let caller_owner = compiler.submit_code(CodeSubmission {
+        name: Some("caller.fz".into()),
+        text: "require Helpers\nfn main(), do: Helpers.inc(40 + 1)\n".into(),
+    });
+    let definition_version = compiler
+        .world()
+        .source_version(definition_owner)
+        .expect("macro definition version");
+    let caller_version = compiler
+        .world()
+        .source_version(caller_owner)
+        .expect("macro caller version");
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let main = compiler.root_function(root);
+    assert_eq!(
+        compiler.world().function_definition(main).0.owner,
+        caller_owner,
+        "body-macro expansion must retain the caller's lexical publishing owner"
+    );
+    let expanded = compiler
+        .world()
+        .expanded_function_source(main)
+        .expect("demanded function retains expanded source");
+    let source_map = compiler.world().source_map();
+    let surface = super::quoted_function::derive_function_surface(&expanded.source, &source_map.borrow())
+        .expect("expanded function source remains decodable");
+    let crate::ast::Expr::BinOp(_, left, right) = &surface.clauses[0].body.node else {
+        panic!("macro result should be the quoted addition");
+    };
+
+    assert_eq!(surface.clauses[0].body.span.source_version, definition_version);
+    assert_eq!(left.span.source_version, caller_version);
+    assert_eq!(right.span.source_version, definition_version);
+    assert_ne!(surface.clauses[0].body.span.source_version, left.span.source_version);
+}
+
+#[test]
+fn repeated_macro_generated_lambdas_keep_distinct_structural_occurrences() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("source-less-lambda-macro.fz".into()),
+        text: r#"
+defmacro deferred(x) do
+  {:fn, %{}, [{:"->", %{}, [[], x]}]}
+end
+
+fn main() do
+  left = deferred(20)
+  right = deferred(22)
+  left.() + right.()
+end
+"#
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(42),
+        "two expansions of one definition-site lambda are distinct occurrences in the final owner"
+    );
+    let main = compiler.root_function(root);
+    let super::LoweredBody::Clauses { generated, .. } = compiler.world().lowered_body(main) else {
+        panic!("main must lower to source clauses");
+    };
+    assert_eq!(generated.len(), 2);
+    assert_ne!(generated[0], generated[1]);
+    let origins = generated
+        .iter()
+        .map(|function| {
+            let super::identity::FunctionOrigin::Generated { owner, occurrence } =
+                &compiler.world().function_ref(*function).origin
+            else {
+                panic!("lambda has typed occurrence");
+            };
+            assert!(std::sync::Arc::ptr_eq(
+                owner,
+                &compiler.world().function_ref(main).denotation
+            ));
+            *occurrence
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        generated
+            .iter()
+            .all(|function| compiler.world().function_surface(*function).span.is_dummy()),
+        "source-less expansions share absent diagnostic location"
+    );
+    assert_eq!(
+        [origins[0].as_u32(), origins[1].as_u32()],
+        [0, 1],
+        "final structural traversal disambiguates equal-range peers before FunctionId allocation"
+    );
+}
 
 #[test]
 fn replacing_a_macro_with_an_ordinary_function_rejects_its_captured_macro_use() {
@@ -34,7 +265,13 @@ fn replacing_a_macro_with_an_ordinary_function_rejects_its_captured_macro_use() 
     let diagnostic = events.iter().find_map(|event| event.diagnostic.as_ref()).unwrap();
     assert_eq!(diagnostic.code, crate::diag::codes::LOWER_UNSUPPORTED);
     assert!(diagnostic.message.contains("not a macro"), "{}", diagnostic.message);
-    assert_eq!(super::CodeId::from_source(diagnostic.primary.span.code_id), replacement);
+    assert_eq!(
+        diagnostic.primary.span.source_version,
+        compiler
+            .world()
+            .source_version(replacement)
+            .expect("replacement source version")
+    );
     assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (0, 19));
 }
 
@@ -61,7 +298,13 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
     let events = diagnostics.events();
     let diagnostic = events.iter().find_map(|event| event.diagnostic.as_ref()).unwrap();
     assert_eq!(diagnostic.code, crate::diag::codes::LOWER_UNBOUND);
-    assert_eq!(super::CodeId::from_source(diagnostic.primary.span.code_id), failed_code);
+    assert_eq!(
+        diagnostic.primary.span.source_version,
+        compiler
+            .world()
+            .source_version(failed_code)
+            .expect("failed source version")
+    );
     assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (40, 53));
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "answer", 0);
     let macro_root = compiler.world_mut().macro_root(function);

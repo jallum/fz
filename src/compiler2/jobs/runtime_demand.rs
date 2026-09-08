@@ -1487,6 +1487,7 @@ fn step_value_depends_on_callsite_return(
         LoweredStep::Map {
             value: defined,
             entries,
+            ..
         } if *defined == value => entries.iter().any(|(key, field)| depends(key.value) || depends(*field)),
         LoweredStep::MapUpdate {
             value: defined,
@@ -1670,7 +1671,7 @@ fn propagate_steps_reverse(
                     }
                 }
             }
-            LoweredStep::Map { value, entries } => {
+            LoweredStep::Map { value, entries, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for (key, field) in entries {
                         let key_demand =

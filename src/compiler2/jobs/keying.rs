@@ -862,7 +862,7 @@ fn returned_values(
             LoweredStep::List { value, items, tail } => {
                 built.insert(*value, items.iter().copied().chain(*tail).collect());
             }
-            LoweredStep::Map { value, entries } => {
+            LoweredStep::Map { value, entries, .. } => {
                 built.insert(*value, entries.iter().map(|(_key, item)| *item).collect());
             }
             LoweredStep::MapUpdate { value, base, entries } => {

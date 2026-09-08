@@ -1332,6 +1332,7 @@ pub enum BackendStep {
     Map {
         value: ValueId,
         entries: Vec<(ValueId, ValueId)>,
+        quoted_span: Option<Span>,
     },
     MapUpdate {
         value: ValueId,

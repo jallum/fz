@@ -8,7 +8,9 @@ use crate::parser::lexer::{Lexer, Token};
 use crate::telemetry::ConfiguredTelemetry;
 
 fn lex(src: &str) -> Vec<Token> {
-    Lexer::with_source_name(src, "<test>")
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("<test>"), src);
+    Lexer::with_source_version_and_name(src, version, "<test>")
         .tokenize(&ConfiguredTelemetry::new())
         .expect("type-expr fragment lexes")
 }

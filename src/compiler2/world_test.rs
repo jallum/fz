@@ -11,8 +11,8 @@ use std::rc::Rc;
 #[test]
 fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
     let mut world = World::new();
-    let job = Job::IndexCode(super::CodeId::ZERO);
-    let fact = FactKey::CodeIndexed(super::CodeId::ZERO);
+    let job = Job::IndexCode(super::SourceOwner::for_test(0));
+    let fact = FactKey::CodeIndexed(super::SourceOwner::for_test(0));
     let read = FactUse::current(FactKey::ModuleDefined(ModuleId::GLOBAL));
     let completion = world.complete_job(
         job.clone(),
@@ -116,6 +116,27 @@ fn compiler2_world_is_lifetime_free_semantic_state() {
 }
 
 #[test]
+fn runtime_source_owner_is_stable_before_its_version_is_materialized() {
+    let mut world = World::new();
+    let runtime_module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Enum").unwrap());
+    let owner = world
+        .runtime_module_owner(runtime_module)
+        .expect("runtime bootstrap reserves every module source owner");
+    let source_count = world.source_map().borrow().code_count();
+
+    assert_eq!(world.source_version(owner), None);
+    let unrelated = world.submit_code(Some("unrelated.fz".into()), "fn unrelated(), do: 1\n".into());
+    assert!(world.source_version(unrelated).is_some());
+    assert_eq!(world.runtime_module_owner(runtime_module), Some(owner));
+    assert_eq!(world.source_version(owner), None);
+    assert_eq!(world.ensure_runtime_module(runtime_module), Some(owner));
+    assert!(world.source_version(owner).is_some());
+    assert_eq!(world.source_map().borrow().code_count(), source_count + 2);
+    assert_eq!(world.ensure_runtime_module(runtime_module), Some(owner));
+    assert_eq!(world.source_map().borrow().code_count(), source_count + 2);
+}
+
+#[test]
 fn compiler2_world_core_mutates_without_an_observer() {
     let mut world = World::new();
     let code = world.submit_code(
@@ -124,7 +145,7 @@ fn compiler2_world_core_mutates_without_an_observer() {
     );
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
 
-    assert_eq!(world.code_text(code), "fn main(), do: 0\n");
+    assert_eq!(world.code_text(code).as_ref(), "fn main(), do: 0\n");
     assert_eq!(
         world.root_entry(root).function,
         world.reference_function(ModuleId::GLOBAL, "main", 0)
@@ -1574,7 +1595,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("global_fn.fz".to_string()),
         "fn greet(name), do: name\n".to_string(),
     );
@@ -1591,7 +1612,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         "a pending candidate home must never leave demand_function_scope empty"
     );
     assert!(
-        waits.contains(&FactKey::CodeIndexed(code_id)),
+        waits.contains(&FactKey::CodeIndexed(source_owner)),
         "the pending code should be named as a CodeIndexed candidate, got {waits:?}"
     );
 
@@ -1607,7 +1628,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         .expect("no duplicate global home in this test");
     assert_eq!(
         waits,
-        vec![FactKey::CodeScoped(code_id)],
+        vec![FactKey::CodeScoped(source_owner)],
         "once a home is found, only its CodeScoped wait should be named"
     );
 

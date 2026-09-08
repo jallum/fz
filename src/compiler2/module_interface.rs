@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::source::Span;
 
-use super::code::CodeId;
+use super::code::SourceOwner;
 use super::drive::FactKey;
 use super::identity::{FunctionId, FunctionRef, ModuleId};
 use super::namespace::NamespaceSymbol;
@@ -44,7 +44,7 @@ impl ModuleInterfaceCallable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceRequester {
-    pub code: CodeId,
+    pub owner: SourceOwner,
     pub module: ModuleId,
     pub span: Span,
 }
@@ -269,7 +269,7 @@ mod tests {
             arity: 2,
             kind: InterfaceCallableKind::PublicFunction,
             requester: Some(InterfaceRequester {
-                code: CodeId::ZERO,
+                owner: SourceOwner::for_test(0),
                 module: ModuleId::GLOBAL,
                 span: Span::DUMMY,
             }),
@@ -279,7 +279,7 @@ mod tests {
             arity: 2,
             kind: InterfaceCallableKind::Macro,
             requester: Some(InterfaceRequester {
-                code: CodeId::ZERO,
+                owner: SourceOwner::for_test(0),
                 module: ModuleId::GLOBAL,
                 span: Span::DUMMY,
             }),

@@ -277,7 +277,7 @@ impl JsonlBackend {
         let backend = Rc::new(self);
         let legacy = Rc::clone(&backend);
         telemetry.attach(&[], Box::new(move |event: &Event<'_, '_, '_>| legacy.handle(event)));
-        Self::install_world_key::<crate::compiler2::CodeId>(
+        Self::install_world_key::<crate::compiler2::SourceOwner>(
             telemetry,
             &backend,
             &["fz", "compiler2", "code", "submitted"],
@@ -773,7 +773,7 @@ impl JsonlBackend {
         );
         let tokens_backend = Rc::clone(backend);
         telemetry
-            .attach_raw_event3::<crate::source::Id, Option<std::rc::Rc<str>>, Vec<crate::parser::lexer::Token>, _>(
+            .attach_raw_event3::<crate::source::SourceVersion, Option<std::rc::Rc<str>>, Vec<crate::parser::lexer::Token>, _>(
                 &["fz", "lexer", "tokens_built"],
                 move |name, span_id, parent_span_id, code, source_name, tokens| {
                     tokens_backend.handle_raw_event(
@@ -788,7 +788,7 @@ impl JsonlBackend {
                     );
                 },
             );
-        Self::install_raw_span2_0::<crate::source::Id, Option<std::rc::Rc<str>>>(
+        Self::install_raw_span2_0::<crate::source::SourceVersion, Option<std::rc::Rc<str>>>(
             telemetry,
             backend,
             &["fz", "lexer", "pass"],
@@ -1677,11 +1677,11 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "halt_value");
         out.push(':');
         push_i64(out, process.halt_value);
-    } else if let Some(code) = opaque.downcast_ref::<crate::source::Id>() {
+    } else if let Some(code) = opaque.downcast_ref::<crate::source::SourceVersion>() {
         out.push(',');
-        write_str_lit(out, "code_id");
+        write_str_lit(out, "source_version");
         out.push(':');
-        push_u64(out, code.0 as u64);
+        push_u64(out, code.as_u32() as u64);
     } else if let Some(source_name) = opaque.downcast_ref::<Option<std::rc::Rc<str>>>() {
         if let Some(source_name) = source_name {
             out.push(',');
@@ -2002,8 +2002,8 @@ fn write_id_field(out: &mut String, key: &'static str, id: u32) {
     push_u64(out, id as u64);
 }
 
-fn write_code_id(out: &mut String, code: crate::compiler2::CodeId) {
-    write_id_field(out, "code_id", code.as_u32());
+fn write_source_owner(out: &mut String, code: crate::compiler2::SourceOwner) {
+    write_id_field(out, "source_owner", code.as_u32());
 }
 
 fn write_module_id(out: &mut String, module: crate::compiler2::ModuleId) {
@@ -2212,7 +2212,7 @@ fn write_transport_position_field(out: &mut String, position: &crate::compiler2:
 fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
     use crate::compiler2::Job;
     match job {
-        Job::IndexCode(code) | Job::ScopeCode(code) => write_code_id(out, *code),
+        Job::IndexCode(code) | Job::ScopeCode(code) => write_source_owner(out, *code),
         Job::DefineModule(module) | Job::DefineModuleInterface(module) => write_module_id(out, *module),
         Job::PublishFunctionSource(function)
         | Job::ExpandFunctionSource(function)
@@ -2238,7 +2238,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
 fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
     use crate::compiler2::FactKey;
     match fact {
-        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) => write_code_id(out, *code),
+        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) => write_source_owner(out, *code),
         FactKey::ModuleIndexed(module)
         | FactKey::ModuleDefined(module)
         | FactKey::ModuleInterface(module)

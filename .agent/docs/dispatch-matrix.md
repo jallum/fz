@@ -239,7 +239,7 @@ semantic fixpoint's, which is the agenda's. A callable value's
 mint order, which is the agenda's again. `plan_callable_flows`
 (`jobs/runtime_demand.rs`) removes that schedule channel by sorting the
 first-class surfaces with `Types::cmp_activation_tys` over their inputs. The
-typed relation walks addressed arrows and stable callable labels; raw type
+typed relation walks addressed arrows and typed callable identities; raw type
 handles and rendered strings never establish construction order. The formula
 then resolves each edge directly from the same immutable callable-flow plan.
 `finish_callable_flows` preserves that edge order and applies
@@ -671,7 +671,7 @@ the two groups say. Three properties carry it:
   total order across groups: the typed activation relation is `Equal` only on
   identical `Ty` slices, identical surfaces project to identical questions,
   and one question is one group — so two distinct groups can never tie. The
-  relation walks structural addresses and immutable callable labels; neither
+  relation walks structural addresses and immutable typed callable identities; neither
   raw type ids nor rendered strings break ties.
 - **It removes the axis exactly where the axis was free, and nowhere else.**
   `Separated` is symmetric but NOT transitive: `A|B` and `B|C` separated says

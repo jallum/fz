@@ -147,7 +147,7 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(span);
-        let file = self.sm.name(loc.code_id).unwrap_or("<unnamed>");
+        let file = self.sm.name(loc.source_version).unwrap_or("<unnamed>");
         writeln!(out, "  --> {}:{}:{}", file, loc.line, loc.col)
     }
 
@@ -161,7 +161,7 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(sl.span);
-        let f = self.sm.code(loc.code_id);
+        let f = self.sm.code(loc.source_version);
         let source_line = &f.bytes.as_bytes()[loc.line_start as usize..loc.line_end as usize];
         let (expanded_line, byte_to_col) = expand_tabs(source_line, self.tab_width as usize);
 

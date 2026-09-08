@@ -13,6 +13,11 @@ immediately; defining it later fills the slot behind that id. A function can be
 definition happens unless a root reaches it, so an uncalled function stays a cold
 definition fact and never grows an activation.
 
+Source work follows the same typed split: source jobs are keyed by stable
+`SourceOwner`, while spans point to exact immutable `SourceVersion` entries.
+Cold runtime sources reserve only an owner. The authoritative model, including
+mixed macro provenance, is in [`quoted-source`](quoted-source.md#source-identity-and-provenance).
+
 ## Fact and product families
 
 Fact families share one agenda; "stratum" is a write boundary, not a pass. The
@@ -228,7 +233,7 @@ defined yet, `DefineFunction(entry)` waits on `FunctionSource(entry)` and
 demands the code contribution whose indexed source surface can actually publish
 that function. That source `ScopeCode` may wait on the runtime prelude's
 `CodeScoped` fact, but the root never broadcasts `ScopeCode` across every known
-code id. Unrelated submitted code therefore stays indexed-but-unscoped unless a
+source owner. Unrelated submitted code therefore stays indexed-but-unscoped unless a
 root, explicit demand, or active late-code path actually asks for its surface.
 
 Macro executable readiness uses a hidden macro root and pulls the backend

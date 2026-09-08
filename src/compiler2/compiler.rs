@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::NativeProgram;
 use super::artifact::BackendProgram;
-use super::code::CodeId;
+use super::code::SourceOwner;
 use super::drive::ExecutionContext;
 use super::dump::DumpStage;
 use super::facts::FactUse;
@@ -85,7 +85,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         self.world.source_map()
     }
 
-    pub fn submit_code(&mut self, submission: CodeSubmission) -> CodeId {
+    pub fn submit_code(&mut self, submission: CodeSubmission) -> SourceOwner {
         let CodeSubmission { name, text } = submission;
         ExecutionContext::new(&mut self.world, &self.telemetry).submit_code(name, text)
     }
@@ -96,7 +96,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// spliced into any user source buffer. Must be called before submitting the
     /// code that should see it. `fz2 test` uses this to make the `test` item
     /// macro available to a test file scoped into this run's world only.
-    pub fn submit_scoped_prelude(&mut self, submission: CodeSubmission) -> CodeId {
+    pub fn submit_scoped_prelude(&mut self, submission: CodeSubmission) -> SourceOwner {
         let CodeSubmission { name, text } = submission;
         self.world.register_scoped_prelude(name, text)
     }
