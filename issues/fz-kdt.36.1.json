@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-tfn.40"
+    "fz-tfn.40",
+    "fz-tfn.47"
   ],
   "blocks": [],
   "created": "2026-09-08T23:24:57Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Function heads: publish supported warnings from typed activation reachability",
   "type": "bug",
-  "updated_at": "2026-09-08T23:26:54Z"
+  "updated_at": "2026-09-08T23:26:55Z"
 }
