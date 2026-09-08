@@ -132,6 +132,14 @@ GROUNDNESS. Collapsing any pair of them is a known defect class.
   really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
   is `!has_vars`.
 
+The semantic-to-executable boundary closes one further distinction only after
+the fixpoint settles. A call result omitted while analysis is climbing means
+"no return evidence yet"; the same omission in a settled callsite summary means
+the callee provably never returns. `project_executable_facts` records that
+result value as `none`. This gives a structurally retained resume entry a
+truthful bottom payload type without manufacturing `any` or pretending its
+unreachable body can execute.
+
 The ARGUMENT decides which specialization a closure call reaches, and nothing
 narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that
 lambda has already been analyzed at — not a contract the caller is checked

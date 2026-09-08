@@ -757,7 +757,7 @@ defmodule Enum do
 
   ## Examples
 
-      Enum.sort([3, 1, 2])
+      Enum.sort(3..1)
       #=> [1, 2, 3]
 
   """
@@ -777,7 +777,7 @@ defmodule Enum do
 
   """
   @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
-  fn sort(enumerable, sorter), do: sort_list(enumerable, sorter)
+  fn sort(enumerable, sorter), do: sort_list(to_list(enumerable), sorter)
 
   @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
   fnp reduce_finish({:done, acc}), do: acc

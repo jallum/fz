@@ -337,7 +337,10 @@ That makes local control explicit instead of positional.
   call even when its lowered body is specialized away. Transport still publishes
   the resume payload ABI for that call target; backend may specialize the body
   to `Halt`, but it preserves the delivered-resume origin so native can build a
-  well-typed continuation descriptor.
+  well-typed continuation descriptor. If the callee provably never returns,
+  settled executable projection closes the analysis-time absence into the empty
+  type, so that descriptor remains typed even though no runtime value can reach
+  it.
   The structural shape of a delivered DATA payload is owned by the PRODUCER: the
   callee's settled `ExecutableReturn` ABI. A destination-passing callee writes
   every field of its return into the caller's continuation, so the resume's shape

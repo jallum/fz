@@ -8829,6 +8829,53 @@ end
     );
 }
 
+#[test]
+fn compiler2_nonreturning_nontail_call_has_a_bottom_resume_payload() {
+    for (case, invocation) in [
+        ("direct", "only(:bad)"),
+        ("closure", "callee = &only/1\n  callee.(:bad)"),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("nonreturning_nontail_{case}_call.fz")),
+            text: format!(
+                r#"
+fn only(:ok), do: :ok
+
+fn main() do
+  {invocation}
+  :unreachable
+end
+"#
+            ),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+
+        let interp_error = match compiler.run_root_interp(root) {
+            Ok(value) => panic!("interp must preserve the {case} callee's function-clause halt, got {value}"),
+            Err(error) => error,
+        };
+        assert!(
+            interp_error.contains("function_clause"),
+            "interp {case} fault should name function_clause: {interp_error}"
+        );
+        let jit_error = match compiler.run_root_jit(root) {
+            Ok(()) => panic!("JIT must preserve the {case} callee's function-clause halt, got success"),
+            Err(error) => error,
+        };
+        assert!(
+            jit_error.contains("function_clause"),
+            "JIT {case} fault should name function_clause: {jit_error}"
+        );
+    }
+}
+
 /// fz-9in: a binding can be dead while the call that produces it survives
 /// (the `1..5` Range construction allocates, so the call edge is kept even
 /// though nothing demands its result). The callee then runs with zero

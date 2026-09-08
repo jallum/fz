@@ -203,11 +203,11 @@ impl RuntimeDemandTypeBuilder {
 pub(crate) fn project_executable_facts(
     world: &mut World,
     executable: &ExecutableKey,
-    analysis: ActivationAnalysis,
+    mut analysis: ActivationAnalysis,
 ) -> Rc<ExecutableFacts> {
     let activation = &executable.activation;
     let body = world.lowered_body(activation.function);
-    let callsites = analysis
+    let callsites: HashMap<_, _> = analysis
         .callsites
         .iter()
         .map(|callsite| {
@@ -224,6 +224,7 @@ pub(crate) fn project_executable_facts(
             )
         })
         .collect();
+    complete_settled_call_result_types(world, &body, &callsites, &mut analysis);
     let delivered_value_joins = delivered_value_joins(&body);
     let callsite_return_origins = collect_callsite_return_origins(&body);
     let value_origins = collect_value_origins(&body, &callsite_return_origins);
@@ -278,6 +279,43 @@ pub(crate) fn project_executable_facts(
         demand_types,
         callable_activation_inputs,
     })
+}
+
+/// Close the one semantic distinction that disappears at this boundary.
+///
+/// During chaotic iteration, an absent call return means "no evidence yet",
+/// so activation analysis must not manufacture a type for the result. Every
+/// callsite summary read here is settled, however: an absent return now means
+/// the callee provably never returns. Record that result as the empty type so
+/// structurally retained delivered-resume entries still have a truthful ABI.
+fn complete_settled_call_result_types(
+    world: &mut World,
+    body: &LoweredBody,
+    callsites: &HashMap<CallSiteId, CallSiteSummary>,
+    analysis: &mut ActivationAnalysis,
+) {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return;
+    };
+    let none = world.types_mut().none();
+    for entry in entries {
+        let (value, callsite) = match &entry.tail {
+            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
+                (*value, *callsite)
+            }
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => continue,
+        };
+        if callsites
+            .get(&callsite)
+            .is_some_and(|summary| summary.return_ty.is_none())
+        {
+            analysis.value_types.entry(value).or_insert(none);
+        }
+    }
 }
 
 fn prepare_runtime_demand_type_inputs(
