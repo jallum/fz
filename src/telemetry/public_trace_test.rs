@@ -2061,7 +2061,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the semantic total; every retained evaluation remains caused.
         // fz-5xp.2: 990 -> 989, the one AnalyzeActivation evaluation the
         // unminted reduce-and-reverse activation no longer needs.
-        total_evaluations: 1109,
+        // fz-5xp.87: 1109 -> 1111. The only moving family is
+        // DeriveFunctionContract: newly declared Map.entry/2 and
+        // Range.done?/3 each contribute their one exact contract derivation.
+        total_evaluations: 1111,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2130,7 +2133,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
         // above; no other formula family moves.
         // Macro readiness is a retained content dependency.
-        total_evaluations: 1458,
+        // fz-5xp.87: 1458 -> 1462. The only moving family is
+        // DeriveFunctionContract: all_value_step/1, any_value_step/1,
+        // find_index_step/2, and find_value_step/2 now declare their domains.
+        total_evaluations: 1462,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2310,7 +2316,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182 removes the same thirteen absorbed-identity analyses
         // from the semantic total.
         // fz-5xp.6 lowers this by 30 -- see the work-start census.
-        total_evaluations: 2467,
+        // fz-5xp.87: 2467 -> 2473. The only moving family is
+        // DeriveFunctionContract: take/drop/split_positive each run once,
+        // non_negative runs twice, and Range.done? runs once.
+        total_evaluations: 2473,
     },
 ];
 

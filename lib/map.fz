@@ -131,26 +131,35 @@ defmodule Map do
 
   # Splits the pair list into parallel key and value lists, which is what the
   # one-allocation builder takes.
+  @spec build([{a, b}], [a], [b]) :: any
   fnp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
   fnp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
 
+  @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   fnp taken(_map, [], acc), do: reverse(acc, [])
   fnp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
+  @spec take_one(any, any, [{any, any}], bool) :: [{any, any}]
   fnp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
   fnp take_one(_map, _k, acc, false), do: acc
 
+  @spec dropped([{a, b}], [any], [{a, b}]) :: [{a, b}]
   fnp dropped([], _keys, acc), do: reverse(acc, [])
   fnp dropped([{k, v} | t], keys, acc), do: dropped(t, keys, drop_one({k, v}, keys, acc, key_listed?(keys, k)))
+  @spec drop_one({a, b}, [any], [{a, b}], bool) :: [{a, b}]
   fnp drop_one(_pair, _keys, acc, true), do: acc
   fnp drop_one(pair, _keys, acc, false), do: [pair | acc]
 
+  @spec kept([{a, b}], ({a, b}) -> bool, [{a, b}]) :: [{a, b}]
   fnp kept([], _fun, acc), do: reverse(acc, [])
   fnp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
+  @spec keep_one({a, b}, [{a, b}], bool) :: [{a, b}]
   fnp keep_one(pair, acc, true), do: [pair | acc]
   fnp keep_one(_pair, acc, false), do: acc
 
+  @spec key_listed?([any], any) :: bool
   fnp key_listed?([], _v), do: false
   fnp key_listed?([h | t], v), do: key_listed_or?(h === v, t, v)
+  @spec key_listed_or?(bool, [any], any) :: bool
   fnp key_listed_or?(true, _t, _v), do: true
   fnp key_listed_or?(false, t, v), do: key_listed?(t, v)
 
@@ -213,6 +222,7 @@ defmodule Map do
   @spec get(any, any, any) :: any
   fn get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
 
+  @spec get_or(any, any, any, bool) :: any
   fnp get_or(map, key, _default, true), do: map[key]
   fnp get_or(_map, _key, default, false), do: default
 
@@ -301,6 +311,7 @@ defmodule Map do
   @spec has_key?(any, any) :: bool
   fn has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
 
+  @spec has_key?(any, integer, integer, any) :: bool
   fnp has_key?(map, count, index, key) do
     if index >= count do
       false
@@ -313,6 +324,7 @@ defmodule Map do
     end
   end
 
+  @spec keys(any, integer, integer, [any]) :: [any]
   fnp keys(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
@@ -321,6 +333,7 @@ defmodule Map do
     end
   end
 
+  @spec values(any, integer, integer, [any]) :: [any]
   fnp values(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
@@ -456,6 +469,7 @@ defmodule Map do
   fnp reduce_while_step(map, count, index, {:cont, acc}, reducer), do: reduce_while_cont(map, count, index + 1, acc, reducer)
   fnp reduce_while_step(_map, _count, _index, {:halt, acc}, _reducer), do: acc
 
+  @spec member_pair?(any, integer, integer, any, any) :: bool
   fnp member_pair?(map, count, index, key, value) do
     if index >= count do
       false
@@ -468,10 +482,12 @@ defmodule Map do
     end
   end
 
+  @spec entry(any, integer) :: {any, any}
   fnp entry(map, index) do
     {fz_map_entry_key(map, index), fz_map_entry_value(map, index)}
   end
 
+  @spec to_list(any, integer, integer, [{any, any}]) :: [{any, any}]
   fnp to_list(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
@@ -480,6 +496,7 @@ defmodule Map do
     end
   end
 
+  @spec reverse([a], [b]) :: [a | b]
   fnp reverse([], acc), do: acc
   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 end

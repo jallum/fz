@@ -1,0 +1,7 @@
+#---
+# purpose: "Json.encode!/1 rejects a non-byte-aligned bitstring explicitly on every path"
+# expect: abort
+#---
+fn main() do
+  Json.encode!(<<1::4>>)
+end

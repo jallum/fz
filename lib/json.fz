@@ -84,12 +84,14 @@ defmodule Json do
   @spec decode(binary) :: {:ok, any} | {:error, any}
   fn decode(input), do: decode_done(value(input), input)
 
+  @spec decode_done({:ok, any, binary} | {:error, any}, binary) :: {:ok, any} | {:error, any}
   fnp decode_done({:ok, v, rest}, input), do: decode_trailing(rest, skip_ws(rest), v, input)
   fnp decode_done({:error, rest}, input), do: {:error, reason(rest, input)}
 
   # Trailing whitespace is accepted; trailing anything else is not. The error
   # points at the raw remainder's first byte, so `"[1] "` is ok and
   # `"[1] junk"` is an invalid_byte at the space.
+  @spec decode_trailing(binary, binary, any, binary) :: {:ok, any} | {:error, any}
   fnp decode_trailing(_raw, "", v, _input), do: {:ok, v}
   fnp decode_trailing(raw, _skipped, _v, input), do: {:error, reason(raw, input)}
 
@@ -111,6 +113,7 @@ defmodule Json do
   @spec decode!(binary) :: any
   fn decode!(input), do: decode_result(decode(input))
 
+  @spec decode_result({:ok, any} | {:error, any}) :: any
   fnp decode_result({:ok, v}), do: v
   fnp decode_result({:error, _reason}), do: Kernel.panic("JSON.decode!: invalid JSON")
 
@@ -134,9 +137,10 @@ defmodule Json do
 
   Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
   a map. Any other value halts the process, so there is no plain
-  `encode/1`. A map's keys are encoded with `encode!/1` too, so a binary
-  key becomes a quoted JSON string; other key types will not produce valid
-  JSON.
+  `encode/1`. Binaries must be byte-aligned; a non-byte-aligned bitstring
+  halts instead of being encoded as a JSON string. A map's keys are encoded
+  with `encode!/1` too, so a binary key becomes a quoted JSON string; other
+  key types will not produce valid JSON.
 
   ## Examples
 
@@ -156,30 +160,38 @@ defmodule Json do
   fn encode!(v :: binary), do: "\"" <> escape(v, "") <> "\""
   fn encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
   fn encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
+  fn encode!(_v), do: Kernel.panic("JSON.encode!: unsupported value")
 
+  @spec escape(binary, binary) :: binary
   fnp escape("", acc), do: acc
   fnp escape(<<"\"", r :: binary>>, acc), do: escape(r, acc <> "\\\"")
   fnp escape(<<"\\", r :: binary>>, acc), do: escape(r, acc <> "\\\\")
   fnp escape(<<"\n", r :: binary>>, acc), do: escape(r, acc <> "\\n")
   fnp escape(<<"\t", r :: binary>>, acc), do: escape(r, acc <> "\\t")
   fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
+  fnp escape(_bits, _acc), do: Kernel.panic("JSON.encode!: binary is not byte-aligned")
 
+  @spec elements([any], binary) :: binary
   fnp elements([], acc), do: acc
   fnp elements([h], acc), do: acc <> encode!(h)
   fnp elements([h | t], acc), do: elements(t, acc <> encode!(h) <> ",")
 
+  @spec pairs([{any, any}], binary) :: binary
   fnp pairs([], acc), do: acc
   fnp pairs([{k, v}], acc), do: acc <> encode!(k) <> ":" <> encode!(v)
   fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode!(k) <> ":" <> encode!(v) <> ",")
 
+  @spec skip_ws(binary) :: binary
   fnp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)
   fnp skip_ws(<<"\n", r :: binary>>), do: skip_ws(r)
   fnp skip_ws(<<"\t", r :: binary>>), do: skip_ws(r)
   fnp skip_ws(<<"\r", r :: binary>>), do: skip_ws(r)
   fnp skip_ws(b), do: b
 
+  @spec value(binary) :: {:ok, any, binary} | {:error, any}
   fnp value(b), do: val(skip_ws(b))
 
+  @spec val(binary) :: {:ok, any, binary} | {:error, any}
   fnp val(<<"true", r :: binary>>), do: {:ok, true, r}
   fnp val(<<"false", r :: binary>>), do: {:ok, false, r}
   fnp val(<<"null", r :: binary>>), do: {:ok, nil, r}
@@ -199,18 +211,23 @@ defmodule Json do
   fnp val(<<110, _r :: binary>>), do: {:error, ""}
   fnp val(b), do: {:error, b}
 
+  @spec negate(any) :: any
   fnp negate({:ok, n, r}), do: {:ok, -n, r}
   fnp negate(other), do: other
 
   # An integer unless a fraction follows, which is how JSON distinguishes them.
+  @spec number(binary) :: any
   fnp number(b), do: fraction(digits(b, 0))
 
+  @spec digits(binary, integer) :: {integer, binary}
   fnp digits(<<c, r :: binary>>, acc) when c >= 48 and c <= 57, do: digits(r, acc * 10 + (c - 48))
   fnp digits(b, acc), do: {acc, b}
 
+  @spec fraction({integer, binary}) :: any
   fnp fraction({whole, <<".", r :: binary>>}), do: fraction_digits(r, whole, 0, 1)
   fnp fraction({whole, b}), do: exponent(whole, b)
 
+  @spec fraction_digits(binary, integer, integer, integer) :: any
   fnp fraction_digits(<<c, r :: binary>>, whole, num, den) when c >= 48 and c <= 57 do
     fraction_digits(r, whole, num * 10 + (c - 48), den * 10)
   end
@@ -218,14 +235,17 @@ defmodule Json do
 
   # `1e3`, `1.5E-2`. JSON allows an exponent on an integer too, and the result
   # is a float either way: `1e3` is `1.0e3`, not `1000`.
+  @spec exponent(integer | float, binary) :: any
   fnp exponent(n, <<"e", r :: binary>>), do: exponent_sign(n, r)
   fnp exponent(n, <<"E", r :: binary>>), do: exponent_sign(n, r)
   fnp exponent(n, b), do: {:ok, n, b}
 
+  @spec exponent_sign(integer | float, binary) :: any
   fnp exponent_sign(n, <<"-", r :: binary>>), do: exponent_digits(n, r, 0, -1)
   fnp exponent_sign(n, <<"+", r :: binary>>), do: exponent_digits(n, r, 0, 1)
   fnp exponent_sign(n, b), do: exponent_digits(n, b, 0, 1)
 
+  @spec exponent_digits(integer | float, binary, integer, integer) :: any
   fnp exponent_digits(n, <<c, r :: binary>>, acc, sign) when c >= 48 and c <= 57 do
     exponent_digits(n, r, acc * 10 + (c - 48), sign)
   end
@@ -237,12 +257,15 @@ defmodule Json do
   # differently. Powers of ten up to 10^22 are exact in a float, so building
   # the power first and applying it once is correctly rounded over the range
   # JSON numbers use.
+  @spec scale(float, integer, integer) :: float
   fnp scale(n, 0, _sign), do: n
   fnp scale(n, e, sign), do: apply_scale(n, pow10(e, 1.0), sign)
 
+  @spec apply_scale(float, float, integer) :: float
   fnp apply_scale(n, p, sign) when sign > 0, do: n * p
   fnp apply_scale(n, p, _sign), do: n / p
 
+  @spec pow10(integer, float) :: float
   fnp pow10(0, acc), do: acc
   fnp pow10(e, acc), do: pow10(e - 1, acc * 10.0)
 
@@ -251,11 +274,13 @@ defmodule Json do
   # second pass to measure a run costs more than the appends it saves: both
   # shapes measured 435 allocations. Scanning first becomes worthwhile once a
   # sub-binary is a view onto its source rather than a copy.
+  @spec string(binary, binary) :: any
   fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
   fnp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
   fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
   fnp string(b, _acc), do: {:error, b}
 
+  @spec escaped(binary, binary, binary) :: any
   fnp escaped(<<"\"", r :: binary>>, acc, _at), do: string(r, acc <> "\"")
   fnp escaped(<<"\\", r :: binary>>, acc, _at), do: string(r, acc <> "\\")
   fnp escaped(<<"/", r :: binary>>, acc, _at), do: string(r, acc <> "/")
@@ -271,16 +296,20 @@ defmodule Json do
   # offset with the six-byte sequence, so it is the one failure that carries
   # where it started rather than where it stopped. An unknown simple escape is
   # an ordinary invalid_byte and needs none of this.
+  @spec unicode(binary, binary, integer | :error, binary) :: any
   fnp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at}}
   fnp unicode(r, acc, cp, _at), do: string(r, acc <> utf8(cp))
 
+  @spec hex4(integer, integer, integer, integer) :: integer | :error
   fnp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
+  @spec hex4_join(integer | :error, integer | :error, integer | :error, integer | :error) :: integer | :error
   fnp hex4_join(:error, _b, _c, _d), do: :error
   fnp hex4_join(_a, :error, _c, _d), do: :error
   fnp hex4_join(_a, _b, :error, _d), do: :error
   fnp hex4_join(_a, _b, _c, :error), do: :error
   fnp hex4_join(a, b, c, d), do: ((a * 16 + b) * 16 + c) * 16 + d
 
+  @spec hex(integer) :: integer | :error
   fnp hex(c) when c >= 48 and c <= 57, do: c - 48
   fnp hex(c) when c >= 97 and c <= 102, do: c - 87
   fnp hex(c) when c >= 65 and c <= 70, do: c - 55
@@ -288,6 +317,7 @@ defmodule Json do
 
   # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined, so
   # a lone surrogate encodes as itself.
+  @spec utf8(integer) :: binary
   fnp utf8(cp) when cp < 128, do: <<cp>>
   fnp utf8(cp) when cp < 2048 do
     <<192 + div(cp, 64), 128 + rem(cp, 64)>>
@@ -298,39 +328,50 @@ defmodule Json do
 
   # `]` closes an empty array only at the start. After a comma a value is
   # required, so `[1,]` is an error.
+  @spec array(binary, [any]) :: any
   fnp array(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
   fnp array(b, acc), do: array_element(b, acc)
 
+  @spec array_element(binary, [any]) :: any
   fnp array_element(b, acc), do: array_item(value(b), acc)
 
+  @spec array_item(any, [any]) :: any
   fnp array_item({:ok, v, r}, acc), do: array_next(skip_ws(r), [v | acc])
   fnp array_item(other, _acc), do: other
 
+  @spec array_next(binary, [any]) :: any
   fnp array_next(<<",", r :: binary>>, acc), do: array_element(skip_ws(r), acc)
   fnp array_next(<<"]", r :: binary>>, acc), do: {:ok, reverse(acc, []), r}
   fnp array_next(b, _acc), do: {:error, b}
 
   # `}` closes an empty object only at the start. After a comma a key is
   # required, so `{"a": 1,}` is an error.
+  @spec object(binary, any) :: any
   fnp object(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
   fnp object(b, acc), do: object_entry(b, acc)
 
+  @spec object_entry(binary, any) :: any
   fnp object_entry(<<"\"", r :: binary>>, acc), do: object_key(string(r, ""), acc)
   fnp object_entry(b, _acc), do: {:error, b}
 
+  @spec object_key(any, any) :: any
   fnp object_key({:ok, k, r}, acc), do: object_colon(skip_ws(r), k, acc)
   fnp object_key(other, _acc), do: other
 
+  @spec object_colon(binary, binary, any) :: any
   fnp object_colon(<<":", r :: binary>>, k, acc), do: object_value(value(r), k, acc)
   fnp object_colon(b, _k, _acc), do: {:error, b}
 
+  @spec object_value(any, binary, any) :: any
   fnp object_value({:ok, v, r}, k, acc), do: object_next(skip_ws(r), Map.put(acc, k, v))
   fnp object_value(other, _k, _acc), do: other
 
+  @spec object_next(binary, any) :: any
   fnp object_next(<<",", r :: binary>>, acc), do: object_entry(skip_ws(r), acc)
   fnp object_next(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
   fnp object_next(b, _acc), do: {:error, b}
 
+  @spec reverse([a], [b]) :: [a | b]
   fnp reverse([], acc), do: acc
   fnp reverse([h | t], acc), do: reverse(t, [h | acc])
 end

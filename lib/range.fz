@@ -194,6 +194,7 @@ defmodule Range do
   fnp reduce_while_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_while_cont(first, last, step, current + step, acc, reducer)
   fnp reduce_while_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: acc
 
+  @spec slice_from(integer, integer, integer, integer, [integer]) :: [integer]
   fnp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
   fnp slice_from(last, step, current, amount, acc) do
     if done?(last, step, current) do
@@ -203,12 +204,15 @@ defmodule Range do
     end
   end
 
+  @spec reverse([a], [b]) :: [a | b]
   fnp reverse([], acc), do: acc
   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
+  @spec done?(integer, integer, integer) :: bool
   fnp done?(last, step, current) when step > 0, do: current > last
   fnp done?(last, _step, current), do: current < last
 
+  @spec contains?(integer, integer, integer, integer) :: bool
   fnp contains?(first, last, step, value) when step > 0, do: value >= first and value <= last
   fnp contains?(first, last, _step, value), do: value <= first and value >= last
 end

@@ -60,6 +60,7 @@ use fz::compiler2::{
     fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };
 use libtest_mimic::{Arguments, Failed, Trial};
+use std::collections::BTreeSet;
 use std::env::{temp_dir, var};
 use std::fs::{self, File, remove_file};
 use std::io::{Error, Read, Seek, SeekFrom, Write};
@@ -188,6 +189,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "production_and_guides_have_no_old_value_format_gate_names",
             production_and_guides_have_no_old_value_format_gate_names,
+        ),
+        (
+            "runtime_private_helpers_declare_their_domains",
+            runtime_private_helpers_declare_their_domains,
         ),
         (
             "quicksort_pins_return_demand_target",
@@ -2184,6 +2189,115 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
             );
         }
     }
+}
+
+/// A private runtime helper is still a callable surface. Without a spec its
+/// parameters have the domain `any`, so list- or tuple-only clauses are
+/// genuinely partial and the coverage warning is correct. Keep the invariant
+/// structural: lazy runtime loading cannot exercise every helper in one
+/// fixture, but every declared private signature must have a matching spec.
+fn runtime_private_helpers_declare_their_domains() {
+    let mut private = BTreeSet::new();
+    let mut specified = BTreeSet::new();
+
+    let mut paths = fs::read_dir("lib")
+        .expect("read runtime library")
+        .map(|entry| entry.expect("read runtime library entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "fz"))
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    for path in paths {
+        let source = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        for (line_index, line) in source.lines().enumerate() {
+            if line.trim_start().starts_with("fnp ") {
+                let signature = runtime_source_signature(line, "fnp ")
+                    .unwrap_or_else(|| panic!("parse private runtime helper at {}:{}", path.display(), line_index + 1));
+                private.insert(format!("{}:{signature}", path.display()));
+            }
+            if let Some(signature) = runtime_source_signature(line, "@spec ") {
+                specified.insert(format!("{}:{signature}", path.display()));
+            }
+        }
+    }
+
+    let missing = private.difference(&specified).cloned().collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "private runtime helpers need explicit parameter and result domains:\n{}",
+        missing.join("\n")
+    );
+}
+
+fn runtime_source_signature(line: &str, marker: &str) -> Option<String> {
+    let declaration = line.trim_start().strip_prefix(marker)?;
+    let open = declaration.find('(')?;
+    let name = &declaration[..open];
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'?' | b'!'))
+    {
+        return None;
+    }
+    let arity = runtime_source_parameter_arity(&declaration[open + 1..])?;
+    Some(format!("{name}/{arity}"))
+}
+
+fn runtime_source_parameter_arity(parameters: &str) -> Option<usize> {
+    let bytes = parameters.as_bytes();
+    let mut depth = 0usize;
+    let mut commas = 0usize;
+    let mut saw_argument = false;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            saw_argument = true;
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"<<") {
+            depth += 1;
+            saw_argument = true;
+            index += 2;
+            continue;
+        }
+        if bytes[index..].starts_with(b">>") {
+            depth = depth.checked_sub(1)?;
+            index += 2;
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                saw_argument = true;
+            }
+            b']' | b'}' => depth = depth.checked_sub(1)?,
+            b')' if depth == 0 => return Some(if saw_argument { commas + 1 } else { 0 }),
+            b')' => depth -= 1,
+            b',' if depth == 0 => commas += 1,
+            byte if !byte.is_ascii_whitespace() => saw_argument = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    None
 }
 
 fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {

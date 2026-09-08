@@ -745,6 +745,7 @@ defmodule Enum do
   # eleven-element sort. The numeric clauses keep the inline compare the
   # operators already have; only the pairs `<=` cannot express reach the
   # comparator.
+  @spec default_order(any, any) :: bool
   fnp default_order(left :: integer, right :: integer), do: left <= right
   fnp default_order(left :: float, right :: float), do: left <= right
   fnp default_order(left, right), do: Kernel.compare(left, right) <= 0
@@ -799,6 +800,7 @@ defmodule Enum do
   fnp reduce_first_acc({:acc, acc}), do: acc
   fnp reduce_first_acc(_state), do: panic("Enum.ReduceStateError")
 
+  @spec each_step(a, b, (a) -> any) :: b
   fnp each_step(entry, acc, fun) do
     fun.(entry)
     acc
@@ -819,9 +821,11 @@ defmodule Enum do
     end)
   end
 
+  @spec map_list([a], (a) -> b) :: [b]
   fnp map_list([], _fun), do: []
   fnp map_list([head | tail], fun), do: [fun.(head) | map_list(tail, fun)]
 
+  @spec filter_list([a], (a) -> any) :: [a]
   fnp filter_list([], _fun), do: []
   fnp filter_list([head | tail], fun) do
     if fun.(head) do
@@ -831,11 +835,13 @@ defmodule Enum do
     end
   end
 
+  @spec flat_map_list([a], (a) -> Enumerable.t(b)) :: [b]
   fnp flat_map_list([], _fun), do: []
   fnp flat_map_list([head | tail], fun) do
     List.concat(to_list(fun.(head)), flat_map_list(tail, fun))
   end
 
+  @spec map_reduce_list([a], b, (a, b) -> {c, b}) :: {[c], b}
   fnp map_reduce_list([], acc, _fun), do: {[], acc}
   fnp map_reduce_list([head | tail], acc, fun) do
     {mapped, next_acc} = fun.(head, acc)
@@ -843,18 +849,22 @@ defmodule Enum do
     {[mapped | mapped_tail], final_acc}
   end
 
+  @spec scan_first([a], (a, a) -> a) :: [a]
   fnp scan_first([], _fun), do: []
   fnp scan_first([head | tail], fun), do: [head | scan_list(tail, head, fun)]
 
+  @spec scan_list([a], b, (a, b) -> b) :: [b]
   fnp scan_list([], _acc, _fun), do: []
   fnp scan_list([head | tail], acc, fun) do
     next = fun.(head, acc)
     [next | scan_list(tail, next, fun)]
   end
 
+  @spec intersperse_list([a], a) :: [a]
   fnp intersperse_list([], _separator), do: []
   fnp intersperse_list([head | tail], separator), do: [head | intersperse_tail(tail, separator)]
 
+  @spec intersperse_tail([a], a) :: [a]
   fnp intersperse_tail([], _separator), do: []
   fnp intersperse_tail([head | tail], separator), do: [separator, head | intersperse_tail(tail, separator)]
   @spec with_index_list([a], integer) :: [{a, integer}]
@@ -871,34 +881,41 @@ defmodule Enum do
     [next | map_every_list(tail, nth, index + 1, fun)]
   end
 
+  @spec map_join_list([a], binary, (a) -> binary) :: binary
   fnp map_join_list([], _joiner, _mapper), do: ""
   fnp map_join_list([head | tail], joiner, mapper) do
     map_join_tail(tail, joiner, mapper, mapper.(head))
   end
 
+  @spec map_join_tail([a], binary, (a) -> binary, binary) :: binary
   fnp map_join_tail([], _joiner, _mapper, acc), do: acc
   fnp map_join_tail([head | tail], joiner, mapper, acc) do
     map_join_tail(tail, joiner, mapper, acc <> joiner <> mapper.(head))
   end
 
+  @spec map_intersperse_list([a], b, (a) -> b) :: [b]
   fnp map_intersperse_list([], _separator, _mapper), do: []
   fnp map_intersperse_list([head | tail], separator, mapper) do
     [mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
+  @spec map_intersperse_tail([a], b, (a) -> b) :: [b]
   fnp map_intersperse_tail([], _separator, _mapper), do: []
   fnp map_intersperse_tail([head | tail], separator, mapper) do
     [separator, mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
+  @spec all_value_step(any) :: {:cont, bool} | {:halt, bool}
   fnp all_value_step(value) do
     if value, do: {:cont, true}, else: {:halt, false}
   end
 
+  @spec any_value_step(any) :: {:cont, bool} | {:halt, bool}
   fnp any_value_step(value) do
     if value, do: {:halt, true}, else: {:cont, false}
   end
 
+  @spec find_index_step(any, {:not_found, integer}) :: {:cont, {:not_found, integer}} | {:halt, {:found, integer}}
   fnp find_index_step(value, {:not_found, index}) do
     if value, do: {:halt, {:found, index}}, else: {:cont, {:not_found, index + 1}}
   end
@@ -907,15 +924,18 @@ defmodule Enum do
   fnp find_index_finish({:found, index}), do: index
   fnp find_index_finish({:not_found, _index}), do: nil
 
+  @spec find_value_step(a, b) :: {:halt, a} | {:cont, b}
   fnp find_value_step(value, default) do
     if value, do: {:halt, value}, else: {:cont, default}
   end
 
   @spec normalized_prefix_count(Enumerable.t(a), integer) :: integer
   fnp normalized_prefix_count(enumerable, amount), do: non_negative(count(enumerable) + amount)
+  @spec non_negative(integer) :: integer
   fnp non_negative(count) when count > 0, do: count
   fnp non_negative(_count), do: 0
 
+  @spec take_positive(Enumerable.t(a), integer) :: [a]
   fnp take_positive(enumerable, amount) do
     take_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
@@ -930,6 +950,7 @@ defmodule Enum do
   @spec take_every_finish({[a], integer}) :: [a]
   fnp take_every_finish({acc, _countdown}), do: reverse_list(acc)
 
+  @spec drop_positive(Enumerable.t(a), integer) :: [a]
   fnp drop_positive(enumerable, amount) do
     drop_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
@@ -947,6 +968,7 @@ defmodule Enum do
   @spec drop_every_finish({[a], integer}) :: [a]
   fnp drop_every_finish({acc, _countdown}), do: reverse_list(acc)
 
+  @spec split_positive(Enumerable.t(a), integer) :: {[a], [a]}
   fnp split_positive(enumerable, count) do
     split_counted_finish(
       reduce_while(enumerable, {[], [], count}, fn (entry, {left, right, remaining}) ->
@@ -960,6 +982,7 @@ defmodule Enum do
   @spec split_pair_finish({[a], [a]}) :: {[a], [a]}
   fnp split_pair_finish({left, right}), do: {reverse_list(left), reverse_list(right)}
 
+  @spec sort_list([a], (a, a) -> bool) :: [a]
   fnp sort_list([], _sorter), do: []
   fnp sort_list([single], _sorter), do: [single]
   fnp sort_list(list, sorter) do
@@ -971,6 +994,7 @@ defmodule Enum do
     )
   end
 
+  @spec split_sort_list([a], [a], [a]) :: {[a], [a]}
   fnp split_sort_list([], left, right), do: {left, right}
   fnp split_sort_list([single], left, right), do: {[single | left], right}
   fnp split_sort_list([left_head, right_head | tail], left, right) do
@@ -983,6 +1007,7 @@ defmodule Enum do
   fnp reverse_list([], acc), do: acc
   fnp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 
+  @spec merge_sort_lists([a], [a], (a, a) -> bool) :: [a]
   fnp merge_sort_lists([], right, _sorter), do: right
   fnp merge_sort_lists(left, [], _sorter), do: left
   fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do

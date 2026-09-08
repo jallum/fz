@@ -112,6 +112,13 @@ Compiler2 owns the active contract path:
   slot is still blind and a returned tuple FIELD at a recursive key is still
   freight, so joined evidence has not gone away; the
   element axis of it has.
+- Private runtime helpers declare the producer-owned parameter and result
+  domains they actually consume. Without a contract, a helper's inputs are
+  `any`, so constructor-only clauses such as `[]` and `[head | tail]` are
+  genuinely partial and correctly warn. The fixture matrix inventories every
+  `fnp name/arity` under `lib/` and requires a matching `@spec name/arity`,
+  while activated fixtures prove those declared domains remove the warnings
+  without hiding genuine user fallthroughs.
 - Kernel arithmetic (`+ - * / %`) is fully specced in
   `lib/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
