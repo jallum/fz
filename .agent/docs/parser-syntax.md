@@ -55,12 +55,20 @@ newline to guess intent.
   *new* statement (mirrors Elixir's tokenizer, where a prefix-capable
   operator never swallows a preceding eol; `%` has no modulo in Elixir, so
   that dual role is fz-specific).
-- **Statement/`eoe` separation**: block parsing (`parse_block_until`) calls
-  `skip_newlines()` between statements. A `Tok::Newline` that reaches
-  `parse_bp`'s Pratt loop matches none of its arms, so the loop returns the
-  completed left-hand side and the block loop treats the newline as the
-  boundary between two statements, wrapping multiple statements in
-  `__block__`.
+- **Statement/`eoe` separation**: a `Tok::Newline` that reaches `parse_bp`'s
+  Pratt loop matches none of its arms, so the loop returns the completed
+  left-hand side. Every newline-delimited sequence then calls
+  `require_newline_or_terminator`: another expression, item, or clause is legal
+  only after a physical newline; an enclosing `end`/`else`/`after` may follow
+  immediately. Spaces alone are never a statement separator, so `a = 1 2` is
+  rejected at the `2` instead of becoming a block whose extra expression can
+  be discarded downstream. Inline grammar such as call arguments, lambdas,
+  and trailing `do` blocks remains inside `parse_bp` and its sub-productions
+  before the sequence boundary is checked. A block with multiple separated
+  statements is wrapped in `__block__`. The keyword-list parser preserves this
+  ownership: it consumes newlines only when the next non-newline token is its
+  comma or closing delimiter. A newline after a no-parens keyword call is left
+  for the enclosing block, so the next call remains a separate statement.
 
 There is no `starts_expr_continuation` / `peek_after_newlines`-style
 lookahead in the parser. Continuation vs. new-statement is a static,

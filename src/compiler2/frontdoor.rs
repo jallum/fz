@@ -136,7 +136,7 @@ impl FrontDoorParser {
         self.skip_newlines();
         while !terminators.iter().any(|terminator| self.peek_is(terminator)) {
             items.push(self.parse_item(module_path)?);
-            self.skip_newlines();
+            self.require_newline_or_terminator(terminators, "unexpected item without a newline")?;
         }
         Ok(items)
     }
@@ -374,7 +374,7 @@ impl FrontDoorParser {
         let mut items = Vec::new();
         while !self.peek_is(&Tok::End) {
             items.push(self.parse_protocol_body_item(module_path)?);
-            self.skip_newlines();
+            self.require_newline_or_terminator(&[Tok::End], "unexpected protocol item without a newline")?;
         }
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
@@ -1170,7 +1170,10 @@ impl FrontDoorParser {
         let mut clauses = Vec::new();
         while !matches!(self.peek(), Tok::After | Tok::End | Tok::Eof) {
             clauses.push(self.parse_case_clause(module_path, scope)?);
-            self.skip_newlines();
+            self.require_newline_or_terminator(
+                &[Tok::After, Tok::End, Tok::Eof],
+                "unexpected receive clause without a newline",
+            )?;
         }
         let mut kw_entries = vec![self.builder.keyword("do", self.builder.list(&clauses)?)?];
         if self.eat(&Tok::After) {
@@ -1228,7 +1231,10 @@ impl FrontDoorParser {
             let clause_span = clause_start.merge(body.span);
             let clause_meta = self.meta(module_path, scope, clause_span)?;
             clauses.push(self.builder.call("->", &clause_meta, &[patterns, body.root])?);
-            self.skip_newlines();
+            self.require_newline_or_terminator(
+                &[Tok::End, Tok::Eof],
+                "unexpected anonymous-function clause without a newline",
+            )?;
         }
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
@@ -1358,7 +1364,7 @@ impl FrontDoorParser {
                 self.builder
                     .call("->", &clause_meta, &[self.builder.list(&[test.root])?, body.root])?,
             );
-            self.skip_newlines();
+            self.require_newline_or_terminator(&[Tok::End], "unexpected cond clause without a newline")?;
         }
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
@@ -1388,7 +1394,7 @@ impl FrontDoorParser {
         let mut clauses = Vec::new();
         while !self.peek_is(&Tok::End) {
             clauses.push(self.parse_case_clause(module_path, scope)?);
-            self.skip_newlines();
+            self.require_newline_or_terminator(&[Tok::End], "unexpected case clause without a newline")?;
         }
         self.expect(&Tok::End, "`end`")?;
         let span = start.merge(self.prev_span());
@@ -1447,7 +1453,10 @@ impl FrontDoorParser {
                 let mut clauses = Vec::new();
                 while !matches!(self.peek(), Tok::End | Tok::Eof) {
                     clauses.push(self.parse_case_clause(module_path, scope)?);
-                    self.skip_newlines();
+                    self.require_newline_or_terminator(
+                        &[Tok::End, Tok::Eof],
+                        "unexpected with-else clause without a newline",
+                    )?;
                 }
                 kw_entries.push(self.builder.keyword("else", self.builder.list(&clauses)?)?);
             }
@@ -1579,7 +1588,7 @@ impl FrontDoorParser {
         self.skip_newlines();
         while !terminators.iter().any(|terminator| self.peek_is(terminator)) {
             exprs.push(self.parse_expr(module_path, scope)?.root);
-            self.skip_newlines();
+            self.require_newline_or_terminator(terminators, "unexpected second expression without a newline")?;
         }
         if exprs.len() == 1 {
             return Ok(exprs.pop().expect("single block expr"));
@@ -1812,6 +1821,14 @@ impl FrontDoorParser {
     }
 
     fn continue_keyword_entries(&mut self, terminator: &Tok, positional_msg: &str) -> Result<bool, FrontDoorError> {
+        if self.peek_is(&Tok::Newline) {
+            let after_newlines = self.peek_non_newline_from(0);
+            let stays_in_keyword_list =
+                matches!(after_newlines, Tok::Comma) || discriminant(after_newlines) == discriminant(terminator);
+            if !stays_in_keyword_list {
+                return Ok(false);
+            }
+        }
         self.skip_newlines();
         if !self.eat(&Tok::Comma) {
             return Ok(false);
@@ -2063,9 +2080,10 @@ impl FrontDoorParser {
 
     /// Look ahead from `self.pos + off`, skipping over any `Newline` tokens,
     /// and return the first non-newline token found (or `Eof` at end of input).
-    /// Used where a construct needs to decide whether a dot continues across
-    /// a line break before committing to consume it (e.g. alias-path chains,
-    /// which only continue when an uppercase segment follows).
+    /// Used where a construct needs to decide whether its own delimiter
+    /// continues across a line break before committing to consume it. Alias
+    /// paths look for an uppercase segment after `.`, while keyword lists
+    /// consume trailing newlines only before their comma or closing delimiter.
     fn peek_non_newline_from(&self, off: usize) -> &Tok {
         let mut i = self.pos + off;
         while let Some(token) = self.toks.get(i) {
@@ -2118,6 +2136,21 @@ impl FrontDoorParser {
         while self.peek_is(&Tok::Newline) {
             self.bump();
         }
+    }
+
+    fn require_newline_or_terminator(
+        &mut self,
+        terminators: &[Tok],
+        missing_separator: &str,
+    ) -> Result<(), FrontDoorError> {
+        if terminators.iter().any(|terminator| self.peek_is(terminator)) {
+            return Ok(());
+        }
+        if !self.peek_is(&Tok::Newline) {
+            return self.err(format!("{missing_separator}: {:?}", self.peek()));
+        }
+        self.skip_newlines();
+        Ok(())
     }
 
     fn collect_line_tokens(&mut self) -> Result<Vec<Token>, FrontDoorError> {

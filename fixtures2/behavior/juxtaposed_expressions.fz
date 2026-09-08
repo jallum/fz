@@ -1,0 +1,9 @@
+#---
+# purpose: "two expressions without a newline between them are rejected instead of silently discarding the second"
+# expect: diagnostic
+# diagnostic.code: parse/expected-token
+#---
+fn main() do
+  a = 1 2
+  dbg(a)
+end
