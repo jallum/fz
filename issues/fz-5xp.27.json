@@ -13,7 +13,7 @@
   "parent": "fz-5xp",
   "priority": 2,
   "status": "open",
-  "title": "[BUG] Make one strict structural comparator own every map-key operation",
+  "title": "Make one strict structural comparator own every map-key operation",
   "type": "bug",
-  "updated_at": "2026-09-08T20:04:57Z"
+  "updated_at": "2026-09-08T20:05:13Z"
 }
