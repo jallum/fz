@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-09T12:36:43Z",
+  "description": "## Goal\n\nMake semantic reachability and executable requirements agree: an impossible map-pattern clause must contribute no runtime value requirement. Native lowering must never be asked to materialize a ValueId whose authoritative demand/IR carrier is Absent.\n\n## Reproduction and boundary\n\nThe production program `metadata() -\u003e %{__fz_local__: 42}; case metadata() do %{__fz_span__: _} -\u003e 0; _ -\u003e 42 end` returns 42 through the interpreter but the native path reaches `BackendStep::RequireMapValue`, calls `env_runtime_var` for an Absent value, and violates its invariant. The same failure reproduces with the pre-fz-tfn.62 binary, so fz-tfn.62 only exposed the defect by correctly retaining source-less syntax metadata without fabricating span metadata.\n\nThis ticket owns the reachability-to-executable seam only. Inspect the existing pattern plan, semantic reachability, demand, DCE, backend, interpreter, and native patterns before changing it. Determine the earliest existing authority that proves the clause impossible and make downstream work derive from that decision. Do not patch `env_runtime_var`, widen demand, invent a placeholder value, retain an impossible lane, or add a native-only exception.\n\n## TDD signal\n\nFirst pin the standalone reproduction through interpreter, JIT, and AOT doors. Assert result 42 and deterministic telemetry/IR showing the impossible clause contributes no `RequireMapValue`, runtime lane, materialization, or native work. Add a reachable-map control whose required key and bound value remain present, plus clause-order and allocation-noise controls. Preserve exact diagnostics for genuinely missing required keys and every existing map-pattern/dispatch behavior.\n\nProve the result at the production boundary used by the fz-tfn.62 source-less quoted-metadata regression. The fix must allow that unchanged regression to pass all doors without weakening its no-fabricated-span assertion.\n\n## Strategy and deletion\n\nWork backward from the authoritative reachability result and collapse contradictory downstream state at construction. Reuse the existing typed plan/demand carriers and their ordering; add no second reachability store, scan, reconstruction, fallback, display-string identity, or compatibility path. Delete any now-redundant impossible-clause step/lane construction and obsolete test assumptions. Update agent/user documentation only where the executable-reachability contract changes.\n\nRun focused RED-to-GREEN, library, fixture, CLI, AOT, formatting, check, strict Clippy, deterministic work/allocation gates, and a fresh ticket-scoped cold adversarial review. One ticket, one commit, one close; no construction debris.",
+  "id": "fz-tfn.64",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 0,
+  "status": "open",
+  "title": "Delete impossible map-clause runtime requirements",
+  "type": "bug",
+  "updated_at": "2026-09-09T12:36:43Z"
+}
