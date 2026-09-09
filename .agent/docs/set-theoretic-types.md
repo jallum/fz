@@ -400,6 +400,15 @@ the observable schema-tag question by clearing positive field constraints;
 positional tuple storage is derived later from the settled schema, never unioned
 into the semantic type. Unknown or ambiguous field projection stays `any`.
 
+The two runtime envelopes preserve different evidence through the same
+polarity-aware structural walk. `runtime_envelope` prepares semantic projection:
+it retains tagged-record fields and recursively widens unresolved field types,
+while preserving callable typing. `runtime_type_test_envelope` prepares an
+observable predicate: it keeps a struct's tag and a callable's construction
+identity, erasing positive struct fields and callable arrows. A shaped negative
+struct remains conservative on that predicate surface because a schema-only
+test cannot reject just the excluded field values.
+
 ## Proof gates
 
 ```text

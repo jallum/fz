@@ -11,7 +11,7 @@ use crate::dispatch_matrix::{
     SubjectSource,
 };
 use crate::fz_ir::Module;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
     fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -199,6 +199,13 @@ pub(super) fn resolve_dispatch_subject<TypeHandle>(
                 })
                 .ok()
                 .and_then(|ref_word| interp_value_from_ref_word(ref_word, "dispatch tuple field").ok())
+            }
+            ProjectionKind::StructField(field) => {
+                let parent = resolve_dispatch_subject(proc, module, plan, projection.source, inputs, pinned, state)?;
+                let parent = parent.as_ref_word(proc).ok()?;
+                let parent = AnyValueRef::from_raw_word(parent).ok()?;
+                let value = unsafe { &*proc }.heap.read_struct_named_field_ref(parent, field).ok()?;
+                interp_value_from_ref_word(value.raw_word(), "dispatch struct field").ok()
             }
             ProjectionKind::ListHead => {
                 let parent = resolve_dispatch_subject(proc, module, plan, projection.source, inputs, pinned, state)?;

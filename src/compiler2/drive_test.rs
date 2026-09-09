@@ -10023,6 +10023,69 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<
     (compiler, program)
 }
 
+#[test]
+fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence() {
+    use crate::dispatch_matrix::pattern::PatternSubjectRef;
+    use crate::dispatch_matrix::{ProjectionKind, SubjectSource};
+
+    let (compiler, program) = driven_backend_program("fixtures2/behavior/source_struct_pattern_fields.fz");
+    let plans = artifact_plans(compiler.world(), &program);
+    let mut projected = 0;
+    let mut bound = 0;
+    let mut receive_projected = false;
+    for artifact in plans {
+        let plan = artifact.plan;
+        for arm in &plan.matrix.arms {
+            for question in &arm.questions {
+                for projection in &question.match_evidence.projections {
+                    let ProjectionKind::StructField(field) = &projection.kind else {
+                        continue;
+                    };
+                    let Region::Type(ty) = question.predicate.region else {
+                        panic!("a named field projection must be owned by a successful type discriminator");
+                    };
+                    assert_eq!(
+                        compiler.world().types().struct_modules([ty]).len(),
+                        1,
+                        "a source struct question must retain exactly one World module identity"
+                    );
+                    assert_eq!(projection.source, question.predicate.subject);
+                    assert!(
+                        question.miss_evidence.projections.is_empty(),
+                        "a rejected schema grants no access to its fields"
+                    );
+                    let Some(PatternSubjectRef::StructField { record, field: named }) =
+                        plan.subject_ref(projection.result)
+                    else {
+                        panic!("field evidence must name a struct-field subject");
+                    };
+                    assert_eq!(named, field);
+                    assert_eq!(Some(record.as_ref()), plan.subject_ref(projection.source));
+                    projected += 1;
+                    receive_projected |= matches!(artifact.site, PlanSite::Receive { .. });
+                }
+            }
+        }
+        for outcome in &plan.outcomes {
+            for binding in &outcome.bindings {
+                if let SubjectSource::Projection(projection) = &plan.matrix.subjects[binding.source.0 as usize].source
+                    && let ProjectionKind::StructField(field) = &projection.kind
+                {
+                    assert_eq!(
+                        field, "value",
+                        "the binding must read its named value field, not the parent record"
+                    );
+                    bound += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        projected > 0 && bound > 0 && receive_projected,
+        "the production artifacts must exercise typed projections, field bindings, and receive evidence"
+    );
+}
+
 /// Where in the artifact a [`PatternDispatchPlan`] sits.
 ///
 /// The artifact carries FIVE, and every one of them decides which body a

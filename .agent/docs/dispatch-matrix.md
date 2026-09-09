@@ -1114,7 +1114,7 @@ instead of widening them, and preserves callable arrows that the pattern graph
 cannot inspect. Negative finite variable branches are erased while preserving
 their concrete axes; negative cofinite branches with excluded variable IDs
 become empty. A cofinite variable axis with no excluded IDs remains ordinary
-top. Exact tuple projections lift to their roots;
+top. Exact tuple and named-struct projections lift to their roots;
 ambiguous positional list projections keep their root type on both edges. The
 traversal separately retains the graph's branch-local empty/cons fact for each
 subject. When the projected domain is already a proper list, `not empty`

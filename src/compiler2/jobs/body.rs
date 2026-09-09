@@ -15,7 +15,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternGuardExpr, PatternRow, SourcePatternError, SourcePatternRows,
-    pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
+    pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
     explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
@@ -626,14 +626,14 @@ fn collect_local_dispatch_requirements(
 
 /// Walks one pattern for the same reason `collect_local_dispatch_requirements`
 /// walks expressions: a `%Mod{field: pattern, ...}` struct pattern needs
-/// `Mod`'s ordered field schema before `lower_struct_pattern` can turn it into
-/// `AssertStruct`/`FieldAccess` steps, so this pre-pass records the field
-/// obligations and the `StructDefined` wait up front, mirroring the
-/// `Expr::Struct` arm above. Patterns never carry dispatch calls of their own
+/// `Mod`'s schema before executable pattern dispatch or body binding can use its
+/// fields. Entry, guard-helper, and body jobs share these field obligations and
+/// the `StructDefined` wait, mirroring the `Expr::Struct` arm above.
+/// Patterns never carry dispatch calls of their own
 /// (guards are the only dispatch-call surface, and guards are walked
 /// separately), so this only needs to recurse far enough to find nested
 /// struct patterns.
-fn collect_local_pattern_requirements(
+pub(super) fn collect_local_pattern_requirements(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
@@ -2475,17 +2475,24 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         rows: Vec<PatternRow<super::super::types::Ty>>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows { input_count: 1, rows };
-        let mut resolver = |name: &CallableName,
-                            arity: usize,
-                            args: Vec<PatternGuardExpr<super::super::types::Ty>>|
-         -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
-            let callee = resolve_guard_callee_checked(self.world, self.namespace, name, arity);
-            Ok(Some(PatternGuardExpr::Dispatch {
-                inputs: args,
-                dispatch: Box::new(self.world.guard_dispatch(callee)),
-            }))
+        let namespace = self.namespace;
+        let mut resolver = super::super::dispatch::SourcePatternResolver {
+            world: self.world,
+            namespace,
+            owner: self.source.owner_module,
+            guard: |world: &mut World,
+                    name: &CallableName,
+                    arity: usize,
+                    args: Vec<PatternGuardExpr<super::super::types::Ty>>|
+             -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
+                let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+                Ok(Some(PatternGuardExpr::Dispatch {
+                    inputs: args,
+                    dispatch: Box::new(world.guard_dispatch(callee)),
+                }))
+            },
         };
-        pattern_dispatch_from_source_with_guard_resolver(source, &mut resolver)
+        pattern_dispatch_from_source_with_resolver(source, &mut resolver)
             .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))
     }
 
@@ -4299,6 +4306,7 @@ fn emit_local_dispatch_error(
         ),
         PatternDispatchError::SourcePattern(
             SourcePatternError::UnknownSubject(_)
+            | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. },
         ) => {

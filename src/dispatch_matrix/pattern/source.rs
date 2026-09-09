@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId};
 
-use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source};
+#[cfg(test)]
+use super::pattern_dispatch_from_source;
+use super::{PatternDispatchPlan, PatternSubjectRef};
 
 /// Opaque handle into the caller's body table. Source-pattern dispatch never
 /// lowers bodies; it routes graph outcomes to caller-owned body lowering by id.
@@ -27,6 +29,7 @@ pub(crate) struct SourcePatternRows<TypeHandle> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SourcePatternError {
+    UnresolvedStruct(crate::ast::ModuleTarget),
     UnsupportedGuardExpr,
     UnsupportedMapKey,
     UnknownSubject(PatternSubjectRef),
@@ -192,12 +195,24 @@ pub(crate) fn find_unreachable_rows<TypeHandle: Clone + PartialEq + Eq>(
     row_bodies.difference(&reached).copied().collect()
 }
 
+#[cfg(test)]
 pub(crate) fn is_inexhaustive<TypeHandle: Clone + PartialEq + Eq>(patterns: &SourcePatternRows<TypeHandle>) -> bool {
     let normalized = normalize_guards_for_analysis(patterns.clone());
     let plan = plan_for_analysis(normalized);
     has_reachable_fail_in_graph(&plan, plan.graph.root)
 }
 
+pub(crate) fn is_inexhaustive_with_resolver<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: &SourcePatternRows<TypeHandle>,
+    resolver: &mut impl super::PatternResolver<TypeHandle>,
+) -> bool {
+    let normalized = normalize_guards_for_analysis(patterns.clone());
+    let plan = super::pattern_dispatch_from_source_with_resolver(normalized, resolver)
+        .expect("resolved source-pattern dispatch analysis must compile");
+    has_reachable_fail_in_graph(&plan, plan.graph.root)
+}
+
+#[cfg(test)]
 fn plan_for_analysis<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> PatternDispatchPlan<TypeHandle> {

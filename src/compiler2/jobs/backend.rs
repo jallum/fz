@@ -1215,6 +1215,9 @@ fn collect_dispatch_atoms(
                 if let ProjectionKind::MapValue { key } = &projection.kind {
                     collect_dispatch_const_atoms(key, seen, atoms);
                 }
+                if let ProjectionKind::StructField(field) = &projection.kind {
+                    push_atom(seen, atoms, field);
+                }
             }
         }
     }

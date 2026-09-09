@@ -13,7 +13,7 @@ use std::collections::HashMap;
 pub(crate) mod source;
 pub(crate) use source::{
     PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_bound_names_in_pattern,
-    collect_guard_capture_names, is_inexhaustive,
+    collect_guard_capture_names,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +85,10 @@ pub(crate) enum PatternSubjectRef {
         tuple: Box<PatternSubjectRef>,
         index: u32,
     },
+    StructField {
+        record: Box<PatternSubjectRef>,
+        field: String,
+    },
     ListHead(Box<PatternSubjectRef>),
     ListTail(Box<PatternSubjectRef>),
     MapValue {
@@ -95,6 +99,43 @@ pub(crate) enum PatternSubjectRef {
         bitstring: Box<PatternSubjectRef>,
         index: u32,
     },
+}
+
+pub(crate) trait PatternResolver<TypeHandle> {
+    fn struct_type(&mut self, module: &crate::ast::ModuleTarget, span: Span) -> Result<TypeHandle, SourcePatternError>;
+
+    fn guard_call(
+        &mut self,
+        name: &crate::ast::CallableName,
+        arity: usize,
+        args: Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>;
+}
+
+impl<TypeHandle, F> PatternResolver<TypeHandle> for F
+where
+    F: FnMut(
+        &crate::ast::CallableName,
+        usize,
+        Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+{
+    fn struct_type(
+        &mut self,
+        module: &crate::ast::ModuleTarget,
+        _span: Span,
+    ) -> Result<TypeHandle, SourcePatternError> {
+        Err(SourcePatternError::UnresolvedStruct(module.clone()))
+    }
+
+    fn guard_call(
+        &mut self,
+        name: &crate::ast::CallableName,
+        arity: usize,
+        args: Vec<PatternGuardExpr<TypeHandle>>,
+    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> {
+        self(name, arity, args)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,14 +238,10 @@ pub(crate) fn prepared_key_name(index: usize) -> String {
 
 pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
     surface: &impl CallableSurface,
-    guard_call_resolver: &mut F,
+    resolver: &mut F,
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
-    F: FnMut(
-        &crate::ast::CallableName,
-        usize,
-        Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    F: PatternResolver<TypeHandle>,
     TypeHandle: Clone + PartialEq + Eq,
 {
     let arity = surface.arity();
@@ -226,7 +263,7 @@ where
             })
             .collect(),
     };
-    let mut plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, guard_call_resolver)
+    let mut plan = pattern_dispatch_from_source_with_resolver(source_patterns, resolver)
         .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
 
     let param_input_by_name: HashMap<String, u32> = surface.clauses()[0]
@@ -287,7 +324,7 @@ where
             &clause.body.node,
             &bindings,
             &pinned_by_name,
-            guard_call_resolver,
+            resolver,
         )?);
     }
 
@@ -301,14 +338,10 @@ pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<String, SubjectId>,
     pinned_by_name: &HashMap<String, PinnedValueId>,
-    guard_call_resolver: &mut F,
+    resolver: &mut F,
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
-    F: FnMut(
-        &crate::ast::CallableName,
-        usize,
-        Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    F: PatternResolver<TypeHandle>,
 {
     Ok(match expr {
         Expr::Int(value) => PatternGuardExpr::Const(GroundValue::Int(*value)),
@@ -326,24 +359,14 @@ where
                 return Err(SourcePatternError::UnknownGuardVar(name.clone()));
             }
         }
-        Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, guard_call_resolver)?,
+        Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, resolver)?,
         Expr::UnOp(crate::ast::UnOp::Not, arg) => PatternGuardExpr::Unary {
             op: PatternGuardUnaryOp::Not,
-            expr: Box::new(guard_expr_from_ast(
-                &arg.node,
-                bindings,
-                pinned_by_name,
-                guard_call_resolver,
-            )?),
+            expr: Box::new(guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver)?),
         },
         Expr::UnOp(crate::ast::UnOp::Neg, arg) => PatternGuardExpr::Unary {
             op: PatternGuardUnaryOp::Neg,
-            expr: Box::new(guard_expr_from_ast(
-                &arg.node,
-                bindings,
-                pinned_by_name,
-                guard_call_resolver,
-            )?),
+            expr: Box::new(guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver)?),
         },
         Expr::BinOp(op, lhs, rhs) => PatternGuardExpr::Binary {
             op: match op {
@@ -370,18 +393,8 @@ where
                 | crate::ast::BinOp::In
                 | crate::ast::BinOp::NotIn => return Err(SourcePatternError::UnsupportedGuardExpr),
             },
-            lhs: Box::new(guard_expr_from_ast(
-                &lhs.node,
-                bindings,
-                pinned_by_name,
-                guard_call_resolver,
-            )?),
-            rhs: Box::new(guard_expr_from_ast(
-                &rhs.node,
-                bindings,
-                pinned_by_name,
-                guard_call_resolver,
-            )?),
+            lhs: Box::new(guard_expr_from_ast(&lhs.node, bindings, pinned_by_name, resolver)?),
+            rhs: Box::new(guard_expr_from_ast(&rhs.node, bindings, pinned_by_name, resolver)?),
         },
         Expr::Call(target, args) => {
             let arity = args.len();
@@ -390,9 +403,9 @@ where
             };
             let args = args
                 .iter()
-                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, guard_call_resolver))
+                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            match guard_call_resolver(&name, arity, args)? {
+            match resolver.guard_call(&name, arity, args)? {
                 Some(expr) => expr,
                 None => return Err(SourcePatternError::UnsupportedGuardExpr),
             }
@@ -408,24 +421,20 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
                         _arity: usize,
                         _args: Vec<PatternGuardExpr<TypeHandle>>|
      -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> { Ok(None) };
-    pattern_dispatch_from_source_with_guard_resolver(patterns, &mut resolver)
+    pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
 }
 
-pub(crate) fn pattern_dispatch_from_source_with_guard_resolver<F, TypeHandle>(
+pub(crate) fn pattern_dispatch_from_source_with_resolver<F, TypeHandle>(
     patterns: SourcePatternRows<TypeHandle>,
-    guard_call_resolver: &mut F,
+    resolver: &mut F,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
 where
-    F: FnMut(
-        &crate::ast::CallableName,
-        usize,
-        Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    F: PatternResolver<TypeHandle>,
     TypeHandle: Clone + PartialEq + Eq,
 {
     let mut producer = PatternDispatchProducer::new(&patterns).map_err(PatternDispatchError::SourcePattern)?;
     producer
-        .add_rows(patterns.rows, guard_call_resolver)
+        .add_rows(patterns.rows, resolver)
         .map_err(PatternDispatchError::SourcePattern)?;
     producer.finish()
 }
@@ -485,37 +494,32 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         })
     }
 
-    fn add_rows<F>(
-        &mut self,
-        rows: Vec<PatternRow<TypeHandle>>,
-        guard_call_resolver: &mut F,
-    ) -> Result<(), SourcePatternError>
+    fn add_rows<F>(&mut self, rows: Vec<PatternRow<TypeHandle>>, resolver: &mut F) -> Result<(), SourcePatternError>
     where
-        F: FnMut(
-            &crate::ast::CallableName,
-            usize,
-            Vec<PatternGuardExpr<TypeHandle>>,
-        ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+        F: PatternResolver<TypeHandle>,
     {
         for row in rows {
-            self.add_row(row, guard_call_resolver)?;
+            self.add_row(row, resolver)?;
         }
         Ok(())
     }
 
-    fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
+    fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, resolver: &mut F) -> Result<(), SourcePatternError>
     where
-        F: FnMut(
-            &crate::ast::CallableName,
-            usize,
-            Vec<PatternGuardExpr<TypeHandle>>,
-        ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+        F: PatternResolver<TypeHandle>,
     {
         let mut questions: Vec<RegionQuestion<TypeHandle>> = Vec::new();
         let mut bindings = Vec::new();
         for (ordinal, pattern) in row.patterns.iter().enumerate() {
             let subject = PatternSubjectRef::Input(ordinal as u32);
-            self.append_pattern(&pattern.node, pattern.span, &subject, &mut questions, &mut bindings)?;
+            self.append_pattern(
+                &pattern.node,
+                pattern.span,
+                &subject,
+                &mut questions,
+                &mut bindings,
+                resolver,
+            )?;
         }
         for (subject_ref, ty) in &row.preconditions {
             let subject = self.subject_id(subject_ref)?;
@@ -526,7 +530,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
-            let guard_expr = guard_expr_from_ast(&guard.node, &bound, &self.pinned_by_name, guard_call_resolver)?;
+            let guard_expr = guard_expr_from_ast(&guard.node, &bound, &self.pinned_by_name, resolver)?;
             let guard_id = GuardId(self.guards.len() as u32);
             self.guards.push(guard_expr);
             questions.push(RegionQuestion::new(RegionPredicate::new(
@@ -578,13 +582,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         subject: &PatternSubjectRef,
         questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
+        resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<(), SourcePatternError> {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Var(name) => self.bind(name, span, subject, bindings)?,
             Pattern::As(name, inner) => {
                 self.bind(name, span, subject, bindings)?;
-                self.append_pattern(&inner.node, inner.span, subject, questions, bindings)?;
+                self.append_pattern(&inner.node, inner.span, subject, questions, bindings, resolver)?;
             }
             Pattern::Pinned(name) => {
                 let pinned = *self
@@ -619,11 +624,11 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     field_subjects.iter().map(|(_, field_id, _)| *field_id),
                 ));
                 for (field_subject, _, field) in field_subjects {
-                    self.append_pattern(&field.node, field.span, &field_subject, questions, bindings)?;
+                    self.append_pattern(&field.node, field.span, &field_subject, questions, bindings, resolver)?;
                 }
             }
             Pattern::List(elems, tail) => {
-                self.append_list_pattern(elems, tail.as_deref(), subject, questions, bindings)?;
+                self.append_list_pattern(elems, tail.as_deref(), subject, questions, bindings, resolver)?;
             }
             Pattern::Map(entries) => {
                 let subject_id = self.subject_id(subject)?;
@@ -637,12 +642,37 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     };
                     let value_id = self.subject_id(&value_subject)?;
                     questions.push(RegionQuestion::map_key_present(subject_id, key, value_id));
-                    self.append_pattern(&val_pat.node, val_pat.span, &value_subject, questions, bindings)?;
+                    self.append_pattern(
+                        &val_pat.node,
+                        val_pat.span,
+                        &value_subject,
+                        questions,
+                        bindings,
+                        resolver,
+                    )?;
                 }
             }
-            Pattern::Struct { fields, .. } => {
-                for (_, value) in fields {
-                    self.append_pattern(&value.node, value.span, subject, questions, bindings)?;
+            Pattern::Struct { module, fields } => {
+                let ty = resolver.struct_type(module, span)?;
+                let source = self.subject_id(subject)?;
+                let mut question = RegionQuestion::type_region(source, ty);
+                let mut projected_fields = Vec::with_capacity(fields.len());
+                for (field, value) in fields {
+                    let projected = PatternSubjectRef::StructField {
+                        record: Box::new(subject.clone()),
+                        field: field.clone(),
+                    };
+                    let result = self.subject_id(&projected)?;
+                    question.match_evidence.projections.push(EdgeProjection {
+                        source,
+                        kind: ProjectionKind::StructField(field.clone()),
+                        result,
+                    });
+                    projected_fields.push((projected, value));
+                }
+                questions.push(question);
+                for (projected, value) in projected_fields {
+                    self.append_pattern(&value.node, value.span, &projected, questions, bindings, resolver)?;
                 }
             }
             Pattern::Bitstring(fields) => {
@@ -653,7 +683,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                         bitstring: Box::new(subject.clone()),
                         index: index as u32,
                     };
-                    self.append_pattern(&field.value.node, field.value.span, &field_subject, questions, bindings)?;
+                    self.append_pattern(
+                        &field.value.node,
+                        field.value.span,
+                        &field_subject,
+                        questions,
+                        bindings,
+                        resolver,
+                    )?;
                 }
             }
         }
@@ -667,10 +704,11 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         subject: &PatternSubjectRef,
         questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
+        resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<(), SourcePatternError> {
         if elems.is_empty() {
             if let Some(tail) = tail {
-                return self.append_pattern(&tail.node, tail.span, subject, questions, bindings);
+                return self.append_pattern(&tail.node, tail.span, subject, questions, bindings, resolver);
             }
             let subject_id = self.subject_id(subject)?;
             questions.push(RegionQuestion::list_empty(subject_id));
@@ -682,16 +720,23 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         let head_id = self.subject_id(&head_subject)?;
         let tail_id = self.subject_id(&tail_subject)?;
         questions.push(RegionQuestion::list_cons(subject_id, head_id, tail_id));
-        self.append_pattern(&elems[0].node, elems[0].span, &head_subject, questions, bindings)?;
+        self.append_pattern(
+            &elems[0].node,
+            elems[0].span,
+            &head_subject,
+            questions,
+            bindings,
+            resolver,
+        )?;
         if elems.len() == 1 {
             if let Some(tail) = tail {
-                self.append_pattern(&tail.node, tail.span, &tail_subject, questions, bindings)
+                self.append_pattern(&tail.node, tail.span, &tail_subject, questions, bindings, resolver)
             } else {
                 questions.push(RegionQuestion::list_empty(tail_id));
                 Ok(())
             }
         } else {
-            self.append_list_pattern(&elems[1..], tail, &tail_subject, questions, bindings)
+            self.append_list_pattern(&elems[1..], tail, &tail_subject, questions, bindings, resolver)
         }
     }
 
@@ -812,6 +857,12 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 let source = self.subject_id(tuple)?;
                 self.builder
                     .add_projected_subject(source, ProjectionKind::TupleField(*index))
+                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+            }
+            PatternSubjectRef::StructField { record, field } => {
+                let source = self.subject_id(record)?;
+                self.builder
+                    .add_projected_subject(source, ProjectionKind::StructField(field.clone()))
                     .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
             }
             PatternSubjectRef::ListHead(list) => {

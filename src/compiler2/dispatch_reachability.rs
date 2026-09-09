@@ -157,8 +157,8 @@ impl ReachabilityCalculator<'_> {
                 continue;
             }
             if target.exact
-                && tuple_only_path(subject)
-                && let Some((lifted_ordinal, lifted)) = lift_tuple_constraint(self.types, &row, subject, target.ty)
+                && exact_projection_path(subject)
+                && let Some((lifted_ordinal, lifted)) = lift_projection_constraint(self.types, &row, subject, target.ty)
             {
                 debug_assert_eq!(lifted_ordinal, ordinal);
                 let match_alternative = self.types.intersect(alternative, lifted);
@@ -292,16 +292,18 @@ fn subject_input(subject: &PatternSubjectRef) -> Option<usize> {
     match subject {
         PatternSubjectRef::Input(ordinal) => Some(*ordinal as usize),
         PatternSubjectRef::TupleField { tuple, .. } => subject_input(tuple),
+        PatternSubjectRef::StructField { record, .. } => subject_input(record),
         PatternSubjectRef::ListHead(list) | PatternSubjectRef::ListTail(list) => subject_input(list),
         PatternSubjectRef::MapValue { map, .. } => subject_input(map),
         PatternSubjectRef::BitstringField { bitstring, .. } => subject_input(bitstring),
     }
 }
 
-fn tuple_only_path(subject: &PatternSubjectRef) -> bool {
+fn exact_projection_path(subject: &PatternSubjectRef) -> bool {
     match subject {
         PatternSubjectRef::Input(_) => true,
-        PatternSubjectRef::TupleField { tuple, .. } => tuple_only_path(tuple),
+        PatternSubjectRef::TupleField { tuple, .. } => exact_projection_path(tuple),
+        PatternSubjectRef::StructField { record, .. } => exact_projection_path(record),
         PatternSubjectRef::ListHead(_)
         | PatternSubjectRef::ListTail(_)
         | PatternSubjectRef::MapValue { .. }
@@ -316,6 +318,12 @@ fn project_subject(types: &mut Types, roots: &[Ty], subject: &PatternSubjectRef)
             let tuple = project_subject(types, roots, tuple);
             types.tuple_field_type(&tuple, *index as usize)
         }
+        PatternSubjectRef::StructField { record, field } => {
+            let record = project_subject(types, roots, record);
+            types
+                .map_field_lookup(&record, &crate::types::MapKey::Atom(field.clone()))
+                .unwrap_or_else(|| types.any())
+        }
         PatternSubjectRef::ListHead(list) => {
             let list = project_subject(types, roots, list);
             types.list_element_type(&list)
@@ -329,7 +337,7 @@ fn project_subject(types: &mut Types, roots: &[Ty], subject: &PatternSubjectRef)
     }
 }
 
-fn lift_tuple_constraint(
+fn lift_projection_constraint(
     types: &mut Types,
     roots: &[Ty],
     subject: &PatternSubjectRef,
@@ -337,6 +345,12 @@ fn lift_tuple_constraint(
 ) -> Option<(usize, Ty)> {
     match subject {
         PatternSubjectRef::Input(ordinal) => Some((*ordinal as usize, constraint)),
+        PatternSubjectRef::StructField { record, field } => {
+            let record_ty = project_subject(types, roots, record);
+            let constrained =
+                types.refine_map_field(&record_ty, &crate::types::MapKey::Atom(field.clone()), &constraint);
+            lift_projection_constraint(types, roots, record, constrained)
+        }
         PatternSubjectRef::TupleField { tuple, index } => {
             let tuple_ty = project_subject(types, roots, tuple);
             let arity = types.max_tuple_arity(&tuple_ty);
@@ -347,7 +361,7 @@ fn lift_tuple_constraint(
             let mut fields = types.repeat(any, arity);
             fields[*index as usize] = constraint;
             let tuple_constraint = types.tuple(&fields);
-            lift_tuple_constraint(types, roots, tuple, tuple_constraint)
+            lift_projection_constraint(types, roots, tuple, tuple_constraint)
         }
         PatternSubjectRef::ListHead(_)
         | PatternSubjectRef::ListTail(_)
@@ -394,6 +408,80 @@ mod tests {
             .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
             .map(|outcome| outcome.body_id)
             .collect()
+    }
+
+    #[test]
+    fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_families() {
+        use crate::compiler2::dispatch::SourcePatternResolver;
+        use crate::compiler2::{ModuleId, Namespace, World};
+        use crate::dispatch_matrix::pattern::{PatternGuardExpr, pattern_dispatch_from_source_with_resolver};
+        use crate::modules::identity::ModuleName;
+
+        let mut world = World::new();
+        let name = ModuleName::parse_dotted("Nested.Box").unwrap();
+        let module = world.reference_module(name.clone());
+        let other_module = world.reference_module(ModuleName::parse_dotted("Other.Box").unwrap());
+        let mut resolver = SourcePatternResolver {
+            world: &mut world,
+            namespace: Namespace::default(),
+            owner: ModuleId::GLOBAL,
+            guard: |_world: &mut World,
+                    _name: &crate::ast::CallableName,
+                    _arity: usize,
+                    _args: Vec<PatternGuardExpr<Ty>>| Ok(None),
+        };
+        let plan = pattern_dispatch_from_source_with_resolver(
+            SourcePatternRows {
+                input_count: 1,
+                rows: vec![
+                    row(
+                        Pattern::Tuple(vec![Spanned::dummy(Pattern::Struct {
+                            module: crate::ast::ModuleTarget::Unresolved(name),
+                            fields: vec![("value".into(), Spanned::dummy(Pattern::Atom("hit".into())))],
+                        })]),
+                        0,
+                    ),
+                    row(Pattern::Wildcard, 1),
+                ],
+            },
+            &mut resolver,
+        )
+        .unwrap();
+        let hit = world.types_mut().atom_lit("hit");
+        let miss = world.types_mut().atom_lit("miss");
+        let values = world.types_mut().union(hit, miss);
+        let fields = vec!["value".into()];
+        let named = world.struct_value_ty(module, &fields, &[values]);
+        let named_hit = world.struct_value_ty(module, &fields, &[hit]);
+        let named_miss = world.struct_value_ty(module, &fields, &[miss]);
+        let wrong = world.struct_value_ty(other_module, &fields, &[hit]);
+        let plain = world.types_mut().map(&[(MapKey::Atom("value".into()), hit)]);
+        let types = world.types_mut();
+        for (input, expected) in [
+            (named_hit, vec![0]),
+            (named_miss, vec![1]),
+            (wrong, vec![1]),
+            (plain, vec![1]),
+        ] {
+            let input = types.tuple(&[input]);
+            let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+            assert_eq!(reachable_body_ids(&plan, &reach), expected);
+            assert!(!reach.fail_reachable);
+        }
+        let input = types.tuple(&[named]);
+        let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+        assert_eq!(reachable_body_ids(&plan, &reach), vec![0, 1]);
+        let matched_root = reach
+            .outcome_inputs
+            .iter()
+            .find(|(outcome, _)| *outcome == plan.outcomes[0].outcome)
+            .unwrap()
+            .1[0];
+        let expected = types.tuple(&[named_hit]);
+        assert!(
+            types.is_equivalent(&matched_root, &expected),
+            "field evidence must lift through the enclosing tuple without losing its struct tag"
+        );
     }
 
     fn list_pattern(length: usize, open_tail: bool) -> Pattern {

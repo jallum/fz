@@ -3424,6 +3424,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
                     var
                 }
+                crate::dispatch_matrix::ProjectionKind::StructField(field) => {
+                    let record = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let (var, _) = ctx.emit_let(Prim::StructField(record, field.clone()));
+                    var
+                }
                 crate::dispatch_matrix::ProjectionKind::ListHead => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let (var, _) = ctx.emit_let(Prim::ListHead(list));

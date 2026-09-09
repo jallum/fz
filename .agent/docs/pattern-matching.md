@@ -47,6 +47,21 @@ For tuples, `TupleArity(n)` dominates every `TupleField` projection. For maps,
 `MapKeyPresent(map, key)` projects a map value only on the present edge, so a
 present `nil` value and an absent key remain distinguishable.
 
+For `%Box{value: x}`, the source producer asks `Region::Type` with Box's
+atomic tagged-record `Ty`. Its success edge publishes a `StructField("value")`
+projection; both a binding and a literal subpattern read that field subject.
+The miss edge publishes no field access. Named fields resolve through the
+runtime schema's named-field accessor; tuple offsets never establish struct
+identity or field meaning.
+
+`PatternResolver` supplies the source producer's two contextual answers:
+struct types and guard-helper dispatch. Compiler2's `SourcePatternResolver`
+uses the definition's World namespace and owner to resolve `ModuleTarget` to
+`ModuleId`, then constructs the existing tagged-record type with unconstrained
+fields. Definition diagnostics use that same identity resolver without needing
+physical layout. Entry, guard-helper, and body jobs record the source pattern's
+ordinary struct-reference and field obligations before executable planning.
+
 This rule is the reason the matrix carries branch evidence rather than letting
 lowering freely materialize paths from syntax.
 

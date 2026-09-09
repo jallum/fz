@@ -614,6 +614,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                     bs_reader_init_id: Some(runtime.bs_reader_init_ref_id),
                     bs_read_field_id: Some(runtime.bs_read_field_ref_id),
                     struct_get_field_id: Some(runtime.struct_get_field_id),
+                    struct_get_named_field_id: Some(runtime.struct_get_named_field_id),
                     list_is_cons_id: Some(runtime.list_is_cons_id),
                     list_head_id: Some(runtime.list_head_fallback_id),
                     list_tail_id: Some(runtime.list_tail_fallback_id),

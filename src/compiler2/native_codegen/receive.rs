@@ -92,6 +92,7 @@ pub(crate) struct DispatchRuntimeHelpers {
     pub bs_reader_init_id: Option<FuncId>,
     pub bs_read_field_id: Option<FuncId>,
     pub struct_get_field_id: Option<FuncId>,
+    pub struct_get_named_field_id: Option<FuncId>,
     pub list_is_cons_id: Option<FuncId>,
     pub list_head_id: Option<FuncId>,
     pub list_tail_id: Option<FuncId>,
@@ -118,6 +119,7 @@ struct DispatchRuntimeRefs {
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
     struct_get_field_fref: Option<ir::FuncRef>,
+    struct_get_named_field_fref: Option<ir::FuncRef>,
     list_is_cons_fref: Option<ir::FuncRef>,
     list_head_fref: Option<ir::FuncRef>,
     list_tail_fref: Option<ir::FuncRef>,
@@ -155,6 +157,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         bs_reader_init_id,
         bs_read_field_id,
         struct_get_field_id,
+        struct_get_named_field_id,
         list_is_cons_id,
         list_head_id,
         list_tail_id,
@@ -219,6 +222,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             bs_reader_init_fref: bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             bs_read_field_fref: bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             struct_get_field_fref: struct_get_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            struct_get_named_field_fref: struct_get_named_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_is_cons_fref: list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_head_fref: list_head_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_tail_fref: list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func)),
@@ -531,6 +535,23 @@ fn resolve_dispatch_subject(
             ProjectionKind::TupleField(index) => {
                 let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
                 emit_struct_get_field(b, ctx, parent, *index)?
+            }
+            ProjectionKind::StructField(field) => {
+                let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                let fref = ctx
+                    .runtime
+                    .struct_get_named_field_fref
+                    .ok_or_else(|| CodegenError::new("struct projection requires fz_struct_get_named_field"))?;
+                let atom_id = ctx
+                    .fz_module
+                    .atom_names
+                    .iter()
+                    .position(|name| name == field)
+                    .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
+                let parent = emit_receive_value_ref(b, ctx, parent)?;
+                let atom = b.ins().iconst(types::I64, atom_id as i64);
+                let inst = b.ins().call(fref, &[ctx.process, parent, atom]);
+                receive_value_from_ref_word(b, b.inst_results(inst)[0])
             }
             ProjectionKind::ListHead => {
                 let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;

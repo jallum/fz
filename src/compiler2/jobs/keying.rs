@@ -1068,6 +1068,7 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DemandPathStep {
+    StructField,
     TupleField(u32),
     ListHead,
     ListTail,
@@ -1127,6 +1128,7 @@ fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<De
             let (ordinal, mut path) = subject_path(subjects, projection.source)?;
             match &projection.kind {
                 ProjectionKind::TupleField(field) => path.push(DemandPathStep::TupleField(*field)),
+                ProjectionKind::StructField(_) => path.push(DemandPathStep::StructField),
                 ProjectionKind::ListHead => path.push(DemandPathStep::ListHead),
                 ProjectionKind::ListTail => path.push(DemandPathStep::ListTail),
                 ProjectionKind::MapValue { .. } => path.push(DemandPathStep::MapValue),
@@ -1148,7 +1150,10 @@ fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDe
             DispatchDemand::TupleFields(fields)
         }
         DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
-        DemandPathStep::ListTail | DemandPathStep::MapValue | DemandPathStep::BitstringField => DispatchDemand::Whole,
+        DemandPathStep::ListTail
+        | DemandPathStep::MapValue
+        | DemandPathStep::StructField
+        | DemandPathStep::BitstringField => DispatchDemand::Whole,
     }
 }
 

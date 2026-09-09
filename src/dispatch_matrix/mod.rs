@@ -113,6 +113,7 @@ pub(crate) struct SubjectProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectionKind {
     TupleField(u32),
+    StructField(String),
     ListHead,
     ListTail,
     MapValue { key: GroundValue },

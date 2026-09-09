@@ -1676,6 +1676,7 @@ fn subject_ref(reference: &PatternSubjectRef) -> String {
     match reference {
         PatternSubjectRef::Input(ordinal) => format!("input({ordinal})"),
         PatternSubjectRef::TupleField { tuple, index } => format!("field({}, {index})", subject_ref(tuple)),
+        PatternSubjectRef::StructField { record, field } => format!("struct_field({}, {field:?})", subject_ref(record)),
         PatternSubjectRef::ListHead(list) => format!("head({})", subject_ref(list)),
         PatternSubjectRef::ListTail(list) => format!("tail({})", subject_ref(list)),
         PatternSubjectRef::MapValue { map, key } => format!("map_value({}, {})", subject_ref(map), ground(key)),
@@ -1697,6 +1698,7 @@ fn projection(projection: &EdgeProjection) -> String {
 fn projection_kind(kind: &ProjectionKind) -> String {
     match kind {
         ProjectionKind::TupleField(index) => format!("field({index})"),
+        ProjectionKind::StructField(field) => format!("struct_field({field:?})"),
         ProjectionKind::ListHead => "head".to_string(),
         ProjectionKind::ListTail => "tail".to_string(),
         ProjectionKind::MapValue { key } => format!("map_value({})", ground(key)),
