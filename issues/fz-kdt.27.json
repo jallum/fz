@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.64"
+  ],
   "created": "2026-08-25T01:40:26Z",
   "description": "A source `%Struct{}` pattern currently loses its schema discriminator and misprojects its field subpatterns.\n\n## Reproducer\n\n```fz\ndefmodule Box do\n  defstruct [:value]\nend\n\nfn classify(v) do\n  case v do\n    %Box{value: x} -\u003e {:box, x}\n    _ -\u003e :other\n  end\nend\n\nfn main() do\n  dbg(classify(%Box{value: 7}))\n  dbg(classify(%{1 =\u003e :one}))\nend\n```\n\nThe first result must be `{:box, 7}`; the plain map must select the fallback and return `:other`. Today the dispatch plan can treat the struct row as irrefutable, then the selected body faults at `assert_struct`.\n\n## Cause\n\n`src/dispatch_matrix/pattern.rs` handles `Pattern::Struct` without emitting a named-struct question. It also applies each field subpattern to the original struct subject instead of a projection of that named field.\n\nThe tagged-record type algebra delivered by `fz-tfn.1` already owns struct-vs-plain-map type carving and mixed protocol receiver unions. This ticket must use that typed identity and must not recreate a parallel nominal/string mechanism.\n\n## Required checks\n\n- The reproducer prints `{:box, 7}` then `:other` through interp, run, and AOT.\n- A source-plan or backend assertion proves `%Box{...}` emits a typed named-struct discriminator.\n- Field subpatterns are applied to their named field projections, including a non-variable field pattern that distinguishes two Box values.\n- A same-shaped plain map does not enter the struct body.\n- Nested/qualified struct names remain exact and do not use canonical Ty display strings as semantic keys.\n- Existing `enumerable_protocol_dispatch` and `membership_operator` fixtures remain green on all three lanes.\n- Full library and serial fixture matrix pass.",
   "id": "fz-kdt.27",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Source struct patterns omit their discriminator and misproject fields",
   "type": "bug",
-  "updated_at": "2026-09-04T23:16:41Z"
+  "updated_at": "2026-09-09T12:50:57Z"
 }

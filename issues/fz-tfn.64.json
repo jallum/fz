@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.27"
+  ],
   "blocks": [
     "fz-tfn.62"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Make dispatch outcome bindings the sole pattern-projection authority",
   "type": "bug",
-  "updated_at": "2026-09-09T12:42:59Z"
+  "updated_at": "2026-09-09T12:50:57Z"
 }
