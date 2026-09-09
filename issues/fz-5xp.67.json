@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.60"
+  ],
   "blocks": [],
   "created": "2026-09-07T15:43:03Z",
   "description": "## Goal\n\nProvide an explicit runtime-library validation request that catches unresolved callees in otherwise cold private clauses without changing ordinary demand-driven compilation.\n\nA normal compile is correct to leave unreachable functions and clauses cold. This ticket must not make user compilation enumerate the runtime library or turn source presence into semantic demand.\n\n## Final model\n\nThe validation front door requests one retained validation product for an exact runtime-library `SourceOwner`/version. Its membership comes from the source publication's typed, source-owned definition inventory. That product explicitly demands the ordinary scope/lowering/name-resolution facts for each published callable and retains their results through ProductMemo.\n\nEach body is checked by the same jobs, resolver, `AttemptOutcome`, dependency ledger, and diagnostic provenance as an ordinarily reached body. The validation request is the demand edge; source name, module kind, compiler startup, queue drain, or global state is not.\n\nDo not add an AST callee walker, second resolver, eager normal-compilation mode, runtime-module whitelist, source/World scan, diagnostic side channel, or duplicate validation cache.\n\n## TDD\n\nProve:\n\n- the runtime-library repro with `Kernel.no_such_function/1` fails the explicit validation request at the exact call provenance;\n- the same cold function remains untouched during an ordinary unrelated user-root request;\n- a valid library validates once and an identical request reuses the same retained product/allocation/generation with zero compiler work or deep copy;\n- adding/removing/changing one library body invalidates only that body's exact validation dependents and aggregate product;\n- rejected source replacement preserves the accepted validation result and provenance;\n- independent source owners and unrelated edits move nothing;\n- FIFO, LIFO, and permutation produce identical diagnostics and product identity.\n\n## Ordering and acceptance\n\nImplement only after fz-tfn.60 has proven the final source, fact, attempt, warning, provenance, and ProductMemo ownership model. This is a downstream explicit consumer, not a prerequisite or exception to that model.\n\nUpdate runtime-library validation and compiler pipeline documentation. Remove all construction probes and fixtures not retained as durable public regressions. Full focused, causal, replacement, library, fixture, CLI, formatting, check, and strict-Clippy gates pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A call to a function that does not exist is silently accepted when the clause is never reached",
   "type": "task",
-  "updated_at": "2026-09-09T00:06:19Z"
+  "updated_at": "2026-09-09T00:06:20Z"
 }

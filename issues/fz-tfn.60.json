@@ -9,7 +9,9 @@
     "fz-tfn.56",
     "fz-tfn.63"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-5xp.67"
+  ],
   "created": "2026-09-07T18:47:45Z",
   "description": "## Goal\n\nProve the completed epic satisfies the exact-reuse contract and remove every construction artifact left by the cutovers.\n\n## Production proof\n\nUsing one retained Compiler2, exercise cold, identical, unrelated edit, identical explicit replacement, location-only replacement, relevant leaf edit, recursive support removal, failed unchanged retry, unrelated request after failure, and successful re-evaluation after a relevant correction.\n\nAuthoritative assertions:\n\n- identical request: zero formula/product/native-body evaluation, lowering, codegen, relink, and deep artifact copy;\n- unrelated edit: zero work attributable to the requested root;\n- relevant edit: every evaluation is in the exact transitive reader closure and names its changed cause;\n- equal reproduction retains allocation and generation and wakes nobody;\n- recursive publications without external ground retract; independently grounded siblings survive;\n- same-version artifacts are byte-identical; diagnostics retain exact current provenance; runtime/ABI/semantic answers retain fidelity;\n- no unexplained or readiness-only work starts remain.\n\n## Required deletion audit\n\nRepository and production-path inspection must find no InputFlow authority, semantic-body copy, key-derived evidence reconstruction, private semantic cone/fixpoint, global normal-drive discovery scan, duplicate source owner, parallel product value store, dormant experiment, obsolete telemetry, compatibility path, or stale documentation. Temporary fixtures and probes leave unless they are durable production-boundary regressions.\n\n## Gates\n\nRun focused causal lenses, serial library and fixture matrix, all target doors, cross-process determinism, docs, formatting, cargo check, and strict Clippy. Wall-clock and CI duration corroborate deterministic counts but never replace them. Fresh ticket-scoped cold adversarial review before the ticket's one commit and close.",
   "id": "fz-tfn.60",
@@ -19,5 +21,5 @@
   "status": "open",
   "title": "Prove exact reuse and remove all construction debris",
   "type": "task",
-  "updated_at": "2026-09-08T17:38:56Z"
+  "updated_at": "2026-09-09T00:06:20Z"
 }
