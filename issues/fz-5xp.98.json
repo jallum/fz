@@ -6,7 +6,7 @@
   ],
   "closed_at": "2026-09-08T19:49:20Z",
   "created": "2026-09-08T19:34:46Z",
-  "description": "GOAL: a declared proper-list domain is recognized as exhausted by [], [single], and [first, second | rest]. SIGNAL: a compiler2 diagnostic test for that exact three-row function emits no type/no-matching-clause warning, while a genuinely partial neighbor still warns. CURRENT: @spec split_sort_list([any], [any], [any]) :: {[any], [any]} still warns on the final [left_head, right_head | tail] clause. The simpler [] / [head | tail] domain is already proven total. STRATEGY: follow the output-contract loop from the declared [any] input through SourcePatternRows/is_inexhaustive, identify the first lost list-tail fact, repair the pattern decision model rather than add a wildcard clause, and retain the smaller total/partial proofs. Found while delivering fz-5xp.87; blocks its zero-false-warning acceptance.",
+  "description": "## Historical delivery\n\nCommit `63e327ab5` corrected the shared Types-backed dispatch reachability calculator for proper-list partitions. Branch-local empty/cons facts now prove that `[]`, `[single]`, and `[first, second | rest]` exhaust a proper-list input while the same rows over genuinely broad `any` still leave non-list values uncovered.\n\n## Retained law and superseded consumer\n\nThe branch-local list reasoning remains required for ordinary semantic dispatch and for demanded warning evidence. What changes under fz-kdt.36.1 is the source of the input row: coverage uses actual correlated `ActivationInputs`, optionally refined by an applied contract, rather than enumerating a declared contract as an independent domain.\n\nThe calculator fix and focused total/partial regressions remain. Whole-contract/source-diagnostic consumers and goldens are removed by the warning-fact cutover.",
   "id": "fz-5xp.98",
   "labels": [],
   "parent": "fz-5xp",
@@ -20,5 +20,5 @@
   "status": "closed",
   "title": "[BUG] Clause coverage rejects the total zero/one/two-plus list partition",
   "type": "bug",
-  "updated_at": "2026-09-08T19:49:20Z"
+  "updated_at": "2026-09-09T00:00:07Z"
 }
