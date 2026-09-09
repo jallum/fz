@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.36.2"
+    "fz-kdt.36.2",
+    "fz-kdt.48"
   ],
   "blocks": [
     "fz-kdt.36.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Clause coverage diagnostics: render canonical reachable failure witnesses",
   "type": "bug",
-  "updated_at": "2026-09-08T23:57:25Z"
+  "updated_at": "2026-09-09T00:04:10Z"
 }
