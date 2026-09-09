@@ -27,6 +27,7 @@
 
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
+use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
@@ -122,89 +123,114 @@ unsafe fn sched_of(proc: *mut Process) -> *mut AotScheduler {
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
-/// Format: NUL-terminated UTF-8 names, double-NUL terminator. Null
-/// pointer / empty blob yields an empty Vec.
-fn parse_atom_blob(blob: *const u8) -> Vec<String> {
+///
+/// Format: NUL-terminated UTF-8 names filling `len - 1` bytes, then one more
+/// NUL. Null pointer or empty blob yields an empty Vec.
+///
+/// The LENGTH is what bounds the scan, not the trailing NUL. Terminating on a
+/// zero-length name instead makes an EMPTY ATOM NAME indistinguishable from
+/// the end of the blob, so `:""` truncated the table and every atom interned
+/// after it vanished -- `dbg(:hello)` printed `:atom_4` on the AOT door alone,
+/// and `Atom.to_string` of any of them aborted the process. The renderer has
+/// always known empty names exist (`any_value::debug::render_atom`); the
+/// encoding was the one place that assumed they do not.
+fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
     let mut out = Vec::new();
-    if blob.is_null() {
+    if blob.is_null() || len == 0 {
         return out;
     }
-    let mut cur = blob;
-    loop {
-        let mut len = 0usize;
-        loop {
-            let b = unsafe { *cur.add(len) };
-            if b == 0 {
-                break;
-            }
-            len += 1;
-            if len > 1_000_000 {
-                eprintln!("parse_atom_blob: name length exceeded sanity limit");
-                abort();
-            }
-        }
-        if len == 0 {
+    // The final byte is the extra terminator; the names occupy everything
+    // before it, each one NUL-terminated.
+    let names = unsafe { from_raw_parts(blob, len as usize - 1) };
+    for name in names.split(|byte| *byte == 0) {
+        // `split` yields a trailing empty slice for the last separator, which
+        // is the terminator of the last NAME rather than a name of its own.
+        if name.as_ptr_range().end == names.as_ptr_range().end && name.is_empty() && !names.is_empty() {
             break;
         }
-        let bytes = unsafe { from_raw_parts(cur, len) };
-        match from_utf8(bytes) {
-            Ok(s) => out.push(s.to_string()),
-            Err(_) => out.push(String::new()),
-        }
-        cur = unsafe { cur.add(len + 1) };
+        out.push(from_utf8(name).map(str::to_string).unwrap_or_default());
     }
     out
 }
 
-fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String>)> {
-    if blob.is_null() || len == 0 {
-        return Vec::new();
-    }
-    let bytes = unsafe { from_raw_parts(blob, len as usize) };
-    let mut pos = 0usize;
-    fn read_u32(bytes: &[u8], pos: &mut usize) -> u32 {
-        let end = *pos + 4;
-        if end > bytes.len() {
-            eprintln!("parse_named_schema_blob: truncated u32");
-            abort();
-        }
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(&bytes[*pos..end]);
-        *pos = end;
-        u32::from_ne_bytes(raw)
-    }
-    fn read_string(bytes: &[u8], pos: &mut usize) -> String {
-        let len = read_u32(bytes, pos) as usize;
-        let end = *pos + len;
-        if end > bytes.len() {
-            eprintln!("parse_named_schema_blob: truncated string");
-            abort();
-        }
-        let s = from_utf8(&bytes[*pos..end])
-            .unwrap_or_else(|_| {
-                eprintln!("parse_named_schema_blob: invalid utf-8");
-                abort();
-            })
-            .to_string();
-        *pos = end;
-        s
+struct BlobReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    context: &'static str,
+}
+
+impl<'a> BlobReader<'a> {
+    fn new(bytes: &'a [u8], context: &'static str) -> Self {
+        Self { bytes, pos: 0, context }
     }
 
-    let schema_count = read_u32(bytes, &mut pos);
+    fn read_u32(&mut self) -> u32 {
+        let end = self.pos + 4;
+        let Some(bytes) = self.bytes.get(self.pos..end) else {
+            eprintln!("{}: truncated u32", self.context);
+            abort();
+        };
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(bytes);
+        self.pos = end;
+        u32::from_ne_bytes(raw)
+    }
+
+    fn read_string(&mut self) -> String {
+        let len = self.read_u32() as usize;
+        let end = self.pos + len;
+        let Some(bytes) = self.bytes.get(self.pos..end) else {
+            eprintln!("{}: truncated string", self.context);
+            abort();
+        };
+        let value = from_utf8(bytes).unwrap_or_else(|_| {
+            eprintln!("{}: invalid utf-8", self.context);
+            abort();
+        });
+        self.pos = end;
+        value.to_string()
+    }
+
+    fn finish(self) {
+        if self.pos != self.bytes.len() {
+            eprintln!("{}: trailing bytes", self.context);
+            abort();
+        }
+    }
+}
+
+/// # Safety
+/// `blob` must point at `len` readable bytes when `len > 0`.
+unsafe fn blob_bytes<'a>(blob: *const u8, len: u32, context: &'static str) -> Option<&'a [u8]> {
+    if len == 0 {
+        return None;
+    }
+    if blob.is_null() {
+        eprintln!("{context}: null blob with len > 0");
+        abort();
+    }
+    Some(unsafe { from_raw_parts(blob, len as usize) })
+}
+
+fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(crate::module_name::ModuleName, Vec<String>)> {
+    let Some(bytes) = (unsafe { blob_bytes(blob, len, "parse_named_schema_blob") }) else {
+        return Vec::new();
+    };
+    let mut reader = BlobReader::new(bytes, "parse_named_schema_blob");
+    let schema_count = reader.read_u32();
     let mut out = Vec::with_capacity(schema_count as usize);
     for _ in 0..schema_count {
-        let name = read_string(bytes, &mut pos);
-        let field_count = read_u32(bytes, &mut pos);
+        let segment_count = reader.read_u32();
+        let segments = (0..segment_count).map(|_| reader.read_string()).collect();
+        let name = crate::module_name::ModuleName::from_segments(segments);
+        let field_count = reader.read_u32();
         let mut fields = Vec::with_capacity(field_count as usize);
         for _ in 0..field_count {
-            fields.push(read_string(bytes, &mut pos));
+            fields.push(reader.read_string());
         }
         out.push((name, fields));
     }
-    if pos != bytes.len() {
-        eprintln!("parse_named_schema_blob: trailing bytes");
-        abort();
-    }
+    reader.finish();
     out
 }
 
@@ -212,12 +238,12 @@ fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String
 /// initialize the halt-cont singleton, register the spawn-entry address,
 /// install scheduler hooks, parse the atom blob. Returns the process pointer
 /// for subsequent register/run calls. `atom_blob` may be null (program has no
-/// atom literals); `atom_blob_len` is currently advisory — parsing terminates
+/// atom literals); `atom_blob_len` bounds the scan — parsing used to terminate
 /// on the double-NUL sentinel.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
-    _atom_blob_len: u32,
+    atom_blob_len: u32,
     halt_cont_body_tagged: *const u8,
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
@@ -228,7 +254,7 @@ pub extern "C" fn fz_aot_setup(
 
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
-    let node = Rc::new(Node::new(parse_atom_blob(atom_blob), Vec::new()));
+    let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len), Vec::new()));
     let proc_box = Box::new(Process::from_consts(
         node,
         schemas,
@@ -317,8 +343,8 @@ extern "C" fn aot_make_resource_hook(
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
 /// in the order baked into the `fz_aot_tuple_arities` data symbol. Codegen
-/// first registers `ClosureEnv0`, then iterates arities in sorted order; this
-/// fn registers in that same order so the schema ids match what was iconst'd
+/// iterates arities in sorted order; this function registers in that same order
+/// so the schema ids match what was iconst'd
 /// into the emitted CLIF.
 ///
 /// `arities` may be null (no tuples in program); `len` is the element
@@ -337,7 +363,6 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
     // `sched_of` reads `proc.ctx`, which must not alias the live &mut below.
     let halt_cont_bodies = unsafe { (*sched_of(proc)).halt_cont_bodies };
     let process = unsafe { &mut *proc };
-    process.heap.closure_schema_id(0);
     if len > 0 {
         assert!(
             !arities.is_null(),
@@ -378,6 +403,31 @@ pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const
     }
 }
 
+/// Register the typed source denotations used to order closures in this AOT
+/// program. The binary carrier preserves the denotation tree directly; no
+/// rendered function label participates in identity or ordering.
+///
+/// # Safety
+/// `proc` must be a process produced by `fz_aot_setup`. `blob` must point at
+/// `len` bytes emitted by AOT codegen when `len > 0`.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_closure_denotations(proc: *mut Process, blob: *const u8, len: u32) {
+    assert!(!proc.is_null(), "fz_aot_register_closure_denotations: null process");
+    if len == 0 {
+        return;
+    }
+    let node = unsafe { &*proc }.node.clone();
+    let bytes = unsafe { blob_bytes(blob, len, "fz_aot_register_closure_denotations") }.unwrap_or_default();
+    let denotations = decode_closure_denotations(bytes).unwrap_or_else(|error| {
+        eprintln!("fz_aot_register_closure_denotations: {error}");
+        abort();
+    });
+    for (id, denotation) in denotations {
+        node.register_closure_denotation(id, denotation);
+    }
+}
+
 /// Register one static closure target. AOT codegen emits one call per
 /// `MakeClosure` with zero captures. `code_addr` is the body fn's
 /// address (Cranelift `func_addr` of the fz_fn_<body_id>).
@@ -395,10 +445,17 @@ pub extern "C" fn fz_aot_register_static_closure(
     arity: u32,
     code_addr: *const u8,
     halt_kind: u32,
+    denotation: u32,
 ) {
     assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(cl_sid, arity, code_addr, halt_kind)]);
+    process.init_static_closures(&[(
+        cl_sid,
+        arity,
+        code_addr,
+        halt_kind,
+        crate::any_value::ClosureDenotationId::user(denotation),
+    )]);
 }
 
 /// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the

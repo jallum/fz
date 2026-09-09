@@ -1,0 +1,19 @@
+{false, true, false, true, true, false}
+{false, false, true, true, false, true}
+{true, true, false, false, false, true}
+{false, true, false, true, true, false}
+{true, true, false, false, false, true}
+{false, false, true, true, false, true}
+{true, false, true, true, true}
+{false, true, false, true, true, false}
+{false, false, true, true, false, true}
+{true, true, false, false, false, true}
+{false, true, false, true, true, false}
+{false, false, true, true, false, true}
+{true, true, true, true}
+{true, false, true, true, true}
+{:eq, :gt, :lt}
+{:eq, :gt, :lt}
+["", "Fig", "apple", "fig", "pear"]
+{true, true, true, true, true}
+{:int_one, :float_one, :other}

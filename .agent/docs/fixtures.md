@@ -57,7 +57,7 @@ Fixtures already live in that comment-frontmatter form:
 # purpose: closure call stays indirect
 # root: main/0
 # assert.metric.semantic.callsites: 2
-# assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
+# assert.edge: main/0[] | @66-71 | closure | main/0#lambda@0/1
 # snapshot.call_edges: call_edges
 #---
 ```
@@ -277,10 +277,11 @@ Fixture-facing identity is provenance-based rather than allocator-order based:
 
 - caller labels are canonical function labels plus the activation input surface
 - callsites identify source spans as `@start-end`
-- generated lambdas identify as `owner::lambda[@start-end]/arity`
+- generated lambdas render as `owner#lambda@<source-occurrence>/arity`, directly
+  from their typed owner and structural source occurrence
 
-Raw generated numbering (`#lambda:<owner_id>:...`, `FnId`, etc.) is not the
-fixture contract surface.
+Raw function mint IDs are not the fixture contract surface. Source spans
+describe callsite locations, never lambda identity.
 
 This harness replaces the old `fixtures/*/expected.outcomes` sweep. New
 compiler-shape pins belong here instead of in the fixture matrix.
@@ -294,8 +295,8 @@ assertions never auto-bless.
 
 Behavioural fixtures call the same runtime library that user programs do
 (`Kernel.assert`/`refute`/`panic`, `Enum`, `Enumerable`, `Process`), so the
-assertion machinery a fixture uses is itself fz source under
-`src/modules/runtime_library/`. `assert`/`refute` route a failure through
+assertion machinery a fixture uses is itself fz source under `lib/`.
+`assert`/`refute` route a failure through
 `Kernel.panic`, which calls the `fz_panic` extern; that is why a failed assertion
 is a nonzero exit on every path. A fixture that exercises a runtime-library
 function both proves the function and (via budgets and allocation goldens) pins

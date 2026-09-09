@@ -18,6 +18,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundarySurface {
     pub boundary_id: NativeCallableBoundaryId,
+    pub denotation: fz_runtime::any_value::ClosureDenotationId,
+    pub source_origin: std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
     pub identity_fn: FnId,
     /// The construction this boundary mints, as a runtime test names it: the
     /// function, and the projected capture types it closed over. `None` for a

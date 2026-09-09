@@ -318,10 +318,9 @@ where
             else {
                 return false;
             };
-            value
-                .value(runtime.cur_proc())
-                .ok()
-                .is_some_and(|value| dispatch_read_bitstring(runtime.cur_proc(), plan, subject, value, shape, state))
+            value.value(runtime.cur_proc()).ok().is_some_and(|value| {
+                dispatch_read_bitstring(runtime.cur_proc(), plan, subject, value, shape, inputs, pinned, state)
+            })
         }
         Region::Guard(guard) => plan
             .guards
@@ -329,6 +328,13 @@ where
             .and_then(|expr| eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match))
             .is_some_and(|value| !(value.is_false() || value.is_nil())),
     }
+}
+
+/// fz-5xp.18 — one dynamic ordering, shared with native codegen and with the
+/// `Kernel` operators, so a guard cannot answer a comparison differently from
+/// the expression that spells it out.
+fn guard_cmp(proc: *mut Process, left: AnyValue, right: AnyValue) -> Option<i64> {
+    interp_cmp(proc, left, right).ok()
 }
 
 pub(super) fn eval_dispatch_guard<TypeHandle, F>(
@@ -354,7 +360,11 @@ where
             let v = eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match)?;
             match op {
                 PatternGuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
-                PatternGuardUnaryOp::Neg => AnyValue::Int(-guard_int(v)?),
+                // The same negation an EXPRESSION gets. Forcing the operand to
+                // an integer here made `when -x > 0.0` silently fail its guard
+                // for a float and fall to the next clause, so `interp` answered
+                // a different clause than `run` and `build` (fz-5xp.46).
+                PatternGuardUnaryOp::Neg => super::binop::eval_unop(crate::fz_ir::UnOp::Neg, v).ok()?,
             }
         }
         PatternGuardExpr::Binary { op, lhs, rhs } => {
@@ -374,12 +384,23 @@ where
                 PatternGuardBinOp::Mul => AnyValue::Int(guard_int(l)? * guard_int(r)?),
                 PatternGuardBinOp::Div => AnyValue::Int(guard_int(l)? / guard_int(r)?),
                 PatternGuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
-                PatternGuardBinOp::Eq => interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?),
-                PatternGuardBinOp::Neq => interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?),
-                PatternGuardBinOp::Lt => interp_bool_value(guard_int(l)? < guard_int(r)?),
-                PatternGuardBinOp::LtEq => interp_bool_value(guard_int(l)? <= guard_int(r)?),
-                PatternGuardBinOp::Gt => interp_bool_value(guard_int(l)? > guard_int(r)?),
-                PatternGuardBinOp::GtEq => interp_bool_value(guard_int(l)? >= guard_int(r)?),
+                // fz-5xp.24 — a guard's `==` is the `==` OPERATOR, so it widens:
+                // `when a == b` with a = 1 and b = 1.0 is true. It was strict
+                // here because native guards lowered through Prim::BinOp(Eq),
+                // which pattern MATCHING also used, and matching must stay
+                // strict. The IR now names the two questions separately, so
+                // both doors can ask this one.
+                PatternGuardBinOp::Eq => interp_bool_value(interp_operator_eq(runtime.cur_proc(), l, r).ok()?),
+                PatternGuardBinOp::Neq => interp_bool_value(!interp_operator_eq(runtime.cur_proc(), l, r).ok()?),
+                // fz-5xp.18 — a guard orders its operands the same way the rest
+                // of the language does, through `fz_value_cmp_ref`. Comparing
+                // as integers could not see a float at all: `when a >= b` with
+                // a = 2 and b = 1.0 failed the conversion and fell through to
+                // the next clause instead of answering true.
+                PatternGuardBinOp::Lt => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? < 0),
+                PatternGuardBinOp::LtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? <= 0),
+                PatternGuardBinOp::Gt => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? > 0),
+                PatternGuardBinOp::GtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? >= 0),
                 PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(!(r.is_false() || r.is_nil())),
             }
         }
@@ -557,12 +578,15 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_read_bitstring<TypeHandle>(
     proc: *mut Process,
     plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
     value: RuntimeAnyValue,
     shape: &BitstringShape,
+    inputs: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
 ) -> bool {
     let Some(value_bits) = value.heap_object_word() else {
@@ -576,7 +600,7 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
     }
     let mut reader = fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
     for (index, field) in shape.fields.iter().enumerate() {
-        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, state) else {
+        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, plan, inputs, pinned, state) else {
             return false;
         };
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring dispatch reader") else {
@@ -645,8 +669,11 @@ fn bitstring_field_subject<TypeHandle>(
     })
 }
 
-pub(super) fn dispatch_bit_size_value(
+pub(super) fn dispatch_bit_size_value<TypeHandle>(
     size: &Option<BitstringFieldSize>,
+    plan: &PatternDispatchPlan<TypeHandle>,
+    inputs: &[AnyValue],
+    pinned: &HashMap<String, AnyValue>,
     state: &DispatchExecState,
 ) -> Option<(u32, u32)> {
     match size {
@@ -657,10 +684,12 @@ pub(super) fn dispatch_bit_size_value(
             .get(subject)
             .and_then(|v| v.as_i64())
             .map(|n| (1, n as u32)),
-        Some(BitstringFieldSize::BindingName(name)) => state
-            .direct_bindings
-            .get(name)
-            .and_then(|v| v.as_i64())
+        // A size from the ENCLOSING SCOPE -- a function parameter, or anything
+        // bound before the `case`. It arrives as a PIN, which is the same
+        // mechanism `Pattern::Pinned` uses, because it is the same question: a
+        // name the pattern USES but does not BIND (fz-5xp.54).
+        Some(BitstringFieldSize::Pinned(pin_id)) => load_pinned_dispatch_value(plan, *pin_id, inputs, pinned)
+            .and_then(|value| value.as_i64())
             .map(|n| (1, n as u32)),
     }
 }

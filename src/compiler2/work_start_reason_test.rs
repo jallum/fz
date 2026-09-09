@@ -143,7 +143,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let observed_source_work = std::rc::Rc::clone(&source_work);
     let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::new())));
     let observed_demand_work = std::rc::Rc::clone(&demand_work);
-    let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 4]));
+    let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 5]));
     let observed_demand_wake_causes = std::rc::Rc::clone(&demand_wake_causes);
     telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
@@ -182,6 +182,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                         super::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 4,
                         cause => panic!("unexpected RuntimeDemand wake prerequisite: {cause:?}"),
                     };
                     observed_demand_wake_causes.borrow_mut()[cause] += 1;
@@ -228,38 +229,33 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4153, 11, 21, 410),
-        "fz-kdt.182 removes 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities; scope and module work remain exact"
+        (4103, 11, 21, 401),
+        "separating retained closure values from member execution demand removes 57 applies; scope, module, and executable-fact work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1448,
-        "fz-kdt.182 removes twenty changed-revision wakes for redundant list-union executable identities; macro waits and product wakes remain exact",
+        // fz-5xp.6 removes twelve more wakes via `Range.count`'s `div/2`.
+        // fz-5xp.87 adds one content wake and five blocked-waiter starts for
+        // the six newly active private-helper contract derivations.
+        1458,
+        "fz-kdt.182 removed twenty changed-revision wakes for redundant list-union executable identities, fz-5xp.2 removes eleven more with the reduce-and-reverse activations Enum.to_list/1 no longer mints for a list, and fz-5xp.87 adds the one content wake used by its six private-helper contract derivations; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1131,
-        "fz-kdt.182 removes seven blocked expansions with the absorbed executable identities; macro products require no separate readiness producer",
+        1162,
+        "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities, fz-5xp.2 removes four more with the unminted reduce-and-reverse activations, and fz-5xp.87 adds the five blocked-waiter starts used by its six private-helper contract derivations; macro products require no separate readiness producer",
     );
     assert_eq!(
-        *demand_completions, 1241,
-        "fz-kdt.182 removes 44 RuntimeDemand completions for absorbed list-union identities; the retained scheduler-completion multiset remains exact",
-    );
-    assert_eq!(
-        *demand_wake_starts, 1009,
-        "fz-kdt.182 removes 37 changed-revision RuntimeDemand wakes with absorbed list-union identities; the retained wake multiset remains exact",
-    );
-    assert_eq!(
-        *demand_wake_causes.borrow(),
-        [58, 232, 147, 572],
-        "fz-kdt.182 removes list-union identity demand resumes from exact moved-input causes, never from readiness-only or unexplained work",
+        (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
+        (1154, 926, [58, 228, 144, 496, 0]),
+        "every demand completion and wake retains its precise cause; removing retention feedback must reduce work without readiness-only or unexplained starts",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        304,
-        "fz-kdt.182 removes seven absorbed identities from the RuntimeDemand and construction-target key frontier",
+        300,
+        "fz-kdt.182 removed seven absorbed identities from the RuntimeDemand and construction-target key frontier and fz-5xp.2 removes four more",
     );
     assert_eq!(
         (
@@ -269,8 +265,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 259, 0, 0, 0),
-        "fz-kdt.182 removes nine absorbed analyses while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path",
+        (2, 255, 0, 0, 0),
+        "fz-kdt.182 removed nine absorbed analyses and fz-5xp.2 removes four more, while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path -- the last three columns stay zero",
     );
 
     let world = compiler.world();

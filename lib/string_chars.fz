@@ -1,0 +1,81 @@
+# `StringChars`, the protocol behind `to_string/1`, following Elixir's
+# `String.Chars`. String interpolation lexes to a call to `Kernel.to_string/1`,
+# which dispatches here: `"a#{x}b"` becomes `"a" <> Kernel.to_string(x) <> "b"`
+# before the rest of the compiler ever sees the literal, so an interpolated
+# value converts the same way any other call to `to_string/1` does.
+#
+# A receiver with no implementation at all -- a map, a tuple -- is refused at
+# compile time, naming this protocol, because fz knows the receiver's type
+# where Elixir has to wait until the call happens. A receiver whose family has
+# an implementation but whose value is out of range -- a bitstring that is not
+# byte-aligned -- cannot be known statically and panics at runtime, below.
+# Either way, there is no generic fallback: an unconvertible value never gets
+# printed as some structural approximation.
+#
+# fz names the binary value family `Binary` where Elixir names it `BitString`.
+# The impl has to use fz's name: `for: BitString` would classify as a bare
+# nominal target and silently never match a binary receiver.
+
+defprotocol StringChars do
+  @moduledoc """
+  The protocol behind `to_string/1` and string interpolation.
+
+  A type converts to a binary by implementing `to_string/1` with `defimpl
+  StringChars, for: SomeType`. `Kernel.to_string/1` dispatches here, and so
+  does every interpolated value, since `"a\#{x}b"` lexes to
+  `"a" <> Kernel.to_string(x) <> "b"`.
+
+  A receiver whose family has no implementation at all is refused at compile
+  time, naming this protocol; there is no generic fallback that stringifies a
+  value structurally.
+  """
+
+  @doc """
+  Converts `term` to a binary.
+
+  ## Examples
+
+      to_string(:hello)
+      #=> "hello"
+
+      "value: \#{5}"
+      #=> "value: 5"
+
+  """
+  @spec to_string(t) :: binary
+  fn to_string(term)
+end
+
+defimpl StringChars, for: Atom do
+  # `nil` is the one special case: `to_string(nil)` gives `""`, while
+  # `Atom.to_string(nil)` gives `"nil"`.
+  fn to_string(nil), do: ""
+  fn to_string(a), do: Atom.to_string(a)
+end
+
+defimpl StringChars, for: Binary do
+  extern "C" fn fz_bitstring_is_binary(any) :: integer
+
+  # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
+  # a `s :: binary` clause head -- so whether a given bitstring is actually a
+  # byte-aligned binary can only be answered at runtime, here.
+  #
+  # The protocol's result is declared `binary`: letting a partial bitstring
+  # through would mean the next `<>` aborts the process with a byte-alignment
+  # assertion far from here.
+  fn to_string(s) do
+    if fz_bitstring_is_binary(s) == 1 do
+      s
+    else
+      Kernel.panic({:string_chars, :cannot_convert_a_bitstring_to_a_string, s})
+    end
+  end
+end
+
+defimpl StringChars, for: Integer do
+  fn to_string(i), do: Integer.to_string(i)
+end
+
+defimpl StringChars, for: Float do
+  fn to_string(f), do: Float.to_string(f)
+end

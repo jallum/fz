@@ -4,6 +4,7 @@ use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use fz_runtime::procbin::SHARED_BIN_BYTES;
 
 fn fn_addr<M: ClModule>(jmod: &mut M, id: FuncId, b: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::Value {
     let fref = jmod.declare_func_in_func(id, b.func);
@@ -31,9 +32,13 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         u32, /* arity */
         FuncId,
         u32, /* halt_kind */
+        fz_runtime::any_value::ClosureDenotationId,
     )],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
+    reg_closure_denotations_id: FuncId,
+    closure_denotations_data: Option<DataId>,
+    closure_denotations_len: u32,
     setup_id: FuncId,
     reg_id: FuncId,
     run_id: FuncId,
@@ -93,6 +98,21 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         );
         let proc_v = b.inst_results(setup_call)[0];
 
+        // Install the same typed source-denotation table used by the compiler
+        // before any user closure can participate in term comparison.
+        {
+            let denotations_addr = match closure_denotations_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let denotations_len = b.ins().iconst(types::I32, closure_denotations_len as i64);
+            let register = jmod.declare_func_in_func(reg_closure_denotations_id, b.func);
+            b.ins().call(register, &[proc_v, denotations_addr, denotations_len]);
+        }
+
         // Register tuple schemas before any code that might allocate one.
         // Static closures use AllocStruct (not MakeTuple), but keeping
         // schema setup adjacent to process setup preserves invariant ordering.
@@ -123,13 +143,15 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 .call(reg_named_fref, &[proc_v, named_schemas_addr, named_schemas_len_v]);
         }
 
-        for (cl_sid, arity, body_func_id, halt_kind) in static_closure_targets {
+        for (cl_sid, arity, body_func_id, halt_kind, denotation) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
             let arity_v = b.ins().iconst(types::I32, *arity as i64);
             let body_addr = fn_addr(jmod, *body_func_id, &mut b);
             let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
+            let denotation_v = b.ins().iconst(types::I32, denotation.as_u32() as i64);
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
-            b.ins().call(reg_fref, &[proc_v, cl_sid_v, arity_v, body_addr, hk_v]);
+            b.ins()
+                .call(reg_fref, &[proc_v, cl_sid_v, arity_v, body_addr, hk_v, denotation_v]);
         }
 
         // Register the drain-dtor entry shim so the AOT run-queue loop
@@ -181,13 +203,20 @@ pub(crate) struct BsConstSyms {
     pub(crate) sharedbin_id: Option<DataId>,
 }
 
-/// Emit a 40-byte static `SharedBin` symbol in `.data`:
+/// Emit a static `SharedBin` symbol in `.data`, `SHARED_BIN_BYTES` wide:
 ///
 ///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
 ///   offset  8..16  bit_len (LE u64)
 ///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
 ///   offset 24..32  bytes_len (LE u64)
 ///   offset 32..40  destructor — function-address relocation to noop
+///   offset 40..48  padding to the type's 16-byte alignment
+///
+/// The alignment is not cosmetic and must match `SharedBin`'s: a ProcBin
+/// stub carries this address in the word Cheney forwards through, so an
+/// address ending in `TAG_FWD`'s 0x8 makes a live stub read as forwarded
+/// (fz-5xp.60). Two statics emitted back to back at 8-alignment put the
+/// second one exactly there.
 ///
 /// The destructor relocation is to `shared_bin_destructor_noop`, declared
 /// as `Linkage::Import` so the linker resolves it to the runtime export.
@@ -203,7 +232,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     let sb_id = jmod
         .declare_data(&sb_name, Linkage::Local, /*writable=*/ true, false)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", sb_name, e)))?;
-    let mut buf = vec![0u8; 40];
+    let mut buf = vec![0u8; SHARED_BIN_BYTES];
     buf[0..8].copy_from_slice(&1u64.to_le_bytes());
     buf[8..16].copy_from_slice(&bit_len.to_le_bytes());
     // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
@@ -211,7 +240,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     // destructor at 32..40 — zero placeholder; function-addr reloc patches.
     let mut desc = DataDescription::new();
     desc.define(buf.into_boxed_slice());
-    desc.set_align(8);
+    desc.set_align(16);
     let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
     desc.write_data_addr(16, bytes_gv, 0);
     let dtor_fref = jmod.declare_func_in_data(runtime.shared_bin_destructor_noop_id, &mut desc);

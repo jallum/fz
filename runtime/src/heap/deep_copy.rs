@@ -97,7 +97,7 @@ pub fn deep_copy_any_value(
                 };
                 copied_entries.push((new_key, new_value));
             }
-            let new_bits = dst_heap.alloc_map_slots(&copied_entries);
+            let new_bits = dst_heap.alloc_ordered_map_entries(copied_entries.into_iter());
             let new_p = map_addr_from_tagged(new_bits).expect("new map ptr");
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::MAP)
@@ -150,9 +150,12 @@ pub fn deep_copy_any_value(
             let bit_len = unsafe { bitstring_bit_len(sp as *const u8) };
             let bytes_len = (bit_len as usize).div_ceil(8);
             let bytes = unsafe { from_raw_parts(bitstring_bytes_ptr(sp as *const u8), bytes_len) };
-            let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
-            forwarding.insert(sp, new_p);
-            AnyValue::heap_ptr(new_p, ValueKind::BITSTRING)
+            // The copy classifies itself: an inline bitstring stays inline
+            // because it is under the threshold by construction, but nothing
+            // here has to know that.
+            let copied = dst_heap.alloc_bitstring(bytes, bit_len);
+            forwarding.insert(sp, copied.heap_addr().expect("copied bitstring"));
+            copied
         }
         ValueKind::PROCBIN => {
             if let Some(&dp) = forwarding.get(&sp) {
@@ -160,7 +163,8 @@ pub fn deep_copy_any_value(
             }
             let src_pb = unsafe { ProcBin::from_raw(sp) };
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
-            let new_p = alloc_procbin(dst_heap, handle).as_raw();
+            // The copy views the same suffix of the same bytes.
+            let new_p = alloc_procbin(dst_heap, handle, src_pb.byte_offset()).as_raw();
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::PROCBIN)
         }
@@ -198,7 +202,8 @@ fn deep_copy_strict_closure(
     let halt_kind = unsafe { closure_halt_kind(sp as *const u8) };
     let fn_ptr = unsafe { closure_fn_ptr(sp as *const u8) };
     let arity = unsafe { closure_arity(sp as *const u8) };
-    let new_bits = dst_heap.alloc_closure_slots(arity, captured_count, halt_kind);
+    let denotation = unsafe { crate::any_value::closure_denotation(sp) };
+    let new_bits = dst_heap.alloc_closure_slots(denotation, arity, captured_count, halt_kind);
     let dp = closure_addr_from_tagged(new_bits).expect("new closure ptr");
     forwarding.insert(sp, dp);
     unsafe { write(dp.add(8) as *mut u64, fn_ptr) };
@@ -235,7 +240,7 @@ fn deep_copy_strict_struct(
         } else {
             child
         };
-        dst_heap.write_field_slot(dp, f.offset, copied);
+        unsafe { dst_heap.write_field_slot(dp, f.offset, copied) };
     }
     for f in &schema.fields {
         match f.kind {

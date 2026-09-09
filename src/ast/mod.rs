@@ -1,6 +1,89 @@
-use crate::modules::identity::ModuleName;
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::parser::lexer::Token;
 use crate::source::{Span, SpanOrigin};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleTarget {
+    Unresolved(ModuleName),
+    Exact(ModuleDenotation),
+}
+
+impl std::fmt::Display for ModuleTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresolved(name) => name.fmt(f),
+            Self::Exact(module) => module.fmt(f),
+        }
+    }
+}
+
+/// A source callable name, optionally qualified by an exact reflected module.
+/// Unresolved source spelling is interpreted only by the lexical resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableName {
+    pub module: Option<ModuleDenotation>,
+    pub name: String,
+}
+
+impl CallableName {
+    pub fn source(name: impl Into<String>) -> Self {
+        Self {
+            module: None,
+            name: name.into(),
+        }
+    }
+
+    pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {
+        match expr {
+            Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| name.clone()),
+            _ => Self::from_expr(expr),
+        }
+    }
+
+    pub fn from_expr(expr: &Expr) -> Option<Self> {
+        let mut path = Vec::new();
+        let mut current = expr;
+        loop {
+            match current {
+                Expr::Var(name) => {
+                    path.push(name.clone());
+                    path.reverse();
+                    return Some(Self::source(path.join(".")));
+                }
+                Expr::Module(module) => {
+                    path.reverse();
+                    let name = path.pop()?;
+                    let mut module = module.clone();
+                    for segment in path {
+                        let ModuleDenotation::Named(parent) = module else {
+                            return None;
+                        };
+                        module = ModuleDenotation::Named(parent.child(segment));
+                    }
+                    return Some(Self {
+                        module: Some(module),
+                        name,
+                    });
+                }
+                Expr::Index(target, field) => {
+                    let Expr::Atom(name) = &field.node else { return None };
+                    path.push(name.clone());
+                    current = &target.node;
+                }
+                _ => return None,
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CallableName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(module) = &self.module {
+            write!(f, "{module}.")?;
+        }
+        f.write_str(&self.name)
+    }
+}
 
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
 /// until compiler2 resolves it against the captured namespace.
@@ -59,12 +142,16 @@ pub enum Expr {
     // identifier reference
     Var(String),
 
+    /// A resolved module alias supplied by compiler reflection. Display
+    /// segments are not retained as a second semantic authority.
+    Module(ModuleDenotation),
+
     /// Explicit function reference: `&name/arity` (fz-swt.5).
     /// `name` may be dotted (`Mod.fun`). Lowers to a thin `Prim::MakeFnRef`
     /// over the fn matching `(name, arity)` exactly, rather than the bare-name
     /// path's "first defined wins".
     FnRef {
-        name: String,
+        name: CallableName,
         arity: usize,
     },
 
@@ -88,7 +175,7 @@ pub enum Expr {
     MapUpdate(Box<Spanned<Expr>>, Vec<(Spanned<Expr>, Spanned<Expr>)>),
     /// `%Mod{field: value, ...}` — named struct construction.
     Struct {
-        module: ModuleName,
+        module: ModuleTarget,
         fields: Vec<(String, Spanned<Expr>)>,
     },
     /// m[k] — bracket access; returns nil if key absent.
@@ -132,7 +219,10 @@ pub enum Expr {
     // clauses, mirroring Elixir's `fn`. A single unguarded clause lowers and
     // evals directly; multi-clause and guarded forms desugar to a
     // pattern-matrix lambda in fz-g58.15 (Arc 3).
-    Lambda(Vec<LambdaClause>),
+    Lambda {
+        occurrence: LambdaOccurrence,
+        clauses: Vec<LambdaClause>,
+    },
 
     // macro support (fz-ul4.10):
     /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
@@ -190,8 +280,8 @@ pub struct MatchClause {
     pub span: Span,
 }
 
-/// fz-g58.2.5 — one clause of an anonymous `fn`: `params [when guard] -> body`.
-/// A `fn` carries a non-empty `Vec<LambdaClause>` (see `Expr::Lambda`).
+pub use fz_runtime::function_denotation::LambdaOccurrence;
+
 #[derive(Debug, Clone)]
 pub struct LambdaClause {
     pub params: Vec<Spanned<Pattern>>,
@@ -239,7 +329,7 @@ pub enum Pattern {
     List(Vec<Spanned<Pattern>>, Option<Box<Spanned<Pattern>>>), // [a, b | rest]
     Map(Vec<(Spanned<Pattern>, Spanned<Pattern>)>),
     Struct {
-        module: ModuleName,
+        module: ModuleTarget,
         fields: Vec<(String, Spanned<Pattern>)>,
     },
     /// fz-5vj — `^name` pinned variable. The matcher compares the

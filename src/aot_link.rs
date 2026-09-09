@@ -137,6 +137,13 @@ pub(crate) fn link_aot_artifact<T: RawSpanTelemetry>(
     cc.arg("-o").arg(output_path).arg(&obj_temp).arg(&runtime_archive.path);
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
+    } else {
+        // fz-5xp.59 — a `float` extern names libm (`sqrt`, `pow`, `jn`), which
+        // on macOS is part of libSystem and needs no flag. Elsewhere it is a
+        // separate library, and `-rdynamic` puts the program's own exports in
+        // the dynamic symbol table so a variadic extern resolved through
+        // `dlsym(RTLD_DEFAULT, ..)` can find them.
+        cc.arg("-lm").arg("-rdynamic");
     }
 
     let _link_span = tel.raw_span1_0(&["fz", "compiler2", "aot", "link"], artifact);

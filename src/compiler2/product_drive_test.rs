@@ -41,7 +41,12 @@ use super::pull::{
 };
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
+use crate::modules::identity::ModuleName;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+fn module_name(text: &str) -> ModuleName {
+    ModuleName::parse_dotted(text).unwrap()
+}
 
 fn drive_retained_backend_fatal(
     world: &mut World,
@@ -578,7 +583,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 .retained_backend_program(root)
                 .executables()
                 .iter()
-                .filter(|executable| compiler.world().function_ref(executable.key.activation.function).name == "leaf")
+                .filter(|executable| {
+                    compiler
+                        .world()
+                        .function_ref(executable.key.activation.function)
+                        .is_named("leaf")
+                })
                 .map(|executable| executable.key.clone())
                 .collect::<Vec<_>>()
         })
@@ -639,13 +649,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     }
     let reached_names = observed_runtime_demand_readers
         .iter()
-        .map(|executable| {
-            compiler
-                .world()
-                .function_ref(executable.activation.function)
-                .name
-                .as_str()
-        })
+        .map(|executable| compiler.world().function_ref(executable.activation.function).name())
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(
         reached_names,
@@ -659,8 +663,8 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
                 compiler
                     .world()
                     .function_ref(executable.activation.function)
-                    .name
-                    .clone(),
+                    .name()
+                    .to_string(),
             )
             .or_default() += 1;
     }
@@ -765,7 +769,12 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .product_executable_inventory(main)
         .expect("main inventory before replacing its reached callee")
         .iter()
-        .filter(|executable| compiler.world().function_ref(executable.activation.function).name == "leaf")
+        .filter(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .is_named("leaf")
+        })
         .cloned()
         .collect::<Vec<_>>();
     assert!(!retired_leaf_executables.is_empty());
@@ -780,13 +789,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .expect("replacement root inventory");
     let names = inventory
         .iter()
-        .map(|executable| {
-            compiler
-                .world()
-                .function_ref(executable.activation.function)
-                .name
-                .as_str()
-        })
+        .map(|executable| compiler.world().function_ref(executable.activation.function).name())
         .collect::<std::collections::HashSet<_>>();
     assert!(names.contains("main") && names.contains("replacement"));
     assert!(
@@ -1246,7 +1249,7 @@ fn a_newly_reached_callee_adds_its_exact_struct_schema() {
     assert_eq!(
         compiler
             .retained_backend_program(root)
-            .schema("Added")
+            .schema(&module_name("Added"))
             .map(Vec::as_slice),
         Some(["value".to_string()].as_slice()),
         "the retained root must gain the schema carried by its newly reached callee"
@@ -1274,9 +1277,9 @@ fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
     let (program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
         .expect("the exact struct dependency fixture should settle");
     let session = driver.session();
-    let needed = world.reference_module("Needed");
-    let spare = world.reference_module("Spare");
-    assert!(program.schema("Needed").is_some());
+    let needed = world.reference_module(module_name("Needed"));
+    let spare = world.reference_module(module_name("Spare"));
+    assert!(program.schema(&module_name("Needed")).is_some());
     assert_eq!(program.struct_schemas.len(), 1, "only the reached schema is packaged");
     let dependencies = session
         .memo()
@@ -1336,15 +1339,15 @@ fn nested_structs_with_the_same_leaf_name_keep_distinct_runtime_schemas() {
     assert_eq!(compiler.run_root_interp(root), Ok(5));
     let program = compiler.retained_backend_program(root);
     assert_eq!(
-        program.schema("A.Item").map(Vec::as_slice),
+        program.schema(&module_name("A.Item")).map(Vec::as_slice),
         Some(["left".to_string()].as_slice())
     );
     assert_eq!(
-        program.schema("B.Item").map(Vec::as_slice),
+        program.schema(&module_name("B.Item")).map(Vec::as_slice),
         Some(["right".to_string()].as_slice())
     );
     assert!(
-        program.schema("Item").is_none(),
+        program.schema(&module_name("Item")).is_none(),
         "runtime schema keys must remain fully qualified"
     );
 }

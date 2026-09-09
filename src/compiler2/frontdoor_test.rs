@@ -458,8 +458,50 @@ fn compiler2_frontdoor_call_no_comma_do_keyword_is_rejected() {
         let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
             .expect_err("no-comma `do:` call surface should be rejected");
         assert!(
-            error.msg.contains("does not yet parse") && error.msg.contains("at item position"),
-            "{label} no-comma `do:` surface should be rejected at item position; got `{}`",
+            error.msg.contains("without a newline") && error.msg.contains("KwKey(\"do\")"),
+            "{label} no-comma `do:` surface should be rejected at the sequence boundary; got `{}`",
+            error.msg
+        );
+    }
+}
+
+#[test]
+fn compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name() {
+    // A heredoc is a string literal, so it interpolates, and the lexer
+    // desugars an interpolation into `fragment <> Kernel.to_string(x) <> ...`
+    // at the token level. `@doc` then consumes only the FIRST fragment and the
+    // rest of the concatenation is left at item position, where it is rejected
+    // for being a `Concat` -- a word from the compiler's vocabulary, not the
+    // author's, and pointing away from the `#{...}` that caused it.
+    //
+    // Documentation that describes interpolation naturally contains one, so
+    // the diagnostic has to name the cause and the escape (fz-5xp.96).
+    for (label, source) in [
+        (
+            "moduledoc",
+            "defmodule M do\n  @moduledoc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+        ),
+        (
+            "doc",
+            "defmodule M do\n  @doc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
+            .expect_err("an interpolating doc attribute should be rejected");
+        assert!(
+            error.msg.contains("interpolat"),
+            "{label} should be rejected for interpolating, not for a node type; got `{}`",
+            error.msg
+        );
+        assert!(
+            error.msg.contains("literal"),
+            "{label} should say a doc attribute takes a literal string; got `{}`",
+            error.msg
+        );
+        assert!(
+            error.msg.contains("\\#{"),
+            "{label} should name the escape that suppresses interpolation; got `{}`",
             error.msg
         );
     }
@@ -798,6 +840,57 @@ fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
         head_name(&stmts[1].ast_node().expect("second cursor").expect("second node")),
         "b"
     );
+}
+
+#[test]
+fn compiler2_frontdoor_rejects_a_second_expression_without_a_statement_separator() {
+    let tel = ConfiguredTelemetry::new();
+    let error = parse_quoted_program(
+        "juxtaposed-expressions.fz",
+        "fn main() do\n  a = 1 2\n  dbg(a)\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect_err("two expressions without a newline between them must be rejected");
+
+    assert!(
+        error.msg.contains("unexpected second expression"),
+        "the diagnostic should explain that a second expression needs a separator; got `{}`",
+        error.msg
+    );
+    assert!(
+        error.msg.contains("Int(2)"),
+        "the diagnostic should name the token that begins the unexpected expression; got `{}`",
+        error.msg
+    );
+    assert_eq!(
+        (error.span.start, error.span.end),
+        (21, 22),
+        "the diagnostic should underline the unexpected `2`, not the expression before it"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_keeps_a_newline_after_no_parens_keyword_arguments_as_the_statement_separator() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "keyword-statement-separation.fz",
+        "fn main() do\n  echo x: 1\n  echo y: 2\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("a no-parens keyword call must leave its trailing newline for the block grammar");
+
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(head_name(&body), "__block__");
+    let statements = body.tail.list_items().expect("block statements");
+    assert_eq!(statements.len(), 2);
+    for statement in statements {
+        assert_eq!(
+            head_name(&statement.ast_node().expect("statement cursor").expect("statement node")),
+            "echo"
+        );
+    }
 }
 
 #[test]

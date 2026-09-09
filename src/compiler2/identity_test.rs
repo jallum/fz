@@ -7,6 +7,78 @@ use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
 use crate::function_surface::FunctionSurface;
 use crate::telemetry::ConfiguredTelemetry;
 
+#[test]
+fn module_identity_preserves_source_segment_boundaries() {
+    use crate::modules::identity::ModuleName;
+    let flat = ModuleName::from_segments(vec!["A.B".into()]);
+    let nested = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+    assert_eq!(flat.dotted(), nested.dotted());
+    let mut modules = ModuleMap::new();
+    let left = modules.reference_named(flat.clone());
+    let right = modules.reference_named(nested.clone());
+    assert_ne!(
+        left, right,
+        "distinct source paths cannot collapse through display spelling"
+    );
+    assert_eq!(modules.name(left), Some(&flat));
+    assert_eq!(modules.name(right), Some(&nested));
+}
+
+#[test]
+fn function_denotation_is_retained_across_new_functions_and_generated_sites() {
+    let mut functions = FunctionMap::new();
+    let owner = functions.reference(ModuleId::GLOBAL, None, "make", 1);
+    let first = functions.reference_generated(owner, ModuleId::GLOBAL, crate::ast::LambdaOccurrence::from_u32(2), 0);
+    let second = functions.reference_generated(owner, ModuleId::GLOBAL, crate::ast::LambdaOccurrence::from_u32(3), 0);
+    let retained = functions.shared_reference_for(first);
+    assert!(std::ptr::eq(
+        retained.lexical_owner(),
+        functions.reference_for(owner).denotation.as_ref()
+    ));
+    let denotation = first.denotation();
+    functions.reference(ModuleId::GLOBAL, None, "earlier_in_source_order", 0);
+    assert_ne!(
+        first, second,
+        "different structural lambda sites are different denotations"
+    );
+    assert_eq!(
+        first,
+        functions.reference_generated(owner, ModuleId::GLOBAL, crate::ast::LambdaOccurrence::from_u32(2), 0)
+    );
+    assert_eq!(
+        first.denotation(),
+        denotation,
+        "another package cannot rerank a live denotation"
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &retained,
+        &functions.shared_reference_for(first)
+    ));
+}
+
+#[test]
+fn callable_order_reads_source_fields_and_numeric_arity_independent_of_mint_order() {
+    use crate::types::ClosureTarget;
+    for reverse in [false, true] {
+        let mut world = super::World::new();
+        let arities = if reverse { [10, 2] } else { [2, 10] };
+        let ids = arities.map(|arity| world.reference_function(ModuleId::GLOBAL, "same", arity));
+        let (two, ten) = if reverse { (ids[1], ids[0]) } else { (ids[0], ids[1]) };
+        assert_eq!(
+            world.function_ref(two).semantic_cmp(world.function_ref(ten)),
+            std::cmp::Ordering::Less
+        );
+        let types = world.types_mut();
+        let two_ty = types.closure_lit(ClosureTarget(two.as_u32()), Vec::new(), 2);
+        let ten_ty = types.closure_lit(ClosureTarget(ten.as_u32()), Vec::new(), 10);
+        assert_eq!(
+            types.cmp_ty(two_ty, ten_ty),
+            std::cmp::Ordering::Less,
+            "typed numeric arity must not inherit the lexical order of rendered /10 and /2"
+        );
+    }
+}
+
 fn quoted_source(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
     parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse should succeed")
@@ -55,7 +127,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
     let namespace = namespaces.prelude_head();
 
-    let math_ref = modules.reference_named("Math");
+    let math_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["Math".into()]));
     let math_def = math_ref;
     let math_changed = modules.define(
         math_def,
@@ -78,7 +150,12 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         !same_math_changed,
         "replaying the same module definition should not signal a change"
     );
-    assert_eq!(modules.name(math_def), Some("Math"));
+    assert_eq!(
+        modules.name(math_def),
+        Some(&crate::modules::identity::ModuleName::from_segments(vec![
+            "Math".into()
+        ]))
+    );
     let module = modules.get(math_def);
     match module {
         ModuleState::Defined { base, interface, .. } => {
@@ -88,13 +165,14 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         other => panic!("module should promote from placeholder to defined, got {other:?}"),
     }
 
-    let scoped_ref = modules.reference_named("Scoped");
+    let scoped_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec![
+        "Scoped".into(),
+    ]));
     let scoped_source = quoted_source("scoped.fz", "defmodule Scoped do\nend\n");
     let indexed_changed = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
-        "Scoped".to_string(),
         scoped_source.clone(),
         empty_scope_surface(),
     );
@@ -102,7 +180,6 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
-        "Scoped".to_string(),
         scoped_source,
         empty_scope_surface(),
     );
@@ -119,7 +196,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         "replaying the same module scope should not signal a change"
     );
 
-    let add_ref = functions.reference(math_def, "add", 2);
+    let add_ref = functions.reference(math_def, None, "add", 2);
     let add_def = add_ref;
     let add_ast = function_surface("Math.add");
     let add_source = quoted_source("math.fz", "fn add(x, y), do: 42\n");
@@ -178,20 +255,10 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     );
     let add_ref_data = functions.reference_for(add_def);
     assert_eq!(add_ref_data.module, math_def);
-    assert_eq!(add_ref_data.name, "add");
+    assert_eq!(add_ref_data.name(), "add");
     assert_eq!(add_ref_data.arity, 2);
-    let generated = functions.reference_generated(
-        add_def,
-        math_def,
-        crate::source::Span::new(crate::source::Id(code_id.as_u32()), 5, 19),
-        1,
-    );
-    let same_generated = functions.reference_generated(
-        add_def,
-        math_def,
-        crate::source::Span::new(crate::source::Id(code_id.as_u32()), 5, 19),
-        1,
-    );
+    let generated = functions.reference_generated(add_def, math_def, crate::ast::LambdaOccurrence::from_u32(5), 1);
+    let same_generated = functions.reference_generated(add_def, math_def, crate::ast::LambdaOccurrence::from_u32(5), 1);
     assert_eq!(
         generated, same_generated,
         "generated function identity should be stable per owner and source site"
@@ -281,7 +348,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
     let namespaces = NamespaceStore::new();
     let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
-    let function = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let function = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let def_ast = function_surface("add");
     let first = quoted_source("math.fz", "fn add(x, y), do: 42\n");
     let second = quoted_source("math.fz", "fn add(x, y), do: 42\n");
@@ -374,7 +441,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
     let namespaces = NamespaceStore::new();
     let code_id = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
-    let function = functions.reference(ModuleId::GLOBAL, "add", 0);
+    let function = functions.reference(ModuleId::GLOBAL, None, "add", 0);
     let surface = function_surface("add");
     let first = quoted_source("math.fz", "fn add(), do: 42\n");
     let second = quoted_source("math.fz", "fn add(), do: 42\n");
@@ -445,7 +512,7 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
     let namespaces = NamespaceStore::new();
     let code_id = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
-    let function = functions.reference(ModuleId::GLOBAL, "add", 0);
+    let function = functions.reference(ModuleId::GLOBAL, None, "add", 0);
     let first = quoted_source("math.fz", "fn add(), do: 42\n");
     let second = quoted_source("math.fz", "fn add(), do: 43\n");
 
@@ -542,7 +609,7 @@ fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_no
     let mut types = Types::new();
     let int = types.int();
     let mut functions = FunctionMap::new();
-    let function = functions.reference(ModuleId::GLOBAL, "main", 0);
+    let function = functions.reference(ModuleId::GLOBAL, None, "main", 0);
     let mut roots = RootMap::new();
     let root = roots.define(RootEntry {
         function,

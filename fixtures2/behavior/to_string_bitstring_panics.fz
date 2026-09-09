@@ -1,0 +1,21 @@
+#---
+# purpose: "to_string of a bitstring that is not byte-aligned panics rather than laundering it into a binary"
+# expect: abort
+#---
+#
+# # to_string_bitstring_panics
+#
+# Elixir's `String.Chars.BitString` is guarded by `is_binary(term)` and raises
+# `Protocol.UndefinedError` with "cannot convert a bitstring to a string" for
+# anything else (elixir/lib/elixir/lib/string/chars.ex:39).
+#
+# fz's type system does not draw that line -- `<<1::4>>` satisfies a
+# `s :: binary` clause head (fz-5xp.42) -- so the impl asks at runtime.
+#
+# Without the check the impl returned `<<1::4>>` unchanged, which violates the
+# protocol's own `:: binary` result type. The damage showed up later and
+# elsewhere: the next `<>` aborted inside `fz_binary_concat` with a
+# byte-alignment assertion, far from the call that actually went wrong.
+fn main() do
+  dbg(to_string(<<1::4>>))
+end

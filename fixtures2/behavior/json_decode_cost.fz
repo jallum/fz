@@ -1,0 +1,44 @@
+#---
+# purpose: "decoding a JSON document costs work proportional to the document, and the epic's signal says so in numbers"
+#---
+#
+# # json_decode_cost
+#
+# The fz-5xp epic asks for allocation goldens on a real workload that are
+# ARGUED, not merely recorded. A single number is not an argument -- it says
+# nothing about whether the cost is right, and pinning one would have enshrined
+# a quadratic scan as correct, which is exactly what nearly happened
+# (fz-5xp.55).
+#
+# So this measures the SAME document shape at two sizes -- 51 bytes and 135, a
+# factor of 2.6 -- and prints both. What is pinned is a RATIO, and the ratio is
+# the claim: the cost tracks the document, it does not square it.
+#
+#   :shared_bin_bytes  -- bytes copied into off-heap binary buffers. This is
+#                         where a copied binary tail shows up and the only place
+#                         it does. Decoding copies NO tails, so both lines are
+#                         0. Before fz-5xp.55 a 79-byte and a 919-byte document
+#                         of this shape reported 3,494 and 1,396,008 bytes:
+#                         12x the input, 400x the copying.
+#
+#   :bitstring_allocs  -- on-heap bitstring objects. It grows, and it should:
+#                         the strings and numbers in the document are really
+#                         built. It grows SLOWER than the document (2.6x the
+#                         input, about 2x the allocations), because the part
+#                         that scales with length is now shared and what is
+#                         left scales with the number of values.
+#
+# The decoded value is printed too, so a change in cost cannot be accepted
+# without also showing the answer is still right.
+fn main() do
+  dbg(decode_cost("{\"users\": [{\"name\": \"ada\", \"age\": 36}], \"ok\": true}"))
+  dbg(decode_cost("{\"users\": [{\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}], \"ok\": true}"))
+end
+
+fnp decode_cost(doc) do
+  before = Process.heap_alloc_stats()
+  {:ok, v} = Json.decode(doc)
+  after_ = Process.heap_alloc_stats()
+  {Json.encode!(v), after_[:shared_bin_bytes] - before[:shared_bin_bytes],
+   after_[:bitstring_allocs] - before[:bitstring_allocs]}
+end

@@ -264,13 +264,12 @@ mod tests {
             .callable_origin(key.value)
             .expect("target owner callable producer")
             .clone();
-        let mut replacement_facts = owner_facts;
+        let mut replacement_analysis = owner_facts.analysis;
         let atom = world.types_mut().atom();
-        replacement_facts
-            .analysis
-            .value_types
-            .insert(producer.captures[0], atom);
-        assert!(world.define_executable_facts(key.owner.clone(), Rc::new(replacement_facts)));
+        replacement_analysis.value_types.insert(producer.captures[0], atom);
+        let replacement_facts =
+            crate::compiler2::executable_facts::project_executable_facts(&mut world, &key.owner, replacement_analysis);
+        assert!(world.define_executable_facts(key.owner.clone(), replacement_facts));
         let owner_fact = FactKey::ExecutableFacts(key.owner.clone());
         world.complete_job(
             Job::DeriveExecutableFacts(key.owner.clone()),

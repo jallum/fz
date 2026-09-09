@@ -20,25 +20,32 @@ struct TargetFixture {
     mainline_runtime_demand_door: ObservationDoor,
 }
 
+// fz-5xp.2 and fz-5xp.18 both remove work these fixtures used to do:
+// `Enum.to_list/1` reaches a list through a clause typed `[a]` instead of
+// reducing and reversing it back, and the comparison operators widen a mixed
+// numeric pair in a typed clause instead of through a coercion codegen inlined
+// behind the operator. The observation-bundle test also pins aggregate work:
+// complete captures require seven late predicate edges, while deleting demand
+// feedback removes 117 walks from the other two fixtures.
 const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1236,
+        runtime_demand_walks: 1103,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 589,
+        runtime_demand_walks: 596,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 243,
+        runtime_demand_walks: 225,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1115,6 +1122,25 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
         6,
         "each bundle must retain two separate-process observations"
     );
+    for process_index in 0..2 {
+        let aggregate_walks = observations
+            .iter()
+            .map(|observation| {
+                observation.processes[process_index]
+                    .report
+                    .formula_totals()
+                    .runtime_demand_evaluations
+            })
+            .sum::<u64>();
+        assert_eq!(
+            aggregate_walks, 1924,
+            "the same retained observations own the aggregate work pin"
+        );
+        assert!(
+            aggregate_walks < 2034,
+            "complete capture retention and feedback removal must reduce total work, even where exact late edges add local work"
+        );
+    }
 
     let mut public_construction_targets = 0;
     let mut backend_construction_targets = 0;
@@ -1944,16 +1970,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         formula_totals,
         FormulaWork {
             // Co-output finality removes redundant executable-fact readiness work.
-            evaluations: 350,
-            runtime_demand_evaluations: 32,
+            evaluations: 349,
+            runtime_demand_evaluations: 31,
             initial: 174,
-            content_caused: 170,
+            content_caused: 169,
             readiness_caused: 6,
             uncaused: 0,
             changed_outputs: 210,
-            unchanged_outputs: 140,
-            wakes: 178,
-            blocked_completions: 157,
+            unchanged_outputs: 139,
+            wakes: 177,
+            blocked_completions: 156,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

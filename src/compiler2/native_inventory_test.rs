@@ -63,9 +63,6 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
             for Stmt::Let(_, prim) in &block.stmts {
                 match prim {
                     Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => roots.push(construction_target(*id)),
-                    Prim::ClosureCapture { constructions, .. } => {
-                        roots.extend(constructions.iter().copied().map(&construction_target))
-                    }
                     _ => {}
                 }
             }
@@ -136,6 +133,12 @@ fn inventory_fixture(count: u32) -> NativeProgram {
 fn inventory_boundary(identity: u32, wrapper: u32) -> super::artifact::NativeCallableBoundary {
     use super::artifact::{BackendCallableReturn, NativeCallableBoundary, NativeCallableBoundaryId};
     NativeCallableBoundary {
+        denotation: fz_runtime::any_value::ClosureDenotationId::user(0),
+        source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(
+            None,
+            "test".into(),
+            0,
+        )),
         id: NativeCallableBoundaryId(identity),
         identity_fn: FnId(identity),
         callable: super::transport::CallableId::for_test(identity),
@@ -260,18 +263,16 @@ fn native_inventory_roots_every_construction_word_even_in_unreachable_bodies() {
             Var(3),
             Prim::ClosureCapture {
                 closure: Var(2),
-                constructions: Box::new([FnId(103), FnId(104)]),
                 index: 0,
             },
         ),
     ];
     assert_eq!(unreachable_native_functions(&program), vec![FnId(5)]);
-    for slot in 0..3 {
+    for slot in 0..2 {
         let mut dangling = program.clone();
         let Stmt::Let(_, prim) = &mut dangling.module.fns[5].blocks[0].stmts[slot];
         match prim {
             Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => *id = FnId(99),
-            Prim::ClosureCapture { constructions, .. } => constructions[0] = FnId(99),
             _ => unreachable!(),
         }
         assert!(std::panic::catch_unwind(|| unreachable_native_functions(&dangling)).is_err());

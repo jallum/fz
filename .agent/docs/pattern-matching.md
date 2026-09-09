@@ -110,6 +110,12 @@ tests remain conservative, so a guard-false path can still prove fallthrough.
 Each row instantiates its arrow parameters through that arrow's bounds using
 `Types::instantiate`. Dependent bounds close to a fixed point; unbounded or
 cyclic variables remain polymorphic and therefore conservative.
+The traversal keeps branch-local empty/cons facts beside the refined root
+types. The list type lattice does not encode a minimum spine length, so a test
+of a projected tail cannot refine its root; when that projection is already
+known to be a proper list, however, `not empty` proves cons and `not cons`
+proves empty. This makes zero/one/two-plus partitions exhaustive without
+inventing a length type or treating a non-list domain as covered.
 This deterministic closure belongs specifically to
 `FunctionContract::input_domain_rows` for diagnostics. Ordinary dependent-bound
 call matching is a separate unresolved path and must not be inferred from this

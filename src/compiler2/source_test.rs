@@ -71,8 +71,88 @@ fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], name
 // so the helper just needs to vary the span by its `line` input.
 fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> QuotedSourceMetadata {
     QuotedSourceMetadata {
+        module: None,
+        from_brackets: false,
         lexical_context: Some(context.clone()),
         span: Some(Span::new(SourceId(0), line, line.saturating_add(3))),
+    }
+}
+
+#[test]
+fn module_reference_metadata_keeps_portable_identity_in_semantic_equality() {
+    use crate::modules::identity::{ModuleDenotation, ModuleName};
+    fn projected(module: ModuleDenotation) -> QuotedSourceRoot {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let builder = heap.builder();
+        let meta = QuotedSourceMetadata {
+            module: Some(module),
+            ..Default::default()
+        };
+        builder.root(builder.alias(&meta, &["A", "B", "C"]).unwrap()).unwrap()
+    }
+    let name = |path| ModuleName::parse_dotted(path).unwrap();
+    let left = ModuleDenotation::ProtocolImpl {
+        protocol: name("A"),
+        target: name("B.C"),
+    };
+    let right = ModuleDenotation::ProtocolImpl {
+        protocol: name("A.B"),
+        target: name("C"),
+    };
+    let first = projected(left.clone());
+    let equal = projected(left.clone());
+    let other_impl = projected(right.clone());
+    let named = projected(ModuleDenotation::Named(name("A.B.C")));
+    assert!(
+        first.semantically_eq(&equal, Horizon::Full),
+        "identity is portable across quoted heaps"
+    );
+    assert!(
+        !first.semantically_eq(&other_impl, Horizon::Full),
+        "the protocol/target boundary is semantic"
+    );
+    assert!(
+        !first.semantically_eq(&named, Horizon::Full),
+        "display equality cannot collapse an implementation into a named module"
+    );
+    for (root, expected) in [(first, left), (other_impl, right)] {
+        assert_eq!(
+            root.cursor()
+                .ast_node()
+                .unwrap()
+                .unwrap()
+                .meta
+                .module_denotation()
+                .unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn malformed_module_reference_metadata_is_rejected_without_interning() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let empty = builder.list(&[]).unwrap();
+    let path = builder.list(&[builder.atom("A")]).unwrap();
+    let wrong = [
+        builder.int(1),
+        builder.tuple(&[]).unwrap(),
+        builder.tuple(&[builder.atom("unknown"), path]).unwrap(),
+        builder.tuple(&[builder.atom("named"), empty]).unwrap(),
+        builder.tuple(&[builder.atom("named"), path, path]).unwrap(),
+        builder.tuple(&[builder.atom("protocol_impl"), path]).unwrap(),
+        builder.tuple(&[builder.atom("protocol_impl"), path, empty]).unwrap(),
+    ];
+    for value in wrong {
+        let meta = builder
+            .root(
+                builder
+                    .map(&[(builder.atom(super::source::META_MODULE_KEY), value)])
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(meta.cursor().module_denotation().is_err());
     }
 }
 
@@ -432,6 +512,32 @@ fn semantically_eq_ignores_span_and_position() {
         a.semantically_eq(&b, Horizon::Surface),
         "position is not semantic content (surface)"
     );
+}
+
+#[test]
+fn semantic_map_keys_ignore_metadata_that_changes_runtime_order() {
+    fn graph(reverse_spans: bool) -> QuotedSourceRoot {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let builder = heap.builder();
+        let entries = ["a", "b"].into_iter().enumerate().map(|(index, name)| {
+            let position = if reverse_spans { 1 - index } else { index } as u32;
+            let metadata = builder
+                .meta(&QuotedSourceMetadata {
+                    span: Some(Span::new(SourceId(0), position, position + 1)),
+                    ..Default::default()
+                })
+                .unwrap();
+            let key = builder.tuple(&[metadata, builder.atom(name)]).unwrap();
+            (key, builder.int(index as i64))
+        });
+        let map = builder.map(&entries.collect::<Vec<_>>()).unwrap();
+        builder.root(map).unwrap()
+    }
+    let left = graph(false);
+    let right = graph(true);
+    assert_eq!(left.cursor().map_entries().unwrap()[0].1.int_value(), Ok(0));
+    assert_eq!(right.cursor().map_entries().unwrap()[0].1.int_value(), Ok(1));
+    assert!(left.semantically_eq(&right, Horizon::Full));
 }
 
 // The function body is part of its definition (Full) but below the module

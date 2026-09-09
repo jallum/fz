@@ -300,17 +300,11 @@ pub(crate) fn discover_modules(
     for form in &surface.forms {
         match form {
             ScopeForm::Module(module) => {
-                let module_id = world.reference_child_module(parent_module, &module.name);
+                let module_id = reference_declared_module(world, parent_module, &module.name);
                 let nested = read_module_body_surface(module)
                     .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
-                let revision = world.index_module_body(
-                    module_id,
-                    code_id,
-                    parent_module,
-                    module.name.clone(),
-                    module.source.clone(),
-                    nested.clone(),
-                );
+                let revision =
+                    world.index_module_body(module_id, code_id, parent_module, module.source.clone(), nested.clone());
                 outputs.push(FactKey::ModuleIndexed(module_id));
                 if revision {
                     changed.push(FactKey::ModuleIndexed(module_id));
@@ -325,7 +319,6 @@ pub(crate) fn discover_modules(
                     module_id,
                     code_id,
                     parent_module,
-                    protocol.name.last_segment().to_string(),
                     protocol.source.clone(),
                     protocol_surface,
                 );
@@ -346,14 +339,13 @@ pub(crate) fn discover_modules(
                 };
                 match (definition, fragment_form) {
                     (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
-                        let module_id = world.reference_child_module(parent_module, &module.name);
+                        let module_id = reference_declared_module(world, parent_module, &module.name);
                         let nested = read_module_body_surface(module)
                             .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
                         let revision = world.index_module_body(
                             module_id,
                             code_id,
                             parent_module,
-                            module.name.clone(),
                             module.source.clone(),
                             nested.clone(),
                         );
@@ -372,7 +364,6 @@ pub(crate) fn discover_modules(
                             module_id,
                             code_id,
                             parent_module,
-                            protocol.name.last_segment().to_string(),
                             protocol.source.clone(),
                             protocol_surface,
                         );
@@ -629,10 +620,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     self.namespace = self.world.bind_namespace(self.namespace, function.name.clone(), symbol);
                 }
                 ScopeForm::Module(module) => {
-                    let module_id = self.world.reference_child_module(self.current_module, &module.name);
+                    let module_id = reference_declared_module(self.world, self.current_module, &module.name);
                     self.namespace = self.world.bind_namespace(
                         self.namespace,
-                        module.name.clone(),
+                        module.name.last_segment().to_string(),
                         NamespaceSymbol::Module(module_id),
                     );
                 }
@@ -672,11 +663,11 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                             self.local_callables.insert((name.clone(), arity), symbol.clone());
                             self.namespace = self.world.bind_namespace(self.namespace, name, symbol);
                         }
-                        ReservedSourceDefinition::Module { local_name } => {
-                            let module_id = self.world.reference_child_module(self.current_module, &local_name);
+                        ReservedSourceDefinition::Module { name } => {
+                            let module_id = reference_declared_module(self.world, self.current_module, &name);
                             self.namespace = self.world.bind_namespace(
                                 self.namespace,
-                                local_name,
+                                name.last_segment().to_string(),
                                 NamespaceSymbol::Module(module_id),
                             );
                         }
@@ -875,7 +866,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     ) -> Result<Option<JobEffects>, FatalError> {
         match form {
             ScopeForm::Alias(alias) => {
-                let module_id = self.world.reference_module(alias.path.join("."));
+                let module_id = self
+                    .world
+                    .reference_module(ModuleName::from_segments(alias.path.clone()));
                 self.namespace = self.world.bind_namespace(
                     self.namespace,
                     alias.as_name.clone(),
@@ -903,7 +896,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 Ok(None)
             }
             ScopeForm::Module(module) => {
-                let module_id = self.world.reference_child_module(self.current_module, &module.name);
+                let module_id = reference_declared_module(self.world, self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
                 let body = read_module_body_surface(module)
                     .map_err(|error| emit_surface_read_error(self.telemetry, "module body read failed", &error))?;
@@ -998,7 +991,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let module_name = self
             .world
             .module_name(module)
-            .map(str::to_owned)
+            .map(ToString::to_string)
             .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
         emit_job_diagnostic(
             self.telemetry,
@@ -1023,7 +1016,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     self.register_protocol_impl(impl_form)?;
                 }
                 ScopeForm::Module(child) => {
-                    let child_id = self.world.reference_child_module(module, &child.name);
+                    let child_id = reference_declared_module(self.world, module, &child.name);
                     let nested = read_module_body_surface(child).map_err(|error| {
                         emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                     })?;
@@ -1055,7 +1048,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                                 "raw scope-definition fragment",
                             )?;
                             if let Some(ScopeForm::Module(child)) = fragment.forms.first() {
-                                let child_id = self.world.reference_child_module(module, &child.name);
+                                let child_id = reference_declared_module(self.world, module, &child.name);
                                 let nested = read_module_body_surface(child).map_err(|error| {
                                     emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                                 })?;
@@ -1125,7 +1118,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         } else {
             match self.world.lookup_namespace(self.namespace, first) {
                 Some(NamespaceSymbol::Module(prefix)) => prefix,
-                _ => self.world.reference_module(first.clone()),
+                _ => self
+                    .world
+                    .reference_module(ModuleName::from_segments(vec![first.clone()])),
             }
         };
         self.namespace =
@@ -1213,7 +1208,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(callables
             .iter()
             .filter(|callable| matches!(callable.kind, InterfaceCallableKind::Macro))
-            .filter(|callable| !denied.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
+            .filter(|callable| !denied.contains(&(callable.reference.name(), callable.reference.arity)))
             .cloned()
             .collect())
     }
@@ -1292,7 +1287,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 }
                 callables
                     .iter()
-                    .filter(|callable| !deny.contains(&(callable.reference.name.as_str(), callable.reference.arity)))
+                    .filter(|callable| !deny.contains(&(callable.reference.name(), callable.reference.arity)))
                     .cloned()
                     .collect()
             } else {
@@ -1337,34 +1332,27 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         }
     }
     /// Hoist a `defimpl Protocol, for: Target` to its own independently-
-    /// demandable module `Protocol.Target` (Elixir's `__concat__`). Discovery
+    /// demandable module identified by the typed `(protocol, target)` pair. Discovery
     /// records the impl as a `ProtocolImpl` module source resolved
-    /// name-accurately at its lexical site; `DefineModule(Protocol.Target)`
+    /// at its lexical site; `DefineModule(impl_module)`
     /// later publishes it without defining its lexical host. The provider index
-    /// points at `Protocol.Target` so dispatch demands exactly the impl.
+    /// points at that module so dispatch demands exactly the impl.
     fn register_protocol_impl(&mut self, form: &ProtocolImplForm) -> Result<(), FatalError> {
         let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
         let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
-        let impl_module = reference_protocol_impl_module(self.world, protocol, target);
+        let impl_module = self.world.reference_protocol_impl_module(protocol, target);
         let body = read_protocol_impl_body_surface(form).map_err(|error| {
             emit_internal_surface_error(
                 self.telemetry,
                 format!("quoted protocol impl body read failed: {error}"),
             )
         })?;
-        let impl_name = self
-            .world
-            .module_name(impl_module)
-            .expect("protocol impl modules should have reverse names")
-            .to_string();
-        // The hoisted impl module `Protocol.Target` is conceptually a child of the
-        // protocol (Elixir's `Enumerable.List`), not of its lexical host: that is
-        // the parent that reconstructs its qualified name and keeps it independent.
+        // The protocol owns this typed implementation pair, not its lexical
+        // host. This edge keeps the implementation independently demandable.
         let revision = self.world.index_protocol_impl_module(
             impl_module,
             self.code_id,
             protocol,
-            last_segment(&impl_name).to_string(),
             form.source.clone(),
             ProtocolImplSource { protocol, target, body },
         );
@@ -1386,7 +1374,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     /// Publish a hoisted impl module from its settled `ProtocolImplSource`: define
     /// each callback under the impl module, key them by the protocol's callback
     /// identity, and refresh the protocol's dispatch. This is the define-tier
-    /// counterpart of `register_protocol_impl`, run by `DefineModule(Protocol.Target)`.
+    /// counterpart of `register_protocol_impl`, run by `DefineModule(impl_module)`.
     fn publish_resolved_protocol_impl(
         &mut self,
         impl_module: ModuleId,
@@ -1516,7 +1504,7 @@ fn module_info_pairs(
         .filter(|callable| keep(callable.kind))
         .map(|callable| {
             builder.tuple(&[
-                builder.atom(&callable.reference.name),
+                builder.atom(callable.reference.name()),
                 builder.int(callable.reference.arity as i64),
             ])
         })
@@ -1682,8 +1670,8 @@ fn collect_struct_obligations(
         TypeExpr::StructRecord { module, fields } => {
             let module_name = ModuleName::from_segments(module.clone());
             let module_id = world
-                .lookup_module_path(scope, &module_name.dotted())
-                .unwrap_or_else(|| world.reference_module(module_name.dotted()));
+                .lookup_module_path(scope, &module_name)
+                .unwrap_or_else(|| world.reference_module(module_name));
             struct_refs.push(module_id);
             world.note_struct_reference_expectation(module_id, requester.clone());
             for (field, value) in fields {
@@ -1835,11 +1823,23 @@ fn find_callable<'a>(
 }
 
 fn bind_callable(world: &mut World, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
-    world.bind_namespace(scope, callable.reference.name.clone(), callable.namespace_symbol())
+    world.bind_namespace(
+        scope,
+        callable.reference.name().to_string(),
+        callable.namespace_symbol(),
+    )
 }
 
 fn reference_declared_protocol_module(world: &mut World, current_module: ModuleId, name: &ModuleName) -> ModuleId {
     world.reference_module(qualified_child_module_name(world, current_module, name))
+}
+
+fn reference_declared_module(world: &mut World, parent: ModuleId, name: &ModuleName) -> ModuleId {
+    let name = match world.module_name(parent) {
+        None => name.clone(),
+        Some(parent) => ModuleName::from_segments(parent.segments().iter().chain(name.segments()).cloned().collect()),
+    };
+    world.reference_module(name)
 }
 
 fn reference_impl_protocol_module(
@@ -1864,35 +1864,123 @@ fn reference_impl_target_module(
         .expect("module resolution should always mint a module id for defimpl target names")
 }
 
-fn reference_protocol_impl_module(world: &mut World, protocol: ModuleId, target: ModuleId) -> ModuleId {
-    let protocol_name = world
-        .module_name(protocol)
-        .expect("protocol modules should have reverse names");
-    let target_name = world
-        .module_name(target)
-        .expect("protocol impl targets should have reverse names");
-    let target_local = last_segment(target_name);
-    world.reference_module(format!("{protocol_name}.{target_local}"))
-}
-
-fn qualified_child_module_name(world: &World, current_module: ModuleId, name: &ModuleName) -> String {
+fn qualified_child_module_name(world: &World, current_module: ModuleId, name: &ModuleName) -> ModuleName {
     if name.segments().len() != 1 || current_module.is_global() {
-        return name.dotted();
+        return name.clone();
     }
     qualify_local_child_name(world, current_module, name.last_segment())
 }
 
-fn qualify_local_child_name(world: &World, current_module: ModuleId, local: &str) -> String {
+fn qualify_local_child_name(world: &World, current_module: ModuleId, local: &str) -> ModuleName {
     let current_name = world
         .module_name(current_module)
         .expect("named scoped modules should have reverse lookups");
-    if local == last_segment(current_name) {
-        current_name.to_string()
+    if local == current_name.last_segment() {
+        current_name.clone()
     } else {
-        format!("{current_name}.{local}")
+        current_name.child(local)
     }
 }
 
-fn last_segment(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_impl_identity_preserves_the_protocol_target_boundary() {
+        let mut world = World::new();
+        let a = world.reference_module(ModuleName::parse_dotted("A").unwrap());
+        let bc = world.reference_module(ModuleName::parse_dotted("B.C").unwrap());
+        let ab = world.reference_module(ModuleName::parse_dotted("A.B").unwrap());
+        let c = world.reference_module(ModuleName::parse_dotted("C").unwrap());
+        let named = world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap());
+        let left = world.reference_protocol_impl_module(a, bc);
+        let right = world.reference_protocol_impl_module(ab, c);
+        assert_ne!(left, right, "the protocol/target boundary is part of module identity");
+        assert_ne!(left, named, "a named module cannot own an implementation's source");
+        assert_ne!(right, named);
+        assert_eq!(left, world.reference_protocol_impl_module(a, bc));
+        assert!(
+            world.module_name(left).is_none(),
+            "an implementation has no named lookup path"
+        );
+        assert!(world.module_name(right).is_none());
+        let left_function = world.reference_function(left, "val", 1);
+        let right_function = world.reference_function(right, "val", 1);
+        let left = &world.function_ref(left_function).denotation;
+        let right = &world.function_ref(right_function).denotation;
+        assert_eq!(left.label(), right.label(), "display labels may collide");
+        assert_ne!(left.semantic_cmp(right), std::cmp::Ordering::Equal);
+        let table = vec![
+            (fz_runtime::any_value::ClosureDenotationId::user(0), left.clone()),
+            (fz_runtime::any_value::ClosureDenotationId::user(1), right.clone()),
+        ];
+        let bytes = fz_runtime::function_denotation::encode_closure_denotations(&table).unwrap();
+        assert_eq!(
+            fz_runtime::function_denotation::decode_closure_denotations(&bytes).unwrap(),
+            table
+        );
+    }
+
+    #[test]
+    fn module_reservation_and_definition_preserve_the_same_source_path() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let source =
+            super::super::parse_quoted_program("path.fz", "defmodule A.B do\nend\n", CodeId::ZERO, &tel).unwrap();
+        let raw = super::super::quoted_surface::read_scope_surface(&source).unwrap();
+        let ScopeForm::MacroCall(call) = &raw.forms[0] else {
+            panic!("source module macro");
+        };
+        let Some(ReservedSourceDefinition::Module { name: reserved }) =
+            reserved_source_definition(&call.source).unwrap()
+        else {
+            panic!("reserved module");
+        };
+        let expanded = super::super::quoted_surface::read_compiler_fragment_surface(&source).unwrap();
+        let ScopeForm::Module(module) = &expanded.forms[0] else {
+            panic!("decoded module");
+        };
+        let expected = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+        assert_eq!(reserved, expected);
+        assert_eq!(module.name, expected);
+    }
+
+    #[test]
+    fn declared_and_protocol_impl_modules_preserve_full_typed_paths() {
+        let mut world = World::new();
+        let parent = world.reference_module(ModuleName::from_segments(vec!["Parent".into()]));
+        let flat = ModuleName::from_segments(vec!["A.B".into()]);
+        let nested = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+        let flat_id = reference_declared_module(&mut world, parent, &flat);
+        let nested_id = reference_declared_module(&mut world, parent, &nested);
+        assert_ne!(flat_id, nested_id);
+        assert_eq!(
+            world.module_name(flat_id).unwrap().dotted(),
+            world.module_name(nested_id).unwrap().dotted()
+        );
+
+        let protocol = world.reference_module(ModuleName::from_segments(vec!["Protocol".into()]));
+        let left = world.reference_module(ModuleName::from_segments(vec!["Left".into(), "Box".into()]));
+        let right = world.reference_module(ModuleName::from_segments(vec!["Right".into(), "Box".into()]));
+        let left_impl = world.reference_protocol_impl_module(protocol, left);
+        let right_impl = world.reference_protocol_impl_module(protocol, right);
+        assert_ne!(
+            left_impl, right_impl,
+            "targets sharing a local name cannot alias an impl module"
+        );
+        assert_eq!(
+            world.module_denotation(left_impl).unwrap(),
+            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
+                protocol: world.module_name(protocol).unwrap().clone(),
+                target: world.module_name(left).unwrap().clone()
+            }
+        );
+        assert_eq!(
+            world.module_denotation(right_impl).unwrap(),
+            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
+                protocol: world.module_name(protocol).unwrap().clone(),
+                target: world.module_name(right).unwrap().clone()
+            }
+        );
+    }
 }

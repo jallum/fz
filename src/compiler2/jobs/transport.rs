@@ -485,6 +485,8 @@ fn project_group_member_owner(
 /// The answer one position publishes: its evidence projected through the
 /// position's OWN layout, analyzed type and demand. Cycle or no cycle, the same
 /// derivation -- an owner says only what its own position can carry.
+/// Source and destination descriptors may differ: exact target evidence follows
+/// typed activation demand, not equality of their physical callable layouts.
 fn project_owner_answer(
     world: &mut World,
     evidence: &TransportFactsBuilder,
@@ -646,11 +648,27 @@ fn project_generic_owner_node(
     publication: &TransportPosition,
 ) {
     match world.shape(shape).clone() {
-        ShapeDescr::Callable(callable) if world.callable(callable).function.is_none() => {
+        ShapeDescr::Callable(callable) => {
             record_generic_owner_facts(world, projected, shape, ty, demand, publication);
             let resolutions = exact_demand_resolution_symbols(source, demand, None);
             if let Some(draft) = projected.callables.get_mut(&callable) {
                 extend_unique(&mut draft.resolutions, resolutions);
+            }
+            if world.callable(callable).function.is_some()
+                && demand.callable.is_first_class()
+                && let Some(owner) = source.callables.get(&callable)
+            {
+                let draft = projected
+                    .callables
+                    .get_mut(&callable)
+                    .expect("the position published its callable");
+                extend_unique(&mut draft.boundary_ids, owner.boundary_ids.clone());
+                for boundary in &owner.boundary_ids {
+                    if let Some(facts) = source.boundaries.get(boundary) {
+                        projected.record_boundary_resolutions(*boundary, facts.resolutions.clone());
+                    }
+                    projected.record_boundary(*boundary, publication.clone());
+                }
             }
             let boundary_ids = projected
                 .callables
@@ -662,29 +680,6 @@ fn project_generic_owner_node(
                     boundary,
                     exact_demand_resolution_symbols(source, demand, Some(surface)),
                 );
-            }
-        }
-        ShapeDescr::Callable(callable) => {
-            let Some(draft) = source.callables.get(&callable) else {
-                return;
-            };
-            let boundary_ids = if demand.callable.is_first_class() {
-                draft.boundary_ids.clone()
-            } else {
-                Vec::new()
-            };
-            projected.record_callable(
-                callable,
-                exact_demand_resolution_symbols(source, demand, None),
-                draft.direct_surfaces.clone(),
-                draft.direct_edges.clone(),
-                boundary_ids.clone(),
-            );
-            for boundary in boundary_ids {
-                if let Some(facts) = source.boundaries.get(&boundary) {
-                    projected.record_boundary_resolutions(boundary, facts.resolutions.clone());
-                }
-                projected.record_boundary(boundary, publication.clone());
             }
         }
         ShapeDescr::Tuple(fields) => {
@@ -748,9 +743,6 @@ fn record_generic_owner_facts(
 ) {
     match world.shape(shape).clone() {
         ShapeDescr::Callable(callable) => {
-            if world.callable(callable).function.is_some() {
-                return;
-            }
             let surfaces = &demand.callable.resolved;
             let surface_layouts = surface_layouts(world, surfaces, facts);
             let surface_shapes = surface_shapes_from_layouts(&surface_layouts);
@@ -935,12 +927,12 @@ fn tuple_layout(world: &mut World, fields: &[TransportLayout]) -> TransportLayou
     }
 }
 
-/// The one physical callable layout this position's settled target set names,
-/// if the set names exactly one. A transport layout is pure physics, so the
+/// The physical callable layout covering this position's settled target
+/// requirements, when they describe one source function. A transport layout is pure physics, so the
 /// question is never "how many targets" but "how many LAYOUTS": several
 /// activations of one function — specializations reached at different argument
-/// types — describe the same captures, and a value that must reach any of them
-/// travels as those captures. Which activation a callsite reaches is decided
+/// types — may retain different parts of the same capture environment. Their
+/// compatible requirements combine slot by slot. Which activation a callsite reaches is decided
 /// there, from the argument types it holds (fz-kdt.132), so that choice never
 /// has to travel with the value.
 ///
@@ -961,11 +953,12 @@ fn exact_direct_callable_layout(
     let mut settled: Option<CallableDescr> = None;
     for target in &targets {
         match direct_callable_descr(world, tel, context, ty, demand, position, target) {
-            DirectCallableDescr::Descr(descr) => match &settled {
-                Some(first) if *first != descr => return None,
-                Some(_) => {}
-                None => settled = Some(descr),
-            },
+            DirectCallableDescr::Descr(descr) => {
+                settled = Some(match &settled {
+                    Some(first) => combine_callable_requirements(world, first, &descr)?,
+                    None => descr,
+                });
+            }
             // A cut or a not-yet-readable capture answers for the whole
             // position: the Cut LAYOUT is target-independent (built from
             // position/ty/demand alone); a Waiting KEY is that target's own
@@ -994,6 +987,82 @@ enum DirectCallableDescr {
     Position(RecipeLayout),
     /// This target names no exact layout at all.
     Unavailable,
+}
+
+fn combine_callable_requirements(
+    world: &mut World,
+    left: &CallableDescr,
+    right: &CallableDescr,
+) -> Option<CallableDescr> {
+    if left.function.is_none()
+        || left.function != right.function
+        || left.arity != right.arity
+        || left.capture_layouts.len() != right.capture_layouts.len()
+    {
+        return None;
+    }
+    let capture_layouts = left
+        .capture_layouts
+        .iter()
+        .copied()
+        .zip(right.capture_layouts.iter().copied())
+        .map(|(left, right)| combine_capture_requirements(world, left, right))
+        .collect::<Option<Box<_>>>()?;
+    Some(CallableDescr {
+        capture_layouts,
+        ..left.clone()
+    })
+}
+
+fn combine_capture_requirements(
+    world: &mut World,
+    left: TransportLayout,
+    right: TransportLayout,
+) -> Option<TransportLayout> {
+    if left == right {
+        return Some(left);
+    }
+    let absent = |layout: TransportLayout| {
+        world.shape(layout.structural).is_semantically_absent() && layout.carrier == TransportCarrier::Absent
+    };
+    if absent(left) {
+        return Some(right);
+    }
+    if absent(right) {
+        return Some(left);
+    }
+    let carrier = match (left.carrier, right.carrier) {
+        (TransportCarrier::Absent, carrier) | (carrier, TransportCarrier::Absent) => carrier,
+        (left, right) if left == right => left,
+        _ => return None,
+    };
+    let structural = if left.structural == right.structural {
+        left.structural
+    } else {
+        match (
+            world.shape(left.structural).clone(),
+            world.shape(right.structural).clone(),
+        ) {
+            (ShapeDescr::Tuple(left), ShapeDescr::Tuple(right)) if left.len() == right.len() => {
+                let fields = left
+                    .iter()
+                    .copied()
+                    .zip(right.iter().copied())
+                    .map(|(left, right)| combine_capture_requirements(world, left, right))
+                    .collect::<Option<Box<_>>>()?;
+                world.intern_shape(ShapeDescr::Tuple(fields))
+            }
+            (ShapeDescr::Callable(left), ShapeDescr::Callable(right)) => {
+                let left = world.callable(left).clone();
+                let right = world.callable(right).clone();
+                let combined = combine_callable_requirements(world, &left, &right)?;
+                let callable = world.intern_callable(combined);
+                world.intern_shape(ShapeDescr::Callable(callable))
+            }
+            _ => return None,
+        }
+    };
+    Some(TransportLayout { structural, carrier })
 }
 
 fn direct_callable_descr(
@@ -1038,13 +1107,13 @@ fn direct_callable_descr(
             None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
         }
     }
-    let capture_tys = &target.activation_inputs[..capture_count];
     DirectCallableDescr::Descr(CallableDescr {
         function: Some(target.activation.function),
-        // The activation's inputs are the environment followed by the call
-        // arguments, so what the environment does not supply is the arity.
-        arity: (target.activation_inputs.len() - capture_count) as u16,
-        capture_tys: capture_tys.to_vec().into_boxed_slice(),
+        arity: world
+            .function_ref(target.activation.function)
+            .arity
+            .try_into()
+            .expect("source arity fits its descriptor"),
         capture_layouts: capture_layouts.into_boxed_slice(),
     })
 }
@@ -1260,7 +1329,6 @@ fn produce_local_callable_construction(
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
         arity,
-        capture_tys: capture_tys.into_boxed_slice(),
         capture_layouts: capture_layouts.clone().into_boxed_slice(),
     });
     let boundary_surfaces = flow.first_class_surfaces.clone();
@@ -1311,12 +1379,14 @@ fn produce_local_callable_construction(
                 .iter()
                 .copied()
                 .zip(capture_layouts)
-                .map(|(value, layout)| CallableConstructionCapture {
+                .zip(capture_tys)
+                .map(|((value, layout), ty)| CallableConstructionCapture {
                     source: TransportPosition::Value {
                         executable: executable_symbol(executable, world.types()),
                         value,
                     },
                     layout,
+                    ty,
                 })
                 .collect(),
             members: selection
@@ -2407,7 +2477,6 @@ fn generic_callable_shape_with_resolutions(
         // A generic callable names no function, so it has no arity of its own;
         // it is never minted into a closure value.
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: Box::default(),
     });
     world.intern_shape(ShapeDescr::Callable(callable))
@@ -2530,6 +2599,132 @@ fn boundary_runtime_demand(world: &mut World, ty: Ty) -> RuntimeDemand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_source_capture_requirements_retain_concrete_zero_lane_children() {
+        let mut world = World::new();
+        let module = super::super::super::identity::ModuleId::GLOBAL;
+        let function = world.reference_function(module, "holder", 0);
+        let captured = world.reference_function(module, "captured", 0);
+        let nothing = TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
+        let captured = world.intern_callable(CallableDescr {
+            function: Some(captured),
+            arity: 0,
+            capture_layouts: Box::default(),
+        });
+        let captured = TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(captured)));
+        let left = CallableDescr {
+            function: Some(function),
+            arity: 0,
+            capture_layouts: Box::new([tuple_layout(&mut world, &[nothing, captured])]),
+        };
+        let right = CallableDescr {
+            capture_layouts: Box::new([tuple_layout(&mut world, &[captured, nothing])]),
+            ..left.clone()
+        };
+        let expected = CallableDescr {
+            capture_layouts: Box::new([tuple_layout(&mut world, &[captured, captured])]),
+            ..left.clone()
+        };
+        for (left, right) in [(&left, &right), (&right, &left)] {
+            let combined = combine_callable_requirements(&mut world, left, right)
+                .expect("one activation's unused slot does not erase another activation's concrete child");
+            assert_eq!(combined, expected);
+            assert!(world.layout_physical_lanes(combined.capture_layouts[0]).is_empty());
+        }
+    }
+
+    #[test]
+    fn incompatible_capture_requirements_do_not_invent_a_source_payload() {
+        let mut world = World::new();
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "capturing", 0);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let left = CallableDescr {
+            function: Some(function),
+            arity: 0,
+            capture_layouts: Box::new([TransportLayout::structural(value_lane_shape(&mut world, int))]),
+        };
+        let right = CallableDescr {
+            capture_layouts: Box::new([TransportLayout::structural(value_lane_shape(&mut world, float))]),
+            ..left.clone()
+        };
+        assert!(
+            combine_callable_requirements(&mut world, &left, &right).is_none(),
+            "target requirements alone do not prove that the source retained a whole boxed payload"
+        );
+    }
+
+    #[test]
+    fn exact_callable_owner_keeps_typed_target_evidence_from_a_generic_source() {
+        let mut world = World::new();
+        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "target", 0);
+        let ty = world
+            .types_mut()
+            .fn_ref_lit(crate::types::ClosureTarget(function.as_u32()), 0);
+        let activation = super::super::super::ActivationKey::from_inputs(
+            super::super::super::RootId::for_test(0),
+            function,
+            &[],
+            world.types_mut(),
+        );
+        let executable = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let resolution = executable_symbol(&executable, world.types());
+        let surface = CallableSurface::new(Vec::new(), world.types_mut());
+        let demand = RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([surface.clone()]),
+            targets: BTreeSet::from([CallableTarget {
+                surface,
+                activation,
+                activation_inputs: Vec::new(),
+                need: ExecutableNeed::Value,
+            }]),
+            opaque: false,
+            escape: false,
+        });
+        let generic = world.intern_callable(CallableDescr {
+            function: None,
+            arity: 0,
+            capture_layouts: Box::default(),
+        });
+        let exact = world.intern_callable(CallableDescr {
+            function: Some(function),
+            arity: 0,
+            capture_layouts: Box::default(),
+        });
+        let layout = TransportLayout::structural(world.intern_shape(ShapeDescr::Callable(exact)));
+        let position = TransportPosition::Value {
+            executable: resolution.clone(),
+            value: ValueId::from_u32(0),
+        };
+        let mut source = TransportFactsBuilder::default();
+        source.record_callable(generic, vec![resolution.clone()], Vec::new(), Vec::new(), Vec::new());
+
+        let owner = project_owner_answer(&mut world, &source, layout, ty, &demand, &position);
+
+        assert_eq!(
+            owner.layout, layout,
+            "projection preserves the consumer's exact zero-lane layout"
+        );
+        assert_eq!(
+            owner.callable_facts.len(),
+            1,
+            "the owner publishes only its own callable descriptor"
+        );
+        assert_eq!(
+            owner.callable_facts[&exact].resolutions.as_ref(),
+            &[resolution],
+            "typed target evidence survives a generic-to-exact representation change"
+        );
+        assert!(owner.construction.is_none());
+        assert!(
+            owner.boundary_facts.is_empty(),
+            "a direct-only consumer creates no runtime boundary"
+        );
+    }
 
     #[test]
     fn tuple_carrier_comes_from_the_composite_demand_not_its_child_lanes() {

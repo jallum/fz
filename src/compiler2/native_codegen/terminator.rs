@@ -1195,7 +1195,13 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
     let stub_addr = body.b.ins().func_addr(types::I64, stub_fref);
     let zero_hk = body.b.ins().iconst(types::I32, 0);
-    let cont_closure = body.alloc_closure(cont_arity, n_caps_v, zero_hk, stub_addr);
+    let cont_closure = body.alloc_closure(
+        fz_runtime::any_value::ClosureDenotationId::INTERNAL,
+        cont_arity,
+        n_caps_v,
+        zero_hk,
+        stub_addr,
+    );
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
         let mut root_ref = body.value_as_any_ref(root);

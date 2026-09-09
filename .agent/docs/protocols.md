@@ -35,10 +35,20 @@ end
 (a root declaration publishes `Enumerable`, not `Enumerable.Enumerable`). It owns
 the required callback names/arities and their public specs. `defimpl` declares
 the protocol, the target, and the callback bodies; the callbacks lower into a
-**protocol-owned** module named `protocol.child(target)` — `defimpl Enumerable,
-for: List` produces `Enumerable.List.reduce/3` (`reference_protocol_impl_module`),
-not a function on `List`, so the body can delegate to ordinary target helpers
-like `List.reduce/3` without colliding.
+**protocol-owned** module identified by `ModuleDenotation::ProtocolImpl { protocol,
+target }` in the ordinary `ModuleMap`. `defimpl Enumerable, for: List` displays
+`Enumerable.List.reduce/3`, so the body can delegate to ordinary target helpers
+like `List.reduce/3` without colliding. The protocol/target boundary is retained:
+`(A, B.C)`, `(A.B, C)`, and the named module `A.B.C` are three distinct owners
+even though all display `A.B.C`. Function denotations and their AOT carrier keep
+this same typed module identity; no callback or closure comparison uses the
+display projection.
+
+Projected `__CALLER__.module` aliases retain this portable denotation in quoted
+metadata. A macro that emits `unquote(__CALLER__.module).val(x)` therefore calls
+the implementation's own callback, even when an ordinary named module shares
+its display path. Both source projection and quote reification consume the one
+`ModuleDenotation::quoted_parts` encoding shape.
 
 The runtime library follows Elixir's split: `Enumerable` is the protocol; `Enum`
 is the convenience module users call. Low-level control tuples
@@ -47,7 +57,7 @@ returns plain accumulator values.
 
 ## The owned facts
 
-`World` carries two registries:
+`World` carries these protocol facts:
 
 - **`ProtocolCallbackMap`** — `function -> ProtocolCallback { protocol }`.
   `define_protocol_callback` fills it while indexing a `defprotocol` surface, so
@@ -60,10 +70,10 @@ returns plain accumulator values.
   from the impl registry. Protocol definition publishes the empty dispatch fact;
   each `defimpl` revises this dispatch fact and only this dispatch fact.
 - **`ProtocolImplProviders`** — the scope-tier discovery surface:
-  `protocol -> [(target, Protocol.Target)]`. `register_protocol_impl` records an
+  `protocol -> [(target, impl_module)]`. `register_protocol_impl` records an
   entry per `defimpl` while scoping (no body defined yet). It is the *only* way
   dispatch finds an unloaded impl: a receiver with no arm demands
-  `DefineModule(Protocol.Target)` for each overlapping target. A `defimpl` is
+  `DefineModule(impl_module)` for each overlapping target. A `defimpl` is
   thus independently demandable — its lexical host is never the unit of demand.
 
 `protocol_callback(fn)` answers "is this function a protocol callback?". It reads
@@ -76,17 +86,25 @@ user `defprotocol` in the program.
 ## Implementation targets
 
 An `ImplTarget` is a module identity, never a display string. Builtin targets
-map to their concrete value family:
+are exact top-level source names and map to their concrete value family:
 
 ```text
 List -> list(any)   Integer -> int   Float -> float   Atom -> atom
 Binary -> str       Map -> map_top
 ```
 
+A qualified name such as `X.List` is a nominal target unless its own
+`StructDefined` fact supplies a struct; sharing a final segment with a builtin
+does not classify it as that builtin.
+
 A named source struct (e.g. `Range`) maps to one tagged record carrying its
-typed `ModuleId` and declared fields together. The tag keeps it disjoint from a
-plain map with identical fields. A target with no `StructDefined` fact remains
-the legacy opaque `impl-target::<name>` marker.
+parsed `ModuleName` and declared fields together. The tag keeps it disjoint
+from a plain map with identical fields; its `ModuleId` records the World
+dependency, while the typed source name owns equality and ordering. A target
+with no `StructDefined` fact remains `OpaqueTag::ProtocolTarget(ModuleName)`
+in the existing opaque set algebra. Ordinary named opaque spellings cannot
+manufacture protocol targets. Runtime predicates project the typed target
+name directly, without recognizing a string prefix.
 
 ## Dispatch is receiver/target overlap selection
 
@@ -104,29 +122,30 @@ for each registered (protocol, target) impl:
         collect it
 exactly one match  -> activate that impl callback as an ordinary call
                       (the protocol callsite becomes a direct call to the impl)
-no match           -> demand the impl module Protocol.Target (from the provider
+no match           -> demand the typed impl owner (from the provider
                       index) whose target overlaps the receiver, then retry
 many matches       -> unresolved (any): the receiver is open/ambiguous here
 ```
 
 The runtime-predicate check is what keeps runtime identity authoritative. A
-named struct is a tagged record, not a plain map; `Enumerable.Range` therefore
+named struct is a tagged record, not a plain map; the `Enumerable` impl for `Range` therefore
 does not overlap the `Map` impl just because the two record shapes have fields.
 
 Selection is lazy about impl code, and there is a single discovery path: the
 **provider index** (`ProtocolImplProviders(protocol)`). Scope time records every
-`defimpl` as a `(protocol, target) -> Protocol.Target` entry — built-in impls
+`defimpl` as a `(protocol, target) -> impl_module` entry — built-in impls
 co-located with the protocol's own source, and impls in a module the program
 never reaches by name alike. When no registered arm matches, the job reads that
-index and demands `DefineModule(Protocol.Target)` for each target the receiver
+index and demands `DefineModule(impl_module)` for each target the receiver
 overlaps by the same runtime-predicate-plus-intersection test; the impl is the
 unit of demand, not the arbitrarily-named module it
 sits inside, and its lexical host is never pulled. There is **no** receiver-type
 module-name scan: a protocol call always names the protocol, and that reference
 scopes its co-located `defimpl`s, so built-in impls ride in on the protocol. A
 single match activates `selected.function` through the ordinary call path — so a
-known list receiver at `Enumerable.reduce/3` resolves to `Enumerable.List.reduce/3`
-and the callsite summary names that concrete callee, no stub and no runtime
+known list receiver at `Enumerable.reduce/3` resolves to the List impl callback
+(displayed `Enumerable.List.reduce/3`), and the callsite summary identifies that
+concrete callee, no stub and no runtime
 lookup table.
 
 ## The domain type
@@ -166,10 +185,10 @@ not revised by `defimpl`.
 jobs/source.rs       indexes defprotocol (define_protocol_surface ->
                      define_protocol_callback)
 source_publish.rs    register_protocol_impl (scope tier) hoists each defimpl to a
-                     ModuleSourceKind::ProtocolImpl source named Protocol.Target
-                     (reference_protocol_impl_module) and records it in the
+                     ModuleSourceKind::ProtocolImpl source owned by the typed pair
+                     (World::reference_protocol_impl_module) and records it in the
                      provider index; publish_protocol_impl_surface (define tier,
-                     run by DefineModule(Protocol.Target)) lowers the callbacks
+                     run by DefineModule(impl_module)) lowers the callbacks
                      and revises the dispatch fact
 compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps
 world.rs             define/read protocol facts; impl_target_ty;
@@ -181,7 +200,7 @@ jobs/semantic.rs     resolve_protocol_call — the receiver-subtype selection ab
 ## Proof gates
 
 ```text
-cargo test --lib compiler2::semantic_analysis_test::compiler2_protocol_impl_resolves_to_concat_module_not_host
+cargo test --lib compiler2::semantic_analysis_test::compiler2_protocol_impl_resolves_to_owned_module_not_host
 cargo test --lib compiler2::semantic_analysis_test::compiler2_root_colocated_protocol_impl_registers_on_scope
 cargo test --lib compiler2::drive_test::compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when_impls_land
 ```

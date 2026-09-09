@@ -1,0 +1,41 @@
+#---
+# purpose: "negation inside a guard works for floats as well as integers, on every door"
+# oracle: oracle.exs
+#---
+#
+# # negate_guard
+#
+# A guard is a third place negation is implemented, after the expression
+# evaluator and native codegen. It forced its operand to an integer, so a float
+# guard silently FAILED -- falling through to the next clause rather than
+# erroring:
+#
+#     fnp classify(x :: float) when -x > 0.0, do: :negative
+#     classify(-5.5)   interp :other   run :negative   build :negative
+#
+# Wrong answer, no error, one door. It stayed invisible while native codegen
+# aborted on the same input (fz-5xp.33): there was nothing for interp to
+# disagree with until that was fixed.
+#
+# ## What it covers
+#
+# Negation in a guard over floats and integers, both branches, and a guard
+# whose operand is a union so no door can decide the lane statically. The
+# clause heads are type-annotated, which is fz's spelling of Elixir's
+# `is_float`/`is_integer` guards -- without them the first clause claims every
+# integer too, because `-(-5) > 0.0` is true in both languages.
+fnp classify(x :: float) when -x > 0.0, do: :negative_float
+fnp classify(x :: integer) when -x > 0, do: :negative_int
+fnp classify(_), do: :other
+
+fnp pick(0), do: -4.5
+fnp pick(_), do: -9
+
+fn main() do
+  dbg(classify(-5.5))
+  dbg(classify(5.5))
+  dbg(classify(-5))
+  dbg(classify(5))
+  dbg(classify(pick(0)))
+  dbg(classify(pick(1)))
+end

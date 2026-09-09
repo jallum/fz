@@ -21,14 +21,15 @@ Read:
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
 - [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
 - [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
-- [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
+- [externs](docs/externs.md) — the FFI door: the two ABIs (`"C"` vs `"fz"`, the implicit process argument, what `binary` means), the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
-- [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage, codegen value lanes, and GC.
+- [semantic authorities](docs/semantic-authorities.md) — who owns each semantic question (truthiness, equality, ordering, arithmetic, runtime type tests, bitstring matching, map key identity, binary representation, storage choice, foreign symbol lookup), which per-door fast paths are allowed beside it, and the divergences that came from a second answer.
+- [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage (including the map's flat SORTED array and the order-agrees-with-equality invariant), codegen value lanes, and GC.
 - [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
 - [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.

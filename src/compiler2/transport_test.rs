@@ -75,7 +75,7 @@ fn transport_consumers_share_one_typed_semantic_order() {
     let list = types.list(int);
     let non_empty = types.non_empty_list(int);
     let mut functions = FunctionMap::new();
-    let function = functions.reference(ModuleId::GLOBAL, "ordered", 1);
+    let function = functions.reference(ModuleId::GLOBAL, None, "ordered", 1);
     let root = RootId::for_test(0);
     let keys = [list, non_empty].map(|input| ExecutableKey {
         activation: ActivationKey::from_inputs(root, function, &[input], &mut types),
@@ -235,7 +235,7 @@ fn transport_descriptors_share_across_root_positions() {
     let mut types = Types::new();
     let int = types.int();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut store = TransportStore::new();
     let interners = store.interners_mut();
 
@@ -263,13 +263,11 @@ fn transport_descriptors_share_across_root_positions() {
     let callable = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let same_callable = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let callable_shape = interners.intern_shape(ShapeDescr::Callable(callable));
@@ -285,7 +283,6 @@ fn transport_descriptors_share_across_root_positions() {
         &CallableDescr {
             function: Some(add),
             arity: 0,
-            capture_tys: Box::default(),
             capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
         },
         "callable descriptors are independent of root-scoped positions"
@@ -297,7 +294,7 @@ fn transport_boundary_descriptors_are_interned_contracts() {
     let mut types = Types::new();
     let int = types.int();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut interners = TransportInterners::default();
 
     let lane = interners.intern_lane(LaneDescr {
@@ -308,7 +305,6 @@ fn transport_boundary_descriptors_are_interned_contracts() {
     let callable = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let boundary = BoundaryDescr {
@@ -331,7 +327,7 @@ fn transport_callable_descriptors_include_ordered_capture_layouts() {
     let int = types.int();
     let atom = types.atom();
     let mut functions = FunctionMap::new();
-    let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+    let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let mut interners = TransportInterners::default();
 
     let int_lane = interners.intern_lane(LaneDescr {
@@ -345,14 +341,12 @@ fn transport_callable_descriptors_include_ordered_capture_layouts() {
     let shared_callable = interners.intern_callable(CallableDescr {
         function: None,
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: Box::default(),
     });
     let shared_shape = interners.intern_shape(ShapeDescr::Callable(shared_callable));
     let int_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: vec![TransportLayout {
             structural: shared_shape,
             carrier: TransportCarrier::ValueRef(int_lane),
@@ -362,7 +356,6 @@ fn transport_callable_descriptors_include_ordered_capture_layouts() {
     let atom_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
-        capture_tys: Box::default(),
         capture_layouts: vec![TransportLayout {
             structural: shared_shape,
             carrier: TransportCarrier::ValueRef(atom_lane),
@@ -377,29 +370,48 @@ fn transport_callable_descriptors_include_ordered_capture_layouts() {
 }
 
 #[test]
-fn transport_callable_descriptors_keep_elided_capture_groundings_distinct() {
+fn transport_callable_descriptors_share_physical_layout_across_capture_annotations() {
+    use super::artifact::{AbiValueRepr, BackendConstructionCapture, BackendValueLayout};
     let mut types = Types::new();
     let int = types.int();
     let atom = types.atom();
     let mut functions = FunctionMap::new();
-    let apply = functions.reference(ModuleId::GLOBAL, "apply", 1);
+    let apply = functions.reference(ModuleId::GLOBAL, None, "apply", 1);
     let mut interners = TransportInterners::default();
-
-    let int_capture = interners.intern_callable(CallableDescr {
+    let any = types.any();
+    let lane = interners.intern_lane(LaneDescr {
+        ty: any,
+        class: TransportClass::Value,
+    });
+    let shape = interners.intern_shape(ShapeDescr::Lane(lane));
+    let capture = |ty| BackendConstructionCapture {
+        ty,
+        layout: BackendValueLayout {
+            structural: shape,
+            carrier: TransportCarrier::ValueRef(lane),
+            tys: Box::new([any]),
+            reprs: Box::new([AbiValueRepr::ValueRef]),
+        },
+    };
+    let annotations = [capture(int), capture(atom)];
+    let descriptor = |capture: &BackendConstructionCapture| CallableDescr {
         function: Some(apply),
         arity: 0,
-        capture_tys: vec![int].into_boxed_slice(),
-        capture_layouts: Box::default(),
-    });
-    let atom_capture = interners.intern_callable(CallableDescr {
-        function: Some(apply),
-        arity: 0,
-        capture_tys: vec![atom].into_boxed_slice(),
-        capture_layouts: Box::default(),
-    });
+        capture_layouts: Box::new([TransportLayout {
+            structural: capture.layout.structural,
+            carrier: capture.layout.carrier,
+        }]),
+    };
 
-    assert_ne!(
+    let int_capture = interners.intern_callable(descriptor(&annotations[0]));
+    let atom_capture = interners.intern_callable(descriptor(&annotations[1]));
+
+    assert_eq!(
         int_capture, atom_capture,
-        "eliding physical capture lanes must not pool distinct settled capture groundings"
+        "source annotations do not split an identical function, arity, and ordered physical environment"
+    );
+    assert_eq!(
+        annotations.iter().map(|capture| capture.ty).collect::<Vec<_>>(),
+        vec![int, atom]
     );
 }

@@ -1,0 +1,74 @@
+#---
+# purpose: "a guard on a receive clause selects the message on every door"
+# oracle: oracle.exs
+#---
+#
+# # receive_guard_clauses
+#
+# Guards reach dispatch as a `Region::Guard`, and the three doors decide that
+# region independently. Every behavioural fixture exercising a guard did so on
+# entry dispatch — a `when` on a function head — so the receive matcher's guard
+# path had no coverage at all, on any door.
+#
+# That is the blind spot this arc keeps finding. Coverage of a region is not
+# coverage of a region AT A DISPATCH SITE: `map_key` and `map_kind` were
+# exercised only inside `receive`, and interpreted entry dispatch turned out to
+# never match a binary-keyed map pattern because it passed an empty prepared-key
+# map. The same asymmetry, pointing the other way, is this fixture.
+#
+# ## What it covers
+#
+#   * clause order among guards on the same message shape — the first guard
+#     that holds wins, so `5` must reach the `< 10` clause and not `< 100`;
+#   * a guard that rejects every clause but the last, unguarded one;
+#   * a guard combined with a pattern, so both the pattern region and the guard
+#     region have to agree before the clause is chosen;
+#   * selective receive: a message that matches no clause stays in the mailbox
+#     and is delivered to a later `receive`, rather than being consumed.
+fn main() do
+  send(self(), 5)
+  send(self(), 50)
+  send(self(), 500)
+  dbg(classify())
+  dbg(classify())
+  dbg(classify())
+
+  send(self(), {:count, 0})
+  send(self(), {:count, 7})
+  dbg(counted())
+  dbg(counted())
+
+  # `:skip` matches no clause of `only_tuples/0`, so it is left in the mailbox
+  # and the tuple behind it is taken first.
+  send(self(), :skip)
+  send(self(), {:take, 1})
+  dbg(only_tuples())
+  dbg(anything())
+end
+
+fnp classify() do
+  receive do
+    n when n < 10 -> {:small, n}
+    n when n < 100 -> {:medium, n}
+    n -> {:large, n}
+  end
+end
+
+fnp counted() do
+  receive do
+    {:count, n} when n > 0 -> {:positive, n}
+    {:count, n} -> {:zero_or_less, n}
+  end
+end
+
+fnp only_tuples() do
+  receive do
+    {:take, n} -> {:took, n}
+  end
+end
+
+fnp anything() do
+  receive do
+    other -> {:leftover, other}
+  end
+end

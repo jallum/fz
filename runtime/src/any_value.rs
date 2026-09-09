@@ -18,7 +18,7 @@ pub const TAG_LIST: u64 = 0x1;
 pub const TAG_MAP: u64 = 0x2;
 /// Heap tuple/struct; schema-driven typed fields, pinned in vrx.0.2.
 pub const TAG_STRUCT: u64 = 0x3;
-/// Heap closure; schema-driven typed captures, pinned in vrx.0.2.
+/// Heap closure; denotation header and self-describing typed capture slots.
 pub const TAG_CLOSURE: u64 = 0x4;
 /// Heap inline bitstring; bit length prefix plus padded bytes.
 pub const TAG_BITSTRING: u64 = 0x5;
@@ -97,6 +97,18 @@ impl ValueKind {
 
     pub const fn is_scalar(self) -> bool {
         matches!(self, Self::INT | Self::FLOAT | Self::ATOM)
+    }
+
+    /// The kinds a binary is held in. A binary is one language value with
+    /// two representations -- inline below `SHARED_BIN_THRESHOLD_BYTES`,
+    /// a shared-buffer view above it -- and every question of the form
+    /// "is this a binary" is a question about both. Asking about
+    /// `BITSTRING` alone made every binary over 64 bytes answer NO
+    /// (fz-5xp.57).
+    pub const BINARY_REPRS: [Self; 2] = [Self::BITSTRING, Self::PROCBIN];
+
+    pub const fn is_binary_repr(self) -> bool {
+        matches!(self, Self::BITSTRING | Self::PROCBIN)
     }
 
     pub const fn from_heap_tag(tag: u64) -> Option<Self> {
@@ -460,10 +472,13 @@ mod any_value_ref_tests {
         let map_bits = heap.alloc_map_slots(&[(AnyValue::atom(3), AnyValue::int(4))]);
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
-        let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
-        let closure_bits = heap.alloc_closure(0, 0, 0, 0xfeed, &[]);
+        let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8).heap_addr().expect("bitstring addr");
+        let closure_bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0xfeed, &[]);
         let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
-        let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
+        let procbin_addr = heap
+            .alloc_bitstring(&[0u8; 65], 65 * 8)
+            .heap_addr()
+            .expect("procbin addr");
         let resource_addr = alloc_resource(
             &mut heap,
             ResourceHandle::new(77, fz_resource_destructor_noop),
@@ -570,6 +585,7 @@ impl AnyValue {
     }
 
     pub const fn float(value: f64) -> Self {
+        assert!(value.is_finite(), "nonfinite float is not a language value");
         Self::Float(value.to_bits())
     }
 
@@ -603,7 +619,7 @@ impl AnyValue {
         Ok(match value.tag() {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(value.load_int()?),
-            ValueKind::FLOAT => Self::Float(value.load_float()?.to_bits()),
+            ValueKind::FLOAT => Self::float(value.load_float()?),
             ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
             tag if tag.is_heap() => Self::HeapRef(value),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
@@ -615,7 +631,7 @@ impl AnyValue {
         Some(match kind {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(raw as i64),
-            ValueKind::FLOAT => Self::Float(raw),
+            ValueKind::FLOAT => Self::float(f64::from_bits(raw)),
             ValueKind::ATOM => Self::Atom(raw as u32),
             ValueKind::LIST if raw == 0 => Self::EmptyList,
             kind if kind.is_heap() => Self::heap_ptr(raw as *mut u8, kind),
@@ -740,8 +756,35 @@ pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 ///
 /// `addr` must point to the start of an initialized strict Closure object.
 #[inline]
-pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
-    unsafe { ptr::read(addr as *const u32) }
+pub unsafe fn closure_denotation(addr: *const u8) -> ClosureDenotationId {
+    ClosureDenotationId(unsafe { ptr::read(addr as *const u32) })
+}
+
+/// A World-global source function identity. The execution code word is independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ClosureDenotationId(u32);
+
+impl ClosureDenotationId {
+    pub const INTERNAL: Self = Self(u32::MAX);
+
+    pub fn user(index: u32) -> Self {
+        assert_ne!(index, u32::MAX, "user function identity space exhausted");
+        Self(index)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_runtime_word(word: u32) -> Self {
+        Self(word)
+    }
+
+    pub fn user_index(self) -> u32 {
+        assert_ne!(self, Self::INTERNAL, "internal continuation is not a user closure");
+        self.0
+    }
 }
 
 /// # Safety
@@ -821,6 +864,8 @@ pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, Val
 ///
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
+/// The caller must exclusively own this unpublished closure. `(raw, kind)` must
+/// describe a published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set_raw_kind(addr: *const u8, idx: usize, raw: u64, kind: ValueKind) {
     let raw = if kind.is_heap() { raw & !TAG_MASK } else { raw };
@@ -844,6 +889,8 @@ pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> AnyValue {
 ///
 /// `addr` must point to an initialized strict Closure object and `idx` must
 /// be in bounds.
+/// The caller must exclusively own this unpublished closure. `value` must be a
+/// published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: AnyValue) {
     unsafe { closure_capture_set_raw_kind(addr, idx, value.raw(), value.kind()) };
@@ -874,6 +921,8 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
 ///
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
+/// The caller must exclusively own this unpublished closure. `value` must refer
+/// to a published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
     let value = AnyValueRef::from_raw_word(value).expect("closure capture ref word");
@@ -885,6 +934,9 @@ pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u
 ///
 /// Both closure addresses must be initialized strict Closure objects, and both
 /// capture indexes must be in-bounds.
+/// The caller must exclusively own the unpublished destination closure. The
+/// source capture must be a published immutable finite acyclic term that cannot
+/// reach the destination closure.
 #[inline]
 pub unsafe fn closure_capture_copy(src_addr: *const u8, src_idx: usize, dst_addr: *const u8, dst_idx: usize) {
     let raw = unsafe { ptr::read(closure_capture_raw_slot(src_addr, src_idx)) };
@@ -980,11 +1032,11 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_procbin(_addr: *const u8) -> usize {
-    16
+    crate::procbin::PROCBIN_BYTES
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
-    48
+    crate::resource::RESOURCE_STUB_SIZE
 }
 
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
@@ -1122,6 +1174,8 @@ impl ListCons {
         self.link = link.raw();
     }
 
+    /// Mutates only an exclusively borrowed cons under construction or a
+    /// collector-owned graph. Published lists are immutable language terms.
     pub fn set_tail_bits(&mut self, tail_bits: u64) {
         self.link = self.link().with_tail(tail_bits).raw();
     }
@@ -1293,8 +1347,15 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 ///
 /// `addr` must point to the start of an initialized strict Map object.
 pub unsafe fn map_count(addr: *const u8) -> usize {
-    unsafe { ptr::read(addr as *const u64) as usize }
+    let header = unsafe { ptr::read(addr as *const u64) };
+    if header & MAP_DESTINATION_FLAG == 0 {
+        header as usize
+    } else {
+        header as u32 as usize
+    }
 }
+
+pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
 
 #[inline]
 /// # Safety
@@ -1390,11 +1451,11 @@ mod any_value_test;
 pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_schema_id, list_addr_from_tagged,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged,
         map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
         struct_schema_id,
     };
-    use crate::heap::{FieldKind, Schema};
+    use crate::heap::FieldKind;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
     use std::slice;
@@ -1462,7 +1523,10 @@ pub mod debug {
         if procbin_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
         }
-        if bits == EMPTY_LIST {
+        // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
+        // and as a LIST-tagged word whose address is null, which is what a
+        // nested `[]` is stored as. Both are the empty list (fz-5xp.63).
+        if bits == EMPTY_LIST || list_addr_from_tagged(bits).is_some_and(|p| p.is_null()) {
             "[]".into()
         } else {
             format!("#ptr<{:#x}>", bits)
@@ -1480,7 +1544,7 @@ pub mod debug {
         {
             let reg = heap.schemas_registry();
             let registry = reg.borrow();
-            if registry.get(schema_id).name.as_str() == Schema::RANGE_NAME {
+            if registry.get(schema_id).is_range() {
                 return render_range(proc, bits);
             }
         }
@@ -1500,6 +1564,44 @@ pub mod debug {
             .map(|offset| render_value(proc, heap.read_field_slot(p, offset)))
             .collect();
         format!("{{{}}}", parts.join(", "))
+    }
+
+    /// A keyword ENTRY: a two-tuple whose first field is an atom, rendered the
+    /// way Elixir renders one inside a keyword list — `a: 1`, not `{:a, 1}`.
+    /// Answers `None` for anything else, which is what decides whether a list
+    /// is a keyword list at all.
+    fn render_keyword_entry(proc: *mut Process, value: AnyValue) -> Option<String> {
+        let p = struct_addr_from_tagged(value.heap_object_word()?)?;
+        let heap = &unsafe { &*proc }.heap;
+        let schema_id = unsafe { struct_schema_id(p) };
+        let offsets: Vec<u32> = {
+            let reg = heap.schemas_registry();
+            let registry = reg.borrow();
+            let schema = registry.get(schema_id);
+            if schema.identity != crate::heap::SchemaIdentity::Tuple(2) {
+                return None;
+            }
+            schema
+                .fields
+                .iter()
+                .filter(|f| matches!(f.kind, FieldKind::AnyValue))
+                .map(|f| f.offset)
+                .collect()
+        };
+        let [key_offset, value_offset] = offsets.as_slice() else {
+            return None;
+        };
+        let key = heap.read_field_slot(p, *key_offset);
+        if key.kind() != ValueKind::ATOM {
+            return None;
+        }
+        let name = render_value(proc, key);
+        let name = name.strip_prefix(':').unwrap_or(&name).to_string();
+        Some(format!(
+            "{}: {}",
+            name,
+            render_value(proc, heap.read_field_slot(p, *value_offset))
+        ))
     }
 
     fn render_range(proc: *mut Process, bits: u64) -> String {
@@ -1542,12 +1644,125 @@ pub mod debug {
         }
     }
 
+    /// A float, rendered the way Elixir's `inspect/1` renders it -- which is
+    /// what `dbg` must match, because that is what the oracle twins print.
+    ///
+    /// `Inspect.Float` (elixir/lib/elixir/lib/inspect.ex:543) is
+    /// `Float.to_string/1` with exactly one case layered on top:
+    ///
+    /// ```elixir
+    /// if abs >= 1.0 and abs < 1.0e16 and trunc(float) == float do
+    ///   [Integer.to_string(trunc(float)), ?., ?0]
+    /// else
+    ///   Float.to_charlist(float)
+    /// end
+    /// ```
+    ///
+    /// So a WHOLE float in `[1.0, 1.0e16)` is written out in full with a
+    /// trailing `.0`, and everything else takes the shortest form. That is why
+    /// `1.0e15` inspects as `1000000000000000.0` while `1.0e16` inspects as
+    /// `1.0e16`, and why `0.00012` inspects as `1.2e-4` though `0.001` does
+    /// not: below 1.0 the special case never applies.
     pub fn render_float(x: f64) -> String {
-        if x.is_finite() && x.fract() == 0.0 {
-            format!("{:.1}", x)
-        } else {
-            format!("{}", x)
+        let magnitude = x.abs();
+        if (1.0..1.0e16).contains(&magnitude) && x.trunc() == x {
+            // In range the truncation is exact and fits an i64 (1.0e16 is far
+            // below i64::MAX), so this is the integer part written in full.
+            return format!("{}.0", x.trunc() as i64);
         }
+        float_to_string(x)
+    }
+
+    /// A float, rendered the way Elixir's `Float.to_string/1` renders it.
+    ///
+    /// `Float.to_string/1` is `:erlang.float_to_binary(f, [:short])`
+    /// (elixir/lib/elixir/lib/float.ex:654): the shortest digit string that
+    /// round-trips, then a choice of notation.
+    ///
+    /// The digits come from `ryu`, which is the algorithm OTP itself uses.
+    /// Rust's own `Display` gives shortest-round-trip digits too, but breaks a
+    /// tie the other way -- `2181495296738027.25` is exactly between two
+    /// 17-digit strings, and Rust rounds up to `.3` where Erlang rounds
+    /// half-to-even to `.2`. That is two values in every five thousand, which
+    /// is precisely often enough to make an oracle flaky and rare enough to
+    /// look like something else.
+    ///
+    /// The NOTATION is not ryu's own: it keeps `1.0e-5` positional as
+    /// `0.00001`, where Elixir does not. Above `1.0e16` Elixir always goes
+    /// scientific; below it, whichever form is shorter wins, a tie going to
+    /// positional. That is why `1.0e14` is `1.0e14` while
+    /// `123456789012345.0`, of the same magnitude, stays positional: there the
+    /// digits are worth more than the exponent saves. No exponent threshold
+    /// produces both, which is the trap this comment exists to keep someone
+    /// out of.
+    ///
+    /// Verified against real Elixir on 4799 values, including 4000 random bit
+    /// patterns and a dense sweep of the `1.0e16` boundary.
+    pub fn float_to_string(x: f64) -> String {
+        if !x.is_finite() {
+            // Erlang has no infinities or NaN -- `1.0 / 0.0` raises there -- so
+            // there is no parity to hold. Rust's rendering stands.
+            return format!("{}", x);
+        }
+        let (negative, digits, exponent) = shortest_digits(x);
+        let sign = if negative { "-" } else { "" };
+        let scientific = format!("{sign}{}", scientific_form(&digits, exponent));
+        if x.abs() >= 1.0e16 {
+            return scientific;
+        }
+        let positional = format!("{sign}{}", positional_form(&digits, exponent));
+        if scientific.len() < positional.len() {
+            scientific
+        } else {
+            positional
+        }
+    }
+
+    /// The shortest round-tripping decimal for `x`, as a sign, a digit string
+    /// with no leading or trailing zeros, and the power of ten that the FIRST
+    /// digit carries. `12.5` is `(false, "125", 1)`.
+    fn shortest_digits(x: f64) -> (bool, String, i32) {
+        let mut buffer = ryu::Buffer::new();
+        let rendered = buffer.format_finite(x);
+        let (negative, rendered) = match rendered.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, rendered),
+        };
+        let (mantissa, exponent) = match rendered.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
+            None => (rendered, 0),
+        };
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let all: String = format!("{whole}{fraction}");
+        let Some(first_significant) = all.find(|c| c != '0') else {
+            return (negative, "0".to_string(), 0);
+        };
+        let exponent = exponent + (whole.len() as i32 - 1) - first_significant as i32;
+        let digits = all[first_significant..].trim_end_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        (negative, digits.to_string(), exponent)
+    }
+
+    /// `d.ddde<exp>`, with the fractional digit Elixir always shows.
+    fn scientific_form(digits: &str, exponent: i32) -> String {
+        let (lead, rest) = digits.split_at(1);
+        let rest = if rest.is_empty() { "0" } else { rest };
+        format!("{lead}.{rest}e{exponent}")
+    }
+
+    /// `ddd.ddd`, padding with zeros on whichever side the exponent asks for.
+    fn positional_form(digits: &str, exponent: i32) -> String {
+        if exponent < 0 {
+            let leading_zeros = "0".repeat((-exponent - 1) as usize);
+            return format!("0.{leading_zeros}{digits}");
+        }
+        let integer_len = exponent as usize + 1;
+        if digits.len() <= integer_len {
+            let trailing_zeros = "0".repeat(integer_len - digits.len());
+            return format!("{digits}{trailing_zeros}.0");
+        }
+        let (whole, fraction) = digits.split_at(integer_len);
+        format!("{whole}.{fraction}")
     }
 
     fn render_bitstring(bits: u64) -> String {
@@ -1603,13 +1818,19 @@ pub mod debug {
     /// Inverse of the lexer's canonical escapes (`\n \t \r \\ \"`).
     fn escape_for_display(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
             match c {
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
+                // `#{` is escaped so the rendering round-trips as source:
+                // an unescaped one would read back as interpolation
+                // (fz-5xp.5). Elixir's inspect does the same, and only for
+                // `#` immediately before `{`.
+                '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
                 other => out.push(other),
             }
         }
@@ -1617,18 +1838,18 @@ pub mod debug {
     }
 
     /// Elixir renders a fun as `#Function<index.uniq/arity>`: an opaque
-    /// identity followed by the arity. `#fn<env_schema/arity>` is the same
-    /// shape — the env schema stands in for the opaque identity (fz-gk4
-    /// follow-up: source-derived), and the arity is the fun's own.
+    /// identity followed by the arity. `#fn<denotation/arity>` reports the
+    /// source function identity independently of code and capture storage.
     fn render_closure(bits: u64) -> String {
         let p = closure_addr_from_tagged(bits).unwrap();
-        let schema_id = unsafe { closure_schema_id(p) };
+        let denotation = unsafe { closure_denotation(p) }.user_index();
         let arity = unsafe { closure_arity(p) };
-        format!("#fn<{}/{}>", schema_id, arity)
+        format!("#fn<{denotation}/{arity}>")
     }
 
     fn render_list(proc: *mut Process, bits: u64) -> String {
         let mut parts: Vec<String> = Vec::new();
+        let mut keyword_entries: Option<Vec<String>> = Some(Vec::new());
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
@@ -1644,18 +1865,36 @@ pub mod debug {
             };
             let cons = unsafe { &*(cp as *const ListCons) };
             parts.push(render_typed_list_head(proc, cons));
+            keyword_entries = keyword_entries.and_then(|mut entries| {
+                let entry = render_keyword_entry(proc, cons.head_value())?;
+                entries.push(entry);
+                Some(entries)
+            });
             cur_bits = cons.tail_bits();
         }
         match tail_render {
             Some(t) => format!("[{} | {}]", parts.join(", "), t),
-            None => format!("[{}]", parts.join(", ")),
+            // A KEYWORD LIST prints as `[a: 1]`, not `[{:a, 1}]`. Elixir
+            // inspects a PROPER list whose every element is a two-tuple with an
+            // atom key that way, and only then (fz-5xp.13). The decision is
+            // made from the values; the rendered strings are output, never
+            // input.
+            None => match keyword_entries {
+                Some(entries) if !entries.is_empty() => format!("[{}]", entries.join(", ")),
+                _ => format!("[{}]", parts.join(", ")),
+            },
         }
     }
 
     fn render_typed_list_head(proc: *mut Process, cons: &ListCons) -> String {
         match cons.head_kind() {
             ValueKind::INT => (cons.head as i64).to_string(),
-            ValueKind::FLOAT => f64::from_bits(cons.head).to_string(),
+            // `render_float`, not Rust's `to_string`: a whole float has to keep
+            // its `.0` wherever it appears. This arm answered `[1, 2]` for
+            // `[1.0, 2.0]` because it had its own idea of how to print a float
+            // (fz-5xp.36), which `Json.encode` cannot survive -- `[1.0]` must
+            // not encode as `[1]`.
+            ValueKind::FLOAT => render_float(f64::from_bits(cons.head)),
             ValueKind::ATOM => render_atom(proc, cons.head as u32),
             kind if kind.is_heap() => {
                 let bits = cons.head | kind.tag() as u64;

@@ -1,0 +1,39 @@
+#---
+# purpose: "the `%` operator answers its float lanes on every door, not just the interpreter"
+#---
+#
+# # float_remainder
+#
+#     7.5 % 2.0
+#
+#     interp -> 1.5
+#     run    -> abort in fz_dynamic_float_arith_unsupported
+#     build  -> the same
+#
+# `Kernel` declares `%` as a typed clause family over all four numeric pairs and
+# the runtime shims implement every one of them, so the operator was fully
+# specified and answerable on one door only. `lower_arith_binop` excluded
+# `BinOp::Mod` from both float paths, and the tagged fallback has no float arm,
+# so the call fell through to the runtime's "unsupported" trap.
+#
+# The exclusion was there because Cranelift has no `frem`: where `+ - * /` are
+# one instruction, float `%` has to be a CALL. `fz_op_rem_ff` now lives in the
+# runtime crate for exactly that reason -- an interp-private shim would link on
+# the JIT and fail at AOT link time (fz-5xp.29's hazard).
+#
+# NO ORACLE, deliberately: Elixir has no `%` operator to compare against. Its
+# `rem/2` is integer-only and raises ArithmeticError on floats, and fz keeps
+# `rem/2` that way -- the last line pins it. `%` is fz's own, and it means
+# C's `fmod`: the result takes the sign of the DIVIDEND, which is what the
+# interpreter has always answered. `:math.fmod(7.5, 2.0)` is 1.5 and
+# `:math.fmod(-7.5, 2.0)` is -1.5 in Elixir, which is where these values come
+# from.
+fn main() do
+  dbg(7.5 % 2.0)
+  dbg(7 % 2)
+  dbg(7.5 % 2)
+  dbg(7 % 2.5)
+  dbg(-7.5 % 2.0)
+  dbg(7.5 % -2.0)
+  dbg(rem(7, 2))
+end

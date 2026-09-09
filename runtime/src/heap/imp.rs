@@ -6,30 +6,32 @@ use super::gc::{
     cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
     cheney_trace_struct, forward_any_value_ref_root,
 };
-use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
-    write_any_value_to_storage, write_ref_to_storage,
+    write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, TAG_BITSTRING, TAG_CLOSURE,
-    TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind, bitstring_size_for_bit_len,
-    closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
-    closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged, heap_object_word,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_entry_raw_kinds, map_key_kind, map_keys_ptr,
-    map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot,
-    struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_DESTINATION_FLAG,
+    TAG_BITSTRING, TAG_CLOSURE, TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
+    closure_capture_set, closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_keys_ptr, map_pack_tag,
+    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
+    struct_schema_id, struct_size_for_payload,
 };
-use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::process::Node;
+use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
 use std::rc::Rc;
+use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
@@ -37,6 +39,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
 // directly, with no `current_process()` and no process argument — which is also
 // why the receive matcher can project list/closure shapes without a process.
+
+fn map_destination_header(capacity: usize, filled: usize) -> u64 {
+    assert!(capacity < (1 << 31) && filled <= capacity, "map destination capacity");
+    MAP_DESTINATION_FLAG | ((filled as u64) << 32) | capacity as u64
+}
+
+fn map_destination_state(addr: *const u8) -> (usize, usize) {
+    let header = unsafe { read(addr.cast::<u64>()) };
+    assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
+    (
+        header as u32 as usize,
+        ((header & !MAP_DESTINATION_FLAG) >> 32) as usize,
+    )
+}
 
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
@@ -68,6 +84,10 @@ pub fn closure_capture_ref(closure: AnyValueRef, idx: usize) -> Result<AnyValueR
 
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
+        Self::with_node(capacity, schemas, Rc::new(Node::empty()))
+    }
+
+    pub fn with_node(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>, node: Rc<Node>) -> Self {
         assert!(
             capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
@@ -85,6 +105,7 @@ impl Heap {
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
+            node,
             schemas,
             pressure: AtomicBool::new(false),
             // Default: half the block. Tunable per-Process for tests that
@@ -196,19 +217,11 @@ impl Heap {
         p
     }
 
-    pub(crate) fn closure_schema_id(&mut self, captured_count: usize) -> u32 {
-        self.schemas.borrow_mut().closure_env(captured_count)
-    }
-
     pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
         let p = range.struct_addr()?;
         let schema_id = unsafe { struct_schema_id(p.cast_const()) };
         let reg = self.schemas.borrow();
-        assert_eq!(
-            reg.get(schema_id).name.as_str(),
-            Schema::RANGE_NAME,
-            "expected Range schema"
-        );
+        assert!(reg.get(schema_id).is_range(), "expected Range schema");
         drop(reg);
         let first = self.read_struct_named_field_ref(range, "first")?.load_int()?;
         let last = self.read_struct_named_field_ref(range, "last")?.load_int()?;
@@ -263,6 +276,7 @@ impl Heap {
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
             AnyValue::Float(bits) => {
+                let bits = AnyValue::float(f64::from_bits(bits)).raw();
                 let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
                     write(slot, bits);
@@ -332,44 +346,68 @@ impl Heap {
             || classify_fragment(p, &self.fragments).is_some()
     }
 
-    /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
-    /// supplies canonically-sorted typed entries; this performs the heap copy.
+    /// Publish a map, normalizing its strict structural keys exactly once.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
-        let total = map_size_for_count(entries.len());
-        let p = self.alloc_kind(HeapAllocKind::Map, total);
-        unsafe {
-            write(p as *mut u64, entries.len() as u64);
-            let tag_p = map_tag_ptr(p);
-            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
-            let keys = map_keys_ptr(p, entries.len());
-            let values = map_values_ptr(p, entries.len());
-            for (i, (key, value)) in entries.iter().copied().enumerate() {
-                let key_kind = key.tag();
-                let value_kind = value.tag();
-                write(tag_p.add(i), map_pack_tag(key_kind, value_kind));
-                write_ref_to_storage(keys.add(i), None, key);
-                write_ref_to_storage(values.add(i), None, value);
-            }
-        }
-        heap_object_word(p, ValueKind::MAP)
+        let entries = entries
+            .iter()
+            .map(|&(key, value)| {
+                (
+                    AnyValue::from_ref(key).expect("map key"),
+                    AnyValue::from_ref(value).expect("map value"),
+                )
+            })
+            .collect();
+        self.publish_map_entries(entries)
     }
 
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
-        let total = map_size_for_count(entries.len());
-        let p = self.alloc_kind(HeapAllocKind::Map, total);
+        self.publish_map_entries(entries.to_vec())
+    }
+
+    fn publish_map_entries(&mut self, mut entries: Vec<(AnyValue, AnyValue)>) -> u64 {
+        self.normalize_map_entries(&mut entries);
+        self.alloc_ordered_map_entries(entries.into_iter())
+    }
+
+    fn normalize_map_entries(&self, entries: &mut Vec<(AnyValue, AnyValue)>) {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
+        entries.dedup_by(|later, earlier| {
+            if comparator.compare(later.0, earlier.0, NumericMode::Strict).is_eq() {
+                earlier.1 = later.1;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// Copy entries whose ordering is preserved by an immutable map operation.
+    pub(super) fn alloc_ordered_map_entries(
+        &mut self,
+        entries: impl ExactSizeIterator<Item = (AnyValue, AnyValue)>,
+    ) -> u64 {
+        let count = entries.len();
+        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
+        self.write_ordered_map_entries(p, count, entries);
+        heap_object_word(p, ValueKind::MAP)
+    }
+
+    fn write_ordered_map_entries(&self, p: *mut u8, count: usize, entries: impl Iterator<Item = (AnyValue, AnyValue)>) {
         unsafe {
-            write(p as *mut u64, entries.len() as u64);
+            write(p as *mut u64, count as u64);
             let tag_p = map_tag_ptr(p);
-            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
-            let keys = map_keys_ptr(p, entries.len());
-            let values = map_values_ptr(p, entries.len());
-            for (i, (key, value)) in entries.iter().copied().enumerate() {
+            write_bytes(tag_p, 0, map_tag_bytes_len(count));
+            let keys = map_keys_ptr(p, count);
+            let values = map_values_ptr(p, count);
+            for (i, (key, value)) in entries.enumerate() {
+                assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
                 write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                 write_any_value_to_storage(keys.add(i), None, key);
                 write_any_value_to_storage(values.add(i), None, value);
             }
         }
-        heap_object_word(p, ValueKind::MAP)
     }
 
     pub fn alloc_map_destination(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
@@ -383,9 +421,9 @@ impl Heap {
         let base_count = base_addr.map_or(0, |addr| unsafe { map_count(addr as *const u8) });
         let count = base_count + extra;
         let total = map_size_for_count(count);
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            write(p as *mut u64, count as u64);
+            write(p as *mut u64, map_destination_header(count, base_count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -404,64 +442,34 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    pub fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
+    /// Append to an exclusively owned, unpublished map destination.
+    ///
+    /// # Safety
+    /// `key` and `value` must be already-published finite immutable terms.
+    /// Neither may reach this or any other unfinished destination.
+    pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
         let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let count = unsafe { map_count(dest as *const u8) };
+        let (count, filled) = map_destination_state(dest);
+        assert!(filled < count, "map destination has no free entry slot");
+        assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
         unsafe {
             let tag_p = map_tag_ptr(dest);
             let keys = map_keys_ptr(dest, count);
             let values = map_values_ptr(dest, count);
-            for i in 0..count {
-                if map_key_kind(read(tag_p.add(i))) == ValueKind::NULL {
-                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
-                    write_any_value_to_storage(keys.add(i), None, key);
-                    write_any_value_to_storage(values.add(i), None, value);
-                    return;
-                }
-            }
+            write(tag_p.add(filled), map_pack_tag(key.kind(), value.kind()));
+            write_any_value_to_storage(keys.add(filled), None, key);
+            write_any_value_to_storage(values.add(filled), None, value);
+            write(dest as *mut u64, map_destination_header(count, filled + 1));
         }
-        panic!("map destination has no free entry slot");
     }
 
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
-        let dest = map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
-        let count = unsafe { map_count(dest as *const u8) };
-        let mut entries = Vec::with_capacity(count);
-        for i in 0..count {
-            let (key_raw, key_kind, value_raw, value_kind) = unsafe { map_entry_raw_kinds(dest as *const u8, i) };
-            if key_kind == ValueKind::NULL {
-                continue;
-            }
-            entries.push((
-                AnyValue::decode_parts(key_raw, key_kind.tag()).expect("map destination key"),
-                AnyValue::decode_parts(value_raw, value_kind.tag()).expect("map destination value"),
-            ));
-        }
-        entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
-        let mut deduped: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(entries.len());
-        for (key, value) in entries {
-            if let Some((last_key, last_value)) = deduped.last_mut()
-                && same_any_value(*last_key, key)
-            {
-                *last_value = value;
-                continue;
-            }
-            deduped.push((key, value));
-        }
-        if deduped.len() == count {
-            unsafe {
-                let tag_p = map_tag_ptr(dest);
-                let keys = map_keys_ptr(dest, count);
-                let values = map_values_ptr(dest, count);
-                for (i, (key, value)) in deduped.iter().copied().enumerate() {
-                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
-                    write_any_value_to_storage(keys.add(i), None, key);
-                    write_any_value_to_storage(values.add(i), None, value);
-                }
-            }
-            return dest_bits;
-        }
-        self.alloc_map_slots(&deduped)
+        let dest = map_addr_from_tagged(dest_bits).expect("map destination");
+        let (_, filled) = map_destination_state(dest);
+        let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
+        self.normalize_map_entries(&mut entries);
+        self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
+        dest_bits
     }
 
     pub fn alloc_map_refs(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, AnyValueRefError> {
@@ -526,48 +534,63 @@ impl Heap {
     }
 
     fn map_put_value_bits(&mut self, map_addr: *mut u8, key: AnyValueRef, value: AnyValueRef) -> u64 {
-        let count = unsafe { map_count(map_addr) };
-        let mut entries = Vec::with_capacity(count + 1);
-        let mut replaced = false;
+        self.map_put_entry(
+            map_addr,
+            AnyValue::from_ref(key).expect("map key"),
+            AnyValue::from_ref(value).expect("map value"),
+        )
+    }
 
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { map_entry_refs(map_addr, i) };
-            if !replaced && same_value_ref(entry_key, key) {
-                entries.push((key, value));
-                replaced = true;
-            } else {
-                entries.push((entry_key, entry_value));
-            }
-        }
-        if !replaced {
-            entries.push((key, value));
-        }
-
-        entries.sort_by(|a, b| map_key_cmp_refs(a.0, b.0));
-        self.alloc_map_refs_bits(&entries)
+    /// An absent deletion borrows the original map without allocating.
+    pub fn map_delete_ref(&mut self, map: AnyValueRef, key: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
+        let addr = map.map_addr()?;
+        let Ok(index) = self.map_key_position(addr, AnyValue::from_ref(key)?) else {
+            return Ok(map);
+        };
+        let count = unsafe { map_count(addr) };
+        let bits = self.alloc_ordered_map_entries(
+            (0..count - 1).map(|i| unsafe { map_entry(addr, if i < index { i } else { i + 1 }) }),
+        );
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("new map"))
     }
 
     pub fn map_put_slot_bits(&mut self, map_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
-        let map_addr = map_addr_from_tagged(map_bits);
-        let count = map_addr.map_or(0, |addr| unsafe { map_count(addr) });
-        let mut entries = Vec::with_capacity(count + 1);
-        let mut replaced = false;
-        if let Some(map_addr) = map_addr {
-            for i in 0..count {
-                let (entry_key, entry_value) = unsafe { map_entry(map_addr, i) };
-                if !replaced && same_any_value(entry_key, key) {
-                    entries.push((key, value));
-                    replaced = true;
-                } else {
-                    entries.push((entry_key, entry_value));
-                }
+        match map_addr_from_tagged(map_bits) {
+            Some(addr) => self.map_put_entry(addr, key, value),
+            None => self.alloc_ordered_map_entries(std::iter::once((key, value))),
+        }
+    }
+
+    fn map_put_entry(&mut self, addr: *mut u8, key: AnyValue, value: AnyValue) -> u64 {
+        let count = unsafe { map_count(addr) };
+        let position = self.map_key_position(addr, key);
+        let (index, inserted) = match position {
+            Ok(index) => (index, 0),
+            Err(index) => (index, 1),
+        };
+        self.alloc_ordered_map_entries((0..count + inserted).map(|i| {
+            if i == index {
+                (key, value)
+            } else {
+                unsafe { map_entry(addr, if i < index { i } else { i - inserted }) }
+            }
+        }))
+    }
+
+    fn map_key_position(&self, addr: *mut u8, key: AnyValue) -> Result<usize, usize> {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        let (mut low, mut high) = (0, unsafe { map_count(addr) });
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let entry_key = unsafe { map_entry(addr, middle).0 };
+            match comparator.compare(entry_key, key, NumericMode::Strict) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(middle),
             }
         }
-        if !replaced {
-            entries.push((key, value));
-        }
-        entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
-        self.alloc_map_slots(&entries)
+        Err(low)
     }
 
     /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
@@ -576,13 +599,23 @@ impl Heap {
     ///
     /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
-    /// per-process heap gets a 16-byte tagged ProcBin stub referencing
+    /// per-process heap gets a tagged ProcBin stub referencing
     /// it. Render and bit-match dispatch via
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
-    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut u8 {
+    ///
+    /// This always COPIES `bytes`. To view an existing shared buffer
+    /// without copying it, use `alloc_bitstring_suffix`.
+    ///
+    /// fz-5xp.45 — returns the VALUE, kind included. The storage choice is
+    /// made here and only here; four callers used to re-derive it from
+    /// `bytes.len()` against the same threshold, which meant the threshold was
+    /// a constant five places had to agree about and a caller could disagree
+    /// with what was actually allocated.
+    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> AnyValue {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
-            return alloc_procbin(self, handle).as_raw();
+            self.alloc_stats.record_shared_bin(bytes.len() as u64);
+            return AnyValue::heap_ptr(alloc_procbin(self, handle, 0).as_raw(), ValueKind::PROCBIN);
         }
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
@@ -600,28 +633,52 @@ impl Heap {
                 write_bytes(p.add(pad_start), 0, total - pad_start);
             }
         }
-        p
+        AnyValue::heap_ptr(p, ValueKind::BITSTRING)
     }
 
-    /// Closure layout: `schema_id`, header word, raw code pointer, then
-    /// schema-backed capture fields.
-    pub fn alloc_closure_slots(&mut self, arity: u16, captured_count: usize, halt_kind: u16) -> u64 {
-        let schema_id = self.closure_schema_id(captured_count);
-        self.alloc_closure_slots_with_schema(schema_id, arity, captured_count, halt_kind)
+    /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
+    /// `SharedBin`, returning it as a value.
+    ///
+    /// fz-5xp.55 — above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
+    /// parent's bytes: a new stub retains the same SharedBin at its own
+    /// offset, and nothing is copied. That is what stops a byte scanner
+    /// being quadratic, because every `<<_c, rest :: binary>>` step is a
+    /// suffix.
+    ///
+    /// At or below the threshold the bytes are copied into an inline
+    /// bitstring. Copying is cheaper than a stub at that size, and it keeps
+    /// a small tail from pinning a large buffer alive.
+    ///
+    /// This is the one place the inline/shared choice is made for a suffix,
+    /// so it returns the value rather than a bare pointer the caller has to
+    /// re-classify.
+    ///
+    /// # Safety
+    ///
+    /// `shared` must point at a live `SharedBin` the caller holds a
+    /// reference edge to for the duration of the call.
+    pub unsafe fn alloc_bitstring_suffix(&mut self, shared: *mut SharedBin, byte_offset: u64) -> AnyValue {
+        let (buf_ptr, buf_bytes, buf_bits) = unsafe { ((*shared).bytes_ptr, (*shared).bytes_len, (*shared).bit_len) };
+        assert!(
+            byte_offset as usize <= buf_bytes,
+            "bitstring suffix offset {byte_offset} past the shared buffer"
+        );
+        let suffix_bytes = buf_bytes - byte_offset as usize;
+        if suffix_bytes > SHARED_BIN_THRESHOLD_BYTES {
+            let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
+            let p = alloc_procbin(self, handle, byte_offset).as_raw();
+            return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
+        }
+        // Owned because `alloc_bitstring` takes `&mut self`; the buffer is
+        // off-heap and immovable, so the read itself is safe.
+        let owned = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) }.to_vec();
+        self.alloc_bitstring(&owned, buf_bits - byte_offset * 8)
     }
 
-    /// Allocate a closure's slots writing `schema_id` verbatim instead of
-    /// registering a `ClosureEnv{n}` schema. For scheduler scaffolding
-    /// closures (entry thunks, synthetic main inners) whose `schema_id` is
-    /// never consulted: captures are accessed by offset, GC sizes and traces
-    /// them by `captured_count` (the closure `flags`), and they are never
-    /// rendered. Registering a `ClosureEnv` schema for them would only perturb
-    /// the schema-id space the AOT runtime must keep identical to compile time
-    /// (and the schema ids interpreter and codegen render). Scaffolding mints
-    /// pass a placeholder `schema_id`.
-    pub fn alloc_closure_slots_with_schema(
+    /// Denotation, layout header, code pointer, then captures and their kind bytes.
+    pub fn alloc_closure_slots(
         &mut self,
-        schema_id: u32,
+        denotation: crate::any_value::ClosureDenotationId,
         arity: u16,
         captured_count: usize,
         halt_kind: u16,
@@ -633,7 +690,7 @@ impl Heap {
         let total = closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
-            write(p as *mut u32, schema_id);
+            write(p as *mut u32, denotation.as_u32());
             write(
                 p.add(4) as *mut u32,
                 closure_header_word(captured_count as u16, halt_kind, arity),
@@ -648,6 +705,7 @@ impl Heap {
 
     pub fn alloc_closure(
         &mut self,
+        denotation: crate::any_value::ClosureDenotationId,
         arity: u16,
         captured_count: usize,
         halt_kind: u16,
@@ -655,7 +713,7 @@ impl Heap {
         captures: &[AnyValue],
     ) -> u64 {
         assert!(captures.len() <= captured_count, "too many closure captures");
-        let bits = self.alloc_closure_slots(arity, captured_count, halt_kind);
+        let bits = self.alloc_closure_slots(denotation, arity, captured_count, halt_kind);
         let p = closure_addr_from_tagged(bits).expect("new closure ptr");
         unsafe {
             write(p.add(8) as *mut u64, fn_ptr);
@@ -668,13 +726,18 @@ impl Heap {
 
     /// # Safety
     ///
-    /// `closure_addr` must point to a live closure allocation with a capture
-    /// slot at `idx`.
+    /// The caller exclusively owns the live, unpublished closure allocation at
+    /// `closure_addr`, and `idx` is an allocated capture slot. `value` must be a
+    /// published immutable finite acyclic term with no path to this closure.
     pub unsafe fn write_closure_capture_value(&mut self, closure_addr: *mut u8, idx: usize, value: AnyValue) {
         unsafe { closure_capture_set(closure_addr, idx, value) };
     }
 
-    pub fn write_closure_capture_ref(
+    /// # Safety
+    /// The caller exclusively owns this live, unpublished closure, and `idx` is
+    /// an allocated capture slot. Captures must be published immutable finite
+    /// acyclic terms and cannot reach the closure being built.
+    pub unsafe fn write_closure_capture_ref(
         &mut self,
         closure: AnyValueRef,
         idx: usize,
@@ -693,12 +756,20 @@ impl Heap {
         unsafe { closure_capture_value(closure_addr, idx) }
     }
 
-    /// Write a canonical value into a Struct's generic payload slot.
-    pub fn write_field_slot(&mut self, obj: *mut u8, field_offset: u32, value: AnyValue) {
+    /// Initialize an unpublished Struct's generic payload slot.
+    ///
+    /// # Safety
+    /// The caller exclusively owns the unpublished object. The written value
+    /// must be a published finite immutable term, with no path back to this object.
+    /// Collector tests may construct non-language graphs only while keeping them
+    /// outside all runtime term operations.
+    pub unsafe fn write_field_slot(&mut self, obj: *mut u8, field_offset: u32, value: AnyValue) {
         self.write_struct_field_value(obj, field_offset, value);
     }
 
-    pub fn write_struct_field_ref(
+    /// # Safety
+    /// The same unpublished finite-term contract as `write_field_slot` applies.
+    pub unsafe fn write_struct_field_ref(
         &mut self,
         obj: AnyValueRef,
         field_offset: u32,
@@ -804,16 +875,10 @@ impl Heap {
         addr: *mut u8,
         key: AnyValueRef,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        let count = unsafe { map_count(addr) };
-
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { map_entry_refs(addr, i) };
-            if !same_value_ref(entry_key, key) {
-                continue;
-            }
-            return Ok(Some(entry_value));
-        }
-        Ok(None)
+        Ok(self
+            .map_key_position(addr, AnyValue::from_ref(key)?)
+            .ok()
+            .map(|index| unsafe { map_entry_refs(addr, index).1 }))
     }
 
     pub fn read_map_value_for_any_key(
@@ -822,16 +887,10 @@ impl Heap {
         key: AnyValue,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
         let addr = map.map_addr()?;
-        let count = unsafe { map_count(addr) };
-        for i in 0..count {
-            let (entry_key, _) = unsafe { map_entry(addr, i) };
-            if !same_any_value(entry_key, key) {
-                continue;
-            }
-            let (_, entry_value) = unsafe { map_entry_refs(addr, i) };
-            return Ok(Some(entry_value));
-        }
-        Ok(None)
+        Ok(self
+            .map_key_position(addr, key)
+            .ok()
+            .map(|index| unsafe { map_entry_refs(addr, index).1 }))
     }
 
     pub fn read_struct_field_ref(&self, obj: AnyValueRef, field_offset: u32) -> Result<AnyValueRef, AnyValueRefError> {
@@ -858,7 +917,13 @@ impl Heap {
                 .fields
                 .iter()
                 .find(|field| field.name.as_deref() == Some(field_name))
-                .unwrap_or_else(|| panic!("schema {} has no field named {}", schema.name, field_name))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "schema {} has no field named {}",
+                        schema.identity.display_name(),
+                        field_name
+                    )
+                })
                 .offset
         };
         self.read_struct_field_ref(obj, field_offset)
@@ -869,7 +934,7 @@ impl Heap {
     }
 
     /// Register a schema in this heap's registry, returning its id. Codegen
-    /// uses this to register tuple-arity / closure / record schemas at JIT
+    /// uses this to register tuple-arity / record schemas at JIT
     /// compile time so the tracer can walk their typed fields.
     pub fn register_schema(&self, schema: Schema) -> u32 {
         self.schemas.borrow_mut().register(schema)

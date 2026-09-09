@@ -26,10 +26,10 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
+    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
     TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
-    closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word, list_addr_from_tagged,
-    map_addr_from_tagged, map_count, map_entry, object_size, struct_addr_from_tagged, struct_schema_id,
+    closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind, heap_object_word, map_addr_from_tagged,
+    map_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -37,18 +37,15 @@ use crate::bitstr::{
 };
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
-use crate::heap::{
-    AllocStat, FieldKind, HeapAllocKind, SHARED_BIN_THRESHOLD_BYTES, closure_capture_ref, list_head_ref, list_tail_ref,
-    map_entry_refs,
-};
+use crate::heap::{AllocStat, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs};
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
-    SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, bitstring_like_eq,
-    is_bitstring_like,
+    ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
 use crate::process::{AlignedClosureStorage, Process, ProcessState};
 use crate::resource::ResourceStub;
 use crate::scheduler_hooks::YIELD_PTR;
+use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use std::cell::Cell;
 use std::mem::{size_of, transmute};
@@ -165,6 +162,7 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     alloc_stat_entries(process, &mut entries, "map", snapshot.map);
     alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
     alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(process, &mut entries, "shared_bin", snapshot.shared_bin);
     alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
     alloc_stat_entries(process, &mut entries, "frame", snapshot.frame);
     alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
@@ -297,14 +295,9 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
 }
 
 fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
-    let slot = (unsafe { &mut *process })
+    (unsafe { &mut *process })
         .heap
-        .alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
-    unsafe {
-        std::ptr::write(slot, raw);
-    }
-    AnyValueRef::from_scalar_slot(tag, slot as *const u64)
-        .expect("scalar ref")
+        .box_any_value_ref(AnyValue::decode_parts(raw, tag.tag()).expect("scalar value"))
         .raw_word()
 }
 
@@ -613,7 +606,7 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
-// Closures are schema-backed environments with a raw code pointer at +8.
+// Closures carry source denotation, a self-describing environment, and code at +8.
 // Invocation is a call_indirect through that code pointer; captures are
 // ordinary env fields read and written through the runtime accessors.
 
@@ -628,16 +621,19 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(
     process: *mut Process,
+    denotation: u32,
     arity: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
 ) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    let bits =
-        (unsafe { &mut *process })
-            .heap
-            .alloc_closure_slots(arity as u16, captured_count as usize, halt_kind as u16);
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
+        crate::any_value::ClosureDenotationId::from_runtime_word(denotation),
+        arity as u16,
+        captured_count as usize,
+        halt_kind as u16,
+    );
     let addr = closure_addr_from_tagged(bits).expect("new closure bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
@@ -678,11 +674,13 @@ pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u
     if !p.halt_cont_singletons[slot].is_null() {
         return heap_ref_word(ValueKind::CLOSURE, p.halt_cont_singletons[slot] as *const u8);
     }
-    let closure_schema = p.heap.closure_schema_id(0);
     let mut buf = AlignedClosureStorage::zeroed();
     let base = buf.as_ptr();
     unsafe {
-        std::ptr::write(base as *mut u32, closure_schema);
+        std::ptr::write(
+            base as *mut u32,
+            crate::any_value::ClosureDenotationId::INTERNAL.as_u32(),
+        );
         std::ptr::write(base.add(4) as *mut u32, closure_flags_pack(0, kind as u16) as u32);
         std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
     }
@@ -893,12 +891,161 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
         .expect("fz_bs_finalize without fz_bs_begin");
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
-    let p = (unsafe { &mut *process }).heap.alloc_bitstring(&bytes, bit_len);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
+    let value = (unsafe { &mut *process }).heap.alloc_bitstring(&bytes, bit_len);
+    value.ref_word().raw_word()
+}
+
+/// `/` on two integers, which is a FLOAT in Elixir: `1 / 2` is `0.5`, not `0`.
+/// The truncating form is `div/2`, which keeps `fz_op_div_ii`.
+///
+/// Lives HERE rather than beside the interpreter's other `fz_op_*` shims
+/// because native codegen does not intercept it by name: it takes the generic
+/// extern path, which needs a symbol the JIT can look up and the AOT link can
+/// resolve. The private shims work only while an intercept covers them, which
+/// is fz-5xp.29.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_div_ii_to_float(a: i64, b: i64) -> f64 {
+    a as f64 / b as f64
+}
+
+/// `-x` for an integer. Its own symbol rather than `0 - x`, because the two
+/// differ: `0.0 - 0.0` is `0.0` while `-0.0` is `-0.0`, and the float sibling
+/// below has to preserve that.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_neg_i(value: i64) -> i64 {
+    -value
+}
+
+/// `-x` for a float. `fneg` flips the sign bit, so `-0.0` stays `-0.0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {
+    -value
+}
+
+/// Float remainder, the `%` operator's float lanes.
+///
+/// Lives in the runtime crate rather than beside the interpreter's other
+/// `fz_op_*` shims because the NATIVE doors need to call it: Cranelift has no
+/// `frem`, so float `%` cannot be an instruction the way `+ - * /` are. An
+/// interp-private shim would be a `symbol not found` at AOT link time
+/// (fz-5xp.29's hazard).
+///
+/// Rust's `%` on `f64` is C's `fmod`: the result takes the sign of the
+/// DIVIDEND, so `-7.5 % 2.0` is `-1.5`. That is what the interpreter has always
+/// answered, and it is what fz's `%` means -- Elixir has no `%` operator to
+/// disagree with, and its `rem/2` is integer-only.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_rem_ff(left: f64, right: f64) -> f64 {
+    left % right
+}
+
+/// Unicode simple case mapping, the table `String.upcase/1` needs.
+///
+/// A TABLE, not an algorithm, and it lives here rather than in fz source for a
+/// reason worth stating: Elixir generates about 2,989 clauses from
+/// UnicodeData.txt, and 2,723 fz clauses would put that table through the
+/// dispatch matrix -- compile work proportional to the TABLE rather than to the
+/// program, which is the opposite of what fz is for. Encoding it as a literal
+/// binary and binary-searching it keeps the clause count at one but costs an
+/// allocation per character.
+///
+/// The ticket's design goal survives the move: it asked for ONE coherent
+/// Unicode version, which Elixir cannot have because its case mapping and
+/// OTP's grapheme breaking track different releases. Rust's `char` tables are
+/// one version, and when fz owns grapheme breaking too it will be the same one.
+///
+/// FULL casing, which is Elixir's default mode: the 103 special casings expand
+/// one codepoint to several, so `"straße"` upcases to `"STRASSE"`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_upcase(process: *mut Process, ref_word: u64) -> u64 {
+    map_case(process, ref_word, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_downcase(process: *mut Process, ref_word: u64) -> u64 {
+    map_case(process, ref_word, false)
+}
+
+fn map_case(process: *mut Process, ref_word: u64, upper: bool) -> u64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("case mapping expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("case mapping expects a byte-aligned binary");
     }
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(p), (bit_len / 8) as usize) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        panic!("case mapping expects valid UTF-8");
+    };
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        // Full casing rather than simple: `to_uppercase` yields several
+        // codepoints for the special casings, and taking all of them is what
+        // makes `"straße"` upcase to `"STRASSE"`, the way Elixir's default
+        // mode does.
+        if upper {
+            out.extend(ch.to_uppercase());
+        } else {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    alloc_text(process, &out)
+}
+
+/// Intern a binary as an atom, the way `String.to_atom/1` does.
+///
+/// Atoms are node-global and never collected, which is why Elixir warns about
+/// calling this on untrusted input. The table is the same one compile-time
+/// atoms live in, so an atom the program already mentions interns to the id it
+/// already has.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("String.to_atom expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("String.to_atom expects a byte-aligned binary");
+    }
+    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(p), (bit_len / 8) as usize) };
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        panic!("String.to_atom expects valid UTF-8");
+    };
+    let id = (unsafe { &*process }).node.intern_atom(name);
+    box_scalar_for_any(process, id as u64, ValueKind::ATOM)
+}
+
+/// The number of BYTES in a binary. Refuses a partial bitstring, which has no
+/// byte size (fz-5xp.42 is the type-level half of the same question).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_byte_size(ref_word: u64) -> i64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word) else {
+        panic!("byte_size expects a binary");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    if !bit_len.is_multiple_of(8) {
+        panic!("byte_size expects a byte-aligned binary");
+    }
+    (bit_len / 8) as i64
+}
+
+/// Is this bitstring byte-aligned -- a `binary` rather than a partial
+/// `bitstring`?
+///
+/// fz's type system does not draw this line: `<<1::4>>` has type `binary` and a
+/// `s :: binary` clause head accepts it (fz-5xp.42). Elixir's does, and
+/// `String.Chars` turns on it -- identity for a binary, raise for anything
+/// else. So the distinction has to be asked at runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
+    let Some(p) = bitstring_like_ptr_from_ref(ref_word).or_else(|| bitstring_like_ptr(ref_word)) else {
+        return 0;
+    };
+    if !unsafe { is_bitstring_like(p) } {
+        return 0;
+    }
+    i64::from((unsafe { bitstring_bit_len(p) } as usize).is_multiple_of(8))
 }
 
 fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
@@ -912,6 +1059,49 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
     (ptr, bit_len / 8)
 }
 
+/// Allocate `text` on the process heap as an fz binary.
+///
+/// The three to-string primitives all end here, so the choice between an inline
+/// bitstring and a shared procbin is made once rather than per primitive.
+fn alloc_text(process: *mut Process, text: &str) -> u64 {
+    let bytes = text.as_bytes();
+    let value = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(bytes, (bytes.len() * 8) as u64);
+    value.ref_word().raw_word()
+}
+
+/// `Atom.to_string/1`: the atom's name, so `:foo` is `"foo"` and `nil` is
+/// `"nil"`.
+///
+/// The `nil -> ""` that Elixir shows belongs to `String.Chars.Atom`, not here
+/// (elixir/lib/elixir/lib/string/chars.ex:30) -- `Atom.to_string(nil)` really
+/// is `"nil"`. Keeping the special case in the protocol impl means the
+/// primitive stays the plain question "what is this atom called".
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_atom_to_binary(process: *mut Process, atom_ref: u64) -> u64 {
+    let value = any_value_ref_from_word(atom_ref, "fz_atom_to_binary");
+    let atom_id = value.load_atom().expect("fz_atom_to_binary expects an atom");
+    let name = (unsafe { &*process })
+        .node
+        .atom_name(atom_id as u32)
+        .unwrap_or_else(|| panic!("unknown atom id {atom_id}"));
+    alloc_text(process, &name)
+}
+
+/// `Integer.to_string/1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_integer_to_binary(process: *mut Process, value: i64) -> u64 {
+    alloc_text(process, &value.to_string())
+}
+
+/// `Float.to_string/1`, which is not how `inspect/1` renders a float -- see
+/// `any_value::debug::float_to_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_float_to_binary(process: *mut Process, value: f64) -> u64 {
+    alloc_text(process, &crate::any_value::debug::float_to_string(value))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_ref: u64) -> u64 {
     let (left_ptr, left_len) = byte_aligned_binary_slice(left_ref, "fz_binary_concat left");
@@ -922,14 +1112,10 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     bytes.extend_from_slice(left);
     bytes.extend_from_slice(right);
 
-    let p = (unsafe { &mut *process })
+    let value = (unsafe { &mut *process })
         .heap
         .alloc_bitstring(&bytes, ((left_len + right_len) * 8) as u64);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    value.ref_word().raw_word()
 }
 
 /// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
@@ -945,12 +1131,8 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     // symbol). It outlives the call; we materialise a slice over it just long
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { from_raw_parts(ptr as *const u8, byte_len as usize) };
-    let p = (unsafe { &mut *process }).heap.alloc_bitstring(bytes, bit_len);
-    if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-        heap_ref_word(ValueKind::PROCBIN, p)
-    } else {
-        heap_ref_word(ValueKind::BITSTRING, p)
-    }
+    let value = (unsafe { &mut *process }).heap.alloc_bitstring(bytes, bit_len);
+    value.ref_word().raw_word()
 }
 
 /// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
@@ -966,7 +1148,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
 pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
-    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle);
+    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -1045,10 +1227,12 @@ fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
     let proc = unsafe { &mut *process };
     let arity3 = proc.bs_tuple_arity3_schema.expect("bs_tuple_arity3_schema not set");
     let tuple_p = proc.heap.alloc_struct(arity3);
-    proc.heap
-        .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits));
-    proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(bit_len));
-    proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(0));
+    unsafe {
+        proc.heap
+            .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits))
+    };
+    unsafe { proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(bit_len)) };
+    unsafe { proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(0)) };
     heap_ref_word(ValueKind::STRUCT, tuple_p as *const u8)
 }
 
@@ -1129,9 +1313,7 @@ fn fz_bs_read_field_bits(
         .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
         let p = (unsafe { &mut *process }).heap.alloc_struct(arity1);
-        (unsafe { &mut *process })
-            .heap
-            .write_field_slot(p, 0, AnyValue::bool_atom(false));
+        unsafe { (&mut *process).heap.write_field_slot(p, 0, AnyValue::bool_atom(false)) };
         heap_ref_word(ValueKind::STRUCT, p)
     };
 
@@ -1163,23 +1345,48 @@ fn fz_bs_read_field_bits(
             if pos + needed_bits > bit_len {
                 return fail();
             }
-            // Build a fresh Bitstring from the slice. Always copy for v1
-            // (zero-copy slicing deferred — see ticket "Open").
-            let mut sub_bytes = Vec::with_capacity(needed_bits.div_ceil(8));
-            let mut w = BitWriter::new();
-            for _ in 0..needed_bits {
-                w.append_bit(r.read_bit().unwrap());
-            }
-            sub_bytes.extend_from_slice(&w.bytes);
-            let new_bs = (unsafe { &mut *process })
-                .heap
-                .alloc_bitstring(&sub_bytes, needed_bits as u64);
-            let new_bs_kind = if sub_bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-                ValueKind::PROCBIN
+            // fz-5xp.55 — a byte-aligned TAIL of a shared binary is another
+            // view of the same bytes, not a copy. This is the step every byte
+            // scanner performs, and copying it is what made scanning
+            // quadratic. Only a suffix qualifies, which is exactly what
+            // `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
+            // decides whether the view is worth a stub.
+            let tail_of_shared = pos.is_multiple_of(8)
+                && pos + needed_bits == bit_len
+                && needed_bits.is_multiple_of(8)
+                && procbin_addr_from_tagged(bs_bits).is_some();
+            if tail_of_shared {
+                let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
+                let offset = src.byte_offset() + (pos / 8) as u64;
+                let shared = src.shared_raw();
+                let value = unsafe { (&mut *process).heap.alloc_bitstring_suffix(shared, offset) };
+                (value, needed_bits)
             } else {
-                ValueKind::BITSTRING
-            };
-            (AnyValue::heap_ptr(new_bs, new_bs_kind), needed_bits)
+                // Build a fresh Bitstring from the slice: a copy, because the
+                // source either is not shared or the field is not its tail.
+                //
+                // Byte-aligned is the overwhelmingly common case -- every
+                // `<<c, rest :: binary>>` step over a binary is one -- and it can
+                // be a slice copy rather than a walk over individual bits. The bit
+                // path remains for genuinely unaligned reads.
+                // The reader's own position is not consulted after this -- the
+                // caller advances by `needed_bits` -- so the aligned path does not
+                // have to walk it forward.
+                let sub_bytes: Vec<u8> = if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
+                    let start = pos / 8;
+                    bytes[start..start + needed_bits / 8].to_vec()
+                } else {
+                    let mut w = BitWriter::new();
+                    for _ in 0..needed_bits {
+                        w.append_bit(r.read_bit().unwrap());
+                    }
+                    w.bytes
+                };
+                let new_bs = (unsafe { &mut *process })
+                    .heap
+                    .alloc_bitstring(&sub_bytes, needed_bits as u64);
+                (new_bs, needed_bits)
+            }
         }
         BitType::Float => {
             let total = size.unwrap_or(64) * unit;
@@ -1201,39 +1408,42 @@ fn fz_bs_read_field_bits(
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 0, any_value_from_heap_object_word(bs_bits));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 8, AnyValue::int(bit_len as i64));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 16, AnyValue::int(new_pos));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 0, any_value_from_heap_object_word(bs_bits))
+    };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 8, AnyValue::int(bit_len as i64))
+    };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 16, AnyValue::int(new_pos))
+    };
 
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 0, AnyValue::bool_atom(true));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 8, extracted_value);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 16, AnyValue::heap_ptr(new_reader_p, ValueKind::STRUCT));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(result_p, 0, AnyValue::bool_atom(true))
+    };
+    unsafe { (&mut *process).heap.write_field_slot(result_p, 8, extracted_value) };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(result_p, 16, AnyValue::heap_ptr(new_reader_p, ValueKind::STRUCT))
+    };
     heap_ref_word(ValueKind::STRUCT, result_p as *const u8)
 }
 
 // ===== Map cluster (fz-ul4.23.4.8) =====
 //
-// Maps use a heap-backed sorted-array layout. Construction is immutable:
-// start with an empty map, then each put copies the existing entries and
-// returns a new map with the key inserted/replaced.
-//
-// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
-// within each category, by raw bits (Int compares signed). Keys compare
-// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+// Maps publish one sorted sequence with unique strict structural keys.
+// Construction freezes once; immutable updates preserve the same order.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
@@ -1271,9 +1481,7 @@ pub extern "C" fn fz_map_dest_put_parts(
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_parts dest");
     let key = AnyValue::decode_parts(key_raw, key_kind as u8).expect("fz_map_dest_put_parts key");
     let value = AnyValue::decode_parts(value_raw, value_kind as u8).expect("fz_map_dest_put_parts value");
-    (unsafe { &mut *process })
-        .heap
-        .map_destination_put(dest_bits, key, value);
+    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
 }
 
 #[unsafe(no_mangle)]
@@ -1286,9 +1494,7 @@ pub extern "C" fn fz_map_dest_put_ref(
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
     let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
     let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .map_destination_put(dest_bits, key, value);
+    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
 }
 
 #[unsafe(no_mangle)]
@@ -1382,6 +1588,18 @@ pub extern "C" fn fz_map_get_float_key_ref(process: *mut Process, map_ref_word: 
     fz_map_get_scalar_key_ref(process, map, AnyValue::float(value))
 }
 
+/// `Map.delete/2`: the map without `key`, or the same map when absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_delete(process: *mut Process, map_ref: u64, key_ref: u64) -> u64 {
+    let map = any_value_ref_from_word(map_ref, "fz_map_delete map");
+    let key = any_value_ref_from_word(key_ref, "fz_map_delete key");
+    (unsafe { &mut *process })
+        .heap
+        .map_delete_ref(map, key)
+        .expect("fz_map_delete")
+        .raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_count(map_ref_word: u64) -> i64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_count map");
@@ -1457,6 +1675,53 @@ pub extern "C" fn fz_map_put_float(process: *mut Process, map_ref_word: u64, key
         AnyValue::from_ref(key).expect("fz_map_put_float key"),
         AnyValue::float(value),
     )
+}
+
+/// Build a map from parallel key and value lists in ONE allocation.
+///
+/// A map is a flat sorted array, so `put/3` in a loop copies the whole array
+/// per key -- O(n^2), and the exact idiom Elixir's docs encourage because a
+/// HAMT makes it cheap there. Every BULK function in `Map` funnels here
+/// instead: collect the pairs, allocate once.
+///
+/// Parallel lists rather than a list of pairs because a tuple's fields are not
+/// reachable from here; the caller already has both lists in hand.
+///
+/// Sorting and deduping are `alloc_map_refs_bits`'s -- which did NOT do either
+/// until this needed it -- so a duplicate key keeps the LAST value, which is
+/// what `merge/2` needs and what Elixir does.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_from_kv(process: *mut Process, keys_ref_word: u64, values_ref_word: u64) -> u64 {
+    let mut keys = any_value_ref_from_word(keys_ref_word, "fz_map_from_kv keys");
+    let mut values = any_value_ref_from_word(values_ref_word, "fz_map_from_kv values");
+    let mut entries: Vec<(AnyValueRef, AnyValueRef)> = Vec::new();
+    while !keys.is_empty_list() {
+        let key = list_head_ref(keys).expect("fz_map_from_kv key");
+        let value = list_head_ref(values).expect("fz_map_from_kv value");
+        entries.push((key, value));
+        keys = list_tail_ref(keys).expect("fz_map_from_kv keys tail");
+        values = list_tail_ref(values).expect("fz_map_from_kv values tail");
+    }
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_refs_bits(&entries))
+}
+
+/// `Map.put` with an ATOM value, taking the atom as a tagged ref.
+///
+/// The sibling below takes a raw atom ID, which is what the interpreter's
+/// map-literal construction already has in hand. fz source does not: an `atom`
+/// parameter marshals as a tagged ref, so calling that one from fz put the ref
+/// WORD where an id belonged and stored a garbage atom -- `{"deep": true}`
+/// decoded to `:atom_847002048`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_atom_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    atom_ref_word: u64,
+) -> u64 {
+    let atom = any_value_ref_from_word(atom_ref_word, "fz_map_put_atom_ref value");
+    let atom_id = atom.load_atom().expect("fz_map_put_atom_ref expects an atom");
+    fz_map_put_atom(process, map_ref_word, key_ref_word, atom_id)
 }
 
 #[unsafe(no_mangle)]
@@ -1664,9 +1929,7 @@ pub extern "C" fn fz_struct_set_field_ref(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
     let value = any_value_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .write_struct_field_ref(object, field_offset, value)
+    unsafe { (&mut *process).heap.write_struct_field_ref(object, field_offset, value) }
         .expect("fz_struct_set_field_ref");
 }
 
@@ -1674,9 +1937,11 @@ pub extern "C" fn fz_struct_set_field_ref(
 pub extern "C" fn fz_struct_set_field_int(process: *mut Process, struct_ref_word: u64, field_offset: u32, value: i64) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
     let obj = object.struct_addr().expect("fz_struct_set_field_int object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::int(value));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::int(value))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -1688,9 +1953,11 @@ pub extern "C" fn fz_struct_set_field_float(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
     let obj = object.struct_addr().expect("fz_struct_set_field_float object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::float(value));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::float(value))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -1702,9 +1969,11 @@ pub extern "C" fn fz_struct_set_field_atom(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
     let obj = object.struct_addr().expect("fz_struct_set_field_atom object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::atom(atom_id as u32));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::atom(atom_id as u32))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -1731,9 +2000,9 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
         Err(err) => {
             let addr = value.closure_addr().expect("fz_closure_get_capture_ref closure");
             panic!(
-                "fz_closure_get_capture_ref idx={} schema_id={} captured_count={} code_ptr={:#x}: {:?}",
+                "fz_closure_get_capture_ref idx={} denotation={:?} captured_count={} code_ptr={:#x}: {:?}",
                 index,
-                unsafe { closure_schema_id(addr) },
+                unsafe { closure_denotation(addr) },
                 unsafe { closure_captured_count(addr) },
                 unsafe { closure_fn_ptr(addr) },
                 err
@@ -1790,10 +2059,12 @@ pub extern "C" fn fz_closure_set_capture_ref(
 ) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
     let value = any_value_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .write_closure_capture_ref(closure, index as usize, value)
-        .expect("fz_closure_set_capture_ref");
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_closure_capture_ref(closure, index as usize, value)
+    }
+    .expect("fz_closure_set_capture_ref");
 }
 
 #[unsafe(no_mangle)]
@@ -1814,7 +2085,7 @@ pub extern "C" fn fz_closure_set_capture_f64(process: *mut Process, closure_ref_
     unsafe {
         (&mut *process)
             .heap
-            .write_closure_capture_value(addr, index as usize, AnyValue::Float(value.to_bits()))
+            .write_closure_capture_value(addr, index as usize, AnyValue::float(value))
     };
 }
 
@@ -1880,9 +2151,12 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
     let count = unsafe { lazy_cont_count(ptr) };
     // A continuation is applied to exactly the one value it receives.
-    let bits = (unsafe { &mut *process })
-        .heap
-        .alloc_closure_slots(CONT_ARITY, count, 0);
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
+        crate::any_value::ClosureDenotationId::INTERNAL,
+        CONT_ARITY,
+        count,
+        0,
+    );
     let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
@@ -1897,14 +2171,14 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
                     raw
                 };
                 let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
-                (unsafe { &mut *process })
-                    .heap
-                    .write_closure_capture_ref(
+                unsafe {
+                    (&mut *process).heap.write_closure_capture_ref(
                         AnyValueRef::from_raw_word(closure_ref_word_from_bits(bits)).expect("materialized closure ref"),
                         i,
                         any,
                     )
-                    .expect("materialized closure capture ref");
+                }
+                .expect("materialized closure capture ref");
             }
             LAZY_CONT_KIND_I64 => unsafe {
                 (&mut *process)
@@ -1914,7 +2188,7 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
             LAZY_CONT_KIND_F64 => unsafe {
                 (&mut *process)
                     .heap
-                    .write_closure_capture_value(addr, i, AnyValue::Float(raw))
+                    .write_closure_capture_value(addr, i, AnyValue::float(f64::from_bits(raw)))
             },
             LAZY_CONT_KIND_ATOM => unsafe {
                 (&mut *process)
@@ -1996,11 +2270,6 @@ pub extern "C" fn fz_alloc_frame(process: *mut Process, schema_id: u32, total_si
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
 /// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
 /// promotes integer operands here; raw float operands stay in typed lanes.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_promote_f64(raw_int: i64) -> f64 {
-    raw_int as f64
-}
-
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
 /// frem opcode, so the JIT's float-mod slow path calls out here.
 #[unsafe(no_mangle)]
@@ -2028,143 +2297,73 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
     u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
 }
 
+/// Widening language term order, borrowed from the same comparator that owns
+/// strict map-key identity. Returns -1, 0, or 1 without boxing scalar adapters.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> i64 {
+    let a = any_value_from_ref_word(a_ref, "fz_value_cmp_ref lhs");
+    let b = any_value_from_ref_word(b_ref, "fz_value_cmp_ref rhs");
+    compare_values(process, a, b, NumericMode::Widening) as i64
+}
+
+/// Exact mixed-number comparison of two unboxed lanes; no process or allocation.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_int_float_cmp(integer: i64, float: f64) -> i64 {
+    crate::term::compare_int_float(integer, float) as i64
+}
+
+fn compare_values(process: *mut Process, a: AnyValue, b: AnyValue, mode: NumericMode) -> std::cmp::Ordering {
+    let process = unsafe { &*process };
+    let registry = process.heap.schemas_registry();
+    let schemas = registry.borrow();
+    TermComparator::new(&process.node, &schemas).compare(a, b, mode)
+}
+
+/// Ordering between a dynamic `AnyValueRef` and an unboxed payload, with no
+/// allocation on either side — the ordering counterpart to
+/// [`fz_value_eq_raw_const`].
+///
+/// An `AnyValueRef` for an integer, float or atom is a POINTER to a heap
+/// scalar box, so handing an unboxed operand to a ref-taking function forces
+/// an allocation. Comparison never needs a value's identity, only its kind and
+/// payload, so codegen passes those directly. `swap` says the unboxed side was
+/// the right-hand operand, so the caller does not have to negate the result.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_cmp_raw_const(
+    process: *mut Process,
+    ref_word: u64,
+    kind_tag: u32,
+    raw: u64,
+    swap: u32,
+) -> i64 {
+    let dynamic = any_value_from_ref_word(ref_word, "fz_value_cmp_raw_const");
+    let Some(kind) = ValueKind::new(kind_tag as u8) else {
+        panic!("fz_value_cmp_raw_const: unknown operand kind {kind_tag}");
+    };
+    let Some(unboxed) = AnyValue::decode_parts(raw, kind.tag()) else {
+        panic!("fz_value_cmp_raw_const: undecodable operand of kind {kind:?}");
+    };
+    let (left, right) = if swap == 0 {
+        (dynamic, unboxed)
+    } else {
+        (unboxed, dynamic)
+    };
+    compare_values(process, left, right, NumericMode::Widening) as i64
+}
+
+/// Widen numeric values recursively for `==`; map keys remain strict.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_eq_widening_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
+    let a = any_value_from_ref_word(a_ref, "fz_value_eq_widening_ref lhs");
+    let b = any_value_from_ref_word(b_ref, "fz_value_eq_widening_ref rhs");
+    u64::from(compare_values(process, a, b, NumericMode::Widening).is_eq())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
-    if a_ref == b_ref {
-        return 1;
-    }
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(eq_value(process, a, b))
-}
-
-fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue) -> bool {
-    if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
-        && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
-    {
-        let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
-        let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
-        return (unsafe { is_bitstring_like(ap) }) && (unsafe { is_bitstring_like(bp) }) && eq_bitstring(ap, bp);
-    }
-    if a.kind() != b.kind() {
-        return false;
-    }
-    if a.raw() == b.raw() {
-        return true;
-    }
-    match a.kind() {
-        ValueKind::LIST => {
-            if a.raw() == 0 || b.raw() == 0 {
-                false
-            } else {
-                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8)
-            }
-        }
-        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8),
-        ValueKind::STRUCT => {
-            let a_schema = unsafe { struct_schema_id(a.raw() as *const u8) };
-            let b_schema = unsafe { struct_schema_id(b.raw() as *const u8) };
-            eq_struct(process, a.raw() as *mut u8, b.raw() as *mut u8, a_schema, b_schema)
-        }
-        ValueKind::BITSTRING | ValueKind::PROCBIN => unreachable!("handled before kind check"),
-        _ => false,
-    }
-}
-
-fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
-    // Walk both chains in lockstep. NIL terminates both at the same step.
-    let mut a = ap as *const u8;
-    let mut b = bp as *const u8;
-    loop {
-        let ac = unsafe { &*(a as *const ListCons) };
-        let bc = unsafe { &*(b as *const ListCons) };
-        if ac.head_kind() != bc.head_kind() {
-            return false;
-        }
-        if !eq_value(process, ac.head_value(), bc.head_value()) {
-            return false;
-        }
-        // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
-        let at = ac.tail_bits();
-        let bt = bc.tail_bits();
-        if at == bt {
-            return true; // both NIL (same scalar bits) — common terminator
-        }
-        // If either tail is non-list, the chains diverge.
-        let anp = list_addr_from_tagged(at);
-        let bnp = list_addr_from_tagged(bt);
-        let (Some(anp), Some(bnp)) = (anp, bnp) else {
-            return false;
-        };
-        if anp.is_null() || bnp.is_null() {
-            return false;
-        }
-        a = anp as *const u8;
-        b = bnp as *const u8;
-    }
-}
-
-fn eq_struct(process: *mut Process, ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
-    if a_schema != b_schema {
-        return false;
-    }
-    let reg = (unsafe { &mut *process }).heap.schemas_registry();
-    let registry = reg.borrow();
-    let schema = registry.get(a_schema);
-    for field in &schema.fields {
-        match field.kind {
-            FieldKind::AnyValue => {
-                let av = (unsafe { &mut *process }).heap.read_field_slot(ap, field.offset);
-                let bv = (unsafe { &mut *process }).heap.read_field_slot(bp, field.offset);
-                if !eq_value(process, av, bv) {
-                    return false;
-                }
-            }
-            FieldKind::RawF64 | FieldKind::RawI64 => {
-                let av = unsafe { std::ptr::read(ap.add(8 + field.offset as usize) as *const u64) };
-                let bv = unsafe { std::ptr::read(bp.add(8 + field.offset as usize) as *const u64) };
-                if av != bv {
-                    return false;
-                }
-            }
-            FieldKind::RawBytes(n) => {
-                let av = unsafe { from_raw_parts(ap.add(8 + field.offset as usize), n as usize) };
-                let bv = unsafe { from_raw_parts(bp.add(8 + field.offset as usize), n as usize) };
-                if av != bv {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
-    unsafe { bitstring_like_eq(ap, bp) }
-}
-
-fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
-    let a_count = unsafe { map_count(ap as *const u8) };
-    let b_count = unsafe { map_count(bp as *const u8) };
-    if a_count != b_count {
-        return false;
-    }
-    // Both maps store entries in canonical sort order (.11.13), so a
-    // pairwise walk suffices — same key-position implies same key.
-    for i in 0..a_count {
-        let (ak, av) = unsafe { map_entry(ap as *const u8, i) };
-        let (bk, bv) = unsafe { map_entry(bp as *const u8, i) };
-        if ak.kind() != bk.kind() || av.kind() != bv.kind() {
-            return false;
-        }
-        if !eq_value(process, ak, bk) {
-            return false;
-        }
-        if !eq_value(process, av, bv) {
-            return false;
-        }
-    }
-    true
+    u64::from(compare_values(process, a, b, NumericMode::Strict).is_eq())
 }
 
 // fz-axu.14 (R1) — utf8 runtime support.

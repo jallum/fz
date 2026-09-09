@@ -1,0 +1,72 @@
+#---
+# purpose: "every pair of values has an order, and it is Erlang's total term order"
+# oracle: oracle.exs
+#---
+#
+# # term_ordering
+#
+# `Enum.sort/1` is only as good as the order underneath it, and fz had no order
+# across types at all: `<` and its siblings were declared for integer, float and
+# binary pairs and NOTHING else, so `Enum.sort` could not be applied to a mixed
+# list and `Enum.sort(["pear", "apple", "fig"])` had, before fz-5xp.18, silently
+# returned `["pear", "fig", "apple"]`.
+#
+# Erlang defines a total order over every term, which Elixir inherits:
+#
+#     number < atom < reference < fun < port < pid < tuple < map < list < bitstring
+#
+# fz has no port or pid values; a resource takes the reference slot. Numbers
+# share one rank, because an integer and a float are ordered against each other
+# BY VALUE rather than by kind.
+#
+# IT IS REACHED THROUGH `Kernel.compare/2`, NOT THROUGH `<`. Giving the
+# comparison operators an `any`/`any` clause makes every comparison callsite
+# with an unresolved operand -- `fn (x) -> x > 1 end` is one -- blind to the
+# dispatcher, which the blind-escape census catches as a latent miscompile
+# (fz-5xp.64). The operators stay declared for the pairs fz can prove, so
+# `1 < :atom` is still refused at COMPILE time rather than answered wrongly at
+# run time. Sorting does not need the operators; it needs an order.
+#
+# The within-rank rules are not uniform, and this fixture pins the differences
+# because they are the parts that look arbitrary until compared:
+#
+#   * TUPLES order by ARITY FIRST: `{2} < {1, 1}`.
+#   * LISTS order ELEMENTWISE first, so `[1, 2, 3] < [2]`, and a prefix sorts
+#     before its extensions. The opposite convention from tuples.
+#   * MAPS order by size, then all keys, then all values, so `%{"a" => 1}` is
+#     less than `%{"b" => 0}` -- the key decides before the value is looked at.
+#   * ATOMS order by NAME, not by the id they were interned with. That is why
+#     the comparator takes the process: ids are handed out in first-seen order,
+#     so ordering by id would depend on which atom the program mentioned first.
+fnp lt?(left, right), do: Kernel.compare(left, right) < 0
+
+fn main() do
+  # across kinds
+  dbg(lt?(1, :atom))
+  dbg(lt?(:atom, "bin"))
+  dbg(lt?("bin", :atom))
+  dbg(Enum.sort([[1], {1}, :a, "s", 3]))
+
+  # numbers share a rank and order by value
+  dbg(Enum.sort([3, 2.5, 1, 2]))
+
+  # atoms by name
+  dbg(Enum.sort([:b, :a, :Zed]))
+
+  # tuples: arity first
+  dbg(Enum.sort([{2}, {1, 1}, {1}]))
+  dbg(lt?({1, 2}, {1, 2, 3}))
+  dbg(lt?({2}, {1, 2}))
+
+  # lists: elementwise first, prefix before extension
+  dbg(Enum.sort([[2], [1, 1], [1]]))
+  dbg(lt?([1, 2, 3], [2]))
+  dbg(lt?([1, 2], [1, 2, 3]))
+
+  # maps: size, then keys, then values
+  dbg(Enum.sort([%{"b" => 1}, %{"a" => 1}, %{"a" => 0}]))
+  dbg(lt?(%{"a" => 1}, %{"b" => 0}))
+
+  # binaries: byte-lexicographic, prefix first
+  dbg(Enum.sort(["b", "a", "ab", "", "aa"]))
+end

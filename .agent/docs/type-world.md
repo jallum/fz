@@ -102,3 +102,15 @@ everything outside the type module — facts, keys, analysis — sees only `Ty` 
 the comparisons the interner caches. Naming sits outside this boundary entirely: the
 kernel is handed symbols and returns symbols, and the question "what does this source
 name denote?" is answered before a `Ty` ever reaches it.
+
+Callable literals follow that rule too. `World` registers the same immutable
+typed `FunctionDenotation` allocation that its function interner owns before a
+literal can name it. This type lives in `fz_runtime::function_denotation`;
+compiler `FunctionRef` pairs its shared allocation with the compiler's `ModuleId`.
+Clause and activation comparisons read that origin's module/name/arity or
+generated owner/source-occurrence fields. These are source identity data, not
+rendered labels; the kernel never decodes a display string to discover a callable.
+Runtime `Node` retains the same typed origins for closure comparisons. Interpreter
+closure creation registers each used origin from its existing shared allocation;
+loading another backend program extends the registry without renumbering live
+closures or scanning the program's construction inventory.

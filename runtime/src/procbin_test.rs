@@ -211,10 +211,10 @@ fn alloc_procbin_pushes_into_mso_chain() {
     let (handle, drops) = observed_bin();
     {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let pb = alloc_procbin(&mut h, handle);
+        let pb = alloc_procbin(&mut h, handle, 0);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
-        assert_eq!(object_size(tagged), 16);
+        assert_eq!(object_size(tagged), PROCBIN_BYTES);
         assert_eq!(h.mso_head, tagged);
         assert_eq!(pb.mso_next(), 0);
         assert_eq!(drops.load(Ordering::Relaxed), 0);
@@ -229,9 +229,9 @@ fn mso_chain_threads_through_procbins_and_frees_every_entry() {
     let (first, first_drops) = observed_bin();
     let (second, second_drops) = observed_bin();
     let (third, third_drops) = observed_bin();
-    let pb1 = alloc_procbin(&mut h, first);
-    let pb2 = alloc_procbin(&mut h, second);
-    let pb3 = alloc_procbin(&mut h, third);
+    let pb1 = alloc_procbin(&mut h, first, 0);
+    let pb2 = alloc_procbin(&mut h, second, 0);
+    let pb3 = alloc_procbin(&mut h, third, 0);
     let pb1_bits = heap_object_word(pb1.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb2_bits = heap_object_word(pb2.as_raw() as *const u8, ValueKind::PROCBIN);
     let pb3_bits = heap_object_word(pb3.as_raw() as *const u8, ValueKind::PROCBIN);
@@ -252,7 +252,7 @@ fn mso_chain_threads_through_procbins_and_frees_every_entry() {
 fn unrooted_shared_bin_is_freed_once_by_gc_not_again_by_heap_drop() {
     let (handle, drops) = observed_bin();
     let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
-    alloc_procbin(&mut heap, handle);
+    alloc_procbin(&mut heap, handle, 0);
     heap.gc(&mut std::ptr::null_mut());
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(heap.mso_head, 0);
@@ -265,7 +265,7 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     let (handle, drops) = observed_bin();
     let mut source = Heap::new(SIZE_TABLE[0], empty_registry());
     let mut destination = Heap::new(SIZE_TABLE[0], empty_registry());
-    let pb = alloc_procbin(&mut source, handle);
+    let pb = alloc_procbin(&mut source, handle, 0);
     crate::heap::deep_copy_slot(
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::PROCBIN),
         &source,
@@ -281,4 +281,79 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
     drop(destination);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     assert_eq!(Arc::strong_count(&drops), 1);
+}
+
+// ===== fz-5xp.55 — suffix views =============================================
+
+/// A tail of a shared binary is another view of the SAME bytes: same
+/// SharedBin, pointer advanced by the offset, length shortened. Nothing is
+/// copied, which is the whole point — a scanner takes one of these per byte.
+#[test]
+fn a_suffix_stub_views_the_parents_bytes_rather_than_copying_them() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let whole = alloc_procbin(&mut h, handle.clone(), 0);
+    let tail = alloc_procbin(&mut h, handle, 70);
+
+    assert_eq!(
+        whole.shared_raw(),
+        tail.shared_raw(),
+        "a suffix shares the parent's buffer instead of allocating its own"
+    );
+    assert_eq!(tail.byte_offset(), 70);
+    assert_eq!(tail.bit_len(), (200 - 70) * 8);
+    assert_eq!(tail.bytes_len(), 200 - 70);
+    assert_eq!(unsafe { *tail.bytes_ptr() }, 70);
+    assert_eq!(unsafe { *tail.bytes_ptr().add(129) }, 199);
+}
+
+/// A suffix ends where the parent's buffer ends, so it inherits the
+/// invisible trailing NUL that [[fz-wu9]] guarantees. That is what lets
+/// `fz_binary_as_cstring` hand a tail straight to C without flattening it.
+#[test]
+fn a_suffix_inherits_the_parents_trailing_nul() {
+    let bytes: Vec<u8> = vec![b'x'; 200];
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let tail = alloc_procbin(&mut h, handle, 199);
+    assert_eq!(tail.bytes_len(), 1);
+    assert_eq!(unsafe { *tail.bytes_ptr().add(tail.bytes_len()) }, 0);
+}
+
+/// The parent buffer outlives the whole-binary stub as long as any suffix
+/// still views it: each stub owns its own reference edge.
+#[test]
+fn a_suffix_keeps_the_shared_bytes_alive_after_the_whole_binary_is_gone() {
+    let (handle, drops) = observed_bin();
+    let mut whole_heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let mut tail_heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    alloc_procbin(&mut whole_heap, handle.clone(), 0);
+    let tail = alloc_procbin(&mut tail_heap, handle.clone(), 4);
+    drop(handle);
+    drop(whole_heap);
+    assert_eq!(
+        drops.load(Ordering::Relaxed),
+        0,
+        "the surviving suffix still owns the bytes"
+    );
+    assert_eq!(tail.byte_offset(), 4);
+    drop(tail_heap);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+}
+
+/// Cheney moves the stub; the offset moves with it, so the survivor still
+/// names the same tail.
+#[test]
+fn gc_preserves_a_suffixs_offset() {
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let handle = SharedBinHandle::from_bytes(&bytes, 200 * 8);
+    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    let tail = alloc_procbin(&mut h, handle, 70);
+    let mut roots = [AnyValue::heap_ptr(tail.as_raw(), ValueKind::PROCBIN)];
+    h.gc_with_extra_root_slots(&mut std::ptr::null_mut(), &mut roots);
+    let moved = unsafe { ProcBin::from_raw(roots[0].heap_addr().expect("survivor")) };
+    assert_eq!(moved.byte_offset(), 70);
+    assert_eq!(moved.bit_len(), (200 - 70) * 8);
+    assert_eq!(unsafe { *moved.bytes_ptr() }, 70);
 }

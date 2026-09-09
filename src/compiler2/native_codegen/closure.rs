@@ -79,7 +79,13 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(body.jmod, halt_cont_body_id_for(runtime, hc_repr), body.b);
                 let zero_hk = body.b.ins().iconst(types::I32, 0);
-                let halt_cl = body.alloc_closure(cont_arity, n_caps0, zero_hk, hcb_addr);
+                let halt_cl = body.alloc_closure(
+                    fz_runtime::any_value::ClosureDenotationId::INTERNAL,
+                    cont_arity,
+                    n_caps0,
+                    zero_hk,
+                    hcb_addr,
+                );
                 body.b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 body.b.switch_to_block(join_blk);
                 body.b.seal_block(join_blk);
@@ -141,7 +147,13 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         .iconst(types::I32, (cap_bindings.len() + extra_ref_captures.len() + 1) as i64);
     let zero_hk = body.b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(body.jmod, cont_fid, body.b);
-    let cl_ptr = body.alloc_closure(cont_arity, n_caps_v, zero_hk, cont_code_addr);
+    let cl_ptr = body.alloc_closure(
+        fz_runtime::any_value::ClosureDenotationId::INTERNAL,
+        cont_arity,
+        n_caps_v,
+        zero_hk,
+        cont_code_addr,
+    );
     let heap_safe_outer_cont = body.materialize_cont(my_outer_cont);
     body.store_closure_capture_ref_word(cl_ptr, 0, heap_safe_outer_cont);
     store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {

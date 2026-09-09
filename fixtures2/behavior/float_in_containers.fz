@@ -1,0 +1,35 @@
+#---
+# purpose: "a whole float keeps its .0 wherever it appears, not only at the top level"
+# oracle: oracle.exs
+#---
+#
+# # float_in_containers
+#
+#     dbg([1.0, 2.0])   ->  [1, 2]
+#
+# A list element was printed with Rust's `to_string` while every other position
+# went through `render_float`, so a whole float silently lost its `.0` inside a
+# list -- and only inside a list. One question, two implementations, agreeing
+# for every float with a fractional part and disagreeing for the rest.
+#
+# `Json.encode!([1.0])` must not emit `[1]`: JSON has one number type, and the
+# `.0` is the only thing distinguishing a float from an integer on the way out.
+# Elixir's own `inspect` keeps it.
+#
+# ## What it covers
+#
+# Whole floats and fractional floats, at the top level and nested one and two
+# deep, in lists and tuples, mixed with integers so a shared renderer cannot
+# paper over the difference, plus `-0.0` whose sign is observable.
+fn main() do
+  dbg(1.0)
+  dbg([1.0, 2.0])
+  dbg([1.5, 2.25])
+  dbg([1.0, 2])
+  dbg({1.0, 2.0})
+  dbg({1.0, 2})
+  dbg([1.0, [2.0, 3.0]])
+  dbg([{1.0, [2.0]}])
+  dbg([-0.0, 100.0])
+  dbg([0.1, 0.2, 0.30000000000000004])
+end

@@ -23,7 +23,7 @@ mod jobs;
 mod keying;
 mod module_interface;
 mod namespace;
-mod native_codegen;
+pub(crate) mod native_codegen;
 mod ordered_set;
 mod ordered_worklist;
 mod product_drive;
@@ -125,6 +125,8 @@ pub use world::World;
 mod artifact_test;
 #[cfg(test)]
 mod canon_test;
+#[cfg(test)]
+mod closure_denotation_test;
 #[cfg(test)]
 mod code_test;
 #[cfg(test)]

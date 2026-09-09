@@ -6,6 +6,7 @@
 
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
+use crate::modules::identity::ModuleName;
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_fn_ptr, struct_schema_id};
 use std::collections::{BTreeSet, HashMap};
@@ -163,7 +164,7 @@ impl RuntimeTestAxis {
             RuntimeAnyValue::HeapRef(value_ref) => match value_ref.tag() {
                 ValueKind::LIST => &[Self::Lists],
                 ValueKind::MAP => &[Self::Maps],
-                ValueKind::BITSTRING => &[Self::Binaries],
+                kind if kind.is_binary_repr() => &[Self::Binaries],
                 ValueKind::CLOSURE => &[Self::Callables],
                 ValueKind::RESOURCE => &[Self::Resources],
                 ValueKind::STRUCT => &[Self::Tuples, Self::NamedStructs, Self::OtherStructs],
@@ -186,7 +187,7 @@ pub(crate) struct RuntimeTypePredicate {
     /// shape them -- what each position of each shape asks. See
     /// [`TupleShapes`].
     pub(crate) tuples: TupleShapes,
-    pub(crate) named_structs: FiniteSet<String>,
+    pub(crate) named_structs: FiniteSet<ModuleName>,
     pub(crate) allow_other_structs: bool,
     pub(crate) maps: bool,
     pub(crate) binaries: bool,
@@ -240,9 +241,9 @@ impl RuntimeTypePredicate {
         predicate
     }
 
-    pub(crate) fn named_struct(name: impl Into<String>) -> Self {
+    pub(crate) fn named_struct(name: ModuleName) -> Self {
         let mut predicate = Self::none();
-        predicate.named_structs = FiniteSet::lit(name.into());
+        predicate.named_structs = FiniteSet::lit(name);
         predicate
     }
 
@@ -1058,7 +1059,7 @@ pub(crate) type ListTailReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAn
 pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) module: &'a Module,
     pub(crate) tuple_schema_ids: &'a HashMap<usize, u32>,
-    pub(crate) named_schema_ids: &'a HashMap<String, u32>,
+    pub(crate) named_schema_ids: &'a HashMap<ModuleName, u32>,
     pub(crate) callables: &'a CallableIdentities<'a>,
     pub(crate) fields: &'a TupleFieldReader<'a>,
     pub(crate) list_head: &'a ListHeadReader<'a>,
@@ -1129,7 +1130,7 @@ fn axis_admits(
             None => false,
         },
         RuntimeTestAxis::Maps => predicate.maps && has_kind(value, ValueKind::MAP),
-        RuntimeTestAxis::Binaries => predicate.binaries && has_kind(value, ValueKind::BITSTRING),
+        RuntimeTestAxis::Binaries => predicate.binaries && is_binary_value(value),
         RuntimeTestAxis::Resources => predicate.resources && has_kind(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => {
             has_kind(value, ValueKind::CLOSURE) && matches_runtime_callable(predicate, value, reader.callables)
@@ -1142,6 +1143,11 @@ fn axis_admits(
 
 fn has_kind(value: RuntimeAnyValue, kind: ValueKind) -> bool {
     matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == kind)
+}
+
+/// A binary in either of its representations. See `ValueKind::BINARY_REPRS`.
+fn is_binary_value(value: RuntimeAnyValue) -> bool {
+    matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag().is_binary_repr())
 }
 
 fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {
@@ -2578,7 +2584,8 @@ mod value_membership_tests {
     #[test]
     fn real_struct_predicates_distinguish_foo_alone_from_plain_map_unions_and_complements() {
         let mut world = World::new();
-        let foo = world.reference_module("Pkg.Foo");
+        let foo_name = ModuleName::from_segments(vec!["Pkg".into(), "Foo".into()]);
+        let foo = world.reference_module(foo_name.clone());
         let int = world.types_mut().int();
         let foo_value = world.struct_value_ty(foo, &["value".to_string()], &[int]);
         let foo_envelope = world.types_mut().runtime_type_test_envelope(foo_value);
@@ -2595,13 +2602,13 @@ mod value_membership_tests {
         let mut heap = FakeHeap::new(&[]);
         heap.module
             .struct_schemas
-            .insert("Pkg.Foo".to_string(), vec!["value".to_string()]);
+            .insert(foo_name.clone(), vec!["value".to_string()]);
         let map = RuntimeAnyValue::HeapRef(
             AnyValueRef::from_heap_object(ValueKind::MAP, 0x1000 as *const u8).expect("a map ref"),
         );
         let struct_value = heap.tuple(7, vec![RuntimeAnyValue::Int(1)]);
         let tuple_schema_ids = HashMap::new();
-        let named_schema_ids = HashMap::from([("Pkg.Foo".to_string(), 7)]);
+        let named_schema_ids = HashMap::from([(foo_name, 7)]);
         let callables = |_: u64| None;
         let fields =
             |value: RuntimeAnyValue, index: usize| heap.fields_of(value).and_then(|fields| fields.get(index)).copied();

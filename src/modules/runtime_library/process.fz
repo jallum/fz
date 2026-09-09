@@ -1,9 +1,0 @@
-defmodule Process do
-  @moduledoc "Runtime process inspection helpers."
-
-  extern "C" fn fz_process_heap_alloc_stats() :: any
-
-  @doc "Returns allocation counters for the current process."
-  @spec heap_alloc_stats() :: any
-  fn heap_alloc_stats(), do: fz_process_heap_alloc_stats()
-end

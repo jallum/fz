@@ -22,7 +22,6 @@ mod deep_copy;
 mod fragment;
 mod gc;
 mod imp;
-mod key_cmp;
 mod ref_io;
 mod schema;
 mod stats;
@@ -31,6 +30,7 @@ mod stats;
 mod heap_test;
 
 use self::fragment::Fragment;
+use crate::process::Node;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -42,7 +42,7 @@ pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
 pub use self::deep_copy::{deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits};
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
-pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaIdentity, SchemaRegistry};
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
 /// fz-cty.5 — bitstrings above this many bytes are routed through the
@@ -71,6 +71,11 @@ pub struct Heap {
     /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
     /// frees the entire list at every collection.
     abandoned_blocks: Vec<(*mut u8, u8)>,
+    /// The atom-name authority for map key ordering. A process heap shares its
+    /// process's node, so every map construction and lookup uses the same atom
+    /// order as `Kernel.compare` without callers having to supply ambient
+    /// process state.
+    pub(crate) node: Rc<Node>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
     /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
     /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.

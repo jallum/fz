@@ -16,7 +16,10 @@ fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
 fn ptr_and_cstring_on_inline_bitstring() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let payload = b"/tmp/fz-fixture";
-    let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
+    let p = h
+        .alloc_bitstring(payload, (payload.len() as u64) * 8)
+        .heap_addr()
+        .expect("bitstring");
     let v = AnyValueRef::from_heap_object(ValueKind::BITSTRING, p)
         .expect("bitstring ref")
         .raw_word();
@@ -39,7 +42,10 @@ fn ptr_and_cstring_on_procbin() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
     let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
-    let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
+    let p = h
+        .alloc_bitstring(&payload, (payload.len() as u64) * 8)
+        .heap_addr()
+        .expect("procbin");
     let v = AnyValueRef::from_heap_object(ValueKind::PROCBIN, p)
         .expect("procbin ref")
         .raw_word();

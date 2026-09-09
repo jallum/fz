@@ -15,6 +15,104 @@ fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
 }
 
 #[test]
+fn projected_module_identity_survives_call_and_function_reference_decoding() {
+    use super::{QuotedSourceHeap, QuotedSourceMetadata};
+    use crate::modules::identity::{ModuleDenotation, ModuleName};
+    let heap = std::rc::Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let module = ModuleDenotation::ProtocolImpl {
+        protocol: ModuleName::parse_dotted("A").unwrap(),
+        target: ModuleName::parse_dotted("B.C").unwrap(),
+    };
+    let empty = QuotedSourceMetadata::default();
+    let meta = QuotedSourceMetadata {
+        module: Some(module.clone()),
+        ..Default::default()
+    };
+    // Even a non-alias display head/tail is inert once the module is resolved.
+    let alias = builder
+        .ast_node(builder.int(99), &meta, builder.atom("display"))
+        .unwrap();
+    let target = builder.call(".", &empty, &[alias, builder.atom("val")]).unwrap();
+    let call = builder.call_callee(target, &empty, &[builder.int(1)]).unwrap();
+    let quotient = builder.call("/", &empty, &[target, builder.int(1)]).unwrap();
+    let reference = builder.call("&", &empty, &[quotient]).unwrap();
+    let body = builder.call("{}", &empty, &[call, reference]).unwrap();
+    let head = builder.call("probe", &empty, &[]).unwrap();
+    let keyword = builder.list(&[builder.keyword("do", body).unwrap()]).unwrap();
+    let function = builder.call("fn", &empty, &[head, keyword]).unwrap();
+    let source = builder.root(builder.list(&[function]).unwrap()).unwrap();
+    let decoded = derive_function_surface(&source).unwrap();
+    let Expr::Tuple(items) = &decoded.clauses[0].body.node else {
+        panic!("tuple body")
+    };
+    let Expr::Call(target, _) = &items[0].node else {
+        panic!("qualified call")
+    };
+    let call = crate::ast::CallableName::for_call(&target.node, 1).unwrap();
+    assert_eq!(call.module, Some(module.clone()));
+    assert_eq!(call.name, "val");
+    let Expr::FnRef { name, arity } = &items[1].node else {
+        panic!("explicit function reference")
+    };
+    assert_eq!(name.module, Some(module));
+    assert_eq!(name.name, "val");
+    assert_eq!(*arity, 1);
+}
+
+#[test]
+fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
+    let root = grouped_function_root(
+        "lambda_occurrences.fz",
+        "fn choose(0), do: {fn () -> fn () -> 1 end end, fn () -> 2 end}\nfn choose(1), do: fn () -> 3 end\n",
+    );
+    fn occurrences(surface: &crate::function_surface::FunctionSurface) -> [crate::ast::LambdaOccurrence; 4] {
+        let Expr::Tuple(items) = &surface.clauses[0].body.node else {
+            panic!("tuple body")
+        };
+        let Expr::Lambda {
+            occurrence: outer,
+            clauses,
+        } = &items[0].node
+        else {
+            panic!("outer lambda")
+        };
+        let Expr::Lambda { occurrence: inner, .. } = &clauses[0].body.node else {
+            panic!("nested lambda")
+        };
+        let Expr::Lambda {
+            occurrence: sibling, ..
+        } = &items[1].node
+        else {
+            panic!("sibling lambda")
+        };
+        let Expr::Lambda {
+            occurrence: next_clause,
+            ..
+        } = &surface.clauses[1].body.node
+        else {
+            panic!("next clause lambda")
+        };
+        [*outer, *inner, *sibling, *next_clause]
+    }
+    let decoded = derive_function_surface(&root).expect("decode source");
+    let first = occurrences(&decoded);
+    assert_eq!(
+        first.iter().copied().collect::<std::collections::HashSet<_>>().len(),
+        4,
+        "nested lambdas, siblings, and grouped clauses are distinct source occurrences"
+    );
+    let cloned = decoded.clone();
+    assert_ne!(decoded.clauses.as_ptr(), cloned.clauses.as_ptr());
+    assert_eq!(first, occurrences(&cloned), "lowering clones retain source identity");
+    assert_eq!(
+        first,
+        occurrences(&derive_function_surface(&root).expect("retry decode")),
+        "retrying unchanged source does not mint new occurrences"
+    );
+}
+
+#[test]
 fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_parser() {
     let source = r#"
 @spec pack(integer) :: binary
@@ -129,7 +227,7 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
         panic!("expected %Range{{}} to decode as a struct literal");
     };
-    assert_eq!(module.dotted(), "Range");
+    assert_eq!(module.to_string(), "Range");
     assert_eq!(
         fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
         ["first", "last", "step"]
@@ -214,5 +312,25 @@ fn a_decoded_ast_node_meta_span_carries_its_own_files_baked_code_id() {
         body_span.code_id,
         crate::source::Id(file_code.as_u32()),
         "a decoded expression's own __fz_span__ must carry the code id of the file it was actually parsed from"
+    );
+}
+
+#[test]
+fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
+    // A one-line `@doc` was all the attribute had ever been handed, because
+    // `"""` lexed as three quote characters rather than a delimiter. The
+    // attribute already took a string token, so a heredoc that lexes to one
+    // needs nothing further from it -- this pins that, text and all, so the
+    // library can carry Elixir-shaped docs instead of one-line labels.
+    let source = "@doc \"\"\"\nAdds one.\n\n## Examples\n\n    bump(1) == 2\n\"\"\"\nfn bump(n), do: n + 1\n";
+    let root = grouped_function_root("bump.fz", source);
+    let surface = derive_function_surface(&root).expect("derive function surface");
+
+    let Attribute::Doc(doc) = &surface.attrs[0] else {
+        panic!("expected @doc attr, got {:?}", surface.attrs[0]);
+    };
+    assert_eq!(
+        doc, "Adds one.\n\n## Examples\n\n    bump(1) == 2\n",
+        "the doc should arrive with its blank lines and its example's indentation intact"
     );
 }

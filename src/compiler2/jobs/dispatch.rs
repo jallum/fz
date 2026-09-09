@@ -13,7 +13,7 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::ast::{Expr, Pattern, Spanned};
+use crate::ast::{CallableName, Expr, Pattern, Spanned};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -27,7 +27,7 @@ use crate::source::Span;
 
 #[derive(Debug, Clone)]
 pub(super) struct GuardCall {
-    name: String,
+    name: CallableName,
     arity: usize,
     span: Span,
 }
@@ -159,7 +159,7 @@ pub(super) fn plan_entry_dispatch(
     let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?;
     let namespace = source.namespace;
     let fn_span = surface.span;
-    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
+    let mut resolver = |name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
         let callee = resolve_guard_callee_checked(world, namespace, name, arity);
         Ok(Some(PatternGuardExpr::Dispatch {
             inputs: args,
@@ -232,7 +232,7 @@ fn build_guard_dispatch(
     let (source, surface) = world.function_definition(function);
     let namespace = source.namespace;
     stack.push(function);
-    let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
+    let mut resolver = |name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
         let callee = resolve_guard_callee_checked(world, namespace, name, arity);
         let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
         Ok(Some(PatternGuardExpr::Dispatch {
@@ -356,12 +356,7 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
             collect_guard_calls_in_expr(right, out)
         }
         Expr::Call(target, args) => {
-            let callee = match &target.node {
-                Expr::Var(name) => Some((name.clone(), args.len())),
-                Expr::FnRef { name, arity } if *arity == args.len() => Some((name.clone(), *arity)),
-                _ => None,
-            };
-            let Some((name, arity)) = callee else {
+            let Some(name) = CallableName::for_call(&target.node, args.len()) else {
                 return Err(expr.span);
             };
             for arg in args {
@@ -369,12 +364,13 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
             }
             out.push(GuardCall {
                 name,
-                arity,
+                arity: args.len(),
                 span: expr.span,
             });
             Ok(())
         }
         Expr::FnRef { .. }
+        | Expr::Module(_)
         | Expr::Capture(_)
         | Expr::CaptureArg(_)
         | Expr::List(_, _)
@@ -392,7 +388,7 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
         | Expr::Receive { .. }
         | Expr::Match(_, _)
         | Expr::Block(_)
-        | Expr::Lambda(_)
+        | Expr::Lambda { .. }
         | Expr::Quote(_)
         | Expr::Unquote(_) => Err(expr.span),
     }
@@ -404,7 +400,7 @@ pub(super) fn resolve_guard_callee(
     namespace: Namespace,
     call: &GuardCall,
 ) -> Result<FunctionId, FatalError> {
-    match world.lookup_callable_namespace(namespace, &call.name, call.arity) {
+    match world.lookup_callable_name(namespace, &call.name, call.arity) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
         Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
             tel,
@@ -436,10 +432,10 @@ pub(super) fn resolve_guard_callee(
 pub(super) fn resolve_guard_callee_checked(
     world: &mut World,
     namespace: Namespace,
-    name: &str,
+    name: &CallableName,
     arity: usize,
 ) -> FunctionId {
-    match world.lookup_callable_namespace(namespace, name, arity) {
+    match world.lookup_callable_name(namespace, name, arity) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => function,
         Some(NamespaceSymbol::Macro(_)) => {
             panic!("guard analysis should reject macro calls before building dispatch artifacts")

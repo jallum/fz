@@ -7,7 +7,7 @@ spans, spacing metadata, and lexer telemetry. The old AST-building
 Compiler2 parses source in `src/compiler2/frontdoor.rs`. That front door consumes
 the shared lexer tokens and produces `QuotedSourceRoot` values directly, rather
 than first building old `ast::Program` / `ast::Item` trees. Runtime bootstrap
-sources in `src/modules/runtime_library/*.fz` also enter compiler2 through this
+sources in `lib/*.fz` also enter compiler2 through this
 quoted-source path.
 
 Keep this boundary crisp:
@@ -55,15 +55,43 @@ newline to guess intent.
   *new* statement (mirrors Elixir's tokenizer, where a prefix-capable
   operator never swallows a preceding eol; `%` has no modulo in Elixir, so
   that dual role is fz-specific).
-- **Statement/`eoe` separation**: block parsing (`parse_block_until`) calls
-  `skip_newlines()` between statements. A `Tok::Newline` that reaches
-  `parse_bp`'s Pratt loop matches none of its arms, so the loop returns the
-  completed left-hand side and the block loop treats the newline as the
-  boundary between two statements, wrapping multiple statements in
-  `__block__`.
+- **Statement/`eoe` separation**: a `Tok::Newline` that reaches `parse_bp`'s
+  Pratt loop matches none of its arms, so the loop returns the completed
+  left-hand side. Every newline-delimited sequence then calls
+  `require_newline_or_terminator`: another expression, item, or clause is legal
+  only after a physical newline; an enclosing `end`/`else`/`after` may follow
+  immediately. Spaces alone are never a statement separator, so `a = 1 2` is
+  rejected at the `2` instead of becoming a block whose extra expression can
+  be discarded downstream. Inline grammar such as call arguments, lambdas,
+  and trailing `do` blocks remains inside `parse_bp` and its sub-productions
+  before the sequence boundary is checked. A block with multiple separated
+  statements is wrapped in `__block__`. The keyword-list parser preserves this
+  ownership: it consumes newlines only when the next non-newline token is its
+  comma or closing delimiter. A newline after a no-parens keyword call is left
+  for the enclosing block, so the next call remains a separate statement.
 
 There is no `starts_expr_continuation` / `peek_after_newlines`-style
 lookahead in the parser. Continuation vs. new-statement is a static,
 per-token fact resolved once at tokenize time (leading position) or an
 ordinary grammar rule (trailing position) — never a runtime guess about
 what a future token "looks like".
+
+## Heredocs are string literals
+
+`"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines
+with the closing delimiter's indentation stripped. It is a string LITERAL, not
+a raw string, so it carries both of a literal's behaviours:
+
+- **Escapes are processed.** Source `one\"two` stores `one"two`. A lone `"`
+  needs no escape, since only `"""` terminates the heredoc, so a backslash that
+  should survive into the text has to be doubled: `"{\\"a\\": 1}"` in the source
+  stores `"{\"a\": 1}"`.
+- **Interpolation runs.** `"a#{1 + 1}b"` inside a heredoc stores `a2b`.
+  `\#{x}` suppresses it and stores `#{x}`; `dbg` re-escapes a literal `#{` when
+  it renders, so a round trip looks doubled and is not.
+
+Both apply to `@doc """ ... """` and `@moduledoc """ ... """`, which take the
+same string token. Documentation that quotes fz syntax is therefore executable
+text: a doc explaining interpolation contains `#{...}` and will interpolate it,
+and an unbound name there currently changes what the module compiles to without
+reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.

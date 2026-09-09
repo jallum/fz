@@ -1430,12 +1430,7 @@ end
     let demanded_lambda_inputs = session
         .demanded_executables()
         .iter()
-        .filter(|executable| {
-            world
-                .function_ref(executable.activation.function)
-                .name
-                .starts_with("#lambda:")
-        })
+        .filter(|executable| world.function_ref(executable.activation.function).is_generated())
         .map(|executable| {
             world
                 .activation_inputs_joined(&executable.activation)
@@ -2908,14 +2903,14 @@ fn main(), do: make_pairer()
         .iter()
         .filter_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1).then_some(&demand.return_demand)
+            (function_ref.is_generated() && function_ref.arity == 1).then_some(&demand.return_demand)
         })
         .collect::<Vec<_>>();
     let lambda_return_predicates = runtime_demands
         .keys()
         .filter_map(|executable| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1)
+            (function_ref.is_generated() && function_ref.arity == 1)
                 .then(|| world.activation_return(&executable.activation))
                 .flatten()
         })
@@ -3009,7 +3004,7 @@ fn main(), do: make()
         .iter()
         .filter(|executable| {
             let function_ref = world.function_ref(executable.activation.function);
-            function_ref.name.starts_with("#lambda:")
+            function_ref.is_generated()
                 && function_ref.arity == 2
                 && executable.activation.input_len(world.types()) == 2
         })
@@ -3123,7 +3118,7 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name == "identity")
+                .is_some_and(|function| world.function_ref(function).is_named("identity"))
         })
         .collect::<Vec<_>>();
     let [construction] = constructions.as_slice() else {
@@ -3311,7 +3306,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             .materialized_executables()
             .any(|(executable, _)| {
                 let function = world.function_ref(executable.activation.function);
-                function.name == "main" && function.arity == 0
+                function.is_named("main") && function.arity == 0
             }),
         "product materialization should include main/0"
     );
@@ -3322,7 +3317,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             .materialized_executables()
             .any(|(executable, _)| {
                 let function = world.function_ref(executable.activation.function);
-                function.name == "+" && function.arity == 2
+                function.is_named("+") && function.arity == 2
             }),
         "product materialization should include Kernel.+/2"
     );
@@ -3704,7 +3699,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
 }
 
 #[test]
-fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_capture() {
+fn compiler2_transport_plan_retains_whole_callable_capture_independently_of_member_inputs() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3748,7 +3743,7 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
         "the capturing lambda must retain executable targets"
     );
     assert!(
-        resolutions.iter().all(|executable| {
+        resolutions.iter().any(|executable| {
             retained_layout_at(
                 &plan,
                 &TransportPosition::ExecutableInput {
@@ -3756,15 +3751,14 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
                     semantic_index: 0,
                 },
             )
-            .is_some_and(|layout| layout.carrier.is_value_ref())
+            .is_some_and(|layout| !layout.carrier.is_value_ref())
         }),
-        "each generated lambda executable must receive its first-class callable capture through a ValueRef-owned input layout: callable={callable:?}; layouts={:?}",
-        retained_layouts(&plan).collect::<Vec<_>>(),
+        "a member may need less than the whole retained callable; execution demand must not erase that semantic capture",
     );
 }
 
 #[test]
-fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix() {
+fn compiler2_singleton_callable_input_retains_its_source_environment_layout() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3805,7 +3799,6 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
     };
     let descr = world.callable(*callable);
     assert_eq!(descr.function, Some(target.activation.function));
-    assert_eq!(descr.capture_tys.as_ref(), &target.activation_inputs[..2]);
     assert_eq!(descr.capture_layouts.len(), 2);
     assert_eq!(callable_capture_lanes(&world, *callable).len(), 2);
     assert_eq!(layout.carrier, TransportCarrier::Absent);
@@ -4065,7 +4058,7 @@ fn main(), do: make(41).(1)
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name.starts_with("#lambda:"))
+                .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
                 && construction.members.len() == 1
         })
@@ -4156,6 +4149,7 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
     driver.finish_session();
     let session = &*driver.session();
     let mut checked = 0;
+    let mut narrower_members = 0;
     for wrapper in program.construction_wrappers().iter() {
         let construction = owner_at(session, &wrapper.identity)
             .construction
@@ -4169,33 +4163,43 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
             wrapper
                 .captures
                 .iter()
-                .map(|capture| capture.layout.carrier)
+                .map(|capture| (capture.ty, capture.layout.carrier))
                 .collect::<Vec<_>>(),
             construction
                 .captures
                 .iter()
-                .map(|capture| capture.layout.carrier)
+                .map(|capture| (capture.ty, capture.layout.carrier))
                 .collect::<Vec<_>>(),
-            "backend packaging must preserve the construction fact's callable capture carriers",
+            "backend packaging preserves source capture annotations and physical carriers independently",
         );
-        for (capture_index, _) in construction.captures.iter().enumerate() {
-            for member in &wrapper.members {
+        for member in &wrapper.members {
+            let target = program
+                .executables()
+                .iter()
+                .find(|target| target.key == member.target)
+                .expect("member target");
+            assert_eq!(
+                member.target_inputs, target.abi.semantic_inputs,
+                "member execution views use the target's authoritative sparse input layouts",
+            );
+            assert_eq!(member.capture_semantic_inputs.len(), wrapper.captures.len());
+            for (capture_index, capture) in wrapper.captures.iter().enumerate() {
                 let semantic_index = member.capture_semantic_inputs[capture_index];
                 let target_carries = member
                     .target_inputs
                     .iter()
                     .find(|input| input.semantic_index == semantic_index)
                     .is_some_and(|input| !input.layout.reprs.is_empty());
-                assert_eq!(
-                    target_carries,
-                    !wrapper.captures[capture_index].layout.reprs.is_empty(),
-                    "the construction fact must agree with every member target capture ABI",
-                );
+                narrower_members += usize::from(!target_carries && !capture.layout.reprs.is_empty());
             }
         }
         checked += usize::from(callable_capture);
     }
     assert!(checked > 0, "the fixture should package a callable capture");
+    assert!(
+        narrower_members > 0,
+        "complete retention must survive an unused member input"
+    );
 }
 
 /// A published whole-value lane is a CONTRACT, so it may only ever be wider
@@ -4227,7 +4231,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
     let mut whole_value_lanes = 0;
     let mut sunk = Vec::new();
     for executable in program.executables().iter() {
-        let name = &world.function_ref(executable.key.activation.function).name;
+        let name = &world.function_ref(executable.key.activation.function).display_name();
         let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
             let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
                 return 0;
@@ -4282,7 +4286,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
 /// specialization, and which position within it.
 fn owner_position_label(world: &World, position: &TransportPosition) -> String {
     let activation = &position.executable().activation;
-    let name = &world.function_ref(activation.function).name;
+    let name = &world.function_ref(activation.function).display_name();
     let what = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => format!("input#{semantic_index}"),
         TransportPosition::ExecutableReturn { .. } => "return".to_string(),
@@ -4531,12 +4535,12 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
                 };
                 demoted.push(format!(
                     "{}#{} {:?} -> {}#{}",
-                    world.function_ref(executable.key.activation.function).name,
+                    world.function_ref(executable.key.activation.function).display_name(),
                     caller,
                     callsite,
                     world
                         .function_ref(program.executables()[callee].key.activation.function)
-                        .name,
+                        .display_name(),
                     callee,
                 ));
             }
@@ -4674,10 +4678,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 115),
-                    (("metadata", true), 302)
+                    (("metadata", false), 223),
+                    (("metadata", true), 184)
                 ]),
-                "fz-kdt.182 removes ten metadata-only positions whose list-union executable identities were redundant; every retained owner preserves its obligation"
+                "all 445 owners preserve their obligations; separating retained closure values from member execution demand removes lanes from 118 metadata-only positions"
             );
         }
     }
@@ -4747,7 +4751,7 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
 }
 
 #[test]
-fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
+fn compiler2_unused_lexical_capture_is_retained_without_expanding_the_member_abi() {
     let source = r#"
 fn discard(_), do: 0
 
@@ -4777,7 +4781,7 @@ fn main(), do: make(41).(1)
             world
                 .callable(construction.callable)
                 .function
-                .is_some_and(|function| world.function_ref(function).name.starts_with("#lambda:"))
+                .is_some_and(|function| world.function_ref(function).is_generated())
                 && construction.captures.len() == 1
         })
         .expect("ignored-input lambda should retain its lexical capture fact");
@@ -4785,7 +4789,7 @@ fn main(), do: make(41).(1)
     assert_eq!(
         capture.layout.carrier,
         TransportCarrier::Absent,
-        "a capture used only by an ignored callee input should have no physical carrier",
+        "a captured scalar needs no boxed carrier",
     );
     let TransportPosition::Value {
         executable: capture_executable,
@@ -4803,7 +4807,11 @@ fn main(), do: make(41).(1)
         capture_abi.transport.value_positions.contains(&capture.source),
         "the lexical source owns capture metadata directly, independent of parameter transport"
     );
-    assert!(capture_abi.value_layouts[value].reprs.is_empty());
+    assert_eq!(
+        capture_abi.value_layouts[value].reprs.as_ref(),
+        [super::artifact::AbiValueRepr::RawInt],
+        "first-class closure identity retains the complete lexical capture",
+    );
     for (key, abi) in session.memo().abi_executables() {
         for (semantic_index, demand) in world.runtime_demand(key).unwrap().input_demands.iter().enumerate() {
             if demand.is_ignore() {
@@ -4833,7 +4841,7 @@ fn main(), do: make(41).(1)
                 .iter()
                 .find(|input| input.semantic_index == semantic_index)
                 .is_none_or(|input| input.layout.reprs.is_empty()),
-            "an absent construction capture must agree with every member target capture ABI",
+            "retaining closure identity does not make member execution consume an unused capture",
         );
     }
 }
@@ -4931,10 +4939,9 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
             }
             let function_name = world
                 .function_ref(position.executable().activation.function)
-                .name
-                .clone();
+                .source_name()?;
             function_name.contains("reduce_while").then_some((
-                function_name,
+                function_name.to_string(),
                 position.clone(),
                 layout.structural,
                 *callable,
@@ -4967,8 +4974,8 @@ fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
             matches!(positioned.position, TransportPosition::Value { .. })
                 && world
                     .function_ref(positioned.position.executable().activation.function)
-                    .name
-                    == "make"
+                    .source_name()
+                    == Some("make")
                 && !positioned.owner.callable_facts.is_empty()
         })
         .collect::<Vec<_>>();
@@ -5292,9 +5299,9 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
         executable_membership(&world, session)
             .iter()
             .filter_map(|sym| {
-                let name = world.function_ref(sym.activation.function).name.clone();
+                let name = world.function_ref(sym.activation.function).source_name()?;
                 (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?"))
-                    .then(|| (name, sym.activation.input.to_vec()))
+                    .then(|| (name.to_string(), sym.activation.input.to_vec()))
             })
             .collect()
     };
@@ -5336,7 +5343,7 @@ fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize
         .iter()
         .find(|key| {
             let function_ref = world.function_ref(key.activation.function);
-            function_ref.name == name && function_ref.arity == arity
+            function_ref.is_named(name) && function_ref.arity == arity
         })
         .map(|key| executable_symbol_for(world, key))
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
@@ -5775,7 +5782,7 @@ fn upstream_input_demand_for_function(
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
-            (function_ref.name == name && function_ref.arity == arity)
+            (function_ref.is_named(name) && function_ref.arity == arity)
                 .then(|| demand.input_demands.get(semantic_index).cloned())
                 .flatten()
         })
@@ -6019,7 +6026,7 @@ fn exact_tuple_field_tys_for_surface(world: &mut World, ty: Ty, arity: usize) ->
 
 fn function_is(world: &World, function: super::FunctionId, name: &str, arity: usize) -> bool {
     let function_ref = world.function_ref(function);
-    function_ref.name == name && function_ref.arity == arity
+    function_ref.is_named(name) && function_ref.arity == arity
 }
 
 fn resume_shapes_for(plan: &super::BackendProgram, executable: &super::transport::ExecutableSymbol) -> Vec<ShapeId> {
@@ -6359,6 +6366,22 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         !wrappers.is_empty(),
         "the fixture must retain actual construction wrappers"
     );
+    let mut denotations = std::collections::HashSet::new();
+    let mut shared_denotation = false;
+    for wrapper in &wrappers {
+        shared_denotation |= !denotations.insert(wrapper.denotation);
+        for member in &wrapper.members {
+            assert_eq!(
+                wrapper.denotation,
+                member.target.activation.function.denotation(),
+                "specialized code and transport position cannot mint a closure denotation",
+            );
+        }
+    }
+    assert!(
+        shared_denotation,
+        "different construction wrappers must exercise one retained source denotation",
+    );
     let descents = wrappers
         .windows(2)
         .filter(|pair| {
@@ -6420,7 +6443,7 @@ end
                 TransportPosition::ExecutableInput {
                     executable,
                     semantic_index: 2,
-                } if world.function_ref(executable.activation.function).name == "reduce_cont"
+                } if world.function_ref(executable.activation.function).is_named("reduce_cont")
             )
         })
         .map(|(position, layout)| (position.clone(), layout))

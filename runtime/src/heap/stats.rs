@@ -26,6 +26,14 @@ pub struct HeapAllocStats {
     pub frame: AllocStat,
     pub resource: AllocStat,
     pub other: AllocStat,
+    /// Off-heap binary buffers allocated by this process (fz-5xp.55).
+    /// Deliberately NOT part of `total`: these bytes do not live on the
+    /// process heap, do not move under Cheney and are not what `bytes`
+    /// measures. They are counted because they are otherwise invisible --
+    /// a ProcBin stub costs the same whether its bytes were freshly copied
+    /// or shared with another view, so the stub counters cannot tell
+    /// copying from sharing.
+    pub shared_bin: AllocStat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +51,12 @@ pub enum HeapAllocKind {
 }
 
 impl HeapAllocStats {
+    /// Record an off-heap binary buffer. Separate from `record` because
+    /// these bytes are not heap bytes; see the `shared_bin` field.
+    pub fn record_shared_bin(&mut self, bytes: u64) {
+        self.shared_bin.record(bytes);
+    }
+
     pub fn record(&mut self, kind: HeapAllocKind, bytes: u64) {
         self.total.record(bytes);
         match kind {

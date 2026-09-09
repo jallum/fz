@@ -1,0 +1,129 @@
+#---
+# purpose: "the goal program: Json.decode/1 and Json.encode!/1 agree with Elixir's own JSON module, and round-trip"
+# oracle: oracle.exs
+#---
+#
+# # json_roundtrip
+#
+# THE SURFACE IS ELIXIR'S, taken from lib/elixir/lib/json.ex rather than
+# guessed at. Elixir's `JSON` has no plain `encode/1` -- encoding can only fail
+# for values it does not accept, so the only spelling is `encode!/1` -- and its
+# decode error is a POSITIONED REASON rather than the leftover input:
+#
+#     {:unexpected_end, offset}
+#     {:invalid_byte, offset, byte}
+#     {:unexpected_sequence, offset, sequence}
+#
+# The malformed cases below assert the whole reason, not just that decoding
+# failed, which is what makes this a conformance test rather than a smoke test.
+# Three of its rules are ones no one would guess:
+#
+#   * a token that STARTED as a keyword and did not finish reports
+#     `unexpected_end` at the END OF INPUT -- even `truX`, where there is a
+#     perfectly good offending byte to point at;
+#   * trailing whitespace is accepted, but trailing junk reports the position of
+#     the WHITESPACE before it, not of the junk;
+#   * a bad `\uXXXX` is `unexpected_sequence` at the BACKSLASH, while a bad
+#     simple escape like `\q` is an ordinary `invalid_byte` at the letter.
+#
+# The fz-5xp epic's goal: a REAL PROGRAM, written in fz, checked against an
+# Elixir twin. The twin here is Elixir's own `JSON` module, so this is fz's
+# implementation against a production one rather than against a hand-written
+# imitation.
+#
+# ## What writing it demanded
+#
+# Every prerequisite below was found by writing this program, not by predicting
+# it -- which is what the epic's strategy says to do:
+#
+#   * fz-5xp.52 -- a string literal in a bitstring pattern silently never
+#     matched, so every token scanner (`true`, `null`, `{`, `,`) did nothing;
+#   * fz-5xp.6 -- `/` returned an integer, so `whole + num / den` truncated and
+#     every fractional number decoded wrong;
+#   * fz-5xp.48 -- binary map keys ordered by ADDRESS, so a decoded object
+#     printed in an order no oracle could match, and duplicate keys did not
+#     collide;
+#   * fz-5xp.15 -- Integer/Float to_string, without which nothing could be
+#     encoded;
+#   * an exponent has to be applied as ONE multiply by an exact power of ten:
+#     scaling step by step turned `1.0e-7` into `1.0000000000000002e-7`, a
+#     different double and a different rendering;
+#   * Map.put as a typed clause family, since a scalar value cannot reach the
+#     heap through the ref writer.
+#
+# ## Why binary keys are the whole game
+#
+# JSON object keys are strings, so a decoded object is a BINARY-keyed map --
+# exactly the case where fz's iteration order matches Elixir's. An atom-keyed
+# map could not be oracled at all (fz-5xp.50).
+fn main() do
+  dbg(Json.decode("true"))
+  dbg(Json.decode("false"))
+  dbg(Json.decode("null"))
+  dbg(Json.decode("0"))
+  dbg(Json.decode("42"))
+  dbg(Json.decode("-45"))
+  dbg(Json.decode("3.5"))
+  dbg(Json.decode("-0.25"))
+  dbg(Json.decode("  \"hi\"  "))
+  dbg(Json.decode("[]"))
+  dbg(Json.decode("[1, 2.5, true, null]"))
+  dbg(Json.decode("[[1], [2, [3]]]"))
+  dbg(Json.decode("{}"))
+  dbg(Json.decode("{\"a\": 1}"))
+  dbg(Json.decode("{\"b\": 2, \"a\": [1, null]}"))
+  dbg(Json.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
+
+  # exponents, on integers and fractions, both signs and both spellings
+  dbg(Json.decode("1e3"))
+  dbg(Json.decode("1.5e2"))
+  dbg(Json.decode("2E+3"))
+  dbg(Json.decode("1.0e-7"))
+  dbg(Json.decode("-1.5e2"))
+
+  # the full escape set, including \u for one, two and three byte UTF-8
+  dbg(Json.decode("\"a\\nb\""))
+  dbg(Json.decode("\"q\\\"q\""))
+  dbg(Json.decode("\"s\\\\s\""))
+  dbg(Json.decode("\"sl\\/sl\""))
+  dbg(Json.decode("\"\\u0041\""))
+  dbg(Json.decode("\"\\u00e9\""))
+  dbg(Json.decode("\"\\u65e5\""))
+
+  dbg(Json.encode!(true))
+  dbg(Json.encode!(nil))
+  dbg(Json.encode!(42))
+  dbg(Json.encode!(-45))
+  dbg(Json.encode!(2.5))
+  dbg(Json.encode!("hi"))
+  dbg(Json.encode!([]))
+  dbg(Json.encode!([1, 2.5, nil]))
+  dbg(Json.encode!(%{}))
+  dbg(Json.encode!(%{"a" => [1, nil], "b" => 2}))
+
+  # malformed input is refused, including the trailing commas a permissive
+  # decoder accepts
+  dbg(Json.decode("[1] junk"))
+  dbg(Json.decode("[1,]"))
+  dbg(Json.decode("{\"a\": 1,}"))
+  dbg(Json.decode("{\"a\" 1}"))
+  dbg(Json.decode(""))
+  dbg(Json.decode("tru"))
+  dbg(Json.decode("[1 2]"))
+
+  # round-trip: decode(encode(x)) == x
+  dbg(roundtrip(true))
+  dbg(roundtrip(nil))
+  dbg(roundtrip(42))
+  dbg(roundtrip(-45))
+  dbg(roundtrip(2.5))
+  dbg(roundtrip("hi"))
+  dbg(roundtrip([]))
+  dbg(roundtrip([1, 2.5, nil]))
+  dbg(roundtrip(%{}))
+  dbg(roundtrip(%{"a" => [1, nil], "b" => 2}))
+end
+
+fnp roundtrip(v), do: same(Json.decode(Json.encode!(v)), v)
+fnp same({:ok, decoded}, original), do: decoded == original
+fnp same(_other, _original), do: false

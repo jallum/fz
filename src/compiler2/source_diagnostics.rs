@@ -73,6 +73,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
         | Expr::Nil
         | Expr::Var(_)
         | Expr::FnRef { .. }
+        | Expr::Module(_)
         | Expr::CaptureArg(_)
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}
@@ -154,7 +155,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
             }
         }
         Expr::Block(items) => items.iter().for_each(|item| walk_expr(item, diagnostics)),
-        Expr::Lambda(clauses) => {
+        Expr::Lambda { clauses, .. } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
                     walk_expr(guard, diagnostics);

@@ -631,12 +631,17 @@ fn arithmetic_binops_infer_from_kernel_operator_specs() {
         "arithmetic operators should be typed by Kernel operator specs",
     );
 
+    // `{1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}`.
+    //
+    // The FOURTH is `4 / 2` and it is a FLOAT: `/` always returns one, as in
+    // Elixir, and `div/2` is the truncating form (fz-5xp.6). It read `int` here
+    // while integer division silently dropped the fraction.
     let expected = {
         let int_ty = compiler.types_mut_for_test().int();
         let float_ty = compiler.types_mut_for_test().float();
         compiler
             .types_mut_for_test()
-            .tuple(&[int_ty, int_ty, int_ty, int_ty, int_ty, float_ty, float_ty, float_ty])
+            .tuple(&[int_ty, int_ty, int_ty, float_ty, int_ty, float_ty, float_ty, float_ty])
     };
     assert_settles_to(
         &compiler,

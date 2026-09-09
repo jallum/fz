@@ -1,0 +1,18 @@
+{false, true, true, true}
+{true, false, true, true, false}
+:different
+:same
+{false, false, true}
+{[1, 2, 3], [1, 3]}
+{true, true, true}
+{true, true}
+{false, false, false}
+{false, false, false}
+{:int_one, :float_one, :other}
+{false, true, true, true, true}
+{false, true, false, false}
+{true, false, true, false}
+{true, false, true}
+{true, false}
+[2, 1, 3, 4]
+{true, false}

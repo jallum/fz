@@ -1,0 +1,68 @@
+#---
+# purpose: "a bitstring pattern selects a clause on every door, in function heads and in case"
+# oracle: oracle.exs
+#---
+#
+# # bitstring_clause_dispatch
+#
+# Selecting a clause by matching a bitstring used to be interpreter-only. The
+# interpreter decided it in `dispatch_read_bitstring`, and the receive matcher
+# decided it in `emit_bitstring_test`, but entry dispatch had no answer at all
+# and refused to lower:
+#
+#     native entry-dispatch lowering does not support bitstring tests yet
+#
+# So `fn parse(<<n, rest :: binary>>)` and `case s do <<b, _ :: binary>> -> ...`
+# compiled on `interp` and failed on `run` and `build`, while an irrefutable
+# `<<a, b, rest :: binary>> = s` — which reads the same fields — worked
+# everywhere. This fixture pins the missing half on all three doors.
+#
+# ## What it covers
+#
+#   * multi-clause function heads that discriminate on the pattern, including
+#     an empty-binary clause and a fallthrough for a non-binary argument;
+#   * a variable-size field, `payload :: binary-size(len)`, where one field's
+#     value is the size of the next — the reason an extracted field has to be
+#     published before the following field's size is computed;
+#   * the same shapes in `case`, which reaches the same dispatch;
+#   * recursion over a binary, consuming it a byte at a time, which is the
+#     shape every text-processing function in the runtime library will take.
+fn main() do
+  dbg(head_byte("hello"))
+  dbg(head_byte(""))
+  dbg(head_byte(:not_a_binary))
+
+  dbg(framed(<<3, 1, 2, 3, 255>>))
+  dbg(framed(<<0, 42>>))
+
+  dbg(first_two("abc"))
+  dbg(first_two("a"))
+
+  dbg(words("the quick brown fox", "", []))
+  dbg(byte_count("hello", 0))
+end
+
+fnp head_byte(<<b, rest :: binary>>), do: {b, rest}
+fnp head_byte(<<>>), do: :empty
+fnp head_byte(_other), do: :not_a_binary
+
+fnp framed(<<len, payload :: binary-size(len), rest :: binary>>), do: {len, payload, rest}
+fnp framed(_other), do: :unframed
+
+fnp first_two(bytes) do
+  case bytes do
+    <<a, b, rest :: binary>> -> {a, b, rest}
+    <<a>> -> {:one, a}
+    <<>> -> :none
+  end
+end
+
+fnp words(<<>>, current, acc), do: reverse([current | acc], [])
+fnp words(<<32, rest :: binary>>, current, acc), do: words(rest, "", [current | acc])
+fnp words(<<c, rest :: binary>>, current, acc), do: words(rest, current <> <<c>>, acc)
+
+fnp byte_count(<<>>, n), do: n
+fnp byte_count(<<_c, rest :: binary>>, n), do: byte_count(rest, n + 1)
+
+fnp reverse([], acc), do: acc
+fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])

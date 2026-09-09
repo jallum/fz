@@ -1,0 +1,66 @@
+#---
+# purpose: "to_string/1 dispatches through String.Chars and agrees with Elixir for atoms, binaries, integers and floats"
+# oracle: oracle.exs
+#---
+#
+# # to_string
+#
+# `Kernel.to_string/1` is the protocol call that Elixir's interpolation uses.
+# fz has no interpolation yet (fz-5xp.5); this is the piece it was waiting on.
+# Elixir's
+# `String.Chars` (elixir/lib/elixir/lib/string/chars.ex) has five builtin
+# impls; four are here.
+#
+# ## What it covers
+#
+#   * ATOM, including Elixir's one special case: `Atom.to_string(nil)` is
+#     "nil", but `to_string(nil)` is "". The empty string lives in the protocol
+#     impl, not in the primitive, which is why both spellings appear below;
+#   * BINARY, which is identity;
+#   * INTEGER, including a negative;
+#   * FLOAT, which is `Float.to_string/1` and NOT how `dbg` renders a float.
+#     The pair below prints one value BOTH ways so the divergence is exercised
+#     rather than described: `dbg(1000000000000000.0)` is
+#     `1000000000000000.0` and `dbg(to_string(...))` of the same value is
+#     `"1.0e15"`. A fixture whose floats all render identically under both
+#     would not notice the two functions being collapsed into one;
+#   * an EMPTY ATOM. `:""` used to truncate the AOT atom table, so every atom
+#     interned after it vanished and `to_string` of one aborted the process;
+#   * a NON-BYTE-ALIGNED BITSTRING, which must panic rather than be laundered
+#     into a `binary` the protocol has promised to return.
+#
+# ## Not covered
+#
+#   * LIST. Elixir's fifth impl is charlist-to-binary; fz has no charlists
+#     (fz-5xp.41).
+#   * A receiver with no impl, which is a compile-time diagnostic here where
+#     Elixir raises at runtime -- `behavior/protocol_without_impl` covers it,
+#     and a fixture cannot hold both a diagnostic and an output golden.
+#   * How `dbg` QUOTES an atom: fz prints `:atom_3` and `:foo bar` where Elixir
+#     prints `:""` and `:"foo bar"` (fz-5xp.44). That is the renderer, not
+#     to_string, and this fixture avoids depending on it.
+fn main() do
+  dbg(to_string(:hello))
+  dbg(to_string(nil))
+  dbg(to_string(:nil_is_not_nil))
+  dbg(Atom.to_string(nil))
+
+  dbg(to_string("already a binary"))
+  dbg(to_string(""))
+
+  dbg(to_string(0))
+  dbg(to_string(42))
+  dbg(to_string(-7))
+
+  dbg(to_string(2.5))
+  dbg(to_string(1.0))
+  dbg(to_string(-0.0))
+  dbg(to_string(0.1))
+
+  # one value, both renderings: `inspect` writes a whole float below 1.0e16 out
+  # in full, `to_string` takes the shorter notation
+  dbg(1000000000000000.0)
+  dbg(to_string(1000000000000000.0))
+
+  dbg(to_string(:""))
+end

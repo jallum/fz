@@ -50,7 +50,7 @@ pub(super) trait RuntimeTestEmitter<'f> {
     fn builder(&mut self) -> &mut FunctionBuilder<'f>;
     fn atom_names(&self) -> &[String];
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32>;
-    fn named_schema_ids(&self) -> &HashMap<String, u32>;
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32>;
 
     fn kind_evidence(&self, value: Self::Value) -> KindEvidence;
     fn kind_flag(&mut self, value: Self::Value, kind: ValueKind) -> Result<ir::Value, CodegenError>;
@@ -150,7 +150,19 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
         }
         RuntimeTestAxis::Lists => emit_list_axis(e, value, &predicate.lists),
         RuntimeTestAxis::Maps => e.kind_flag(value, ValueKind::MAP),
-        RuntimeTestAxis::Binaries => e.kind_flag(value, ValueKind::BITSTRING),
+        RuntimeTestAxis::Binaries => {
+            // Every representation a binary is held in, so a shared-buffer
+            // binary answers the same as an inline one.
+            let mut flag: Option<ir::Value> = None;
+            for kind in ValueKind::BINARY_REPRS {
+                let next = e.kind_flag(value, kind)?;
+                flag = Some(match flag {
+                    None => next,
+                    Some(prev) => e.builder().ins().bor(prev, next),
+                });
+            }
+            Ok(flag.expect("BINARY_REPRS is never empty"))
+        }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Callables => emit_callable_axis(e, value, &predicate.callables),
         RuntimeTestAxis::Tuples | RuntimeTestAxis::NamedStructs | RuntimeTestAxis::OtherStructs => {
@@ -446,7 +458,7 @@ fn emit_tuple_arity_membership<'f, E: RuntimeTestEmitter<'f>>(
 fn emit_named_struct_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     schema: ir::Value,
-    names: &FiniteSet<String>,
+    names: &FiniteSet<fz_runtime::module_name::ModuleName>,
 ) -> ir::Value {
     if names.is_none() {
         return e.builder().ins().iconst(types::I8, 0);

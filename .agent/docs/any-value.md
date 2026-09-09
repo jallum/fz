@@ -69,15 +69,51 @@ fz_binary_concat(process, left, right)
 `fz_struct_get_field_ref` build a ref over the slot already living in the
 container. For a scalar slot the returned ref points straight at that payload
 word (`any_value_ref_from_storage`); for a heap slot it carries the slot's
-heap pointer. `Enumerable.Map` (`src/modules/runtime_library/map.fz`) is plain
+heap pointer. `Enumerable.Map` (`lib/map.fz`) is plain
 fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.
 
-`fz_binary_concat` validates byte-aligned binary inputs, copies their bytes into
-the caller process heap through `Heap::alloc_bitstring`, and tags the result
-`ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64) or `Bitstring` below it — so
-large results land on the shared-binary path on their own.
+`fz_binary_concat` validates byte-aligned binary inputs and copies their bytes
+into the caller process heap through `Heap::alloc_bitstring`, which returns the
+VALUE — `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64), `Bitstring` below it.
+The storage choice is made there and only there. Four callers used to re-derive
+it from `bytes.len()` against the same threshold (fz-5xp.45), which made the
+threshold a constant five places had to agree about and let a caller disagree
+with what was actually allocated.
+
+Two questions still read the threshold, and they are different questions:
+`alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native
+codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
+symbol or a call to the inline allocator — which it must decide at compile time
+with no heap to ask.
+
+### A ProcBin names a suffix
+
+A `ProcBin` stub is not "the shared binary"; it is a byte-aligned *suffix* of
+one. It carries a `byte_offset`, and its length is the parent buffer's length
+minus that offset. The whole binary is the suffix at offset 0. Several stubs
+over the same `SharedBin` at different offsets are the normal case, each owning
+its own reference edge.
+
+That is what makes matching a tail free. `<<_c, rest :: binary>>` asks for a
+suffix, so `fz_bs_read_field_bits` hands back another view of the same bytes
+instead of copying them; `Heap::alloc_bitstring_suffix` decides whether the view
+is worth a stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a
+short tail cannot pin a long buffer. Before this, scanning n bytes copied
+n + (n-1) + … bytes, and decoding a 919-byte JSON document copied 1.4 MB.
+
+Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
+one invisible trailing NUL, so a suffix ends where the NUL is and
+`fz_binary_as_cstring` can hand a tail straight to C. An arbitrary window could
+not, which is why one cannot be built: `alloc_procbin` derives the length from
+the offset rather than accepting one.
+
+Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
+buffers, separately from `total` because they are not heap bytes and do not move
+under Cheney. Without it, copying is invisible: a stub costs the same whether
+its bytes were freshly copied or shared, so the stub counters alone cannot tell
+the two apart.
 
 **Typed fast reads** are fused helpers for callers the typer already proved the
 shape of. They project then load, and `.expect()` the projection, so they panic
@@ -208,19 +244,70 @@ List cons (16 bytes): head payload word
                       link word = tail address + head-kind nibble + alias bit
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
-Closure:              schema id + header word, code pointer,
+                      -- ENTRIES ARE SORTED BY KEY, see below
+Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
 
-The closure header word's low half is `flags` — captured count plus halt kind,
-the environment facts the collector sizes and traces by. Its high half is
-`arity`: the closure's user-visible parameter count, supplied by the callable
-boundary that decides the call surface. The two halves answer different
-questions and must not be confused. Arity is fixed by the source, so it is what
-a rendered fun reports (`#fn<env_schema/arity>`, matching Elixir's
-`#Function<index.uniq/arity>`); the environment half moves whenever demand
-elides a capture or inlining folds one away, which is why rendering it produced
-goldens that changed without the program changing.
+The closure header separates user arity from captured count and scheduler halt
+kind. A user closure has exactly one slot per lexical capture, in the immutable
+source binding order fixed before specialization. Each slot retains the whole
+runtime value: raw scalar payload plus kind byte, or one composite/callable
+reference. Demand, inlining, and wrapper ABI choices do not erase captured
+information. Invocation projects those values into the selected execution ABI;
+capture reads ask the slot's kind byte and carry no construction-set lookup.
+Construction wrappers retain the source type annotation beside each capture
+layout. Physical callable descriptors share function, arity, and layouts only;
+specialization never replaces the wrapper's capture annotations.
+
+`ClosureDenotationId` projects the World's `FunctionId` into the header.
+The Node retains the same shared typed `FunctionDenotation` source origin for
+ordering. Code pointers and wrappers own execution; source denotation plus the
+one immutable environment owns runtime identity. GC and transport preserve
+both. Scheduler-only closures use `INTERNAL`, which user rendering and
+comparison reject.
+
+### A map is a flat sorted array
+
+Every map has one entry per strict structural key, stored in comparator order.
+`TermComparator` borrows Node and SchemaRegistry and is the authority for
+construction, lookup, updates, equality, order, and iteration. Equal tuple,
+list, nested-map, and binary keys collide even when separately allocated.
+Integer and float kinds remain distinct recursively; numeric ordering compares
+exact mathematical values before using kind to break strict ties. Signed float
+zeros are distinct strict keys but equal under widening comparison. Equal binary
+bits share identity across inline and ProcBin storage. Named schemas retain
+typed module segments, and tuples use typed arity, so display collisions never
+alias identities. AOT transports the same segments without a rendered-name bridge.
+Resource keys retain the generative ID in their existing off-heap owner.
+After validity checks, retained value identity proves equality without visiting
+children; a shared immutable DAG is not expanded into a tree of comparisons.
+Distinct allocations still compare by structural contents.
+
+Public slot/ref builders normalize once: stable sort, then last-value-wins
+deduplication. An unpublished destination header records capacity and filled
+count, so each input entry writes its next slot directly. Freeze normalizes
+and compacts that same allocation, then clears construction state. A published
+map cannot be reopened for mutation. `put`, `delete`, and lookup share one
+binary search; put/delete preserve order while copying the new sequence, and
+an absent deletion returns the original map with no allocation. GC and
+cross-heap transport preserve structural order without a sort.
+
+A single update copies the flat array, so repeated updates remain quadratic.
+Use bulk operations when touching several keys. Iteration follows strict fz
+term order, including atom names and binary content; Elixir's atom-key
+iteration may differ because it uses VM identity.
+
+Published language values are finite immutable DAGs. Low-level struct, closure,
+and map-destination writes are unsafe construction operations whose caller must own the
+unpublished object exclusively and supply published values with no path back.
+Proper lists admit only a list tail or `[]`; collector tests may deliberately
+construct cycles, but never publish them to term comparison. The comparator
+allocates no visited set, temporary Process, schema copies, or scalar boxes.
+Checked float construction, ref decoding, and scalar-box ingress reject
+nonfinite payloads before publication. Unfinished maps, internal absence
+(`NULL`), forged nonfinite float payloads, and unregistered atoms also have no
+language comparison semantics and are rejected at comparator entry.
 
 The list link's **alias bit** is a conservative cell-local reuse guard. A cons
 is the single owner of its tail link until it is *published*; publication turns
@@ -268,8 +355,14 @@ copies its boxed payload (`copy_scalar_box_to_space`, a small `ScalarBox` heap
 object) and rewrites the root to the copy — copied, not followed.
 
 Off-heap binaries and resources have their own atomic reference counts. A
-16-byte `ProcBin` stub owns one edge to a 40-byte `SharedBin`; a resource stub
-owns one edge to a 24-byte `Resource`. Copying a stub into another heap retains
+32-byte `ProcBin` stub owns one edge to a `SharedBin`; a resource stub owns one
+edge to a `Resource`. Both off-heap objects are 16-ALIGNED, the same invariant
+the process heap keeps, and for the same reason: a stub holds the address in
+word 0, and word 0 is where Cheney writes a forwarding marker — a pointer with
+`TAG_FWD` (`0x8`) in the low four bits. At 8-byte alignment half of those
+addresses end in 8 and a live stub reads as forwarded, which made the sweep
+write into the object it was supposed to be releasing (fz-5xp.60). Alignment is
+what keeps a real pointer and a tag distinguishable by construction. Copying a stub into another heap retains
 one edge. Moving it during GC preserves that edge; sweeping an unreachable stub
 or dropping its heap releases it. An immediate last release invokes the
 allocation's destructor and reclaims its storage. Deferred resource release
@@ -290,8 +383,8 @@ because the ref is self-describing — a scalar ref has no children, a heap ref 
 scanned by object layout, and sentinels have no children. The process mailbox is
 `VecDeque<AnyValueRef>` (`runtime/src/process.rs`); a parked receive
 (`runtime/src/park.rs`) keeps its pinned snapshot, per-clause matcher outputs,
-and bound values as `Vec<AnyValueRef>`. Map construction has no process-root
-builder — a map is a fold of immutable put operations.
+and bound values as `Vec<AnyValueRef>`. Map construction carries its unpublished
+heap destination through the same value representation.
 
 ## Policy: one value model, copy on cross-process send
 

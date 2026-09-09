@@ -266,24 +266,17 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
     );
 }
 
-/// fz-kdt.105 — every closure literal the compile interns names a callable the
-/// owner labelled.
-///
-/// Canonical clause order compares closure literals by their stable
-/// `Module.name/arity` label, never by the mint-order `FnId` behind them. That
-/// only holds if the label table is COMPLETE: an unlabelled callable falls back
-/// to raw-id order, which would quietly reintroduce the cross-version movement
-/// the label discipline exists to prevent. `World` names each callable as it
-/// mints the id, and this is the sweep that says the two mint sites are all of
-/// them.
+/// Every closure literal has a typed origin shared by the function interner.
+/// A missing origin could silently fall back to storage's standalone raw-id
+/// order. World registers at both mint sites, before any literal can name it.
 #[test]
-fn every_closure_literal_names_a_labelled_callable() {
+fn every_closure_literal_has_a_registered_origin() {
     for (name, text) in TARGETS {
         let compiler = drive_fixture(name, text);
-        let unnamed = compiler.world().types().unnamed_callables();
+        let unregistered = compiler.world().types().unregistered_callables();
         assert!(
-            unnamed.is_empty(),
-            "{name}: closure literals over unlabelled callables {unnamed:?} would order by raw FnId"
+            unregistered.is_empty(),
+            "{name}: closure literals over unregistered callables {unregistered:?} would order by raw FnId"
         );
     }
 }
@@ -440,13 +433,25 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// backend diffs are display corroboration only. Normalized
 /// interp/run/build/AOT behavior is byte-identical, while work-graph applies
 /// fall by 352 and product evaluations by 786.
+///
+/// Re-pinned DOWNWARD again by fz-5xp.2, which gives `Enum.to_list/1` a clause
+/// typed `[a]` so a list reaches it as itself instead of through
+/// `reverse(reverse(_))`. Every builder is `builder_list(to_list(enumerable), fun)`,
+/// so the two reduce-and-reverse activations that used to stand between a list
+/// argument and its builder disappear along with the executables that were
+/// specialized for them. `enum_map_family` falls 149 -> 113; the other seven
+/// pins hold. Stdout is byte-identical on all three doors — the accompanying
+/// matrix goldens moved only in diagnostic line numbers.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
         (
             "fixtures2/behavior/enum_count_member_reduce.fz",
             include_str!("../../fixtures2/behavior/enum_count_member_reduce.fz"),
-            26,
+            // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
+            // it used to spell that `==` in a guard and rely on guards being
+            // strict, so the strict operator becomes an executable of its own.
+            27,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
@@ -456,7 +461,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            149,
+            113,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
@@ -486,12 +491,16 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
             // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
             // and the wrapper surfaces they ground stop sharing.
-            230,
+            // fz-5xp.2 re-measured 230 -> 226: the take/drop/split families
+            // reach their list arguments through `Enum.to_list/1`'s `[a]`
+            // clause, so the reduce-and-reverse activations they used to mint
+            // on the way in are never specialized.
+            226,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            230,
+            226,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

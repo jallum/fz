@@ -1398,7 +1398,7 @@ fn resolve_protocol_call(
 
     if matches.is_empty() {
         // The dispatch holds no arm for this receiver yet. Each `defimpl` is its
-        // own `Protocol.Target` module recorded in the provider index at scope
+        // own typed implementation owner recorded in the provider index at scope
         // time (including built-ins co-located with the protocol, and impls in a
         // module the program never otherwise reaches by name). Demand the impl
         // module whose target overlaps the receiver — the impl is the unit of
@@ -1826,7 +1826,9 @@ fn emit_spec_violation(
             codes::SPEC_VIOLATION,
             format!(
                 "call to `{}/{}` violates its @spec for arguments ({})",
-                function_ref.name, function_ref.arity, observed
+                function_ref.display_name(),
+                function_ref.arity,
+                observed
             ),
             span,
         )

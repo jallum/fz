@@ -1,0 +1,149 @@
+defmodule List do
+  @moduledoc """
+  Support functions for lists.
+
+  `List` is narrow by design: it supplies `concat/2` and `subtract/2`,
+  the functions the `++` and `--` operators desugar to, along with the
+  `Enumerable` callbacks (`reduce/3`, `reduce_while/3`, `count/1`,
+  `member?/2`) that let `Enum` walk a list. `reverse/2` is the one
+  general-purpose helper beyond that. For everything else — mapping,
+  filtering, folding, searching — use `Enum`.
+  """
+
+  @doc """
+  Concatenates `left` and `right`.
+
+  This is the function that implements the `++` operator.
+
+  ## Examples
+
+      List.concat([1, 2], [3])
+      #=> [1, 2, 3]
+
+  """
+  @spec concat([a], [a]) :: [a]
+  fn concat([], right), do: right
+  fn concat([head | tail], right), do: [head | concat(tail, right)]
+
+  @doc """
+  Removes from `left` the first occurrence of each element of `right`.
+
+  This is the function that implements the `--` operator. Elements of
+  `right` that do not occur in `left` are ignored.
+
+  ## Examples
+
+      List.subtract([1, 2, 3, 2], [2])
+      #=> [1, 3, 2]
+
+  """
+  @spec subtract([a], [a]) :: [a]
+  fn subtract(left, []), do: left
+  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+
+  @spec delete_first([a], any) :: [a]
+  fnp delete_first([], _value), do: []
+  fnp delete_first([head | tail], value) do
+    if head === value, do: tail, else: [head | delete_first(tail, value)]
+  end
+
+  @doc """
+  Implements the `Enumerable.reduce/3` callback for lists.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.reduce/2`, `Enum.reduce/3`, and every other
+  `Enum` function that folds over a list, by way of `Enum.to_list/1`.
+  """
+  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  fn reduce(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+
+  @doc """
+  Implements the `Enumerable.reduce_while/3` callback for lists.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.reduce_while/3` and the `Enum` functions built
+  on it, such as `Enum.take_while/2`, `Enum.all?/1`, and `Enum.find/2`.
+  """
+  @spec reduce_while([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fn reduce_while(list, acc, reducer), do: reduce_while_cont(list, acc, reducer)
+
+  @doc """
+  Implements the `Enumerable.count/1` callback for lists.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.count/1`.
+
+  ## Examples
+
+      List.count([1, 2, 3])
+      #=> 3
+
+  """
+  @spec count(any) :: integer
+  fn count(list), do: count(list, 0)
+
+  @doc """
+  Implements the `Enumerable.member?/2` callback for lists.
+
+  This is protocol plumbing, not a function to call directly: it is
+  reached through `Enum.member?/2` and the `in` operator.
+
+  ## Examples
+
+      List.member?([1, 2, 3], 2)
+      #=> true
+
+  """
+  @spec member?([a], any) :: bool
+  fn member?([], _value), do: false
+  fn member?([head | tail], value) do
+    if head === value, do: true, else: member?(tail, value)
+  end
+
+  @doc """
+  Reverses `list`, prepending the result onto `tail`.
+
+  ## Examples
+
+      List.reverse([1, 2, 3], [])
+      #=> [3, 2, 1]
+
+      List.reverse([1, 2, 3], [:a, :b])
+      #=> [3, 2, 1, :a, :b]
+
+  """
+  @spec reverse([a], [a]) :: [a]
+  fn reverse([], tail), do: tail
+  fn reverse([head | tail], acc), do: reverse(tail, [head | acc])
+
+  @spec reduce_cont([a], b | c, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  fnp reduce_cont([], acc, _reducer), do: {:done, acc}
+  fnp reduce_cont([head | tail], acc, reducer) do
+    reduce_step(tail, reducer.(head, acc), reducer)
+  end
+
+  @spec reduce_step([a], {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  fnp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  fnp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fnp reduce_step(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+
+  @spec reduce_while_cont([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_cont([], acc, _reducer), do: acc
+  fnp reduce_while_cont([head | tail], acc, reducer) do
+    reduce_while_step(tail, reducer.(head, acc), reducer)
+  end
+
+  @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
+  fnp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
+
+  @spec count([a], integer) :: integer
+  fnp count([], acc), do: acc
+  fnp count([_head | tail], acc), do: count(tail, acc + 1)
+end

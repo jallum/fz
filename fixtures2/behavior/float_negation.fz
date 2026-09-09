@@ -1,0 +1,43 @@
+#---
+# purpose: "negating a float is a float operation on every door, not integer negation of its bits"
+#---
+#
+# # float_negation
+#
+# `-3.0` used to abort `run` and `build` with "cannot read raw i64 from
+# non-integer value" while `interp` answered `-3.0`. Native lowering of
+# `UnOp::Neg` did `as_raw_i64` then `ineg` unconditionally -- there was no float
+# lane at all. Two's complement applied to an IEEE-754 encoding is not negation
+# of that float, so the only reason this was an abort rather than a wrong answer
+# is that reading a float as a raw i64 is itself refused.
+#
+# A negative float literal is not an exotic input, and every negative-float
+# oracle comparison in this epic's Float formatting work runs through it.
+#
+# ## What it covers
+#
+#   * a negative literal, which is the shortest path to the bug;
+#   * negation of a float-typed variable and of a float-typed parameter;
+#   * negation of a parenthesised float expression, where the operand is a
+#     computed value rather than a constant;
+#   * `-0.0`, which must stay `-0.0`. This is why negation cannot be lowered as
+#     `0.0 - x`: that answers `0.0`, and the sign of zero is observable;
+#   * integer negation beside it, which always worked and must keep working.
+#
+# Not covered, deliberately: negating an operand whose type is a union of
+# integer and float. That still aborts natively, because unary minus is the one
+# operator with no typed clause family in `Kernel` -- see fz-5xp.38.
+fnp negate_float(x :: float), do: -x
+fnp negate_any(x), do: -x
+
+fn main() do
+  dbg(-3.0)
+  dbg(-3)
+  y = 2.5
+  dbg(-y)
+  dbg(negate_float(1.25))
+  dbg(negate_any(7))
+  dbg(-(1.5 + 2.5))
+  dbg(-0.0)
+  dbg(0.0 - 0.0)
+end

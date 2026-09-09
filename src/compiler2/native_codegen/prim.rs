@@ -656,17 +656,25 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `fz_abi` selects what a declared parameter type MEANS.
+///
+/// A C function taking `binary` wants a `*const u8` into the bytes. An fz
+/// runtime helper taking `binary` wants the tagged value ref, because it works
+/// in fz's own representation and may allocate a new one. Same declaration,
+/// two conventions -- which is why the ABI has to reach this far rather than
+/// being consumed at the front door.
 fn marshal_extern_arg<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     var: Var,
     ty: ExternTy,
+    fz_abi: bool,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
         ExternTy::F64 => body.as_raw_f64(var_env, var.0),
+        ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
         ExternTy::Binary | ExternTy::CString => {
             let helper_id = match ty {
                 ExternTy::CString => runtime.binary_as_cstring_id,
@@ -798,7 +806,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let mut call_args = Vec::with_capacity(args.len() + 1);
     call_args.push(fn_ptr);
     for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
-        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty)?);
+        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty, false)?);
     }
 
     let dispatcher_fref = body.jmod.declare_func_in_func(dispatcher, body.b.func);
@@ -812,9 +820,13 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let raw = body.b.inst_results(inst)[0];
     match decl.ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
-        ExternTy::F64 => Ok(LowerOut::RawF64(raw)),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
-        ExternTy::Unit | ExternTy::Never => unreachable!(),
+        // `variadic_dispatcher` accepts only `I64`-returning shapes, so the
+        // dispatcher's result is an i64 whatever the declaration says. Tagging
+        // it `RawF64` would be the mislabelling this arm looks like it guards
+        // against, so the refusal stays upstream where it can be one message.
+        ExternTy::F64 => unreachable!("variadic_dispatcher refuses a non-I64 return"),
+        ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
     }
 }
 
@@ -882,7 +894,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq => {
+                BinOp::Eq | BinOp::Neq | BinOp::Identical | BinOp::NotIdentical => {
                     lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -892,10 +904,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             }
         }
         Prim::UnOp(op, x) => match op {
-            UnOp::Neg => {
-                let xi = body.as_raw_i64(var_env, x.0);
-                Ok(LowerOut::RawI64(body.b.ins().ineg(xi)))
-            }
+            UnOp::Neg => lower_neg(body, t, value_types, var_env, *x),
             UnOp::Not => {
                 let xv = *var_env.get(&x.0).expect("not operand");
                 let truthy = body.value_truthy(xv);
@@ -919,17 +928,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if decl.symbol == "fz_self" && args.is_empty() {
                 return lower_extern_fz_self(body);
             }
-            if decl.symbol == "fz_process_heap_alloc_stats" && args.is_empty() {
-                let process = body.process_arg();
-                let sig = sig1(&[types::I64], &[types::I64]);
-                let func_id = body
-                    .jmod
-                    .declare_function("fz_process_heap_alloc_stats", Linkage::Import, &sig)
-                    .map_err(|e| CodegenError::new(format!("declare fz_process_heap_alloc_stats: {}", e)))?;
-                let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[process]);
-                return Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]));
-            }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
                 return lower_extern_fz_make_ref(body);
             }
@@ -942,56 +940,67 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
-            if decl.symbol == "fz_dbg_value" && args.len() == 1 {
-                return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_binary_concat" && args.len() == 2 {
-                return lower_extern_fz_binary_concat(body, var_env, &arg_vars, dest_var);
-            }
-            if matches!(decl.symbol.as_str(), "fz_op_add_ii" | "fz_op_add_if" | "fz_op_add_ff") && args.len() == 2 {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Add, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_sub_ii" | "fz_op_sub_if" | "fz_op_sub_fi" | "fz_op_sub_ff"
-            ) && args.len() == 2
+            if let Some(op) = arith_shim_op(&decl.symbol)
+                && args.len() == 2
             {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Sub, &arg_vars);
-            }
-            if matches!(decl.symbol.as_str(), "fz_op_mul_ii" | "fz_op_mul_if" | "fz_op_mul_ff") && args.len() == 2 {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mul, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_div_ii" | "fz_op_div_if" | "fz_op_div_fi" | "fz_op_div_ff"
-            ) && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Div, &arg_vars);
-            }
-            if matches!(
-                decl.symbol.as_str(),
-                "fz_op_rem_ii" | "fz_op_rem_if" | "fz_op_rem_fi" | "fz_op_rem_ff"
-            ) && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, BinOp::Mod, &arg_vars);
+                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, op, &arg_vars);
             }
             if decl.symbol == "fz_op_eq" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Eq, &arg_vars, dest_var);
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Eq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                );
+            }
+            if decl.symbol == "fz_op_identical" && args.len() == 2 {
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Identical,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                );
+            }
+            if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::NotIdentical,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                );
             }
             if decl.symbol == "fz_op_neq" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Neq, &arg_vars, dest_var);
+                return lower_eq_binop(
+                    body,
+                    t,
+                    value_types,
+                    var_env,
+                    runtime,
+                    BinOp::Neq,
+                    arg_vars[0],
+                    arg_vars[1],
+                    dest_var,
+                );
             }
-            if decl.symbol == "fz_op_lt" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Lt, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_lte" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Le, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_gt" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Gt, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_op_gte" && args.len() == 2 {
-                return lower_extern_fz_op_cmp(body, t, value_types, var_env, runtime, BinOp::Ge, &arg_vars, dest_var);
+            if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
+                && args.len() == 2
+            {
+                return lower_typed_cmp(body, var_env, runtime, op, kinds, &arg_vars, dest_var);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(
@@ -1119,52 +1128,22 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
-        Prim::ClosureCapture {
-            closure,
-            constructions,
-            index,
-        } => lower_closure_capture(body, env, var_env, *closure, constructions, *index),
+        Prim::ClosureCapture { closure, index } => lower_closure_capture(body, var_env, *closure, *index),
     }
 }
 
-/// Read capture `index` back out of a closure, in the representation the
-/// CONSTRUCTION that minted it wrote it in.
-///
-/// `emit_capturing_closure` stores each capture through the boundary's
-/// `capture_reprs`; this is the same table read the other way, so the load and
-/// the store cannot drift. The prim names every construction of the ONE
-/// callable layout the callee grounded on -- one layout, several mint
-/// positions -- and those agree about this slot by construction, because the
-/// reprs are derived from the layout. The check stays as a tripwire over
-/// exactly that set (fz-kdt.157).
+/// The captured value's kind byte makes every lexical slot self-describing.
 fn lower_closure_capture<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     closure: Var,
-    constructions: &[FnId],
     index: u32,
 ) -> Result<LowerOut, CodegenError> {
-    let mut reprs = constructions.iter().map(|identity_fn| {
-        env.surface
-            .callable_boundary_for_identity(*identity_fn)
-            .and_then(|boundary| boundary.capture_reprs.get(index as usize).copied())
-    });
-    let repr = match reprs.next() {
-        Some(Some(repr)) if reprs.all(|other| other == Some(repr)) => repr,
-        _ => {
-            return Err(CodegenError::new(format!(
-                "closure capture {index} of constructions {constructions:?} has no single settled representation",
-            )));
-        }
-    };
     let value = *var_env.get(&closure.0).expect("closure capture subject");
     let closure_ref = body.value_as_any_ref(value);
-    Ok(LowerOut::Strict(body.closure_capture_as_binding(
-        closure_ref,
-        index as usize,
-        repr,
-    )))
+    Ok(LowerOut::ValueRef(
+        body.closure_capture_ref_at(closure_ref, index as usize),
+    ))
 }
 
 /// Lower a `RuntimeTypeTest` prim.
@@ -1288,7 +1267,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         self.env.tuple_schema_ids
     }
 
-    fn named_schema_ids(&self) -> &HashMap<String, u32> {
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32> {
         self.env.named_schema_ids
     }
 
@@ -1430,6 +1409,70 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
 /// operands share the int or float lane, extract their raw values and
 /// run the matching op closure, bypassing tagged dispatch. Returns None
 /// when neither lane applies (caller falls back to runtime tag tests).
+/// Negation is PER-LANE. `ineg` on a float's bits is not negation of that
+/// float -- it is two's complement applied to an IEEE-754 encoding, which lands
+/// nowhere near the answer. The operand's lane is the same question
+/// `lower_arith_binop` asks of its operands, and for one operand the codegen
+/// value's repr IS the lane.
+///
+/// Before this, `-3.0` reached `as_raw_i64` and aborted with "cannot read raw
+/// i64 from non-integer value" on `run` and `build` while `interp` answered
+/// `-3.0` (fz-5xp.33). A negative float literal is not an exotic input.
+fn lower_neg<M, T>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    x: Var,
+) -> Result<LowerOut, CodegenError>
+where
+    M: cranelift_module::Module,
+    T: Types<Ty = Ty>,
+{
+    let repr = var_env.get(&x.0).expect("neg operand").repr();
+    if matches!(repr, ArgRepr::RawF64) || ty_is_float(t, value_types, x) {
+        let xf = body.as_raw_f64(var_env, x.0);
+        return Ok(LowerOut::RawF64(body.b.ins().fneg(xf)));
+    }
+    if matches!(repr, ArgRepr::RawInt) || ty_is_int(t, value_types, x) {
+        let xi = body.as_raw_i64(var_env, x.0);
+        return Ok(LowerOut::RawI64(body.b.ins().ineg(xi)));
+    }
+    // Neither lane is provable, so ask the value at runtime.
+    //
+    // An expression never gets here -- the front door rewrites `-x` to
+    // `Kernel.negate/1`, whose typed clauses dispatch (fz-5xp.38). A GUARD
+    // does: it is lowered inside the dispatch plan rather than as a call, so
+    // `when -x > 0.0` on an operand the plan has not yet narrowed reached
+    // `as_raw_i64` and aborted in `fz_unbox_int` (fz-5xp.47).
+    let value = *var_env.get(&x.0).expect("neg operand");
+    let is_int = body.value_is_tag(value, ValueKind::INT);
+    let int_blk = body.b.create_block();
+    let float_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, types::I64);
+    let no_args: Vec<BlockArg> = Vec::new();
+    body.b.ins().brif(is_int, int_blk, &no_args, float_blk, &no_args);
+
+    body.b.switch_to_block(int_blk);
+    body.b.seal_block(int_blk);
+    let raw_int = body.value_raw_int_for_checked_branch(value);
+    let negated_int = body.b.ins().ineg(raw_int);
+    let boxed_int = body.box_int_for_any(negated_int);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(boxed_int)]);
+
+    body.b.switch_to_block(float_blk);
+    body.b.seal_block(float_blk);
+    let raw_float = body.value_raw_float(value);
+    let negated_float = body.b.ins().fneg(raw_float);
+    let boxed_float = body.box_float_for_any(negated_float);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(boxed_float)]);
+
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    Ok(LowerOut::ValueRef(body.b.block_params(join_blk)[0]))
+}
+
 fn try_typed_binop_fast_path<T, F, I, M>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1475,6 +1518,21 @@ where
 /// Three code paths: float coercion (int+float mix), typed fast path
 /// (same-kind int or float), and tagged dispatch fallback that splits
 /// on runtime tag tests.
+/// Float `%`. Cranelift has no `frem`, so where `+ - * /` are one instruction
+/// this is a call into the runtime (fz-5xp.34). Excluding Mod from the float
+/// paths instead is what made `7.5 % 2.0` answer 1.5 on interp and abort in
+/// `fz_dynamic_float_arith_unsupported` on run and build.
+fn emit_float_rem<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    left: ir::Value,
+    right: ir::Value,
+) -> ir::Value {
+    let fref = body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[left, right]);
+    body.b.inst_results(inst)[0]
+}
+
 fn lower_arith_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1495,8 +1553,7 @@ where
     if matches!(
         (a_repr, b_repr),
         (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
-    ) && !matches!(mop, BinOp::Mod)
-    {
+    ) {
         let af = as_known_numeric_f64(var_env, body.b, a.0);
         let bf = as_known_numeric_f64(var_env, body.b, bv.0);
         return Ok(LowerOut::RawF64(match mop {
@@ -1504,10 +1561,14 @@ where
             BinOp::Sub => body.b.ins().fsub(af, bf),
             BinOp::Mul => body.b.ins().fmul(af, bf),
             BinOp::Div => body.b.ins().fdiv(af, bf),
+            BinOp::Mod => emit_float_rem(body, runtime, af, bf),
             _ => unreachable!(),
         }));
     }
-    // Typed fast paths: float (skipped for Mod) and int.
+    // Typed fast paths: float and int. Float `%` is the one that is a CALL
+    // rather than an instruction, so its funcref is declared up front — the
+    // closure below is handed a builder, not the module.
+    let rem_fref = matches!(mop, BinOp::Mod).then(|| body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func));
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
@@ -1516,14 +1577,15 @@ where
         bv,
         var_env,
         |b, af, bf| {
-            if matches!(mop, BinOp::Mod) {
-                return None;
-            }
             Some(LowerOut::RawF64(match mop {
                 BinOp::Add => b.ins().fadd(af, bf),
                 BinOp::Sub => b.ins().fsub(af, bf),
                 BinOp::Mul => b.ins().fmul(af, bf),
                 BinOp::Div => b.ins().fdiv(af, bf),
+                BinOp::Mod => {
+                    let inst = b.ins().call(rem_fref.expect("float rem funcref"), &[af, bf]);
+                    b.inst_results(inst)[0]
+                }
                 _ => unreachable!(),
             }))
         },
@@ -1594,8 +1656,8 @@ where
 /// fully generic `fz_value_eq_ref`. Instead the runtime checks the dynamic
 /// side's actual tag against the known kind and compares raw payloads
 /// directly — `fz_value_eq_raw_const` — with no allocation on either side.
-/// Float is deliberately excluded: float equality has IEEE-754 semantics
-/// (-0.0 == 0.0, NaN != NaN) that a bitwise payload compare would violate.
+/// Float is deliberately excluded: widening equality equates signed zeros,
+/// while structural identity distinguishes their bits.
 fn raw_scalar_vs_dynamic(
     var_env: &HashMap<u32, CodegenValue>,
     raw_side: Var,
@@ -1621,6 +1683,15 @@ fn raw_scalar_vs_dynamic(
 /// raw atom compare for atom/nil/bool pairs, the no-allocation raw-scalar
 /// check when only one side is an unboxed int/atom, or calls the runtime
 /// value_eq_ref for the fully heterogeneous fallback.
+/// The OP says which of the two questions is being asked. `Eq`/`Neq` are the
+/// `==` operator, which compares numbers by value, so `1 == 1.0` is true.
+/// `Identical`/`NotIdentical` are structural identity -- `===`, and what every
+/// kind of matching asks -- for which `1` and `1.0` are different values and
+/// the value-disjointness fold applies.
+///
+/// This used to be a `widen_numerics: bool` that each CALL SITE set from what
+/// it knew about its caller, which is how a guard came to ask the matching
+/// question and answer `same?(1, 1.0)` as `:different` (fz-5xp.24).
 fn lower_eq_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1636,12 +1707,36 @@ where
     M: cranelift_module::Module,
     T: Types<Ty = Ty>,
 {
-    let is_eq = matches!(op, BinOp::Eq);
+    let is_eq = matches!(op, BinOp::Eq | BinOp::Identical);
+    let widen_numerics = matches!(op, BinOp::Eq | BinOp::Neq);
     let int_cc = if is_eq { IntCC::Equal } else { IntCC::NotEqual };
     let f_cc = if is_eq { FloatCC::Equal } else { FloatCC::NotEqual };
 
-    // Value-disjoint (brand-erased) fold doesn't need either operand.
-    if descrs_value_disjoint(t, value_types, a, bv) {
+    // fz-5xp.18 — an integer and a float are value-disjoint for MATCHING
+    // (Elixir's `case 1.0 do 1 -> ...` does not match, and neither does fz's)
+    // but not for `==`, which compares numbers by value: `1 == 1.0` is true.
+    // A mixed numeric pair therefore skips the disjointness fold and asks the
+    // exact numeric comparator without rounding the integer through f64.
+    let a_is_int = ty_is_int(t, value_types, a);
+    let b_is_int = ty_is_int(t, value_types, bv);
+    let a_is_float = ty_is_float(t, value_types, a);
+    let b_is_float = ty_is_float(t, value_types, bv);
+    let mixed_numeric = widen_numerics && ((a_is_int && b_is_float) || (a_is_float && b_is_int));
+    if mixed_numeric {
+        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let cmp = body.b.ins().icmp_imm(int_cc, ordering, 0);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
+
+    // Value-disjointness is a MATCHING question: `1.0` never matches `1`, and
+    // `[int]` never matches `[float]`. Under `==` it is not decisive, because
+    // widening bridges exactly those pairs -- `[1] == [1.0]` is true. So the
+    // operator path skips the fold and lets the comparator decide; only
+    // matching, which passes `widen_numerics: false`, still folds.
+    if !widen_numerics && descrs_value_disjoint(t, value_types, a, bv) {
         let raw = body.b.ins().iconst(
             types::I64,
             if is_eq {
@@ -1660,7 +1755,15 @@ where
     {
         let af = body.as_raw_f64(var_env, a.0);
         let bf = body.as_raw_f64(var_env, bv.0);
-        let cmp = body.b.ins().fcmp(f_cc, af, bf);
+        // `==` is IEEE, so `0.0 == -0.0` is true. `===` and matching ask
+        // identity, where those are different values -- compare the bits.
+        let cmp = if widen_numerics {
+            body.b.ins().fcmp(f_cc, af, bf)
+        } else {
+            let ai = body.b.ins().bitcast(types::I64, MemFlags::new(), af);
+            let bi = body.b.ins().bitcast(types::I64, MemFlags::new(), bf);
+            body.b.ins().icmp(int_cc, ai, bi)
+        };
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
@@ -1691,8 +1794,13 @@ where
             return Ok(LowerOut::Condition(same_raw));
         }
         Ok(LowerOut::Strict(strict_bool(body.b, same_raw)))
-    } else if let Some((kind, raw, dyn_var)) =
-        raw_scalar_vs_dynamic(var_env, a, bv).or_else(|| raw_scalar_vs_dynamic(var_env, bv, a))
+    } else if let Some((kind, raw, dyn_var)) = raw_scalar_vs_dynamic(var_env, a, bv)
+        .or_else(|| raw_scalar_vs_dynamic(var_env, bv, a))
+        // `fz_value_eq_raw_const` is a kind+payload compare, so it answers
+        // `launder(1.0) == 1` as false. Under `==` an unboxed INT may still
+        // equal a dynamic float, so that pair goes to the widening comparator
+        // instead. Atoms have no such partner and keep the fast path.
+        .filter(|(kind, _, _)| !(widen_numerics && *kind == ValueKind::INT))
     {
         // One side is an unboxed int/atom and the other's static type isn't
         // known to match: skip boxing the unboxed side into a heap scalar
@@ -1720,7 +1828,16 @@ where
         let a_ref = body.tagged_var(var_env, a.0);
         let b_ref = body.tagged_var(var_env, bv.0);
         let process = body.process_arg();
-        let fref = body.jmod.declare_func_in_func(runtime.value_eq_ref_id, body.b.func);
+        // The `==` operator widens numerics; structural identity does not. The
+        // flag that separates the two static arms has to separate the dynamic
+        // one as well, or the widening leaks into pinned matches,
+        // `Enum.member?/2` and `--`.
+        let eq_fn = if widen_numerics {
+            runtime.value_eq_widening_ref_id
+        } else {
+            runtime.value_eq_ref_id
+        };
+        let fref = body.jmod.declare_func_in_func(eq_fn, body.b.func);
         let inst = body.b.ins().call(fref, &[process, a_ref, b_ref]);
         let eq = body.b.inst_results(inst)[0];
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
@@ -1737,9 +1854,8 @@ where
 }
 
 /// Lower a `Prim::BinOp` ordered comparison (Lt/Le/Gt/Ge). Typed fast
-/// paths emit native fcmp/icmp; the dispatch fallback splits on the
-/// int-tag test and falls back to an inlined float promote+fcmp slow
-/// path for any non-int-int operand mix.
+/// paths emit native fcmp/icmp for same-kind lanes and the shared exact
+/// comparator for mixed numeric lanes; dynamic values ask the term comparator.
 fn lower_cmp_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1769,6 +1885,17 @@ where
         BinOp::Ge => FloatCC::GreaterThanOrEqual,
         _ => unreachable!(),
     };
+    let a_is_int = ty_is_int(t, value_types, a);
+    if (a_is_int && ty_is_float(t, value_types, bv))
+        || (ty_is_float(t, value_types, a) && ty_is_int(t, value_types, bv))
+    {
+        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let cmp = body.b.ins().icmp_imm(icc, ordering, 0);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
     // Typed fast paths: float and int.
     // Safety: the two closures are mutually exclusive — only the
     // float arm fires for float operands and only the int arm fires
@@ -1798,6 +1925,38 @@ where
     ) {
         return Ok(out);
     }
+    // One side unboxed and the other dynamic: hand the runtime the unboxed
+    // side's kind and payload directly. Boxing it into a heap scalar just to
+    // form an `AnyValueRef` is the allocation this avoids, exactly as
+    // `fz_value_eq_raw_const` avoids it for `==`.
+    // `raw_scalar_vs_dynamic(x, y)` succeeds when `x` is the unboxed side, so
+    // the first arm has the unboxed operand on the LEFT (swap = 1) and the
+    // second has it on the right (swap = 0).
+    if let Some((kind, raw, dyn_var, swap)) = raw_scalar_vs_dynamic(var_env, a, bv)
+        .map(|(k, r, d)| (k, r, d, 1u32))
+        .or_else(|| raw_scalar_vs_dynamic(var_env, bv, a).map(|(k, r, d)| (k, r, d, 0u32)))
+    {
+        let dyn_ref = body.tagged_var(var_env, dyn_var.0);
+        let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
+        let swap_flag = body.b.ins().iconst(types::I32, i64::from(swap));
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.value_cmp_raw_const_id, body.b.func);
+        let process = body.process_arg();
+        let inst = body.b.ins().call(fref, &[process, dyn_ref, kind_tag, raw, swap_flag]);
+        let ordering = body.b.inst_results(inst)[0];
+        let zero = body.b.ins().iconst(types::I64, 0);
+        let cmp = body.b.ins().icmp(icc, ordering, zero);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
+
+    // Two unboxed integers are the overwhelmingly common dynamic case — a
+    // guard like quicksort's `when h < p` — and comparing them must not box
+    // either operand, which is what keeps that fixture at zero scalar boxes.
+    // So the runtime tag test and its inline `icmp` stay.
     let av = *var_env.get(&a.0).expect("cmp lhs");
     let bv_value = *var_env.get(&bv.0).expect("cmp rhs");
     let a_is_int = body.value_is_tag(av, ValueKind::INT);
@@ -1817,26 +1976,23 @@ where
     let cmp = body.b.ins().icmp(icc, ai, bi);
     body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
+    // fz-5xp.18 — anything else asks `fz_value_cmp_ref`, the one dynamic
+    // ordering, shared with the interpreter and with the `bb` intrinsic. It
+    // replaces an inlined coercion that boxed the float operand and then read
+    // the resulting pointer as a number: that answered `2 >= 1.0` as false,
+    // and answered it differently from the interpreter, because ordering was
+    // implemented twice.
     body.b.switch_to_block(slow_blk);
     body.b.seal_block(slow_blk);
-    // Inlined float-cmp slow path: promote both operands
-    // to f64 and emit native fcmp.
-    let pfref = body.jmod.declare_func_in_func(runtime.promote_f64_id, body.b.func);
-    let fcc = match op {
-        BinOp::Lt => FloatCC::LessThan,
-        BinOp::Le => FloatCC::LessThanOrEqual,
-        BinOp::Gt => FloatCC::GreaterThan,
-        BinOp::Ge => FloatCC::GreaterThanOrEqual,
-        _ => unreachable!(),
-    };
-    let av = body.tagged_var(var_env, a.0);
-    let bvv = body.tagged_var(var_env, bv.0);
-    let i0 = body.b.ins().call(pfref, &[av]);
-    let af = body.b.inst_results(i0)[0];
-    let i1 = body.b.ins().call(pfref, &[bvv]);
-    let bf = body.b.inst_results(i1)[0];
-    let cmp = body.b.ins().fcmp(fcc, af, bf);
-    body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
+    let left = body.tagged_var(var_env, a.0);
+    let right = body.tagged_var(var_env, bv.0);
+    let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
+    let process = body.process_arg();
+    let call = body.b.ins().call(cmp_ref, &[process, left, right]);
+    let ordering = body.b.inst_results(call)[0];
+    let zero = body.b.ins().iconst(types::I64, 0);
+    let slow_cmp = body.b.ins().icmp(icc, ordering, zero);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(slow_cmp)]);
 
     body.b.switch_to_block(join_blk);
     body.b.seal_block(join_blk);
@@ -1893,40 +2049,37 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// `fz_dbg_value(value)`: prints the value and returns it. The runtime BIF
-/// renders atom names off the process and routes output through the process's
-/// ExecCtx telemetry sink, so the process is prepended from the pinned register.
-fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let value_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    let call = body.call_named("fz_dbg_value", &[process, value_ref]);
-    let result = body.b.inst_results(call)[0];
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
-    }
-    Ok(LowerOut::DeadUnit)
-}
+/// The arithmetic shims native codegen LOWERS IN PLACE rather than calls.
+///
+/// They are declared in `kernel.fz` and listed in `RUNTIME_SYMBOLS`, but no
+/// door ever resolves their address on the native path: this table is where
+/// the call becomes a machine instruction instead. It is a table rather than
+/// five `matches!` arms so that the set is nameable — `extern_contract`'s
+/// coverage test reads it to tell a symbol that needs no JIT registration
+/// from one that is simply missing (fz-5xp.58).
+pub(crate) const ARITH_SHIMS: &[(&str, BinOp)] = &[
+    ("fz_op_add_ii", BinOp::Add),
+    ("fz_op_add_if", BinOp::Add),
+    ("fz_op_add_ff", BinOp::Add),
+    ("fz_op_sub_ii", BinOp::Sub),
+    ("fz_op_sub_if", BinOp::Sub),
+    ("fz_op_sub_fi", BinOp::Sub),
+    ("fz_op_sub_ff", BinOp::Sub),
+    ("fz_op_mul_ii", BinOp::Mul),
+    ("fz_op_mul_if", BinOp::Mul),
+    ("fz_op_mul_ff", BinOp::Mul),
+    ("fz_op_div_ii", BinOp::Div),
+    ("fz_op_div_if", BinOp::Div),
+    ("fz_op_div_fi", BinOp::Div),
+    ("fz_op_div_ff", BinOp::Div),
+    ("fz_op_rem_ii", BinOp::Mod),
+    ("fz_op_rem_if", BinOp::Mod),
+    ("fz_op_rem_fi", BinOp::Mod),
+    ("fz_op_rem_ff", BinOp::Mod),
+];
 
-fn lower_extern_fz_binary_concat<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let process = body.process_arg();
-    let left = body.tagged_var(var_env, args[0].0);
-    let right = body.tagged_var(var_env, args[1].0);
-    let call = body.call_named("fz_binary_concat", &[process, left, right]);
-    let result = body.b.inst_results(call)[0];
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
-    }
-    Ok(LowerOut::DeadUnit)
+pub(crate) fn arith_shim_op(symbol: &str) -> Option<BinOp> {
+    ARITH_SHIMS.iter().find(|(name, _)| *name == symbol).map(|(_, op)| *op)
 }
 
 fn lower_extern_fz_op_arith<M, T>(
@@ -1945,29 +2098,137 @@ where
     lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
 }
 
-fn lower_extern_fz_op_cmp<M, T>(
+/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects for an operand
+/// pair whose kinds it knows.
+///
+/// Ordering is a partial function: `Kernel` declares a clause for each pair it
+/// can order and no `any`/`any` default, so an unsupported combination has no
+/// matching clause and is refused at compile time rather than answered wrongly
+/// at run time. Equality is total and keeps its structural default.
+///
+/// `ii` and `ff` compare raw lanes directly. `if`/`fi` call the shared exact
+/// numeric comparator without boxing. `bb` asks the runtime for byte order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CmpOperands {
+    IntInt,
+    FloatFloat,
+    IntFloat,
+    FloatInt,
+    BinaryBinary,
+}
+
+fn typed_cmp_extern(symbol: &str) -> Option<(BinOp, CmpOperands)> {
+    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
+    let kinds = match suffix {
+        "ii" => CmpOperands::IntInt,
+        "ff" => CmpOperands::FloatFloat,
+        "if" => CmpOperands::IntFloat,
+        "fi" => CmpOperands::FloatInt,
+        "bb" => CmpOperands::BinaryBinary,
+        _ => return None,
+    };
+    let op = match op {
+        "eq" => BinOp::Eq,
+        "neq" => BinOp::Neq,
+        "lt" => BinOp::Lt,
+        "lte" => BinOp::Le,
+        "gt" => BinOp::Gt,
+        "gte" => BinOp::Ge,
+        _ => return None,
+    };
+    Some((op, kinds))
+}
+
+fn lower_typed_cmp<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     op: BinOp,
+    kinds: CmpOperands,
     args: &[Var],
     dest_var: Var,
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    match op {
-        BinOp::Eq | BinOp::Neq => {
-            lower_eq_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+) -> Result<LowerOut, CodegenError> {
+    let cmp = match kinds {
+        CmpOperands::IntInt => {
+            let icc = int_cc_for(op)?;
+            let left = body.as_raw_i64(var_env, args[0].0);
+            let right = body.as_raw_i64(var_env, args[1].0);
+            body.b.ins().icmp(icc, left, right)
         }
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            lower_cmp_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var)
+        CmpOperands::FloatFloat => {
+            let fcc = float_cc_for(op)?;
+            let left = body.as_raw_f64(var_env, args[0].0);
+            let right = body.as_raw_f64(var_env, args[1].0);
+            body.b.ins().fcmp(fcc, left, right)
         }
-        _ => unreachable!(),
+        CmpOperands::IntFloat | CmpOperands::FloatInt => {
+            let ordering =
+                emit_mixed_numeric_cmp(body, var_env, runtime, args[0], args[1], kinds == CmpOperands::IntFloat);
+            body.b.ins().icmp_imm(int_cc_for(op)?, ordering, 0)
+        }
+        CmpOperands::BinaryBinary => {
+            let icc = int_cc_for(op)?;
+            let left = body.tagged_var(var_env, args[0].0);
+            let right = body.tagged_var(var_env, args[1].0);
+            let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
+            let process = body.process_arg();
+            let call = body.b.ins().call(cmp_ref, &[process, left, right]);
+            let ordering = body.b.inst_results(call)[0];
+            let zero = body.b.ins().iconst(types::I64, 0);
+            body.b.ins().icmp(icc, ordering, zero)
+        }
+    };
+    if body.cache.if_only_conds.contains(&dest_var.0) {
+        return Ok(LowerOut::Condition(cmp));
     }
+    Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+}
+
+fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    left: Var,
+    right: Var,
+    left_is_int: bool,
+) -> ir::Value {
+    let (integer, float) = if left_is_int {
+        (body.as_raw_i64(var_env, left.0), body.as_raw_f64(var_env, right.0))
+    } else {
+        (body.as_raw_i64(var_env, right.0), body.as_raw_f64(var_env, left.0))
+    };
+    let compare = body.jmod.declare_func_in_func(runtime.int_float_cmp_id, body.b.func);
+    let call = body.b.ins().call(compare, &[integer, float]);
+    let ordering = body.b.inst_results(call)[0];
+    if left_is_int {
+        ordering
+    } else {
+        body.b.ins().ineg(ordering)
+    }
+}
+
+fn int_cc_for(op: BinOp) -> Result<IntCC, CodegenError> {
+    Ok(match op {
+        BinOp::Eq => IntCC::Equal,
+        BinOp::Neq => IntCC::NotEqual,
+        BinOp::Lt => IntCC::SignedLessThan,
+        BinOp::Le => IntCC::SignedLessThanOrEqual,
+        BinOp::Gt => IntCC::SignedGreaterThan,
+        BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+    })
+}
+
+fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
+    Ok(match op {
+        BinOp::Eq => FloatCC::Equal,
+        BinOp::Neq => FloatCC::NotEqual,
+        BinOp::Lt => FloatCC::LessThan,
+        BinOp::Le => FloatCC::LessThanOrEqual,
+        BinOp::Gt => FloatCC::GreaterThan,
+        BinOp::Ge => FloatCC::GreaterThanOrEqual,
+        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
+    })
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
@@ -2043,9 +2304,9 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 
-/// Generic extern fallback: marshals each arg per its declared
-/// `ExternTy`, looks up (or caches) the FuncRef, and packages the
-/// return as RawI64 / ValueRef / nil / DeadUnit per the decl shape.
+/// Generic extern fallback: marshals each arg per its declared `ExternTy`,
+/// looks up (or caches) the FuncRef, and packages the return as
+/// RawI64 / RawF64 / ValueRef / nil / DeadUnit per the decl shape.
 fn lower_extern_generic<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
@@ -2055,14 +2316,19 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     args: &[ExternArg],
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
-    let param_tys: Vec<ir::Type> = decl
-        .params
-        .iter()
-        .map(|t| match t {
-            ExternTy::F64 => types::F64,
-            _ => types::I64,
-        })
-        .collect();
+    // An `extern "fz"` helper receives the current process as an implicit
+    // first argument. Declaring it means a new allocating primitive is a
+    // declaration plus a Rust function, not another rung in a name-keyed chain
+    // here and two more in the interpreter.
+    let takes_process = decl.abi.takes_process();
+    let mut param_tys: Vec<ir::Type> = Vec::with_capacity(decl.params.len() + 1);
+    if takes_process {
+        param_tys.push(types::I64);
+    }
+    param_tys.extend(decl.params.iter().map(|t| match t {
+        ExternTy::F64 => types::F64,
+        _ => types::I64,
+    }));
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret_tys: &[ir::Type] = if returns_value {
         match decl.ret {
@@ -2096,18 +2362,34 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         args.len(),
         param_kinds.len()
     );
+    let process_arg = takes_process.then(|| body.process_arg());
     let arg_vals: Vec<ir::Value> = args
         .iter()
         .zip(param_kinds.iter())
-        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty))
+        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty, takes_process))
         .collect::<Result<_, _>>()?;
-    let inst = body.b.ins().call(fref, &arg_vals);
+    let call_args: Vec<ir::Value> = match process_arg {
+        Some(process) => std::iter::once(process).chain(arg_vals).collect(),
+        None => arg_vals,
+    };
+    let inst = body.b.ins().call(fref, &call_args);
     if returns_value {
         let raw = body.b.inst_results(inst)[0];
-        if matches!(decl.ret, ExternTy::I64) {
-            return Ok(LowerOut::RawI64(raw));
-        }
-        return Ok(LowerOut::ValueRef(raw));
+        // The declared RETURN says what came back, and each wire type has its
+        // own lane. `F64` used to fall into the `ValueRef` arm, which told
+        // everything downstream that a raw f64 was a tagged value ref: the
+        // consumer then unboxed it, and the result was an unbox helper applied
+        // to an f64 that failed Cranelift verification.
+        return Ok(match decl.ret {
+            ExternTy::I64 => LowerOut::RawI64(raw),
+            ExternTy::F64 => LowerOut::RawF64(raw),
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
+            // Spelled out rather than defaulted: the defect above WAS a wire
+            // type falling into the `ValueRef` arm because nobody had listed
+            // it. A wildcard here would silently do it again to the next
+            // variant added; `returns_value` already excluded these two.
+            ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
+        });
     }
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
@@ -2215,7 +2497,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let halt_repr = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
-    let cl_ptr = body.alloc_closure(arity_v, nc_v, hk_v, body_addr);
+    let cl_ptr = body.alloc_closure(boundary.denotation, arity_v, nc_v, hk_v, body_addr);
     for (i, cv) in captured.iter().enumerate() {
         match closure_capture_for_var_as(body, var_env, cv.0, boundary.capture_reprs[i]) {
             ClosureCapture::RefWord(value) => body.store_closure_capture_ref_word(cl_ptr, i, value),

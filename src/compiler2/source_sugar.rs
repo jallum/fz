@@ -21,6 +21,7 @@ pub(crate) fn rewrite_source_sugar(
     match head.as_str() {
         "|>" if args.len() == 2 => rewrite_pipe(owner, node, &args),
         "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0]),
+        "-" if args.len() == 1 => rewrite_unary_minus(owner, node, &args[0]),
         "fn" => rewrite_lambda(owner, node, &args),
         "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if args.len() == 2 => {
             rewrite_operator(owner, node, head.as_str(), &args)
@@ -64,6 +65,34 @@ fn rewrite_pipe(
         rhs_node.head.root(),
         node.meta.root(),
         &piped_args,
+    )?))
+}
+
+/// `-x` becomes `Kernel.negate(x)`, a typed clause family like every BINARY
+/// operator.
+///
+/// Lowered instead to one machine instruction, unary minus read a single lane,
+/// so `-x` aborted natively for an operand that might be an integer or a float
+/// while `0 - x` on the same value worked (fz-5xp.38). Routing it through
+/// `Kernel` makes the two agree by construction, and makes an unsupported
+/// operand a missing clause rather than a wrong instruction.
+///
+/// A numeric LITERAL is left alone for the decoder to fold into a negative
+/// literal: `-3` should not become a call.
+fn rewrite_unary_minus(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    operand: &QuotedSourceCursor,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    if matches!(operand.root().tag(), ValueKind::INT | ValueKind::FLOAT) {
+        return Ok(None);
+    }
+    let builder = owner.builder();
+    Ok(Some(remote_call(
+        &builder,
+        "Kernel.negate",
+        node.meta.root(),
+        &[operand.root()],
     )?))
 }
 

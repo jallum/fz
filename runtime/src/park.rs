@@ -111,6 +111,7 @@ pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_val
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
+        unsafe { crate::any_value::closure_denotation(template_addr) },
         unsafe { closure_arity(template_addr as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),

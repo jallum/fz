@@ -23,16 +23,72 @@ fn sched_handle(sched: &mut AotScheduler) -> *mut () {
 }
 
 #[test]
-fn parse_atom_blob_walks_until_double_nul() {
+fn parse_atom_blob_reads_every_name_the_length_covers() {
     let blob = b"ok\0err\0\0";
-    let names = parse_atom_blob(blob.as_ptr());
+    let names = parse_atom_blob(blob.as_ptr(), blob.len() as u32);
     assert_eq!(names, vec!["ok".to_string(), "err".to_string()]);
+}
+
+/// An EMPTY atom name is a name, not the end of the blob.
+///
+/// Terminating on a zero-length name instead made `:""` truncate the table:
+/// every atom interned after it vanished, so `dbg(:hello)` printed `:atom_4`
+/// on the AOT door alone and `Atom.to_string` of it aborted the process. The
+/// length is what bounds the scan.
+#[test]
+fn parse_atom_blob_keeps_names_after_an_empty_one() {
+    let blob = b"\0hello\0world\0\0";
+    let names = parse_atom_blob(blob.as_ptr(), blob.len() as u32);
+    assert_eq!(
+        names,
+        vec![String::new(), "hello".to_string(), "world".to_string()],
+        "an empty name must not end the table",
+    );
+
+    let only_empty = b"\0\0";
+    assert_eq!(
+        parse_atom_blob(only_empty.as_ptr(), only_empty.len() as u32),
+        vec![String::new()]
+    );
+
+    let trailing_empty = b"a\0\0\0";
+    assert_eq!(
+        parse_atom_blob(trailing_empty.as_ptr(), trailing_empty.len() as u32),
+        vec!["a".to_string(), String::new()],
+    );
 }
 
 #[test]
 fn parse_atom_blob_null_pointer_returns_empty() {
-    let names = parse_atom_blob(null());
+    let names = parse_atom_blob(null(), 0);
     assert!(names.is_empty());
+}
+
+#[test]
+fn empty_closure_denotation_registration_has_no_work() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    fz_aot_register_closure_denotations(&mut process, null(), 0);
+}
+
+#[test]
+fn named_schema_blob_preserves_module_segment_boundaries() {
+    let mut blob = Vec::new();
+    blob.extend(2u32.to_ne_bytes());
+    for segments in [&["A.B"][..], &["A", "B"][..]] {
+        blob.extend((segments.len() as u32).to_ne_bytes());
+        for segment in segments {
+            blob.extend((segment.len() as u32).to_ne_bytes());
+            blob.extend(segment.as_bytes());
+        }
+        blob.extend(0u32.to_ne_bytes());
+    }
+    let schemas = parse_named_schema_blob(blob.as_ptr(), blob.len() as u32);
+    assert_eq!(schemas[0].0.segments(), &["A.B"]);
+    assert_eq!(schemas[1].0.segments(), &["A", "B"]);
+    let mut registry = SchemaRegistry::new();
+    let left = registry.register(Schema::named_struct(schemas[0].0.clone(), vec![]));
+    let right = registry.register(Schema::named_struct(schemas[1].0.clone(), vec![]));
+    assert_ne!(left, right, "transport must not merge distinct source module paths");
 }
 
 #[test]

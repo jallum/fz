@@ -1,0 +1,100 @@
+#---
+# purpose: "`==` compares numbers by value; structural identity does not"
+# oracle: oracle.exs
+#---
+#
+# # equality_widening_and_identity
+#
+# fz asks two different equality questions and must not confuse them.
+#
+#   * The `==` OPERATOR compares numbers by value, as Elixir does, and does so
+#     recursively: `1 == 1.0`, `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}` are all
+#     true.
+#   * STRUCTURAL IDENTITY asks whether two values are the same value. A pinned
+#     match, `Enum.member?/2`, `--`, and a map KEY all ask this, and for them
+#     `1` and `1.0` are different.
+#
+# Widening the shared structural comparator made every one of those loose at
+# once — `Enum.member?([1, 2, 3], 1.0)` answered true, `[1, 2, 3] -- [1.0]`
+# answered `[2, 3]`, and `1` matched `^1.0`. The two questions get two entry
+# points, and this fixture is what keeps them apart.
+#
+# It also pins the boundary Elixir draws inside a map: values widen, keys do
+# not. `%{1 => :a} == %{1.0 => :a}` is false, because the keys decide which
+# entries line up, and `%{1 => :a, 1.0 => :b}` genuinely has two of them.
+#
+# ## Integers are compared as integers
+#
+# Routing an integer pair through `f64` to reuse the mixed-number path silently
+# loses the distinction above 2^53: `9007199254740993 == 9007199254740992`
+# answered true, and the ordering of the same pair disagreed between doors.
+# Both values below are laundered through the mailbox so no door can fold them.
+fn main() do
+  big = launder(9007199254740993)
+  smaller = launder(9007199254740992)
+  dbg({big == smaller, big != smaller, big > smaller, smaller < big})
+
+  one = launder(1)
+  one_float = launder(1.0)
+
+  # `==` widens.
+  dbg({one == one_float, one != one_float, 1 == 1.0, 1.0 == 1, 2 == 1.0})
+
+  # A pinned match does not.
+  dbg(pinned_against(one, one_float))
+  dbg(pinned_against(one_float, one_float))
+
+  # Neither does membership or subtraction.
+  dbg({Enum.member?([1, 2, 3], 1.0), Enum.member?([1.0], 1), Enum.member?([1, 2, 3], 2)})
+  dbg({[1, 2, 3] -- [1.0], [1, 2, 3] -- [2]})
+
+  # Widening recurses through containers.
+  dbg({[1] == [1.0], {1} == {1.0}, %{a: 1} == %{a: 1.0}})
+  dbg({[1, [2]] == [1.0, [2.0]], {1, {2}} == {1.0, {2.0}}})
+
+  # But not through map keys, and not when the values genuinely differ.
+  dbg({%{1 => :a} == %{1.0 => :a}, 1 == 1.5, [1] == [1.5]})
+  dbg({[1] == [1.0, 2.0], [1, 2] == [1.0], %{a: 1} == %{a: 1, b: 2}})
+
+  # Literal patterns stay strict, which is a matching question, not `==`.
+  dbg({literal(one), literal(one_float), literal(launder(2))})
+
+  # `===` is the operator that asks identity out loud, and `!==` its negation.
+  dbg({one === one_float, one !== one_float, one === launder(1), 1 === 1, 1.0 === 1.0})
+  dbg({[1] === [1.0], [1] === [1], {1} === {1.0}, %{a: 1} === %{a: 1.0}})
+  dbg({:a === :a, :a === :b, "x" === "x", "x" === "y"})
+
+  # Equal numbers, different values: `==` is IEEE, `===` is identity.
+  negative_zero = 0.0 * (0 - 1.0)
+  dbg({0.0 == negative_zero, 0.0 === negative_zero, 0.0 !== negative_zero})
+
+  # A range holds integers, so a float is not in one -- and asking must not
+  # abort the process, which it used to on the native doors.
+  dbg({Enum.member?(1..5, 3), Enum.member?(1..5, 3.0)})
+
+  # `Enum.reverse/2` accepts any enumerable as the tail, so the conversion it
+  # performs is real work and not the identity.
+  dbg(Enum.reverse([1, 2], 3..4))
+
+  # A map is a member of itself by key AND value identity, not by `==`.
+  dbg({Enum.member?(%{1 => :a}, {1, :a}), Enum.member?(%{1 => :a}, {1.0, :a})})
+end
+
+fnp pinned_against(subject, pin) do
+  case subject do
+    ^pin -> :same
+    _other -> :different
+  end
+end
+
+fnp literal(1), do: :int_one
+fnp literal(1.0), do: :float_one
+fnp literal(_other), do: :other
+
+fnp launder(value) do
+  send(self(), value)
+
+  receive do
+    received -> received
+  end
+end

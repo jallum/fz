@@ -50,8 +50,13 @@ fn independent_allocators_do_not_share_lifetime_observations() {
 }
 
 #[test]
-fn resource_is_24_bytes() {
-    assert_eq!(size_of::<Resource>(), 24);
+fn a_resource_is_16_aligned_so_its_address_is_never_a_forwarding_marker() {
+    // The stub holds this address in the word Cheney forwards through, so
+    // an address ending in TAG_FWD's 0x8 would read as forwarded.
+    assert_eq!(align_of::<Resource>(), 16);
+    assert_eq!(size_of::<Resource>(), RESOURCE_BYTES);
+    let (handle, _drops) = observed_resource();
+    assert_eq!(handle.as_raw() as usize % 16, 0);
 }
 
 #[test]
@@ -207,9 +212,9 @@ fn mixed_mso_chain_with_procbin_and_resource() {
     let second_bin = SharedBinHandle::from_bytes(&[4, 5], 16);
     {
         let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
-        let pb1 = alloc_procbin(&mut heap, first_bin.clone());
+        let pb1 = alloc_procbin(&mut heap, first_bin.clone(), 0);
         let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
-        let pb2 = alloc_procbin(&mut heap, second_bin.clone());
+        let pb2 = alloc_procbin(&mut heap, second_bin.clone(), 0);
         let rs2 = alloc_resource(&mut heap, second, AnyValue::nil_atom());
         let rs2_bits = heap_object_word(rs2.as_raw(), ValueKind::RESOURCE);
         let pb2_bits = heap_object_word(pb2.as_raw(), ValueKind::PROCBIN);

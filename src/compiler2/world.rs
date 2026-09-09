@@ -17,7 +17,7 @@ use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
-use crate::modules::identity::{Mfa, ModuleName};
+use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
 use crate::source::Span;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -474,7 +474,7 @@ impl World {
     /// `Ignition`; internal runtime-module minting (`ensure_runtime_module`)
     /// leaves it to be pulled.
     pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
-        let module = self.reference_module(module_name);
+        let module = self.reference_module(ModuleName::parse_dotted(&module_name).expect("submitted module path"));
         self.define_module_interface(module, interface);
         // External front door: the same ignition shape as `submit_code`/`submit_root`.
         self.work_graph
@@ -1008,13 +1008,19 @@ impl World {
         root
     }
 
-    pub fn reference_module(&mut self, name: impl Into<String>) -> ModuleId {
+    pub fn reference_module(&mut self, name: ModuleName) -> ModuleId {
         self.modules.reference_named(name)
     }
 
-    #[cfg(test)]
-    pub(crate) fn module_state(&self, module: ModuleId) -> ModuleState {
-        self.modules.get(module).clone()
+    pub(crate) fn reference_protocol_impl_module(&mut self, protocol: ModuleId, target: ModuleId) -> ModuleId {
+        self.modules.reference(ModuleDenotation::ProtocolImpl {
+            protocol: self.module_name(protocol).expect("named protocol").clone(),
+            target: self.module_name(target).expect("named implementation target").clone(),
+        })
+    }
+
+    pub(crate) fn reference_module_denotation(&mut self, denotation: ModuleDenotation) -> ModuleId {
+        self.modules.reference(denotation)
     }
 
     pub fn reference_child_module(&mut self, parent: ModuleId, local_name: &str) -> ModuleId {
@@ -1042,11 +1048,10 @@ impl World {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
-        self.modules.index_body(id, code, parent, local_name, source, surface)
+        self.modules.index_body(id, code, parent, source, surface)
     }
 
     pub fn index_protocol_module(
@@ -1054,12 +1059,10 @@ impl World {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
-        self.modules
-            .index_protocol(id, code, parent, local_name, source, surface)
+        self.modules.index_protocol(id, code, parent, source, surface)
     }
 
     pub fn index_protocol_impl_module(
@@ -1067,12 +1070,10 @@ impl World {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         impl_source: super::identity::ProtocolImplSource,
     ) -> bool {
-        self.modules
-            .index_protocol_impl(id, code, parent, local_name, source, impl_source)
+        self.modules.index_protocol_impl(id, code, parent, source, impl_source)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
@@ -1080,19 +1081,18 @@ impl World {
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        let id = self.functions.reference(module, name, arity);
-        self.name_callable(id);
+        let denotation = self.modules.denotation(module).cloned();
+        let id = self.functions.reference(module, denotation, name, arity);
+        self.share_callable_origin(id);
         id
     }
 
-    /// Hand the type lattice the stable name behind a freshly minted function
-    /// id, so a closure literal over it can be ordered canonically without
-    /// touching the mint-order `FnId` (see `types::order`). Naming at the mint
-    /// is what makes the table complete: no literal can name a function that
-    /// was never referenced.
-    fn name_callable(&mut self, id: FunctionId) {
-        let label = super::function_label(self, id);
-        self.types.name_callable(ClosureTarget(id.as_u32()), label);
+    /// Share a minted function's typed origin with the type lattice before any
+    /// literal can name it. The function interner owns uniqueness, not a scan of
+    /// rendered callable labels.
+    fn share_callable_origin(&mut self, id: FunctionId) {
+        self.types
+            .define_callable_origin(ClosureTarget(id.as_u32()), self.functions.shared_reference_for(id));
     }
 
     /// Holds a `@type` declaration's unresolved decl — parsed body plus the
@@ -1121,7 +1121,7 @@ impl World {
                 arity,
             }),
             [prefix @ .., leaf] => {
-                let module = self.lookup_module_path(scope, &prefix.join("."))?;
+                let module = self.lookup_module_path(scope, &ModuleName::from_segments(prefix.to_vec()))?;
                 Some(TypeName {
                     module,
                     name: leaf.clone(),
@@ -1302,13 +1302,13 @@ impl World {
         if self.is_protocol_domain_type(name)
             && let Some(protocol) = self.module_name(name.module)
         {
-            return protocol_domain_tag(protocol);
+            return protocol_domain_tag(protocol.dotted());
         }
         if name.module.is_global() {
             return name.name.clone();
         }
         match self.module_name(name.module) {
-            Some(path) if !path.is_empty() => format!("{}::{}", path, name.name),
+            Some(path) => format!("{}::{}", path, name.name),
             _ => name.name.clone(),
         }
     }
@@ -1606,8 +1606,12 @@ impl World {
         function
     }
 
-    pub(crate) fn module_name(&self, module: ModuleId) -> Option<&str> {
+    pub(crate) fn module_name(&self, module: ModuleId) -> Option<&ModuleName> {
         self.modules.name(module)
+    }
+
+    pub(crate) fn module_denotation(&self, module: ModuleId) -> Option<&ModuleDenotation> {
+        self.modules.denotation(module)
     }
 
     pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
@@ -1697,11 +1701,7 @@ impl World {
         let module_name = self
             .module_name(function_ref.module)
             .expect("provider-boundary functions should belong to a named module");
-        Mfa::new(
-            ModuleName::parse_dotted(module_name).expect("compiler2 module names should be valid module paths"),
-            function_ref.name.clone(),
-            function_ref.arity,
-        )
+        Mfa::new(module_name.clone(), function_ref.name().to_string(), function_ref.arity)
     }
 
     #[cfg(test)]
@@ -1835,12 +1835,12 @@ impl World {
         kind: QuotedLexicalContextKind,
     ) -> QuotedLexicalContext {
         let module = self
-            .module_name(scope.module_id())
-            .map(module_name_segments)
+            .module_denotation(scope.module_id())
+            .map(|denotation| denotation.display_segments().cloned().collect())
             .unwrap_or_default();
         let function_scope = scope
             .function_id()
-            .map(|function| vec![self.function_ref(function).name.clone()])
+            .map(|function| vec![self.function_ref(function).lexical_owner().name().to_string()])
             .unwrap_or_default();
         QuotedLexicalContext::new(kind, module, function_scope).with_namespace_id(scope.namespace().as_u32())
     }
@@ -1851,14 +1851,16 @@ impl World {
         scope: ScopeSnapshot,
         kind: QuotedLexicalContextKind,
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        let Some(name) = self.module_name(scope.module_id()) else {
+        let Some(denotation) = self.module_denotation(scope.module_id()) else {
             return Ok(builder.nil());
         };
         let metadata = QuotedSourceMetadata {
+            module: Some(denotation.clone()),
+            from_brackets: false,
             lexical_context: Some(self.scope_lexical_context(scope, kind)),
             span: None,
         };
-        let segments = name.split('.').collect::<Vec<_>>();
+        let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
         builder.alias(&metadata, &segments)
     }
 
@@ -1870,8 +1872,11 @@ impl World {
     ) -> Result<AnyValueRef, QuotedSourceError> {
         let function = match scope.function_id() {
             Some(function) => {
-                let function_ref = self.function_ref(function);
-                builder.tuple(&[builder.atom(&function_ref.name), builder.int(function_ref.arity as i64)])?
+                let function_ref = self.function_ref(function).lexical_owner();
+                builder.tuple(&[
+                    builder.atom(function_ref.name()),
+                    builder.int(function_ref.arity as i64),
+                ])?
             }
             None => builder.nil(),
         };
@@ -1922,7 +1927,7 @@ impl World {
         arity: usize,
     ) -> Option<NamespaceSymbol> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, module_path)?;
+            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
             return self.lookup_module_callable(module, local_name, arity);
         }
         self.namespaces
@@ -1936,6 +1941,21 @@ impl World {
             })
             .cloned()
             .map(|symbol| self.resolve_callable_symbol(symbol))
+    }
+
+    pub(crate) fn lookup_callable_name(
+        &mut self,
+        head: Namespace,
+        name: &crate::ast::CallableName,
+        arity: usize,
+    ) -> Option<NamespaceSymbol> {
+        match &name.module {
+            Some(module) => {
+                let module = self.reference_module_denotation(module.clone());
+                self.lookup_module_callable(module, &name.name, arity)
+            }
+            None => self.lookup_callable_namespace(head, &name.name, arity),
+        }
     }
 
     pub(crate) fn lookup_module_callable(
@@ -1953,7 +1973,7 @@ impl World {
         }
         let mut best = None;
         for callable in self.module_interface(module).callables() {
-            if callable.reference.name != name {
+            if callable.reference.name() != name {
                 continue;
             }
             let Some(score) = callable_match_score(callable.reference.arity, callable.variadic, arity) else {
@@ -1987,15 +2007,8 @@ impl World {
 
     pub(crate) fn min_variadic_arity(&mut self, head: Namespace, name: &str) -> Option<usize> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let module = self.lookup_module_path(head, module_path)?;
-            self.module_interface_revision(module)?;
-            return self
-                .module_interface(module)
-                .callables()
-                .iter()
-                .filter(|callable| callable.reference.name == local_name && callable.variadic)
-                .map(|callable| callable.reference.arity)
-                .min();
+            let module = self.lookup_module_path(head, &ModuleName::parse_dotted(module_path).ok()?)?;
+            return self.min_module_variadic_arity(module, local_name);
         }
         self.namespaces
             .lookup_best_matching(head, name, |symbol| match symbol {
@@ -2017,6 +2030,16 @@ impl World {
                     unreachable!("variadic lookup should not yield modules or types")
                 }
             })
+    }
+
+    pub(crate) fn min_module_variadic_arity(&self, module: ModuleId, name: &str) -> Option<usize> {
+        self.module_interface_revision(module)?;
+        self.module_interface(module)
+            .callables()
+            .iter()
+            .filter(|callable| callable.reference.name() == name && callable.variadic)
+            .map(|callable| callable.reference.arity)
+            .min()
     }
 
     pub(crate) fn guard_dispatch(&self, function: FunctionId) -> PatternGuardDispatch<Ty> {
@@ -2062,9 +2085,12 @@ impl World {
     }
 
     pub(crate) fn module_named_parent(&mut self, module: ModuleId) -> Option<ModuleId> {
-        let name = self.module_name(module)?.to_string();
-        let (parent, _) = name.rsplit_once('.')?;
-        Some(self.reference_module(parent.to_string()))
+        let segments = self.module_name(module)?.segments();
+        if segments.len() == 1 {
+            return None;
+        }
+        let parent = ModuleName::from_segments(segments[..segments.len() - 1].to_vec());
+        Some(self.reference_module(parent))
     }
 
     fn module_definition_code(&self, module: ModuleId) -> CodeId {
@@ -2135,15 +2161,15 @@ impl World {
             .closure_lit(ClosureTarget(function.as_u32()), captures, arity)
     }
 
-    fn qualified_module_name(&self, parent: ModuleId, local_name: &str) -> String {
+    fn qualified_module_name(&self, parent: ModuleId, local_name: &str) -> ModuleName {
         if parent.is_global() {
-            local_name.to_string()
+            ModuleName::from_segments(vec![local_name.to_string()])
         } else {
             let parent_name = self
                 .modules
                 .name(parent)
                 .expect("named parent module should have a reverse lookup");
-            format!("{parent_name}.{local_name}")
+            parent_name.child(local_name)
         }
     }
 
@@ -2166,13 +2192,13 @@ impl World {
         let module_name = self
             .module_name(module)
             .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-            .to_string();
+            .clone();
         let map_fields = field_names
             .iter()
             .zip(field_tys.iter().copied())
             .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
             .collect::<Vec<_>>();
-        self.types.struct_map(module, &module_name, &map_fields)
+        self.types.struct_map(module, module_name, &map_fields)
     }
 
     pub(crate) fn resolve_module_name(
@@ -2187,22 +2213,35 @@ impl World {
                 return Some(module);
             }
             if current_module.is_global() {
-                return Some(self.reference_module(local.to_string()));
+                return Some(self.reference_module(path.clone()));
             }
-            let current_name = self.module_name(current_module)?;
-            if current_name.rsplit('.').next().unwrap_or(current_name) == local {
+            if self
+                .module_name(current_module)
+                .is_some_and(|name| name.last_segment() == local)
+            {
                 return Some(current_module);
             }
-            return Some(self.reference_module(path.dotted()));
+            return Some(self.reference_module(path.clone()));
         }
 
-        let dotted = path.dotted();
-        self.lookup_module_path(head, &dotted)
-            .or_else(|| Some(self.reference_module(dotted)))
+        self.lookup_module_path(head, path)
+            .or_else(|| Some(self.reference_module(path.clone())))
     }
 
-    pub(crate) fn lookup_module_path(&mut self, head: Namespace, path: &str) -> Option<ModuleId> {
-        let mut segments = path.split('.');
+    pub(crate) fn resolve_module_target(
+        &mut self,
+        owner: ModuleId,
+        head: Namespace,
+        target: &crate::ast::ModuleTarget,
+    ) -> Option<ModuleId> {
+        match target {
+            crate::ast::ModuleTarget::Unresolved(name) => self.resolve_module_name(owner, head, name),
+            crate::ast::ModuleTarget::Exact(module) => Some(self.reference_module_denotation(module.clone())),
+        }
+    }
+
+    pub(crate) fn lookup_module_path(&mut self, head: Namespace, path: &ModuleName) -> Option<ModuleId> {
+        let mut segments = path.segments().iter();
         let first = segments.next()?;
         let mut module = match self.namespaces.lookup(head, first) {
             Some(NamespaceSymbol::Module(module)) => *module,
@@ -2218,7 +2257,7 @@ impl World {
         let name = self
             .module_name(module)
             .expect("impl target modules should have reverse names")
-            .to_string();
+            .clone();
         match self.classify_impl_target(module, &name, reads) {
             ImplTargetKind::Struct => {
                 // Honor the struct's declared @type field types for the dispatch
@@ -2239,7 +2278,7 @@ impl World {
                 }
             }
             ImplTargetKind::Builtin(family) => builtin_value_family_ty(&mut self.types, family),
-            ImplTargetKind::Nominal => nominal_impl_target_ty(&mut self.types, &name),
+            ImplTargetKind::Nominal => self.types.nominal_protocol_target(name),
         }
     }
 
@@ -2247,8 +2286,8 @@ impl World {
     /// struct wins whenever `StructDefined(module)` has published one,
     /// otherwise the name is checked against the compiler's built-in ground
     /// value families (`List`/`Integer`/`Float`/`Atom`/`Binary`/`Map` — these
-    /// have no backing module facts at all, the name literally *is* their
-    /// identity), and anything left over is a bare nominal target (e.g.
+    /// publish no `StructDefined`, so the name literally *is* their identity),
+    /// and anything left over is a bare nominal target (e.g.
     /// `defimpl P, for: String`, where `String` names no struct and no ground
     /// family).
     ///
@@ -2265,7 +2304,12 @@ impl World {
     /// `reads` subscription rather than a hard `waits` block, so a bare
     /// builtin/nominal name that never publishes `StructDefined` classifies
     /// immediately and does not stall.
-    fn classify_impl_target(&mut self, module: ModuleId, name: &str, reads: &mut Vec<FactKey>) -> ImplTargetKind {
+    fn classify_impl_target(
+        &mut self,
+        module: ModuleId,
+        name: &ModuleName,
+        reads: &mut Vec<FactKey>,
+    ) -> ImplTargetKind {
         reads.push(FactKey::StructDefined(module));
         if self.struct_def(module).is_some() {
             return ImplTargetKind::Struct;
@@ -2338,7 +2382,7 @@ impl World {
             .unwrap_or(Span::DUMMY);
         let module_name = self
             .module_name(module)
-            .map(str::to_owned)
+            .map(ToString::to_string)
             .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
         Some(UnresolvedIssue {
             key: UnresolvedIssueKey::Struct(module),
@@ -2371,7 +2415,7 @@ impl World {
                 codes::RESOLVE_UNKNOWN_MODULE,
                 format!(
                     "module `{}` is not defined",
-                    self.module_name(module)
+                    self.module_denotation(module)
                         .expect("referenced modules should have reverse names")
                 ),
                 span,
@@ -2394,7 +2438,11 @@ impl World {
                 key: UnresolvedIssueKey::Function(function),
                 diagnostic: Diagnostic::error(
                     codes::RESOLVE_UNKNOWN_FUNCTION,
-                    format!("function `{}/{}` is not defined", function_ref.name, function_ref.arity),
+                    format!(
+                        "function `{}/{}` is not defined",
+                        function_ref.display_name(),
+                        function_ref.arity
+                    ),
                     Span::DUMMY,
                 ),
             });
@@ -2415,7 +2463,7 @@ impl World {
         }
 
         let module_name = self
-            .module_name(function_ref.module)
+            .module_denotation(function_ref.module)
             .expect("referenced function modules should have reverse names");
         // The span comes from the `InterfaceExpectation` `resolve_runtime_function`
         // recorded for this exact `(name, arity)` when the call was lowered
@@ -2432,7 +2480,7 @@ impl World {
                     .expectations()
                     .iter()
                     .find(|expectation| {
-                        expectation.name == function_ref.name && expectation.arity == function_ref.arity
+                        expectation.name == function_ref.name() && expectation.arity == function_ref.arity
                     })
                     .and_then(|expectation| expectation.requester.as_ref())
                     .map(|requester| requester.span)
@@ -2444,7 +2492,9 @@ impl World {
                 codes::RESOLVE_UNKNOWN_IMPORT,
                 format!(
                     "module `{}` does not export `{}/{}`",
-                    module_name, function_ref.name, function_ref.arity
+                    module_name,
+                    function_ref.name(),
+                    function_ref.arity
                 ),
                 span,
             ),
@@ -2538,7 +2588,7 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
         .iter()
         .map(|form| match form {
             ScopeForm::Function(function)
-                if function.name == function_ref.name && function.arity == function_ref.arity =>
+                if function_ref.is_named(&function.name) && function.arity == function_ref.arity =>
             {
                 FunctionSurfaceMatch::Certain
             }
@@ -2574,7 +2624,9 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
 /// the caller falls back to another candidate's span instead.
 fn function_form_span(source: &QuotedCodeSource, function_ref: &FunctionRef) -> Option<Span> {
     source.surface.forms.iter().find_map(|form| match form {
-        ScopeForm::Function(function) if function.name == function_ref.name && function.arity == function_ref.arity => {
+        ScopeForm::Function(function)
+            if function_ref.is_named(&function.name) && function.arity == function_ref.arity =>
+        {
             Some(function.span)
         }
         _ => None,
@@ -2585,7 +2637,7 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
     matches!(
         reserved_source_definition(source).ok().flatten(),
         Some(ReservedSourceDefinition::Function { name, arity, .. })
-            if name == function_ref.name && arity == function_ref.arity
+            if function_ref.is_named(&name) && arity == function_ref.arity
     )
 }
 
@@ -2604,7 +2656,7 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
 fn item_macro_call_match(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
     match reserved_source_definition(source) {
         Ok(Some(ReservedSourceDefinition::Function { name, arity, .. })) => {
-            if name == function_ref.name && arity == function_ref.arity {
+            if function_ref.is_named(&name) && arity == function_ref.arity {
                 FunctionSurfaceMatch::Certain
             } else {
                 FunctionSurfaceMatch::None
@@ -2630,13 +2682,6 @@ fn dedup_module_ids(refs: &mut Vec<ModuleId>) {
     refs.retain(|module| seen.insert(*module));
 }
 
-fn module_name_segments(name: &str) -> Vec<String> {
-    name.split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// The typed shape a `defimpl P, for: Target` module classifies as. See
 /// `World::classify_impl_target` for how this is derived — the point of
 /// having this type is that dispatch resolution matches on a closed enum
@@ -2656,8 +2701,15 @@ enum ImplTargetKind {
 }
 
 /// The compiler's built-in ground value families: primitive value shapes a
-/// protocol can dispatch on by name alone, with no `defstruct` and (for
-/// `Integer`/`Float`/`Atom`/`Binary`) no backing module source at all.
+/// protocol can dispatch on by name alone, because they publish no
+/// `StructDefined`.
+///
+/// Several of these names now ALSO name a runtime-library module -- `Atom`,
+/// `Integer`, `Float` and `List` all carry `to_string`, `reduce` and friends.
+/// That is fine, because classification turns on `StructDefined` rather than
+/// on whether a module of the name exists. It does mean a user `defstruct`
+/// with one of these names wins the classification and takes the family's
+/// dispatch with it (fz-5xp.43).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuiltinValueFamily {
     List,
@@ -2669,8 +2721,11 @@ enum BuiltinValueFamily {
 }
 
 impl BuiltinValueFamily {
-    fn from_name(module_name: &str) -> Option<Self> {
-        match module_name.rsplit('.').next().unwrap_or(module_name) {
+    fn from_name(module_name: &ModuleName) -> Option<Self> {
+        let [name] = module_name.segments() else {
+            return None;
+        };
+        match name.as_str() {
             "List" => Some(Self::List),
             "Integer" => Some(Self::Integer),
             "Float" => Some(Self::Float),
@@ -2694,11 +2749,6 @@ fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: B
         BuiltinValueFamily::Binary => t.str_t(),
         BuiltinValueFamily::Map => t.map_top(),
     }
-}
-
-fn nominal_impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
-    let tag = module_name.rsplit('.').next().unwrap_or(module_name);
-    t.opaque_of(&format!("impl-target::{}", tag))
 }
 
 impl World {
@@ -2726,7 +2776,7 @@ impl World {
     ) -> RootId {
         let module = module_name
             .as_deref()
-            .map(|name| self.reference_module(name.to_string()))
+            .map(|name| self.reference_module(ModuleName::parse_dotted(name).expect("submitted root module path")))
             .unwrap_or(ModuleId::GLOBAL);
         let function = self.reference_function(module, name, arity);
         let any = self.types.any();
@@ -2909,8 +2959,8 @@ impl World {
                 .any(|callable| expectation.matches_callable(callable))
         })?;
         let module_name = self
-            .module_name(id)
-            .map(str::to_owned)
+            .module_denotation(id)
+            .map(ToString::to_string)
             .unwrap_or_else(|| format!("<unnamed module {}>", id.as_u32()));
         let message = match expectation.kind {
             InterfaceCallableKind::Macro => format!(
@@ -2976,7 +3026,7 @@ impl World {
             .map(|expectation| {
                 let module_name = self
                     .module_name(module)
-                    .map(str::to_owned)
+                    .map(ToString::to_string)
                     .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
                 Diagnostic::error(
                     codes::RESOLVE_UNKNOWN_STRUCT_FIELD,
@@ -3061,6 +3111,7 @@ impl World {
     pub(crate) fn define_generated_function(
         &mut self,
         owner: FunctionId,
+        occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
         capture_params: Vec<String>,
         surface: FunctionSurface,
@@ -3069,8 +3120,8 @@ impl World {
         let owner_module = self.functions.reference_for(owner).module;
         let id = self
             .functions
-            .reference_generated(owner, owner_module, surface.span, surface.arity());
-        self.name_callable(id);
+            .reference_generated(owner, owner_module, occurrence, surface.arity());
+        self.share_callable_origin(id);
         let fn_source = FunctionSource {
             code: owner_source.code,
             owner_module: owner_source.owner_module,
@@ -3182,7 +3233,11 @@ impl World {
             .unwrap_or(Span::DUMMY);
         Diagnostic::error(
             codes::RESOLVE_DUPLICATE_FUNCTION,
-            format!("`{}/{}` is already defined", function_ref.name, function_ref.arity),
+            format!(
+                "`{}/{}` is already defined",
+                function_ref.display_name(),
+                function_ref.arity
+            ),
             span,
         )
     }
@@ -3478,13 +3533,14 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     pub(crate) fn define_generated_function(
         &mut self,
         owner: FunctionId,
+        occurrence: crate::ast::LambdaOccurrence,
         namespace: Namespace,
         capture_params: Vec<String>,
         surface: FunctionSurface,
     ) -> (FunctionId, bool) {
         let (id, changed) = self
             .world
-            .define_generated_function(owner, namespace, capture_params, surface);
+            .define_generated_function(owner, occurrence, namespace, capture_params, surface);
         if changed {
             self.emit_generated_function_defined(&id, &owner);
         }

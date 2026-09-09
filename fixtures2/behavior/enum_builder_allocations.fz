@@ -1,0 +1,75 @@
+#---
+# purpose: "list-building Enum functions cost one cons per produced element, not three"
+#---
+#
+# # enum_builder_allocations
+#
+# `behavior/enum_list_allocations.fz` pins the *non-building* Enum surface —
+# `count/1`, `member?/2`, `reduce/3` — at zero additional cons cells. This is
+# its sibling for the functions that build a new list, which that fixture
+# deliberately excludes.
+#
+# Every builder in `Enum` is written as `builder_list(to_list(enumerable), fun)`,
+# so all of them inherit whatever `to_list/1` costs. `to_list/1` reaches a list
+# through a clause typed `[a]` — fz's form of Elixir's `when is_list(list)` —
+# and only falls back to the reduce-and-reverse-back path for enumerables that
+# are not already lists. Without that typed clause every builder pays two extra
+# traversals: one to reduce the input onto a reversed list, and one to reverse
+# that back into order. On this twenty-element input, removing it takes
+# `Enum.map/2` from 60 cons cells to 20 and `Enum.to_list/1` from 40 to 0.
+#
+# ## Contract
+#
+# Each stage is measured against the counter snapshot taken immediately before
+# it, so the printed numbers are per-stage costs rather than a running total.
+# The input list is built before the first snapshot and is not counted.
+#
+# - `Enum.to_list/1` over a list allocates **0**. A list already is one, so the
+#   answer is the argument itself.
+# - `Enum.map/2` allocates **20** — one cons per produced element. `map`
+#   replaces the head of every cell, so a fresh cell is required.
+# - `Enum.filter/2` retaining every element allocates **20**, one per retained
+#   element.
+# - `Enum.map |> Enum.filter` allocates **40**: one cons per element for each
+#   of the two stages.
+#
+# ## A note on reuse
+#
+# These are the costs when a builder's input has already been read by something
+# else, which is the shape this fixture measures and the common one in real
+# code. When a list is still private — nothing else has read it and the result
+# does not outlive the expression — the reuse helper can relink its cells in
+# place, and `Enum.filter/2` over such a list allocates nothing at all. That
+# path is deliberately *not* pinned here: it depends on how both the input and
+# the result escape, and this fixture is the stable per-element ceiling, not a
+# claim about the best case.
+fn main() do
+  xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  base = allocs()
+
+  listed = Enum.to_list(xs)
+  after_to_list = allocs()
+
+  mapped = Enum.map(xs, fn (x) -> x * 2 end)
+  after_map = allocs()
+
+  kept = Enum.filter(xs, fn (x) -> x > 0 end)
+  after_filter = allocs()
+
+  piped = Enum.filter(Enum.map(xs, fn (x) -> x * 3 end), fn (x) -> x > 0 end)
+  after_pipeline = allocs()
+
+  dbg({Enum.count(listed), Enum.count(mapped), Enum.count(kept), Enum.count(piped)})
+
+  dbg({
+    after_to_list - base,
+    after_map - after_to_list,
+    after_filter - after_map,
+    after_pipeline - after_filter
+  })
+end
+
+fnp allocs() do
+  stats = Process.heap_alloc_stats()
+  stats[:list_cons_allocs]
+end

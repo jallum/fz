@@ -255,7 +255,57 @@ impl ExternArg {
     }
 }
 
-/// One resolved `extern "C" fn` declaration stored in `Module.externs`.
+/// The calling convention an `extern` declaration names.
+///
+/// `C` is a plain C symbol: it is called with exactly the declared arguments,
+/// and a `binary` parameter arrives as a `*const u8` into the bytes.
+///
+/// `Fz` is an fz runtime helper: it receives the current `*mut Process` as an
+/// implicit first argument -- everything that allocates on the process heap
+/// needs one -- and a `binary` parameter arrives as the tagged value ref the
+/// runtime itself works in.
+///
+/// The convention is DECLARED, so adding an allocating primitive is a
+/// declaration plus a Rust function. It used to be keyed by symbol name, which
+/// meant one hand-written rung in native codegen and another in the
+/// interpreter for every such primitive, and no way for either to know it had
+/// missed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExternAbi {
+    C,
+    Fz,
+}
+
+impl ExternAbi {
+    /// Every convention that exists. `parse` and the diagnostic that lists the
+    /// alternatives both read this, so a new convention is one entry.
+    pub const ALL: &'static [Self] = &[Self::C, Self::Fz];
+
+    /// The name as written in the declaration. Anything else is a diagnostic
+    /// there, never a silent fall back to C.
+    pub fn parse(abi: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|candidate| candidate.as_str() == abi)
+    }
+
+    pub fn takes_process(self) -> bool {
+        matches!(self, Self::Fz)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Fz => "fz",
+        }
+    }
+}
+
+impl std::fmt::Display for ExternAbi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One resolved `extern` declaration stored in `Module.externs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
@@ -265,6 +315,7 @@ pub struct ExternDecl {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternTy,
+    pub abi: ExternAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,8 +335,21 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// The `==` OPERATOR, which compares numbers by value: `1 == 1.0` is true,
+    /// and so are `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}`.
     Eq,
     Neq,
+    /// STRUCTURAL IDENTITY -- the `===` operator, and the question every kind of
+    /// MATCHING asks. `1` and `1.0` are different values, so
+    /// `case 1.0 do 1 -> ... end` must not match.
+    ///
+    /// Separate from `Eq` because they are two questions, not one question with
+    /// a flag. They used to share `Eq`, with a `widen_numerics` boolean that
+    /// each lowering call site set from what it happened to know about its
+    /// caller -- so a guard, which reached the matching lowering, answered
+    /// `same?(1, 1.0)` as `:different` where Elixir says `:equal` (fz-5xp.24).
+    Identical,
+    NotIdentical,
     Lt,
     Le,
     Gt,
@@ -314,7 +378,7 @@ pub enum Prim {
     MakeTuple(Vec<Var>),
     /// Build a named struct using a source `defstruct` schema.
     MakeStruct {
-        module: String,
+        module: fz_runtime::module_name::ModuleName,
         fields: Vec<(String, Var)>,
     },
     /// Project the i-th element of a tuple.
@@ -390,16 +454,10 @@ pub enum Prim {
     RuntimeTypeTest(Var, Box<RuntimeTypePredicate>),
     /// Read one captured value back out of a closure object.
     ///
-    /// The mirror of `MakeClosure`: a caller that holds a whole closure and a
-    /// callee that wants its captures as separate lanes meet here.
-    /// `constructions` names the code words of every construction that mints
-    /// the callable at the layout the callee grounded -- the same words
-    /// `MakeClosure` stamps -- and those are the authority on how each capture
-    /// was STORED; reading it back any other way would be a guess
-    /// (fz-kdt.127).
+    /// Captures retain lexical source order. The slot's runtime kind describes
+    /// its storage; callers project the complete value to their required ABI.
     ClosureCapture {
         closure: Var,
-        constructions: Box<[FnId]>,
         index: u32,
     },
 }
@@ -823,7 +881,7 @@ pub struct Module {
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
-    pub struct_schemas: BTreeMap<String, Vec<String>>,
+    pub struct_schemas: BTreeMap<fz_runtime::module_name::ModuleName, Vec<String>>,
 }
 
 impl Module {
@@ -1111,6 +1169,8 @@ impl fmt::Display for BinOp {
             BinOp::Mod => "%",
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
+            BinOp::Identical => "===",
+            BinOp::NotIdentical => "!==",
             BinOp::Lt => "<",
             BinOp::Le => "<=",
             BinOp::Gt => ">",
@@ -1209,18 +1269,7 @@ impl fmt::Display for Prim {
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
-            Prim::ClosureCapture {
-                closure,
-                constructions,
-                index,
-            } => {
-                let constructions = constructions
-                    .iter()
-                    .map(|construction| construction.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "closure_capture({closure}, [{constructions}], {index})")
-            }
+            Prim::ClosureCapture { closure, index } => write!(f, "closure_capture({closure}, {index})"),
         }
     }
 }

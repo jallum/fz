@@ -98,13 +98,9 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 
 // ----- Map runtime fns -----
 //
-// Maps use a heap-backed sorted-array layout. Codegen constructs maps by
-// folding immutable put operations: start with an empty map, then each put
-// copies/replaces/inserts and returns the new map.
-//
-// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
-// within each category, by raw bits (Int compares signed). Keys compare
-// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+// Maps use an immutable heap-backed sorted array. Construction fills unpublished
+// slots once, then normalizes them with the runtime's strict structural order.
+// Later put/delete operations preserve that order in the returned allocation.
 
 // ----- Bitstring runtime fns -----
 //
@@ -155,7 +151,12 @@ pub(crate) fn default_unit_for(ty: BitType) -> u32 {
 //
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
 // (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
-// slow arm promotes both to f64 via fz_promote_f64 and emits native
-// fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
-// and typed int-int fast paths sit in front of the dispatch entirely.
-// Eq/Neq do NOT promote: `1 == 1.0` is false.
+// slow arm promotes both to f64 and emits native fadd/fsub/fmul/fdiv when the
+// result can stay RawF64. Typed float-float and typed int-int fast paths sit in
+// front of the dispatch entirely.
+//
+// Comparison does NOT share this path: `Kernel` gives each comparison operator
+// a clause per operand pair, and the dynamic remainder asks fz_value_cmp_ref.
+// `==` widens numerics (`1 == 1.0` is true, and recursively so for containers);
+// structural identity -- a pinned match, `Enum.member?/2`, `--`, a map key --
+// stays strict and uses fz_value_eq_ref.

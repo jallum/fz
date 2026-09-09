@@ -1,4 +1,6 @@
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -36,6 +38,10 @@ impl ModuleId {
 pub struct FunctionId(u32);
 
 impl FunctionId {
+    pub fn denotation(self) -> fz_runtime::any_value::ClosureDenotationId {
+        fz_runtime::any_value::ClosureDenotationId::user(self.0)
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
@@ -201,7 +207,6 @@ impl ModuleState {
 pub struct ModuleSource {
     pub code: CodeId,
     pub parent: ModuleId,
-    pub local_name: String,
     pub source: QuotedSourceRoot,
     pub kind: ModuleSourceKind,
 }
@@ -210,12 +215,10 @@ pub struct ModuleSource {
 pub enum ModuleSourceKind {
     Body(ScopeSurface),
     Protocol(ScopeSurface),
-    /// A `defimpl Protocol, for: Target` hoisted to its own module named
-    /// `Protocol.Target` (Elixir's `__concat__`). It is independently
-    /// demandable via `DefineModule(Protocol.Target)`: the impl is defined
-    /// without defining its lexical host module. `protocol`/`target`/`owner`
-    /// are resolved name-accurately at the defimpl's lexical site; `owner` is
-    /// the enclosing module that supplies the callbacks' resolution context.
+    /// A `defimpl Protocol, for: Target` owned by its typed protocol/target
+    /// pair. `DefineModule(impl_module)` demands it independently of its
+    /// lexical host. The protocol and target resolve at the declaration site;
+    /// the saved namespace supplies the callbacks' lexical resolution context.
     ProtocolImpl(ProtocolImplSource),
 }
 
@@ -231,7 +234,6 @@ impl ModuleSource {
         Self {
             code,
             parent: ModuleId::GLOBAL,
-            local_name: String::new(),
             source: QuotedSourceRoot::empty(),
             kind: ModuleSourceKind::Body(ScopeSurface {
                 attrs: Vec::new(),
@@ -295,15 +297,23 @@ struct FunctionKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GeneratedFunctionKey {
     owner: FunctionId,
-    span: Span,
+    occurrence: crate::ast::LambdaOccurrence,
     arity: usize,
 }
+
+pub use fz_runtime::function_denotation::{FunctionDenotation, FunctionOrigin};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
     pub module: ModuleId,
-    pub name: String,
-    pub arity: usize,
+    pub denotation: Arc<FunctionDenotation>,
+}
+
+impl std::ops::Deref for FunctionRef {
+    type Target = FunctionDenotation;
+    fn deref(&self) -> &Self::Target {
+        &self.denotation
+    }
 }
 
 /// The identity of a named type: its owning module, source name, and arity.
@@ -335,8 +345,8 @@ pub struct NotedTypeDecl {
 #[derive(Debug, Default)]
 pub struct ModuleMap {
     slots: Vec<ModuleState>,
-    names: Vec<Option<String>>,
-    by_name: HashMap<String, ModuleId>,
+    denotations: Vec<Option<ModuleDenotation>>,
+    by_denotation: HashMap<ModuleDenotation, ModuleId>,
 }
 
 impl ModuleMap {
@@ -347,20 +357,23 @@ impl ModuleMap {
                 base: Namespace::default(),
                 interface: ModuleInterface::default(),
             }],
-            names: vec![None],
-            by_name: HashMap::new(),
+            denotations: vec![None],
+            by_denotation: HashMap::new(),
         }
     }
 
-    pub fn reference_named(&mut self, name: impl Into<String>) -> ModuleId {
-        let name = name.into();
-        if let Some(id) = self.by_name.get(&name) {
+    pub fn reference_named(&mut self, name: ModuleName) -> ModuleId {
+        self.reference(ModuleDenotation::Named(name))
+    }
+
+    pub fn reference(&mut self, denotation: ModuleDenotation) -> ModuleId {
+        if let Some(id) = self.by_denotation.get(&denotation) {
             return *id;
         }
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(ModuleState::Placeholder { interface: None });
-        self.names.push(Some(name.clone()));
-        self.by_name.insert(name, id);
+        self.denotations.push(Some(denotation.clone()));
+        self.by_denotation.insert(denotation, id);
         id
     }
 
@@ -429,7 +442,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> bool {
@@ -438,7 +450,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::Body(surface),
             },
@@ -452,7 +463,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> bool {
@@ -461,7 +471,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::Protocol(surface),
             },
@@ -475,7 +484,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         impl_source: ProtocolImplSource,
     ) -> bool {
@@ -484,7 +492,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::ProtocolImpl(impl_source),
             },
@@ -493,35 +500,28 @@ impl ModuleMap {
         update_if_changed(module, next)
     }
 
-    pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
-        let id = ModuleId(self.slots.len() as u32);
-        self.slots.push(ModuleState::Defined {
-            source: ModuleSource::empty(code),
-            base: namespace,
-            interface: ModuleInterface::default(),
-        });
-        self.names.push(None);
-        id
-    }
-
     pub fn get(&self, id: ModuleId) -> &ModuleState {
         self.slots
             .get(id.0 as usize)
             .expect("module ids should be known before reading module slots")
     }
 
-    pub fn name(&self, id: ModuleId) -> Option<&str> {
-        self.names
+    pub fn name(&self, id: ModuleId) -> Option<&ModuleName> {
+        self.denotation(id).and_then(ModuleDenotation::named_path)
+    }
+
+    pub fn denotation(&self, id: ModuleId) -> Option<&ModuleDenotation> {
+        self.denotations
             .get(id.0 as usize)
             .expect("module ids should be known before reading module names")
-            .as_deref()
+            .as_ref()
     }
 }
 
 #[derive(Debug, Default)]
 pub struct FunctionMap {
     slots: Vec<FunctionState>,
-    refs: Vec<FunctionRef>,
+    refs: Vec<Arc<FunctionRef>>,
     by_key: HashMap<FunctionKey, FunctionId>,
     generated_by_key: HashMap<GeneratedFunctionKey, FunctionId>,
 }
@@ -531,7 +531,13 @@ impl FunctionMap {
         Self::default()
     }
 
-    pub fn reference(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
+    pub fn reference(
+        &mut self,
+        module: ModuleId,
+        module_denotation: Option<ModuleDenotation>,
+        name: impl Into<String>,
+        arity: usize,
+    ) -> FunctionId {
         let name = name.into();
         let key = FunctionKey {
             module,
@@ -543,23 +549,47 @@ impl FunctionMap {
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
-        self.refs.push(FunctionRef { module, name, arity });
+        self.refs.push(Arc::new(FunctionRef {
+            module,
+            denotation: Arc::new(FunctionDenotation {
+                origin: FunctionOrigin::Named {
+                    module: module_denotation,
+                    name,
+                },
+                arity,
+            }),
+        }));
         self.by_key.insert(key, id);
         id
     }
 
-    pub fn reference_generated(&mut self, owner: FunctionId, module: ModuleId, span: Span, arity: usize) -> FunctionId {
-        let key = GeneratedFunctionKey { owner, span, arity };
+    pub fn reference_generated(
+        &mut self,
+        owner: FunctionId,
+        module: ModuleId,
+        occurrence: crate::ast::LambdaOccurrence,
+        arity: usize,
+    ) -> FunctionId {
+        let key = GeneratedFunctionKey {
+            owner,
+            occurrence,
+            arity,
+        };
         if let Some(id) = self.generated_by_key.get(&key) {
             return *id;
         }
         let id = FunctionId(self.slots.len() as u32);
         self.slots.push(FunctionState::Placeholder);
-        self.refs.push(FunctionRef {
+        self.refs.push(Arc::new(FunctionRef {
             module,
-            name: format!("#lambda:{}:{}-{}", owner.as_u32(), span.start, span.end),
-            arity,
-        });
+            denotation: Arc::new(FunctionDenotation {
+                origin: FunctionOrigin::Generated {
+                    owner: Arc::clone(&self.refs[owner.0 as usize].denotation),
+                    occurrence,
+                },
+                arity,
+            }),
+        }));
         self.generated_by_key.insert(key, id);
         id
     }
@@ -619,13 +649,17 @@ impl FunctionMap {
             .expect("function ids should be known before reading reverse references")
     }
 
+    pub fn shared_reference_for(&self, id: FunctionId) -> Arc<FunctionRef> {
+        Arc::clone(&self.refs[id.0 as usize])
+    }
+
     /// The reverse reference for `id`, or `None` when `id` is not a known
     /// function slot. Unlike [`reference_for`](Self::reference_for) this does
     /// not assume the id is in range, so a caller decoding an id of uncertain
     /// provenance (e.g. a packed closure-surface var) can probe it safely.
     #[cfg(test)]
     pub fn try_reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
-        self.refs.get(id.0 as usize)
+        self.refs.get(id.0 as usize).map(Arc::as_ref)
     }
 }
 
@@ -914,7 +948,6 @@ impl ModuleSource {
     fn same_source(&self, other: &Self) -> bool {
         self.code == other.code
             && self.parent == other.parent
-            && self.local_name == other.local_name
             && self.source.semantically_eq(&other.source, Horizon::Surface)
     }
 }

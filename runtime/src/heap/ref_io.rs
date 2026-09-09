@@ -26,13 +26,6 @@ pub(super) fn any_value_ref_from_storage(
     }
 }
 
-pub(super) fn write_ref_to_storage(raw_slot: *mut u64, kind_slot: Option<*mut u8>, value: AnyValueRef) {
-    unsafe { write(raw_slot, value.storage_raw().expect("ref storage raw")) };
-    if let Some(kind_slot) = kind_slot {
-        unsafe { write(kind_slot, value.tag().tag()) };
-    }
-}
-
 pub(super) fn write_any_value_to_storage(raw_slot: *mut u64, kind_slot: Option<*mut u8>, value: AnyValue) {
     unsafe { write(raw_slot, value.raw()) };
     if let Some(kind_slot) = kind_slot {
@@ -66,10 +59,6 @@ pub(super) fn list_tail_bits_from_ref(value: AnyValueRef) -> Result<u64, AnyValu
             found,
         }),
     }
-}
-
-pub(super) fn value_ref_sort_payload(value: AnyValueRef) -> u64 {
-    value.storage_raw().expect("ref sort payload")
 }
 
 pub(super) fn is_active_from_space_object(

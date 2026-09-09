@@ -201,7 +201,7 @@ pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -305,7 +305,7 @@ pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -384,19 +384,15 @@ where
             )?),
         },
         Expr::Call(target, args) => {
-            let callee = match &target.node {
-                Expr::Var(name) => Some((name.as_str(), args.len())),
-                Expr::FnRef { name, arity } if *arity == args.len() => Some((name.as_str(), *arity)),
-                _ => None,
-            };
-            let Some((name, arity)) = callee else {
+            let arity = args.len();
+            let Some(name) = crate::ast::CallableName::for_call(&target.node, arity) else {
                 return Err(SourcePatternError::UnsupportedGuardExpr);
             };
             let args = args
                 .iter()
                 .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, guard_call_resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            match guard_call_resolver(name, arity, args)? {
+            match guard_call_resolver(&name, arity, args)? {
                 Some(expr) => expr,
                 None => return Err(SourcePatternError::UnsupportedGuardExpr),
             }
@@ -408,7 +404,7 @@ where
 pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
-    let mut resolver = |_name: &str,
+    let mut resolver = |_name: &crate::ast::CallableName,
                         _arity: usize,
                         _args: Vec<PatternGuardExpr<TypeHandle>>|
      -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> { Ok(None) };
@@ -421,7 +417,7 @@ pub(crate) fn pattern_dispatch_from_source_with_guard_resolver<F, TypeHandle>(
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -496,7 +492,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     ) -> Result<(), SourcePatternError>
     where
         F: FnMut(
-            &str,
+            &crate::ast::CallableName,
             usize,
             Vec<PatternGuardExpr<TypeHandle>>,
         ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -510,7 +506,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
     where
         F: FnMut(
-            &str,
+            &crate::ast::CallableName,
             usize,
             Vec<PatternGuardExpr<TypeHandle>>,
         ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -712,13 +708,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             let size = match &field.spec.size {
                 None => None,
                 Some(BitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
-                Some(BitSize::Var(name)) => Some(
-                    binding_subjects
-                        .get(name)
-                        .copied()
-                        .map(BitstringFieldSize::Binding)
-                        .unwrap_or_else(|| BitstringFieldSize::BindingName(name.clone())),
-                ),
+                Some(BitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
+                    Some(subject) => BitstringFieldSize::Binding(subject),
+                    // Not bound by an earlier field, so it comes from the
+                    // enclosing scope. That is what a PIN is for, and the
+                    // existing pass that binds a pin to its parameter index
+                    // covers this one too (fz-5xp.54).
+                    None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
+                }),
             };
             let field_subject = PatternSubjectRef::BitstringField {
                 bitstring: Box::new(subject.clone()),
@@ -784,6 +781,25 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             span,
         });
         Ok(())
+    }
+
+    /// A pin for a name the pattern does not bind, created on first use.
+    ///
+    /// The pass that binds a pin to its parameter index runs after the whole
+    /// plan is produced, so a pin registered here is connected the same way a
+    /// guard capture's is.
+    fn pin_for_name(&mut self, name: &str, span: Span) -> PinnedValueId {
+        if let Some(id) = self.pinned_by_name.get(name) {
+            return *id;
+        }
+        let id = PinnedValueId(self.pinned.len() as u32);
+        self.pinned.push(PatternPinnedInput {
+            name: name.to_string(),
+            input: None,
+            span,
+        });
+        self.pinned_by_name.insert(name.to_string(), id);
+        id
     }
 
     fn subject_id(&mut self, subject: &PatternSubjectRef) -> Result<SubjectId, SourcePatternError> {

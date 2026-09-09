@@ -107,23 +107,9 @@ pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram)
     inverse(&canon.wrapper_order(program))
 }
 
-/// A function's stable label: `Module.name/arity`.
-///
-/// Generated lambdas are minted with a name that embeds their OWNER's raw
-/// `FunctionId` (`#lambda:{owner}:{start}-{end}`, see
-/// `FunctionTable::reference_generated`), which is a mint-order index and so
-/// cannot appear in a canonical rendering. The owner is resolved to its own
-/// label instead, which also keeps the result injective: the generated key is
-/// exactly (owner, span, arity), and all three survive here.
+/// Render the function interner's typed origin without raw mint IDs.
 pub(crate) fn function_label(world: &World, function: FunctionId) -> String {
-    let reference = world.function_ref(function);
-    let (name, arity) = (reference.name.clone(), reference.arity);
-    let module = world.module_name(reference.module).unwrap_or_default().to_string();
-    match parse_generated_name(&name) {
-        Some((owner, start, end)) => format!("{}#lambda@{start}-{end}/{arity}", function_label(world, owner)),
-        None if module.is_empty() => format!("{name}/{arity}"),
-        None => format!("{module}.{name}/{arity}"),
-    }
+    world.function_ref(function).label()
 }
 
 #[cfg(test)]
@@ -137,17 +123,6 @@ fn stable_closure_alpha_label(world: &World, id: TypeVarId) -> Option<String> {
         ClosureSurfacePos::Arg(_) => return None,
     };
     Some(format!("closure({}:{slot})", function_label(world, function)))
-}
-
-fn parse_generated_name(name: &str) -> Option<(FunctionId, u32, u32)> {
-    let rest = name.strip_prefix("#lambda:")?;
-    let (owner, span) = rest.split_once(':')?;
-    let (start, end) = span.split_once('-')?;
-    Some((
-        FunctionId::from_fn_id(crate::fz_ir::FnId(owner.parse().ok()?)),
-        start.parse().ok()?,
-        end.parse().ok()?,
-    ))
 }
 
 /// An indented line sink. Every renderer below appends whole lines, so the
@@ -572,19 +547,12 @@ impl ProgramCanon<'_> {
             .function
             .map(|function| function_label(self.world, function))
             .unwrap_or_else(|| "<unknown>".to_string());
-        let tys: Vec<String> = descr.capture_tys.iter().map(|ty| self.ty(*ty)).collect();
         let layouts: Vec<String> = descr
             .capture_layouts
             .iter()
             .map(|layout| self.transport_layout(*layout))
             .collect();
-        let text: Arc<str> = format!(
-            "{function}/{} captures=[{}] layouts=[{}]",
-            descr.arity,
-            tys.join(", "),
-            layouts.join(", ")
-        )
-        .into();
+        let text: Arc<str> = format!("{function}/{} layouts=[{}]", descr.arity, layouts.join(", ")).into();
         self.callables.insert(id, Arc::clone(&text));
         text
     }
@@ -1430,7 +1398,7 @@ impl ProgramCanon<'_> {
     }
 
     fn construction_capture(&mut self, capture: &BackendConstructionCapture) -> String {
-        self.layout(&capture.layout)
+        format!("{} {}", self.ty(capture.ty), self.layout(&capture.layout))
     }
 
     fn member_adapter(&mut self, member: &BackendConstructionMemberAdapter) -> String {
@@ -1752,7 +1720,7 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
         None => "-".to_string(),
         Some(BitstringFieldSize::Literal(bits)) => bits.to_string(),
         Some(BitstringFieldSize::Binding(subject)) => format!("s{}", subject.0),
-        Some(BitstringFieldSize::BindingName(name)) => name.clone(),
+        Some(BitstringFieldSize::Pinned(pinned)) => format!("p{}", pinned.0),
     };
     format!(
         "{:?}/size={size}/{:?}/signed={}/unit={:?}",

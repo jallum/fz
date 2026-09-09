@@ -1421,7 +1421,11 @@ mod tests {
         let range_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "range_impl", 1);
         let any = world.types_mut().any();
         let list = world.types_mut().list(any);
-        let range = world.types_mut().opaque_of("impl-target::Range");
+        let range = world
+            .types_mut()
+            .nominal_protocol_target(crate::modules::identity::ModuleName::from_segments(vec![
+                "Range".into(),
+            ]));
         let summary = CallSiteSummary {
             targets: vec![
                 CallTargetSummary {
@@ -2003,8 +2007,12 @@ mod tests {
     fn a_closure_nested_in_a_tuple_is_named_by_the_test() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        world.types_mut().name_callable(ClosureTarget(66), "boxed_one/1");
-        world.types_mut().name_callable(ClosureTarget(68), "boxed_other/1");
+        world
+            .types_mut()
+            .define_test_callable(ClosureTarget(66), "boxed_one", 1);
+        world
+            .types_mut()
+            .define_test_callable(ClosureTarget(68), "boxed_other", 1);
         let tag = world.types_mut().atom_lit("tag");
         let one = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 1);
         let other = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 1);
@@ -2060,7 +2068,7 @@ mod tests {
         let mut world = World::new();
         world
             .types_mut()
-            .name_callable(ClosureTarget(66), "capturing_callable/1");
+            .define_test_callable(ClosureTarget(66), "capturing_callable", 1);
         let tag = world.types_mut().atom_lit("tag");
         let int = world.types_mut().int();
         let float = world.types_mut().float();
@@ -2115,10 +2123,12 @@ mod tests {
     fn arms_that_differ_only_in_their_lambda_are_told_apart_by_it() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        world.types_mut().name_callable(ClosureTarget(66), "multiply_by_two/2");
         world
             .types_mut()
-            .name_callable(ClosureTarget(68), "multiply_by_three/2");
+            .define_test_callable(ClosureTarget(66), "multiply_by_two", 2);
+        world
+            .types_mut()
+            .define_test_callable(ClosureTarget(68), "multiply_by_three", 2);
         let int = world.types_mut().int();
         let one_reducer = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 2);
         let other_reducer = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 2);
@@ -3536,8 +3546,12 @@ mod tests {
     fn callable_flow_dispatch_discriminates_callable_correlations() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        world.types_mut().name_callable(ClosureTarget(66), "closure_a/1");
-        world.types_mut().name_callable(ClosureTarget(68), "closure_b/1");
+        world
+            .types_mut()
+            .define_test_callable(ClosureTarget(66), "closure_a", 1);
+        world
+            .types_mut()
+            .define_test_callable(ClosureTarget(68), "closure_b", 1);
         let closure_a = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 1);
         let closure_b = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 1);
         let target_a = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "target_a", 1);

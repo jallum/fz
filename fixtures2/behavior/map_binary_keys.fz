@@ -1,0 +1,53 @@
+#---
+# purpose: "a map's key order agrees with its key equality, so equal binary keys collide and iteration is content-ordered"
+# oracle: oracle.exs
+#---
+#
+# # map_binary_keys
+#
+# A map here is a flat SORTED array, so its key ORDER has to agree with its key
+# EQUALITY. Two equal keys that do not sort adjacent never collide, and a binary
+# search over the array misses what a linear scan finds.
+#
+# They disagreed about binaries. Lookup compared them structurally; the sort
+# ordered them by ADDRESS, and split inline bitstrings from shared procbins on
+# the tag although equal content in either representation is the same key. So a
+# duplicate key kept both entries in the array:
+#
+#     built = "a" <> "b"
+#     %{"ab" => 1, built => 2}
+#
+#       elixir  %{"ab" => 2}     the later key wins
+#       interp  %{"ab" => 2}     agreed
+#       run     %{"ab" => 1}     SILENTLY WRONG
+#
+# Lookup survived only because it was a linear scan using the correct relation,
+# which is why this hid: the slow path was the right one.
+#
+# `Json.decode` builds maps whose keys are binaries constructed at runtime, and
+# duplicate keys are legal in JSON with last-one-wins, so this is the goal
+# program's central data structure.
+#
+# ## What it covers
+#
+#   * a duplicate key where one side is built at runtime, so the two are equal
+#     in content and differ in address -- the later value must win;
+#   * lookup by a runtime-built key, which the linear scan already did and a
+#     content-ordered array must keep doing;
+#   * ITERATION ORDER, which is now by content. It matches Elixir, whose small
+#     maps are term-ordered -- including the prefix case where the shorter key
+#     sorts first.
+fn main() do
+  built = "a" <> "b"
+
+  dbg(%{"ab" => 1, built => 2})
+  dbg(Enum.count(%{"ab" => 1, built => 2}))
+
+  m = %{"ab" => 1, "cd" => 2, "ef" => 3}
+  dbg(m["ab"])
+  dbg(m[built])
+  dbg(m["zz"])
+
+  dbg(Enum.to_list(%{"zebra" => 1, "apple" => 2, "mango" => 3}))
+  dbg(Enum.to_list(%{"aa" => 1, "a" => 2, "ab" => 3}))
+end

@@ -390,7 +390,9 @@ fn import_except_wrong_arity_is_error() {
 fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
-    let math = compiler.world_mut().reference_module("Math".to_string());
+    let math = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Math").unwrap());
     let add = compiler.world_mut().reference_function(math, "add".to_string(), 2);
     let reference = compiler.world().function_ref(add).clone();
     compiler.submit_module_interface(

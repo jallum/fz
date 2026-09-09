@@ -1,14 +1,12 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
-use crate::compiler2::artifact::{
-    NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
-};
+use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::compiler2::pull::{ProductKey, ProductSettlement, ProductValue, TransportCarrier};
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
-    FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, Namespace, QuotedSourceHeap,
+    FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace, QuotedSourceHeap,
     QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
     parse_quoted_program,
 };
@@ -20,6 +18,7 @@ use crate::fz_ir::{ExternTy, FnId, PhysicalCapability, Prim as IrPrim, Stmt as I
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -28,6 +27,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
+
+fn module_name(text: &str) -> ModuleName {
+    ModuleName::parse_dotted(text).unwrap()
+}
 
 #[test]
 fn retained_closure_source_replacement_does_not_request_obsolete_products() {
@@ -63,7 +66,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
     requests.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: None,
-        text: "\n\nfn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+        text: "fn main(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     assert!(
@@ -86,7 +89,7 @@ type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
-type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
+type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleDenotation>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
@@ -501,7 +504,7 @@ impl TypeReferenceCapture {
         telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
             &["fz", "compiler2", "type", "references", "function", "recorded"],
             move |_, _, _, world, function| {
-                let name = world.function_ref(*function).name.clone();
+                let name = world.function_ref(*function).display_name();
                 records.borrow_mut().extend(
                     world
                         .function_type_refs(*function)
@@ -798,7 +801,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "top-level scope should prepare module definitions",
     );
 
-    let protocol = world.reference_module("Proof");
+    let protocol = world.reference_module(module_name("Proof"));
     assert!(
         world.demand(Job::DefineModule(protocol)),
         "protocol definition should be demandable"
@@ -808,7 +811,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "protocol definition should publish callback facts first",
     );
 
-    let owner = world.reference_module("Box");
+    let owner = world.reference_module(module_name("Box"));
     assert!(
         world.demand(Job::DefineModule(owner)),
         "owner module definition should be demandable",
@@ -849,9 +852,9 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
-    let protocol = world.reference_module("Contracts.Collectable");
-    let list = world.reference_module("List");
-    let contracts_list = world.reference_module("Contracts.List");
+    let protocol = world.reference_module(module_name("Contracts.Collectable"));
+    let list = world.reference_module(module_name("List"));
+    let contracts_list = world.reference_module(module_name("Contracts.List"));
     let id_callback = world.reference_function(protocol, "id", 1);
     let dispatch = world
         .protocol_dispatch(protocol)
@@ -903,11 +906,11 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     );
     let protocol = *module_ids
         .iter()
-        .find(|module| world.module_name(**module) == Some("Proof"))
+        .find(|module| world.module_name(**module) == Some(&module_name("Proof")))
         .expect("indexed module id for the protocol");
     let owner = *module_ids
         .iter()
-        .find(|module| world.module_name(**module) == Some("Box"))
+        .find(|module| world.module_name(**module) == Some(&module_name("Box")))
         .expect("indexed module id for the impl owner");
 
     assert!(
@@ -1054,7 +1057,9 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     // fz-hwn.19.2.4.16.1: the `defimpl Proof, for: List` nested in `Box` is
     // hoisted to its own module `Proof.List`. The impl lands — and revises the
     // dispatch — when *that* module is defined, never its lexical host `Box`.
-    let impl_module = world.reference_module("Proof.List".to_string());
+    let protocol = world.reference_module(module_name("Proof"));
+    let target = world.reference_module(module_name("List"));
+    let impl_module = world.reference_protocol_impl_module(protocol, target);
     assert!(
         world.demand(Job::DefineModule(impl_module)),
         "defining the hoisted impl module `Proof.List` should be demandable",
@@ -1115,7 +1120,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     assert!(
         world
             .module_name(dispatch.arms[0].target)
-            .is_some_and(|name| name.ends_with("List")),
+            .is_some_and(|name| name.last_segment() == "List"),
         "the dispatch arm should target the List receiver domain",
     );
     assert!(
@@ -1171,8 +1176,8 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         "second drive should scope both modules",
     );
 
-    let point = world.reference_module("Point");
-    let helper = world.reference_module("Helper");
+    let point = world.reference_module(module_name("Point"));
+    let helper = world.reference_module(module_name("Helper"));
 
     assert!(
         world.demand(Job::DefineModule(point)),
@@ -1273,7 +1278,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         "second drive should scope the module",
     );
 
-    let point = world.reference_module("Point");
+    let point = world.reference_module(module_name("Point"));
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
@@ -1353,7 +1358,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         "second drive should scope the module",
     );
 
-    let point = world.reference_module("Point");
+    let point = world.reference_module(module_name("Point"));
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
@@ -1472,8 +1477,8 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         "second drive should scope both modules",
     );
 
-    let q = world.reference_module("Q");
-    let point = world.reference_module("Point");
+    let q = world.reference_module(module_name("Q"));
+    let point = world.reference_module(module_name("Point"));
     let t = TypeName {
         module: q,
         name: "t".to_string(),
@@ -1559,7 +1564,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         "second drive should scope both modules",
     );
 
-    let point = world.reference_module("Point");
+    let point = world.reference_module(module_name("Point"));
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
@@ -1569,7 +1574,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         "third drive should define Point's defstruct",
     );
 
-    let q = world.reference_module("Q");
+    let q = world.reference_module(module_name("Q"));
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert!(
         matches!(
@@ -1626,7 +1631,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "second drive should scope both modules",
     );
 
-    let q = world.reference_module("Q");
+    let q = world.reference_module(module_name("Q"));
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert_resolved(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
@@ -1637,7 +1642,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "no diagnostic should fire before Point settles"
     );
 
-    let point = world.reference_module("Point");
+    let point = world.reference_module(module_name("Point"));
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
@@ -1959,8 +1964,8 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
-    let point = world.reference_module("Point");
+    let b = world.reference_module(module_name("B"));
+    let point = world.reference_module(module_name("Point"));
     let convert = world.reference_function(b, "convert", 1);
 
     assert!(
@@ -2056,7 +2061,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let make = world.reference_function(b, "make", 0);
 
     assert!(
@@ -2120,7 +2125,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let take = world.reference_function(b, "take", 1);
 
     assert!(
@@ -2186,7 +2191,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let make = world.reference_function(b, "make", 0);
     assert!(
         world.demand(Job::LowerFunction(make)),
@@ -2243,7 +2248,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let make = world.reference_function(b, "make", 0);
     assert!(
         world.demand(Job::LowerFunction(make)),
@@ -2319,7 +2324,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let take = world.reference_function(b, "take", 1);
     assert!(
         world.demand(Job::LowerFunction(take)),
@@ -2376,7 +2381,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "second drive should scope both modules",
     );
 
-    let b = world.reference_module("B");
+    let b = world.reference_module(module_name("B"));
     let take = world.reference_function(b, "take", 1);
     assert!(
         world.demand(Job::LowerFunction(take)),
@@ -2568,12 +2573,12 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.schema("Point").map(Vec::as_slice),
+        program.schema(&module_name("Point")).map(Vec::as_slice),
         Some(["x".to_string(), "y".to_string()].as_slice()),
         "Point's schema should be the declared defstruct order, not the literal's write order"
     );
     assert_eq!(
-        program.schema("Pair").map(Vec::as_slice),
+        program.schema(&module_name("Pair")).map(Vec::as_slice),
         Some(["first".to_string(), "second".to_string()].as_slice()),
         "Pair's schema should be present from the fact store even though it is only ever pattern-destructured"
     );
@@ -2609,7 +2614,11 @@ fn compiler2_backend_keeps_a_struct_named_only_by_a_retained_type_predicate() {
     );
 
     assert_eq!(
-        backend.last(root).program.schema("Packet").map(Vec::as_slice),
+        backend
+            .last(root)
+            .program
+            .schema(&module_name("Packet"))
+            .map(Vec::as_slice),
         Some(["value".to_string()].as_slice()),
         "the retained entry predicate must carry Packet's typed schema dependency even without a Struct step"
     );
@@ -2659,7 +2668,7 @@ fn compiler2_main_root_keeps_its_struct_schema_independent_of_a_macro_root() {
 
     let program = backend.last(root_id).program;
     assert_eq!(
-        program.schema("Widget").map(Vec::as_slice),
+        program.schema(&module_name("Widget")).map(Vec::as_slice),
         Some(["label".to_string(), "count".to_string()].as_slice()),
         "the runtime root must retain its exact Widget schema (in declaration order) even though an \
          independently driven macro root touches no structs in the shared World",
@@ -2708,13 +2717,13 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         .into_iter()
         .filter(|record| {
             !matches!(
-                record.function_ref.name.as_str(),
+                record.function_ref.name(),
                 "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
             )
         })
         .map(|record| {
             (
-                record.function_ref.name.clone(),
+                record.function_ref.display_name(),
                 record.arity,
                 function_module_name(&record, &modules),
                 function_fq_name(&record, &modules),
@@ -2763,7 +2772,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
                     .is_none_or(|function_ref| {
                         matches!(
-                            function_ref.name.as_str(),
+                            function_ref.name(),
                             "fn" | "fnp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
                         )
                     })
@@ -3690,7 +3699,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         .cloned()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -3888,7 +3897,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -5013,25 +5022,18 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-fn compiler2_native_program_shares_boxed_callable_cps_without_erasing_semantic_identity() {
+fn compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_captures() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
     functions.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
-    let before_sharing = Rc::new(RefCell::new(Vec::<NativeProgram>::new()));
-    let before_sharing_sink = Rc::clone(&before_sharing);
-    tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
-        &["fz", "compiler2", "native_program", "before_sharing"],
-        move |_, _, _, _, program| before_sharing_sink.borrow_mut().push(program.clone()),
-    );
-
+    let dbg = DbgCapture::new();
     let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/boxed_callable_cps_sharing.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/boxed_callable_cps_sharing.fz").to_string(),
+        name: Some("fixtures2/behavior/grounded_predicate_captures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/grounded_predicate_captures.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5039,381 +5041,184 @@ fn compiler2_native_program_shares_boxed_callable_cps_without_erasing_semantic_i
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     settle_native_product(&mut compiler, root_id);
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "native lowering should preserve reducer behavior when the same boxed surface captures different predicates: {outcome:?}; diagnostic={message}"
-        );
-    }
+    assert_resolved(compiler.drive(), "grounded predicate captures should lower directly");
 
     let make_reducer_id = function_id(&functions, "make_reducer", 1);
-    let predicate_functions = HashSet::from([
-        function_id(&functions, "gt2", 1).as_u32(),
-        function_id(&functions, "even", 1).as_u32(),
-    ]);
+    let predicate_functions = HashSet::from([function_id(&functions, "gt2", 1), function_id(&functions, "even", 1)]);
     let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
         .into_iter()
         .find(|record| record.arity == 2)
         .expect("make_reducer/1 should generate the reducer lambda")
         .function_id;
-
-    let mut unshared_program = before_sharing
-        .borrow()
-        .last()
-        .cloned()
-        .expect("native lowering should expose its complete graph before physical sharing");
-    let unshared_reducers = unshared_program
+    let program = native.last(root_id).program;
+    let reducers = program
         .executable_entries
         .iter()
         .filter(|entry| entry.key.activation.function == reducer_id)
-        .cloned()
         .collect::<Vec<_>>();
+    assert_eq!(reducers.len(), 2, "both semantic predicate identities remain");
+    let types = compiler.types_for_test();
     assert_eq!(
-        unshared_reducers
+        reducers
             .iter()
-            .map(|entry| entry.fn_id)
+            .map(|entry| entry.key.activation.inputs(types)[0])
             .collect::<HashSet<_>>()
             .len(),
         2,
-        "the comparison proof must begin with distinct physical reducer graphs",
+        "captured predicate identity is semantic even when it needs no physical lane",
     );
-    let left_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[0].key);
-    let right_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[1].key);
+    assert_eq!(
+        reducers.iter().map(|entry| entry.fn_id).collect::<HashSet<_>>().len(),
+        2
+    );
     assert!(
-        left_graph.len() > 1 && left_graph.len() == right_graph.len() && left_graph.is_disjoint(&right_graph),
-        "the distinct proof pair must include equally sized, disjoint owned continuation graphs",
+        !program.native_cps_graphs_equivalent(&reducers[0].key, &reducers[1].key),
+        "different direct predicate calls are not interchangeable native graphs",
     );
-    let body = |fn_id| {
-        unshared_program
+    let expected_predicates = program
+        .executable_entries
+        .iter()
+        .filter(|entry| predicate_functions.contains(&entry.key.activation.function))
+        .map(|entry| entry.fn_id)
+        .collect::<HashSet<_>>();
+    let mut called_predicates = HashSet::new();
+    for reducer in &reducers {
+        let body = program
             .bodies
             .iter()
-            .find(|body| body.fn_id == fn_id)
-            .expect("executable native body")
-    };
-    let left_body = body(unshared_reducers[0].fn_id);
-    let right_body = body(unshared_reducers[1].fn_id);
-    let differing_value_types = left_body
-        .value_types
-        .iter()
-        .filter_map(|(var, left_ty)| (right_body.value_types.get(var) != Some(left_ty)).then_some(*var))
-        .collect::<HashSet<_>>();
-    let left_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
-        unshared_program.module.fn_by_id(unshared_reducers[0].fn_id),
-    );
-    let right_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
-        unshared_program.module.fn_by_id(unshared_reducers[1].fn_id),
-    );
-    assert!(
-        !differing_value_types.is_empty()
-            && differing_value_types.iter().all(|var| {
-                left_callee_only.contains(var)
-                    && right_callee_only.contains(var)
-                    && left_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
-                    && right_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
-            }),
-        "the positive pair must exercise only the proven ValueRef indirect-callee type exception",
-    );
-    assert!(
-        unshared_program.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
-        "the distinct boxed reducer and full continuation graphs should normalize as equivalent",
-    );
-    let mut opposite_construction_order = unshared_program.clone();
-    opposite_construction_order.bodies.reverse();
-    opposite_construction_order.module.fns.reverse();
-    opposite_construction_order.module.fn_idx = opposite_construction_order
-        .module
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(index, function)| (function.id, index))
-        .collect();
-    assert!(
-        opposite_construction_order.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
-        "structurally equal graphs must compare equally after opposite body construction order",
-    );
-    let mut broken_structure = unshared_program.clone();
-    let mut detached = None;
-    'functions: for function in &mut broken_structure.module.fns {
-        if !right_graph.contains(&function.id) {
-            continue;
-        }
-        for block in &mut function.blocks {
-            let continuation = match &mut block.terminator {
-                IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => {
-                    Some(&mut continuation.fn_id)
-                }
-                _ => None,
-            };
-            if let Some(continuation) = continuation.filter(|continuation| right_graph.contains(continuation)) {
-                detached = Some(*continuation);
-                *continuation = unshared_reducers[0].fn_id;
-                break 'functions;
-            }
-        }
-    }
-    let detached = detached.expect("the structural-role control needs a continuation control edge in the right graph");
-    assert!(
-        !broken_structure.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
-        "an owned continuation detached from the completed IR control graph must make sharing ineligible",
-    );
-    broken_structure.deduplicate_equivalent_sibling_graphs();
-    assert_eq!(
-        unshared_reducers
-            .iter()
-            .map(|entry| broken_structure.executable_fn(&entry.key).expect("reducer executable"))
-            .collect::<HashSet<_>>()
-            .len(),
-        2,
-        "an incomplete ownership graph must not enter equivalence during the sharing fixed point",
-    );
-    let detached_owner = broken_structure
-        .bodies
-        .iter()
-        .find_map(|body| {
-            (body.fn_id == detached).then(|| match body.origin {
-                NativeBodyOrigin::Continuation { owner } => owner,
-                _ => panic!("the detached body must remain a continuation"),
-            })
-        })
-        .expect("an ineligible continuation must not be removed by an unrelated representative remap");
-    assert!(
-        broken_structure.module.fn_idx.contains_key(&detached)
-            && broken_structure.module.fn_idx.contains_key(&detached_owner),
-        "an ineligible continuation and its owner must remain internally valid after other graph remaps",
-    );
-    let representative = unshared_reducers[0].fn_id;
-    let sharing_work = unshared_program.deduplicate_equivalent_sibling_graphs();
-    assert_eq!(
-        sharing_work,
-        NativeGraphSharingWork {
-            passes: 2,
-            indexed_bodies: 95,
-            owned_graph_bodies: 84,
-            graph_comparisons: 3,
-            body_comparisons: 7,
-        },
-        "sharing work must be a deterministic function of indexed graph ownership",
-    );
-    assert!(
-        unshared_reducers
-            .iter()
-            .all(|entry| unshared_program.executable_fn(&entry.key) == Some(representative)),
-        "fixed-point sharing should deterministically retain the first semantic entry's physical graph",
-    );
-    assert!(
-        left_graph
-            .iter()
-            .all(|fn_id| unshared_program.module.fn_idx.contains_key(fn_id))
-            && right_graph
-                .iter()
-                .all(|fn_id| !unshared_program.module.fn_idx.contains_key(fn_id)),
-        "sharing must retain every representative continuation and remove every redundant continuation",
-    );
-    assert!(
-        unshared_program.bodies.iter().all(|body| match body.origin {
-            NativeBodyOrigin::Continuation { owner } => unshared_program.module.fn_idx.contains_key(&owner),
-            _ => true,
-        }),
-        "representative remapping must not leave any retained continuation with a removed owner",
-    );
-
-    let program = native.last(root_id).program;
-    let reducer_executables = program
-        .executable_entries
-        .iter()
-        .filter(|entry| entry.key.activation.function == reducer_id)
-        .collect::<Vec<_>>();
-    let types = compiler.types_for_test();
-    assert!(
-        reducer_executables
-            .iter()
-            .all(|entry| entry.key.activation.input_len(types) != 0),
-        "the reducer executable should still carry a captured predicate identity lane",
-    );
-
-    let capture_identities = reducer_executables
-        .iter()
-        .map(|entry| entry.key.activation.inputs(types)[..1].to_vec())
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        capture_identities.len(),
-        2,
-        "the reducer lambda should preserve both semantic activation identities",
-    );
-    assert_eq!(
-        reducer_executables
-            .iter()
-            .map(|entry| entry.fn_id)
-            .collect::<HashSet<_>>()
-            .len(),
-        1,
-        "equivalent boxed reducer activations should share one native body graph",
-    );
-    let predicate_words = program
-        .callable_boundaries
-        .iter()
-        .filter(|boundary| {
-            boundary
-                .shape
-                .as_ref()
-                .is_some_and(|shape| predicate_functions.contains(&shape.target.0))
-        })
-        .map(|boundary| boundary.identity_fn)
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        predicate_words.len(),
-        2,
-        "even and gt2 must keep distinct runtime construction words",
-    );
-    let emitted_predicate_words = program
-        .module
-        .fns
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.stmts)
-        .filter_map(|stmt| match stmt {
-            IrStmt::Let(_, IrPrim::MakeFnRef(_, identity_fn) | IrPrim::MakeClosure(_, identity_fn, _))
-                if predicate_words.contains(identity_fn) =>
-            {
-                Some(*identity_fn)
-            }
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        emitted_predicate_words, predicate_words,
-        "sharing reducer code must not merge the predicate construction words it dispatches through",
-    );
-    let reducer_graph = program.native_graph_fn_ids(&reducer_executables[0].key);
-    assert_eq!(
-        reducer_graph
-            .iter()
-            .flat_map(|fn_id| &program.module.fn_by_id(*fn_id).blocks)
-            .filter(|block| matches!(
-                block.terminator,
-                IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
-            ))
-            .count(),
-        1,
-        "the shared reducer graph must still invoke its captured predicate through the boxed callable word",
-    );
-}
-
-#[test]
-fn compiler2_native_program_keeps_direct_callable_specializations_inequivalent() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-    let functions = FunctionCapture::new();
-    functions.install(&tel);
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/direct_callable_capture_identity.fz".to_string()),
-        text: r#"
-fn double(n), do: n * 2
-fn triple(n), do: n * 3
-fn mk(g), do: fn (n) -> g.(n) end
-fn main(), do: mk(double).(4) + mk(triple).(4)
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    settle_native_product(&mut compiler, root_id);
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!("direct callable control should lower: {outcome:?}; diagnostic={message}");
-    }
-
-    let mk_id = function_id(&functions, "mk", 1);
-    let double_id = function_id(&functions, "double", 1);
-    let triple_id = function_id(&functions, "triple", 1);
-    let lambda_id = generated_functions_owned_by(&functions, mk_id)
-        .into_iter()
-        .find(|record| record.arity == 1)
-        .expect("mk/1 should generate its returned lambda")
-        .function_id;
-    let program = native.last(root_id).program;
-    let lambda_executables = program
-        .executable_entries
-        .iter()
-        .filter(|entry| entry.key.activation.function == lambda_id)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        lambda_executables.len(),
-        2,
-        "double and triple should mint two semantic activations"
-    );
-    assert!(
-        !program.native_cps_graphs_equivalent(&lambda_executables[0].key, &lambda_executables[1].key),
-        "the direct-carrier lambda bodies ground to different call targets and must remain inequivalent",
-    );
-    assert_eq!(
-        lambda_executables
-            .iter()
-            .map(|entry| entry.fn_id)
-            .collect::<HashSet<_>>()
-            .len(),
-        2,
-        "inequivalent direct specializations must retain separate native bodies",
-    );
-    let direct_target = |entry: &crate::compiler2::artifact::NativeExecutableEntry| {
-        program
-            .native_graph_fn_ids(&entry.key)
-            .into_iter()
-            .flat_map(|fn_id| program.module.fn_by_id(fn_id).blocks.iter())
-            .filter_map(|block| match block.terminator {
-                IrTerm::Call {
+            .find(|body| body.fn_id == reducer.fn_id)
+            .expect("reducer native body");
+        assert_eq!(
+            body.param_reprs,
+            vec![AbiValueRepr::RawInt, AbiValueRepr::RawInt],
+            "entry and accumulator are the only runtime inputs; the predicate is grounded",
+        );
+        let mut graph_predicates = HashSet::new();
+        for fn_id in program.native_graph_fn_ids(&reducer.key) {
+            for block in &program.module.fn_by_id(fn_id).blocks {
+                assert!(
+                    !matches!(
+                        block.terminator,
+                        IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
+                    ),
+                    "the reducer must not box and indirectly invoke a statically known predicate",
+                );
+                if let IrTerm::Call {
                     callee: crate::fz_ir::DirectCallTarget::Local(target),
                     ..
                 }
                 | IrTerm::TailCall {
                     callee: crate::fz_ir::DirectCallTarget::Local(target),
                     ..
-                } => Some(target),
-                _ => None,
-            })
-            .find(|target| {
-                program.executable_entries.iter().any(|candidate| {
-                    candidate.fn_id == *target
-                        && matches!(candidate.key.activation.function, function if function == double_id || function == triple_id)
-                })
-            })
-            .expect("each direct-carrier lambda should ground its captured call")
-    };
-    let grounded_targets = lambda_executables
-        .iter()
-        .map(|entry| direct_target(entry))
-        .collect::<HashSet<_>>();
-    let expected_targets = program
+                } = block.terminator
+                    && expected_predicates.contains(&target)
+                {
+                    graph_predicates.insert(target);
+                }
+            }
+        }
+        assert_eq!(
+            graph_predicates.len(),
+            1,
+            "each specialization invokes only its own predicate"
+        );
+        called_predicates.extend(graph_predicates);
+    }
+    assert_eq!(called_predicates, expected_predicates);
+    compiler
+        .run_root_jit(root_id)
+        .expect("grounded reducers retain their behavior");
+    assert_eq!(dbg.lines(), vec!["4".to_string()]);
+}
+
+#[test]
+fn compiler2_native_program_shares_runtime_selected_predicate_invocation_only() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let before = Rc::new(RefCell::new(None::<NativeProgram>));
+    let observed = Rc::clone(&before);
+    tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
+        &["fz", "compiler2", "native_program", "before_sharing"],
+        move |_, _, _, _, program| *observed.borrow_mut() = Some(program.clone()),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("boxed_predicate_cps_sharing.fz".into()),
+        text: include_str!("../../fixtures2/behavior/boxed_predicate_cps_sharing.fz").into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "runtime-selected predicates should lower");
+    let maker = function_id(&functions, "make_reducer", 1);
+    let reducer = generated_functions_owned_by(&functions, maker)
+        .into_iter()
+        .find(|record| record.arity == 2)
+        .expect("reducer lambda")
+        .function_id;
+    let before = before.borrow();
+    let before = before.as_ref().expect("pre-sharing native program");
+    let entries = before
         .executable_entries
         .iter()
-        .filter(
-            |entry| matches!(entry.key.activation.function, function if function == double_id || function == triple_id),
-        )
-        .map(|entry| entry.fn_id)
-        .collect::<HashSet<_>>();
+        .filter(|entry| entry.key.activation.function == reducer)
+        .collect::<Vec<_>>();
     assert_eq!(
-        grounded_targets, expected_targets,
-        "double and triple must remain distinct grounded direct targets",
+        entries.len(),
+        2,
+        "different predicate unions retain distinct semantic keys"
     );
+    assert_ne!(entries[0].key, entries[1].key);
+    assert_ne!(entries[0].fn_id, entries[1].fn_id);
+    let body = |id| {
+        before
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == id)
+            .expect("reducer body")
+    };
+    let (left, right) = (body(entries[0].fn_id), body(entries[1].fn_id));
+    let differing = left
+        .value_types
+        .iter()
+        .filter_map(|(var, ty)| (right.value_types.get(var) != Some(ty)).then_some(*var))
+        .collect::<HashSet<_>>();
+    let left_callees = crate::compiler2::artifact::indirect_callee_only_vars(before.module.fn_by_id(left.fn_id));
+    let right_callees = crate::compiler2::artifact::indirect_callee_only_vars(before.module.fn_by_id(right.fn_id));
+    assert!(
+        !differing.is_empty(),
+        "the positive proof exercises the boxed-callee type exception"
+    );
+    assert!(
+        differing.iter().all(|var| left_callees.contains(var)
+            && right_callees.contains(var)
+            && left.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+            && right.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)),
+        "only actual ValueRef indirect callees may differ in type"
+    );
+    assert!(before.native_cps_graphs_equivalent(&entries[0].key, &entries[1].key));
+    let after = native.last(root).program;
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| after.executable_fn(&entry.key).expect("retained semantic entry"))
+            .collect::<HashSet<_>>()
+            .len(),
+        1,
+        "one equivalent invocation graph serves both retained semantic identities",
+    );
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    compiler
+        .run_root_jit(root)
+        .expect("shared predicate invocation preserves the asserted result");
 }
 
 fn assert_native_helpers_are_referenced(source: &str) {
@@ -7801,10 +7606,13 @@ fn compiler2_interp_retains_single_clause_dispatch_failure() {
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/single_clause_failure_backend_interp.fz".to_string()),
+        // `dbg/1` is the prelude wrapper, used here only to make `:b` opaque so
+        // the clause cannot be decided statically. It used to redeclare
+        // `fz_dbg_value` as `extern "C"`, which reached the runtime helper --
+        // an `fn(*mut Process, u64)` -- through a `fn(u64)` transmute.
         text: r#"
-extern "C" fn fz_dbg_value(any) :: any
 fn choose(:a), do: 1
-fn main(), do: choose(fz_dbg_value(:b))
+fn main(), do: choose(dbg(:b))
 "#
         .to_string(),
     });
@@ -8658,7 +8466,10 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         .executables()
         .iter()
         .find(|executable| {
-            compiler.world().function_ref(executable.key.activation.function).name == "count_result"
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("count_result")
                 && executable.abi.materialized.runtime_demand.input_demands.first() == Some(&exact_result)
         })
         .expect("the selected count-result clause should need only the integer payload");
@@ -8676,7 +8487,10 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         .executables()
         .iter()
         .filter(|executable| {
-            compiler.world().function_ref(executable.key.activation.function).name == "count"
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("count")
                 && executable
                     .abi
                     .materialized
@@ -8826,6 +8640,53 @@ end
     );
 }
 
+#[test]
+fn compiler2_nonreturning_nontail_call_has_a_bottom_resume_payload() {
+    for (case, invocation) in [
+        ("direct", "only(:bad)"),
+        ("closure", "callee = &only/1\n  callee.(:bad)"),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("nonreturning_nontail_{case}_call.fz")),
+            text: format!(
+                r#"
+fn only(:ok), do: :ok
+
+fn main() do
+  {invocation}
+  :unreachable
+end
+"#
+            ),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+
+        let interp_error = match compiler.run_root_interp(root) {
+            Ok(value) => panic!("interp must preserve the {case} callee's function-clause halt, got {value}"),
+            Err(error) => error,
+        };
+        assert!(
+            interp_error.contains("function_clause"),
+            "interp {case} fault should name function_clause: {interp_error}"
+        );
+        let jit_error = match compiler.run_root_jit(root) {
+            Ok(()) => panic!("JIT must preserve the {case} callee's function-clause halt, got success"),
+            Err(error) => error,
+        };
+        assert!(
+            jit_error.contains("function_clause"),
+            "JIT {case} fault should name function_clause: {jit_error}"
+        );
+    }
+}
+
 /// fz-9in: a binding can be dead while the call that produces it survives
 /// (the `1..5` Range construction allocates, so the call edge is kept even
 /// though nothing demands its result). The callee then runs with zero
@@ -8971,6 +8832,36 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 }
 
 #[test]
+fn with_else_lowering_copies_retain_one_source_lambda_denotation() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("with_else_denotation.fz".into()),
+        text: "fn make(a, b) do\n  with :ok <- a, :ok <- b do\n    :ok\n  else\n    _ -> fn () -> 42 end\n  end\nend\nfn main() do\n  dbg(make(:bad, :ok))\n  dbg(make(:ok, :bad))\n  0\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    let denotations = functions
+        .all()
+        .into_iter()
+        .filter(|record| record.function_ref.is_generated() && record.function_ref.lexical_owner().is_named("make"))
+        .map(|record| record.function_id.denotation())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        denotations.len(),
+        1,
+        "lowering the same else AST for each failed binding must not mint new source denotations: {denotations:?}"
+    );
+}
+
+#[test]
 fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and_jit() {
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
@@ -8999,20 +8890,13 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
         .all()
         .into_iter()
         .filter(|record| {
-            record
-                .function_ref
-                .name
-                .strip_prefix("#lambda:0:")
-                .is_some_and(|range| {
-                    range.split_once('-').is_some_and(|(start, end)| {
-                        start
-                            .parse::<usize>()
-                            .ok()
-                            .zip(end.parse::<usize>().ok())
-                            .and_then(|(start, end)| source.get(start..end))
-                            .is_some_and(|body| body.contains("x < 4"))
-                    })
-                })
+            if !record.function_ref.is_generated() {
+                return false;
+            }
+            let span = compiler.world().function_surface(record.function_id).span;
+            source
+                .get(span.start as usize..span.end as usize)
+                .is_some_and(|body| body.contains("x < 4"))
         })
         .map(|record| record.function_id)
         .collect::<HashSet<_>>();
@@ -9213,11 +9097,17 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(cl_sid, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
+        .find(|(cl_sid, _, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
         .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
     let body_ptr = compiled
         .fn_ptr(native_callable_boundary.wrapper_fn)
         .expect("compiled JIT module should publish the dtor wrapper body address");
+    assert_eq!(native_callable_boundary.denotation, lambda_id.denotation());
+    assert_eq!(
+        static_target.4,
+        lambda_id.denotation(),
+        "static publication must retain source denotation, not its callable-boundary identity",
+    );
     assert_ne!(
         static_target.2, body_ptr,
         "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
@@ -9389,6 +9279,149 @@ fn compiler2_unchanged_backend_request_emits_no_content_movement() {
     assert!(
         records[0].changed,
         "a changed backend settlement represents actual state movement",
+    );
+}
+
+#[test]
+fn compiler2_unknown_extern_abi_is_a_lower_diagnostic() {
+    // The ABI string is not decoration: it decides whether the callee receives
+    // the current process as an implicit first argument, and whether a
+    // `binary` parameter arrives as a `*const u8` or as a tagged value ref.
+    // Falling back to C for an unrecognised name would call the symbol with the
+    // wrong arguments -- a crash inside the callee, blamed on the callee.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("unknown_extern_abi.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "rust" fn some_symbol(integer) :: integer
+end
+
+fn main(), do: Weird.some_symbol(1)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "an unrecognised extern ABI must stop the compile, not silently pick one: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("unknown ABI diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNSUPPORTED.0,
+        "an unrecognised extern ABI is an unsupported lowering case",
+    );
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("`rust`") && message.contains("`C`") && message.contains("`fz`"),
+        "the diagnostic should name the rejected ABI and every ABI that exists, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
+    // The `fz` ABI names symbols that BOTH doors also claim by name in their
+    // own lowerings, and the two claim sets are not the same. So a foreign
+    // declaration of one is a question the doors would answer differently:
+    // `extern "fz" fn fz_op_add_ii` once returned 5 under `run` and a process
+    // pointer plus two under `interp`. Refusing it in the shared front end is
+    // what makes every door refuse it identically.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("foreign_fz_abi.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "fz" fn fz_op_add_ii(integer, integer) :: integer
+end
+
+fn main(), do: Weird.fz_op_add_ii(2, 3)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a foreign `extern \"fz\"` must stop the compile: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("reserved ABI diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("reserved for fz's own runtime library"),
+        "the diagnostic should say why the ABI is not available here, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi() {
+    // `fz_dbg_value` is really `fn(*mut Process, u64) -> u64`. A declaration
+    // saying otherwise is not a preference, it is a lie about a symbol the
+    // runtime owns, and it ends in a transmute: `extern "C"` reached it as
+    // `fn(u64) -> u64`, so the argument's ref word was read as the process
+    // pointer. Under `interp` that returned nil; under `run` and `build`,
+    // `fz_process_heap_alloc_stats` shaped the same way SEGFAULTED.
+    //
+    // So the refusal belongs where FIX A's does -- the shared front end. That
+    // is what lets this be one assertion instead of three: `drive` is the
+    // common ancestor of every door.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("wrong_abi_for_runtime_symbol.fz".to_string()),
+        text: r#"defmodule Weird do
+  extern "C" fn fz_dbg_value(any) :: any
+end
+
+fn main(), do: Weird.fz_dbg_value(:zz)
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a declaration contradicting the runtime must stop the compile: {outcome:?}",
+    );
+
+    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("ABI mismatch diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    let message = metadata_str(&diagnostic, "message");
+    assert!(
+        message.contains("fz_dbg_value") && message.contains("`fz` ABI"),
+        "the diagnostic should name the symbol and the convention the runtime actually \
+         provides, got: {message}",
     );
 }
 
@@ -10519,8 +10552,21 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
 /// denominator is 7 either way and the zero above still speaks for exactly what
 /// it did.
+/// fz-5xp.2: `entry` 171 -> 156 plans, 164 -> 149 unreadable. `Enum.to_list/1`
+/// gains a clause typed `[a]`, so a list argument reaches it as itself rather
+/// than through `reverse(reverse(_))`, and the reduce-and-reverse activations
+/// that stood between every builder and its list argument stop being
+/// specialized. Fifteen entry plans go away with them; the READABLE denominator
+/// is 7 either way, and the escape populations this census actually ratchets --
+/// `reachable`, `SOURCE_ORDER_BLIND_ESCAPES`, and the permuted-arrival stresses
+/// -- are all unchanged. This moves the denominator, not the zero.
+/// fz-5xp.22: `entry` 157 -> 156 plans, 149 -> 148 unreadable. `List.member?`
+/// stops asking its question in a `when head == value` guard -- where it got
+/// identity semantics only because guards happen to be strict -- and says
+/// `===` in the body instead, so the guard region it used to contribute goes
+/// away with it. The escape populations this census ratchets are unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 171, 164), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 156, 148), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -11400,9 +11446,11 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
             &["fz", "compiler2", "work_graph", "applied"],
             move |_, _, _, world, completion| {
                 if let Job::DeriveRuntimeDemand(executable) = &completion.job {
-                    let name = world.function_ref(executable.activation.function).name.clone();
-                    if ["left", "right", "count", "even", "odd", "main"].contains(&name.as_str()) {
-                        run_sink.borrow_mut().push((executable.clone(), name));
+                    let Some(name) = world.function_ref(executable.activation.function).source_name() else {
+                        return;
+                    };
+                    if ["left", "right", "count", "even", "odd", "main"].contains(&name) {
+                        run_sink.borrow_mut().push((executable.clone(), name.to_string()));
                     }
                 }
             },
@@ -11496,7 +11544,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
                     FactUse::Current(FactKey::CallableConstructionTarget(key)) if key.owner == *executable
                 )
             }) {
-                construction_owners.insert(world.function_ref(executable.activation.function).name.clone());
+                construction_owners.insert(world.function_ref(executable.activation.function).display_name());
             }
             assert_eq!(
                 actual_peers, expected_peers,
@@ -11576,7 +11624,12 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
         .retained_backend_program(root)
         .executables()
         .iter()
-        .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
+        .find(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.key.activation.function)
+                .is_named("main")
+        })
         .expect("the main executable should reach the backend")
         .key
         .clone();
@@ -11597,7 +11650,7 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
     assert!(
         callable_dependencies
             .iter()
-            .all(|function| { compiler.world().function_ref(*function).name.starts_with("#lambda:") })
+            .all(|function| { compiler.world().function_ref(*function).is_generated() })
     );
 }
 
@@ -12704,7 +12757,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
                 modules
                     .try_qualified_name(record.module_id)
                     .unwrap_or_else(|| format!("<unnamed:{}>", record.module_id.as_u32())),
-                record.function_ref.name,
+                record.function_ref.display_name(),
                 record.arity,
             )
         })
@@ -12791,7 +12844,7 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     let edge_names = |function: FunctionId| {
         callees(function)
             .into_iter()
-            .map(|callee| compiler.world().function_ref(callee).name.clone())
+            .map(|callee| compiler.world().function_ref(callee).display_name())
             .collect::<BTreeSet<_>>()
     };
     let names = |names: [&str; 2]| names.map(str::to_string).into_iter().collect::<BTreeSet<_>>();
@@ -13707,7 +13760,7 @@ fn main(), do: rebuild([1, 2])
 }
 
 #[test]
-fn compiler2_reusable_cons_statically_skips_a_returned_source_alias() {
+fn compiler2_reusable_cons_preserves_typed_source_and_reuses_a_returned_list() {
     let run = reusable_cons_run(
         "reusable_cons_returned_source_alias.fz",
         r#"
@@ -13725,7 +13778,12 @@ end
     );
 
     assert_eq!((run.births, run.transported), (1, 0));
-    assert_eq!((run.attempts, run.reused), (0, 0));
+    assert_eq!((run.attempts, run.reused), (1, 1));
+    assert_eq!(
+        (run.live_count, run.bytes_used),
+        (6, 160),
+        "preserving the source list type avoids the seventh object: a redundant 16-byte cons"
+    );
     assert!(run.source_and_rebuild_share_return);
     assert_eq!(run.output, ["{{[1, 2]}, [1, 2]}"]);
 }
@@ -13755,6 +13813,8 @@ struct ReusableConsRun {
     transported: u64,
     attempts: u64,
     reused: u64,
+    live_count: usize,
+    bytes_used: usize,
     source_and_rebuild_share_return: bool,
     output: Vec<String>,
 }
@@ -13798,6 +13858,8 @@ fn reusable_cons_run(name: &str, source: &str) -> ReusableConsRun {
         transported,
         attempts: exit.reusable_cons_attempts,
         reused: exit.reusable_cons_reused,
+        live_count: exit.live_count,
+        bytes_used: exit.bytes_used,
         source_and_rebuild_share_return,
         output: dbg.lines(),
     }
@@ -14089,7 +14151,7 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
 /// predicate into its wrapper lambda, and the wrapper calls it, so both remain
 /// keyed per brand. Native lowering may map equivalent boxed-call activations
 /// to one physical CPS graph; grounded direct targets remain distinct, as
-/// `compiler2_native_program_keeps_direct_callable_specializations_inequivalent`
+/// `compiler2_native_program_keeps_grounded_predicates_distinct_without_boxed_captures`
 /// pins. The semantic marginal cost of a call site is therefore three
 /// executables (its lambda, the constructor's split, the wrapper's split), not
 /// the seven it was when the pure transporters `find/2` and three
@@ -14603,6 +14665,56 @@ fn compiler2_guard_dispatch_rejects_cycles() {
 }
 
 #[test]
+fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider() {
+    // A guard helper is reified as a nested plan with its own input space. The
+    // caller's required-input set names the CALLER's semantic inputs, so a
+    // 3-input helper called from a 1-input clause must still leave the caller
+    // requiring only input 0. Merging the two spaces made `interp` demand an
+    // input `band/1` does not have while `run` and `build` answered `:low`
+    // (fz-5xp.74).
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let entry_defs = EntryDispatchCapture::new();
+    entry_defs.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/guard_helper_wider_than_caller.fz".to_string()),
+        text: include_str!("../../fixtures2/00558_guard_helper_wider_than_caller.fz").to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the helper and its caller");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "explicit demand should scope the wider helper",
+    );
+    assert_resolved(compiler.drive(), "second drive should define the wider helper");
+
+    let band_id = function_id(&functions, "band", 1);
+    assert!(
+        compiler.demand(Job::PlanEntryDispatch(band_id)),
+        "band/1 should be demandable as entry dispatch",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "entry-dispatch planning should reify the wider helper",
+    );
+
+    let plan = entry_dispatch(&entry_defs, band_id);
+    assert_eq!(plan.input_count, 1, "band/1 has one semantic input");
+    assert!(
+        plan_has_nested_guard_dispatch(&plan),
+        "the guard should have been reified as a nested helper plan",
+    );
+    assert_eq!(
+        crate::compiler2::artifact::required_dispatch_input_ordinals(&plan),
+        HashSet::from([0]),
+        "the helper's own ordinals must not become demands on the caller",
+    );
+}
+
+#[test]
 fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -14953,8 +15065,8 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         functions
             .all()
             .into_iter()
-            .filter(|record| record.function_ref.name != "__info__")
-            .all(|record| record.function_ref.name != "func"),
+            .filter(|record| !record.function_ref.is_named("__info__"))
+            .all(|record| !record.function_ref.is_named("func")),
         "root definition should not eagerly define the nested user function",
     );
 
@@ -14980,7 +15092,7 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let function_defined = functions
         .all()
         .into_iter()
-        .find(|record| record.function_ref.name == "func")
+        .find(|record| record.function_ref.is_named("func"))
         .expect("nested function.defined event");
     assert_eq!(
         function_module_name(&function_defined, &modules),
@@ -15072,7 +15184,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15096,7 +15208,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15457,7 +15569,7 @@ end
                     .metadata
                     .get("function_ref")
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
-                    .is_none_or(|function_ref| function_ref.name != "tagged")
+                    .is_none_or(|function_ref| !function_ref.is_named("tagged"))
             }),
         "the short alias form should not expand the remote macro",
     );
@@ -15521,7 +15633,7 @@ end
                     .metadata
                     .get("function_ref")
                     .and_then(|value| value.downcast_ref::<FunctionRef>())
-                    .is_none_or(|function_ref| function_ref.name != "twice")
+                    .is_none_or(|function_ref| !function_ref.is_named("twice"))
             }),
         "remote macros must not expand unless the current source scope required them",
     );
@@ -15674,7 +15786,7 @@ fn compiler2_import_all_waits_for_module_interface() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -15741,7 +15853,7 @@ fn compiler2_import_except_waits_for_module_interface() {
         .all()
         .into_iter()
         .filter(|record| module_ids.contains(&record.module_id))
-        .filter(|record| record.function_ref.name != "__info__")
+        .filter(|record| !record.function_ref.is_named("__info__"))
         .map(|record| (function_fq_name(&record, &modules), record.arity))
         .collect::<Vec<_>>();
     names.sort();
@@ -16021,7 +16133,7 @@ impl FunctionCapture {
         self.defs
             .borrow()
             .values()
-            .find(|record| record.function_ref.name == name && record.arity == arity)
+            .find(|record| record.function_ref.is_named(name) && record.arity == arity)
             .map(|record| record.function_id)
             .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
     }
@@ -16056,7 +16168,7 @@ impl SourceNoteCapture {
         self.notes
             .borrow()
             .iter()
-            .filter(|function_ref| function_ref.name == name && function_ref.arity == arity)
+            .filter(|function_ref| function_ref.is_named(name) && function_ref.arity == arity)
             .count()
     }
 }
@@ -16073,10 +16185,12 @@ impl ModuleCapture {
         telemetry.attach_raw_event2::<crate::compiler2::World, ModuleId, _>(
             &["fz", "compiler2", "module", "defined"],
             move |_, _, _, world, module| {
-                defs.borrow_mut()
-                    .entry(*module)
-                    .or_default()
-                    .push(world.module_state(*module));
+                defs.borrow_mut().entry(*module).or_default().push(
+                    world
+                        .module_denotation(*module)
+                        .expect("defined module denotation")
+                        .clone(),
+                );
             },
         );
     }
@@ -16085,44 +16199,23 @@ impl ModuleCapture {
         if module_id == ModuleId::GLOBAL {
             return "<top-level>".to_string();
         }
-        let module = self
-            .defs
+        self.defs
             .borrow()
             .get(&module_id)
             .and_then(|defs| defs.last())
-            .cloned()
-            .unwrap_or_else(|| panic!("module.defined for {}", module_id.as_u32()));
-        Self::qualified_name_from(module, self)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| panic!("module.defined for {}", module_id.as_u32()))
     }
 
     fn try_qualified_name(&self, module_id: ModuleId) -> Option<String> {
         if module_id == ModuleId::GLOBAL {
             return Some("<top-level>".to_string());
         }
-        let module = self
-            .defs
+        self.defs
             .borrow()
             .get(&module_id)
             .and_then(|defs| defs.last())
-            .cloned()?;
-        Some(Self::qualified_name_from(module, self))
-    }
-
-    fn qualified_name_from(module: ModuleState, modules: &Self) -> String {
-        match &module {
-            crate::compiler2::ModuleState::Defined { source, .. }
-            | crate::compiler2::ModuleState::Scoped { source, .. }
-            | crate::compiler2::ModuleState::Indexed { source, .. } => {
-                if source.parent == ModuleId::GLOBAL {
-                    source.local_name.clone()
-                } else {
-                    format!("{}.{}", modules.qualified_name(source.parent), source.local_name)
-                }
-            }
-            crate::compiler2::ModuleState::Placeholder { .. } => {
-                panic!("defined module capture should not contain placeholders")
-            }
-        }
+            .map(ToString::to_string)
     }
 
     fn defined_names(&self) -> Vec<String> {
@@ -16641,27 +16734,8 @@ fn backend_direct_call_in_entry(
     }
 }
 
-/// The capture unpack is keyed on the CONSTRUCTIONS that mint the layout the
-/// callee grounded on, not on the callee's function (fz-kdt.127, fz-kdt.157).
-///
-/// `same_lambda_two_capture_types_dynamic` mints ONE lambda through boundaries
-/// that disagree about slot 0 -- a raw int in one, a raw float in the other --
-/// and hands the value to `P.run/2` through a `case` no key can pin, so the
-/// whole closure really does travel to a callee that wants its captures as
-/// lanes. A prim keyed on the function would ask both boundaries how slot 0
-/// was stored, get two answers, and refuse to compile. So the two halves below
-/// are the invariant and its witness in one program.
-///
-/// The static twin carries the capture type in its forwarder KEY, so it lowers
-/// no unpack at all and cannot witness this; that is
-/// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key`.
-///
-/// This is also fz-kdt.157's missing coverage. Its refusing half had no
-/// program that could reach it, because a function minted at two capture
-/// layouts compiled on no path; loosening the keying back to the function is
-/// exactly what the first assertion detects.
 #[test]
-fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
+fn compiler2_a_capture_unpack_reads_semantic_slots_across_storage_representations() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -16717,42 +16791,15 @@ fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
             .collect::<Vec<_>>(),
     );
 
-    let reprs_by_construction = program
-        .callable_boundaries
-        .iter()
-        .map(|boundary| (boundary.identity_fn, boundary.capture_reprs.clone()))
-        .collect::<HashMap<_, _>>();
     let mut unpacks = 0;
     for body in &program.bodies {
         for block in &program.module.fn_by_id(body.fn_id).blocks {
             for stmt in &block.stmts {
-                let IrStmt::Let(
-                    _,
-                    IrPrim::ClosureCapture {
-                        constructions, index, ..
-                    },
-                ) = stmt
-                else {
+                let IrStmt::Let(_, IrPrim::ClosureCapture { index, .. }) = stmt else {
                     continue;
                 };
                 unpacks += 1;
-                assert!(
-                    !constructions.is_empty(),
-                    "a capture unpack that names no construction has no authority to read from",
-                );
-                let mut reprs = constructions.iter().map(|construction| {
-                    reprs_by_construction
-                        .get(construction)
-                        .unwrap_or_else(|| panic!("construction {construction:?} mints no boundary"))
-                        .get(*index as usize)
-                        .copied()
-                });
-                let first = reprs.next().expect("a non-empty construction list has a first repr");
-                assert!(
-                    first.is_some() && reprs.all(|other| other == first),
-                    "the constructions a capture unpack names must agree about the slot they \
-                     minted, or there is no single answer to read: {constructions:?} slot {index}",
-                );
+                assert_eq!(*index, 0, "every specialization reads the same lexical capture slot");
             }
         }
     }
@@ -17043,7 +17090,7 @@ pub(crate) fn function_id_in_module(
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == name
+            record.function_ref.is_named(name)
                 && record.arity == arity
                 && modules.try_qualified_name(record.module_id).as_deref() == Some(module_name)
         })
@@ -17063,12 +17110,12 @@ pub(crate) fn module_id(capture: &ModuleCapture, name: &str) -> ModuleId {
 
 fn function_fq_name(function: &FunctionDefinedRecord, modules: &ModuleCapture) -> String {
     if function.module_id == ModuleId::GLOBAL {
-        function.function_ref.name.clone()
+        function.function_ref.display_name()
     } else {
         format!(
             "{}.{}",
             modules.qualified_name(function.module_id),
-            function.function_ref.name
+            function.function_ref.display_name()
         )
     }
 }
@@ -17090,10 +17137,11 @@ fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> 
 }
 
 fn named_module_id(world: &crate::compiler2::World, modules: &[ModuleId], name: &str) -> ModuleId {
+    let expected = module_name(name);
     modules
         .iter()
         .copied()
-        .find(|module| world.module_name(*module) == Some(name))
+        .find(|module| world.module_name(*module) == Some(&expected))
         .unwrap_or_else(|| panic!("indexed module `{name}`"))
 }
 
@@ -17459,7 +17507,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
             .iter()
             .map(|activation| {
                 (
-                    world.function_ref(activation.function).name.clone(),
+                    world.function_ref(activation.function).display_name(),
                     activation
                         .inputs(world.types())
                         .iter()
@@ -17817,6 +17865,37 @@ end
     );
 
     assert!(diagnostics.is_empty(), "total declared domains warned: {diagnostics:?}");
+}
+
+#[test]
+fn compiler2_declared_list_domain_recognizes_zero_one_and_two_plus_as_total() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "list_length_partition_exhaustiveness.fz",
+        r#"
+@spec total([any]) :: integer
+fn total([]), do: 0
+fn total([_single]), do: 1
+fn total([_first, _second | _tail]), do: 2
+
+@spec missing_one([any]) :: integer
+fn missing_one([]), do: 0
+fn missing_one([_first, _second | _tail]), do: 2
+
+fn main(), do: {total([:a]), missing_one([])}
+"#,
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|(source, diagnostic)| (source.as_str(), diagnostic.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "list_length_partition_exhaustiveness.fz",
+            "`fn` clauses don't cover every input",
+        )],
+        "only the genuinely partial list partition should warn: {diagnostics:?}",
+    );
 }
 
 #[test]
@@ -18455,22 +18534,13 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
         .all()
         .into_iter()
         .find(|record| {
-            record
-                .function_ref
-                .name
-                .strip_prefix("#lambda:0:")
-                .is_some_and(|range| {
-                    range.split_once('-').is_some_and(|(start, end)| {
-                        start
-                            .parse::<usize>()
-                            .ok()
-                            .zip(end.parse::<usize>().ok())
-                            .and_then(|(start, end)| {
-                                include_str!("../../fixtures2/00279_enum_find_find_value.fz").get(start..end)
-                            })
-                            .is_some_and(|source| source.contains("x > 2"))
-                    })
-                })
+            if !record.function_ref.is_generated() {
+                return false;
+            }
+            let span = compiler.world().function_surface(record.function_id).span;
+            include_str!("../../fixtures2/00279_enum_find_find_value.fz")
+                .get(span.start as usize..span.end as usize)
+                .is_some_and(|body| body.contains("x > 2"))
         })
         .expect("find predicate producer should be indexed")
         .function_id;

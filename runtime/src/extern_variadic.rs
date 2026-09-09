@@ -15,7 +15,7 @@ use std::mem::transmute;
 use std::process::abort;
 use std::sync::{Mutex, OnceLock};
 
-use libc::{RTLD_DEFAULT, c_int, c_longlong, c_uint, dlsym};
+use libc::{RTLD_DEFAULT, RTLD_GLOBAL, RTLD_LAZY, c_int, c_longlong, c_uint, c_void, dlopen, dlsym};
 
 type SymbolCache = HashMap<Vec<u8>, usize>;
 
@@ -49,8 +49,60 @@ pub unsafe extern "C" fn fz_extern_symbol_addr(name: *const c_char) -> usize {
 #[cfg(unix)]
 fn resolve_symbol_addr(name: *const c_char) -> usize {
     let ptr = unsafe { dlsym(RTLD_DEFAULT, name) };
-    ptr as usize
+    if !ptr.is_null() {
+        return ptr as usize;
+    }
+    for handle in standard_c_library_handles() {
+        let ptr = unsafe { dlsym(*handle, name) };
+        if !ptr.is_null() {
+            return ptr as usize;
+        }
+    }
+    0
 }
+
+/// The standard C libraries, opened so their symbols can be searched.
+///
+/// fz-5xp.59 — `RTLD_DEFAULT` searches what the process has ALREADY LOADED, and
+/// a declaration like `extern "C" fn libc::sqrt(float) :: float` names a symbol
+/// nothing in the process referenced. On macOS that never shows: the C library
+/// and the math library are one thing (libSystem) and every process has it. On
+/// Linux libm is separate, so `sqrt` was simply not in the process to be found
+/// and the same program failed on one platform only.
+///
+/// Opening them here rather than arranging a link-time dependency is what makes
+/// the answer not depend on whether the linker decided to keep one: `--as-needed`
+/// drops a library nothing references, which is exactly the case for a symbol
+/// that only fz source names.
+///
+/// This is a stand-in for the thing fz cannot say yet: which library a foreign
+/// declaration comes from (fz-5xp.61). Until it can, these are the libraries a
+/// `libc::` declaration is allowed to mean.
+#[cfg(unix)]
+fn standard_c_library_handles() -> &'static [*mut c_void] {
+    static HANDLES: OnceLock<Vec<usize>> = OnceLock::new();
+    let handles = HANDLES.get_or_init(|| {
+        STANDARD_C_LIBRARIES
+            .iter()
+            .filter_map(|name| {
+                let handle = unsafe { dlopen(name.as_ptr() as *const c_char, RTLD_LAZY | RTLD_GLOBAL) };
+                (!handle.is_null()).then_some(handle as usize)
+            })
+            .collect()
+    });
+    // Safety: `usize` and `*mut c_void` have the same layout, and the handles
+    // are opened once and never closed.
+    unsafe { transmute::<&[usize], &[*mut c_void]>(handles.as_slice()) }
+}
+
+/// NUL-terminated so they can be handed to `dlopen` without allocating.
+/// Apple needs none: libSystem carries the whole standard library and is
+/// already in every process.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+const STANDARD_C_LIBRARIES: &[&str] = &["libm.so.6\0", "libc.so.6\0"];
+
+#[cfg(target_vendor = "apple")]
+const STANDARD_C_LIBRARIES: &[&str] = &[];
 
 #[cfg(not(unix))]
 fn resolve_symbol_addr(_name: *const c_char) -> usize {

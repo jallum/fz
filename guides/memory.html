@@ -87,7 +87,7 @@ because the container layout already says where the stamp lives.
     <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id + flags)</td></tr>
     <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
     <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
-    <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>16 bytes total (shared_ptr + mso_next)</td></tr>
+    <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>32 bytes total (shared_ptr + mso_next + byte_offset)</td></tr>
     <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
     <tr><td class="tag">0x8</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
@@ -282,7 +282,7 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
   <li><strong>Bitstring:</strong> offset 0 <code>bit_len: u64</code>; offset 8
   bytes, padded to 16-byte alignment.</li>
   <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
-  <code>mso_next</code>; 16 bytes total.</li>
+  <code>mso_next</code>; offset 16 <code>byte_offset</code>; 32 bytes total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
   resource discriminator; offset 16 destructor closure payload; offset 24
   destructor closure kind byte plus padding; offset 32 <code>mso_next</code>;
@@ -331,7 +331,7 @@ kind has its own prefix and size function.</p>
     <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>schema_id+flags prefix + fn_ptr</td></tr>
     <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
-    <tr><td>ProcBin (large bin stub)</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
+    <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>8 shared_ptr + 8 mso_next + 8 byte_offset</td></tr>
     <tr><td>Resource</td><td class="size">48 bytes</td><td>shared ptr + discriminator + destructor closure + mso_next</td></tr>
   </tbody>
 </table>
@@ -674,11 +674,12 @@ Instead:</p>
 
 <pre>
   shared_bin_retain(src.shared_ptr)        <span class="note">// atomic ++ on refcount</span>
-  dst_proc_bin = dst_heap.alloc_procbin(src.shared_ptr)
+  dst_proc_bin = dst_heap.alloc_procbin(src.shared_ptr, src.byte_offset)
   forwarding[src] = dst_proc_bin
 </pre>
 
-<p>The receiver's heap gets a fresh 16-byte ProcBin pointing at the same
+<p>The receiver's heap gets a fresh 32-byte ProcBin viewing the same suffix of
+the same
 SharedBin. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
@@ -700,7 +701,7 @@ destructor runs and the memory goes back to the system allocator.</p>
 <p>No central registry. No mutex. Each SharedBin is its own allocation:</p>
 
 <pre>
-  struct SharedBin {           <span class="note">// 40 bytes total</span>
+  struct SharedBin {           <span class="note">// 40 bytes of fields, 48 with alignment padding</span>
     refcount:   AtomicUsize,                    <span class="note">// 0..8</span>
     bit_len:    u64,                            <span class="note">// 8..16  (length in bits)</span>
     bytes_ptr:  *const u8,                      <span class="note">// 16..24 → separate Box&lt;[u8]&gt;</span>
@@ -708,6 +709,15 @@ destructor runs and the memory goes back to the system allocator.</p>
     destructor: fn(*mut SharedBin),             <span class="note">// 32..40</span>
   }
 </pre>
+
+<p>The struct is <strong>16-byte aligned</strong>, the same as everything on
+the process heap, and that is load-bearing rather than cosmetic. A ProcBin keeps
+this address in its first word, and the first word is also where the collector
+writes a forwarding marker — a pointer carrying the tag <code>0x8</code> in its
+low four bits. At 8-byte alignment about half of all SharedBin addresses end in
+8, so a perfectly live ProcBin would read as <em>already forwarded</em>: the
+sweep would take the SharedBin itself for a relocated stub and write into it.
+Aligning to 16 means no real address can ever be mistaken for a tag.</p>
 
 <p>The bytes live in a separate <code>Box&lt;[u8]&gt;</code> rather than
 inline, so the destructor can free the bytes and the SharedBin struct
@@ -755,7 +765,7 @@ the storage based on size:</p>
 <pre>
   if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {   <span class="note">// = 64</span>
       shared_ptr = shared_bin_alloc(bytes, bit_len);
-      return self.alloc_procbin(shared_ptr);
+      return self.alloc_procbin(shared_ptr, 0);   <span class="note">// whole binary</span>
   }
   // small: inline TAG_BITSTRING object on the process heap
 </pre>
@@ -765,6 +775,40 @@ the storage based on size:</p>
 <code>is_bitstring_like</code>) that read from the right place based on the
 pointer's low 4-bit kind tag. Callers don't know or care which storage they're
 looking at — the behaviour is identical.</p>
+
+<h3>Matching a tail copies nothing</h3>
+
+<p>A ProcBin doesn't name "the shared binary" — it names a byte-aligned
+<strong>suffix</strong> of one. Alongside <code>shared_ptr</code> it carries a
+<code>byte_offset</code>, and its length is whatever remains after that offset.
+The whole binary is simply the suffix at offset&nbsp;0.</p>
+
+<p>That is what makes a byte scanner cheap. This clause asks for a suffix:</p>
+
+<pre>
+  fnp walk(&lt;&lt;_c, rest :: binary&gt;&gt;, n), do: walk(rest, n + 1)
+</pre>
+
+<p>so <code>rest</code> becomes another stub over the <em>same</em> bytes at
+offset&nbsp;+1, and nothing is copied. Suffixes at or below the 64-byte
+threshold are still copied into an inline bitstring: at that size a copy is
+smaller than a stub, and it keeps a short tail from pinning a long buffer
+alive.</p>
+
+<p>Without this, each step copied the whole remainder, so scanning
+<em>n</em> bytes copied <em>n</em> + (<em>n</em>−1) + … bytes. Decoding a
+919-byte JSON document copied <strong>1.4&nbsp;MB</strong>; it now copies the
+document once.</p>
+
+<div class="box green">
+<strong>Why a suffix and not any window.</strong><br>
+Every shared buffer is allocated with one extra zero byte, so a binary can be
+handed to C as a NUL-terminated string without copying. A suffix ends exactly
+where that NUL is, so it inherits the guarantee; an arbitrary window in the
+middle would not. So a window in the middle cannot be built:
+<code>alloc_procbin</code> takes an offset and <em>derives</em> the length,
+rather than accepting one.
+</div>
 
 <h3>Lifetime — retain, release, sweep</h3>
 
@@ -864,10 +908,17 @@ map allocated by an earlier stats call.</p>
 keys use the pattern <code>:K_allocs</code> and <code>:K_bytes</code>, where
 <code>K</code> is one of <code>list_cons</code>, <code>struct</code>,
 <code>closure</code>, <code>map</code>, <code>bitstring</code>,
-<code>procbin</code>, <code>scalar_box</code>, <code>frame</code>,
-<code>resource</code>, or <code>other</code>. Heap object bytes are 16-byte
-aligned request sizes. Frame bytes are the aligned frame allocation size even
-though frames are allocated outside the bump heap.</p>
+<code>procbin</code>, <code>shared_bin</code>, <code>scalar_box</code>,
+<code>frame</code>, <code>resource</code>, or <code>other</code>. Heap object
+bytes are 16-byte aligned request sizes. Frame bytes are the aligned frame
+allocation size even though frames are allocated outside the bump heap.</p>
+
+<p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
+off-heap byte buffers behind large binaries, and are deliberately NOT part of
+<code>:allocs</code> / <code>:bytes</code> — those bytes never live on the
+process heap. They are the counters that tell copying from sharing: a ProcBin
+stub costs the same either way, so without them a binary copied byte for byte
+looks identical to one that shares an existing buffer.</p>
 
 <div class="aside">
 The stats answer "how much memory did this process request from the runtime

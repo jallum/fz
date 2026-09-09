@@ -63,6 +63,8 @@ impl<T: Copy> CallTarget<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionWrapper {
     pub identity: TransportPosition,
+    pub denotation: fz_runtime::any_value::ClosureDenotationId,
+    pub source_origin: std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
     pub callable: CallableId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub call_arity: usize,
@@ -104,6 +106,14 @@ pub struct BackendValueLayout {
     pub reprs: Box<[AbiValueRepr]>,
 }
 
+impl BackendValueLayout {
+    /// ABI width only: a zero-capture callable or a recursive tuple can
+    /// publish no lanes while retaining a semantic value.
+    pub fn publishes_no_lanes(&self) -> bool {
+        self.reprs.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendReturnLayout {
     pub layout: BackendValueLayout,
@@ -112,6 +122,8 @@ pub struct BackendReturnLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionCapture {
+    /// The source capture annotation, independent of its physical layout.
+    pub ty: Ty,
     pub layout: BackendValueLayout,
 }
 
@@ -736,7 +748,7 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
 }
 
 /// Visit CPS control edges, never callable construction words carried by
-/// `MakeFnRef`, `MakeClosure`, or `ClosureCapture`.
+/// `MakeFnRef` or `MakeClosure`.
 fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)) {
     for block in &mut function.blocks {
         match &mut block.terminator {
@@ -880,10 +892,12 @@ pub(crate) struct NativeBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
+    pub denotation: fz_runtime::any_value::ClosureDenotationId,
+    pub source_origin: std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
     pub identity_fn: FnId,
-    /// The callable LAYOUT this boundary mints: function, capture types and
-    /// physical capture lanes. Several boundaries can mint one layout -- one
-    /// per construction position -- and each stamps its own `identity_fn`.
+    /// The physical specialization: function, arity and ordered capture layouts.
+    /// Several construction positions may share it. Runtime captures retain
+    /// complete values in source order, independent of these ABI layouts.
     pub callable: CallableId,
     /// The CONSTRUCTION this boundary mints, as a runtime test names it: the
     /// function the lattice's closure literal names, plus the projected
@@ -1071,10 +1085,23 @@ impl ExecutableDispatch {
     }
 }
 
+/// The semantic inputs a plan must be handed to decide a clause.
+///
+/// Every ordinal here names an input of THIS plan. A backend is entitled to
+/// pass anything else as nil, so an ordinal that escapes `plan.input_count` is
+/// not a conservative over-approximation -- it is a demand no caller can meet,
+/// and the doors disagree about it (native skips the out-of-range ordinal,
+/// interpreted dispatch refuses the call). The assertion keeps that failure at
+/// the plan that produced it instead of at whichever door reads it first.
 pub(crate) fn required_dispatch_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
     let mut required = HashSet::new();
     let mut visited = HashSet::new();
     collect_dispatch_node_inputs(plan, plan.graph.root, &mut visited, &mut required);
+    assert!(
+        required.iter().all(|ordinal| *ordinal < plan.input_count),
+        "dispatch plan requires inputs {required:?} but has only {} semantic input(s)",
+        plan.input_count,
+    );
     required
 }
 
@@ -1152,14 +1179,19 @@ fn collect_guard_expr_inputs(plan: &PatternDispatchPlan<Ty>, expr: &PatternGuard
             collect_guard_expr_inputs(plan, lhs, out);
             collect_guard_expr_inputs(plan, rhs, out);
         }
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        // A reified helper is a plan closed over its OWN input space: its
+        // subjects, pins and clause bodies are numbered `0..helper arity` and
+        // are fed only by `inputs`. Walking that plan against the caller would
+        // label the caller's ordinals with the helper's numbers -- a 3-input
+        // helper called from a 1-input clause made the caller "require"
+        // semantic input 2, which `interp` then refused to supply while `run`
+        // and `build` answered correctly (fz-5xp.74). Collecting the argument
+        // expressions is complete on its own: every caller input the guard can
+        // reach flows through one of them.
+        PatternGuardExpr::Dispatch { inputs, .. } => {
             for input in inputs {
                 collect_guard_expr_inputs(plan, input, out);
             }
-            for body in &dispatch.bodies {
-                collect_guard_expr_inputs(&dispatch.plan, body, out);
-            }
-            collect_dispatch_node_inputs(&dispatch.plan, dispatch.plan.graph.root, &mut HashSet::new(), out);
         }
     }
 }
@@ -1308,7 +1340,7 @@ pub enum BackendStep {
     },
     Struct {
         value: ValueId,
-        module_name: String,
+        module_name: fz_runtime::module_name::ModuleName,
         fields: Vec<(String, ValueId)>,
     },
     Bitstring {
@@ -1353,7 +1385,7 @@ pub enum BackendStep {
     },
     AssertStruct {
         source: ValueId,
-        module_name: String,
+        module_name: fz_runtime::module_name::ModuleName,
     },
     RequireMapValue {
         value: ValueId,

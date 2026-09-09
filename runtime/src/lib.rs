@@ -13,8 +13,10 @@ pub mod bitstr;
 pub mod exec_ctx;
 pub mod extern_binary;
 pub mod extern_variadic;
+pub mod function_denotation;
 pub mod heap;
 pub mod ir_runtime;
+pub mod module_name;
 pub mod output;
 pub mod park;
 pub mod pinned_abi;
@@ -25,6 +27,7 @@ pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
+pub mod term;
 pub mod timer;
 
 use crate::process::Process;
@@ -59,3 +62,6 @@ pub extern "C" fn fz_panic(process: *mut Process, msg_ref: u64) -> ! {
     eprintln!("fz panic: {}", render_value(process, value));
     abort();
 }
+
+#[cfg(test)]
+mod export_test;

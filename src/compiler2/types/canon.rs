@@ -158,7 +158,7 @@ impl<'a> TyCanon<'a> {
         let axes = self.axes(cx, d);
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
-        push_set(&mut parts, &d.opaques, "opaque", Clone::clone);
+        push_set(&mut parts, &d.opaques, "opaque", ToString::to_string);
         push_set(&mut parts, &d.vars, "var", |id| self.var_text(cx, *id));
         parts.extend(sorted(axes.tuple_rects.iter().map(|rect| self.rect_text(cx, rect))));
         parts.extend(sorted(
@@ -655,7 +655,7 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr, mut render_var: impl FnMut(TypeVa
     }
     let mut parts = basic_names(d.basic);
     push_key(&mut parts, "a", &d.atoms, |name| format!(":{name}"));
-    push_key(&mut parts, "o", &d.opaques, Clone::clone);
+    push_key(&mut parts, "o", &d.opaques, ToString::to_string);
     if !d.brands.is_any() {
         push_key(&mut parts, "n", &d.brands, Clone::clone);
     }

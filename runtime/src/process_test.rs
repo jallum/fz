@@ -1,4 +1,4 @@
-use super::{Process, YIELD_REASON_REDUCTIONS};
+use super::{Node, Process, YIELD_REASON_REDUCTIONS};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -8,6 +8,15 @@ fn aligned_closure_storage_is_taggable() {
         let mut buf = super::AlignedClosureStorage::zeroed();
         assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
     }
+}
+
+#[test]
+fn node_compares_atoms_by_name_not_intern_id() {
+    let node = Node::new(vec!["z".into(), "a".into(), "m".into()], Vec::new());
+
+    assert_eq!(node.cmp_atom_names(0, 1), std::cmp::Ordering::Greater);
+    assert_eq!(node.cmp_atom_names(1, 2), std::cmp::Ordering::Less);
+    assert_eq!(node.cmp_atom_names(2, 2), std::cmp::Ordering::Equal);
 }
 
 #[test]

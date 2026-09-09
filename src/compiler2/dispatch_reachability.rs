@@ -54,7 +54,8 @@ pub(crate) fn calculate_dispatch_reachability(
         #[cfg(test)]
         max_root_slots: 0,
     };
-    calculator.visit(plan.graph.root, roots);
+    let list_shapes = vec![None; plan.subjects.len()];
+    calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
     DispatchReachability {
         outcomes: calculator.outcomes.into_iter().collect(),
         outcome_inputs: calculator.outcome_inputs.into_iter().collect(),
@@ -66,10 +67,16 @@ pub(crate) fn calculate_dispatch_reachability(
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ReachabilityState {
+    roots: Vec<Ty>,
+    list_shapes: Vec<Option<ListRegion>>,
+}
+
 struct ReachabilityCalculator<'a> {
     types: &'a mut Types,
     plan: &'a PatternDispatchPlan<Ty>,
-    visited: HashSet<(GraphNodeId, Vec<Ty>)>,
+    visited: HashSet<(GraphNodeId, ReachabilityState)>,
     outcomes: BTreeSet<OutcomeId>,
     outcome_inputs: BTreeSet<(OutcomeId, Vec<Ty>)>,
     fail_reachable: bool,
@@ -78,12 +85,12 @@ struct ReachabilityCalculator<'a> {
 }
 
 impl ReachabilityCalculator<'_> {
-    fn visit(&mut self, node_id: GraphNodeId, roots: Vec<Ty>) {
+    fn visit(&mut self, node_id: GraphNodeId, state: ReachabilityState) {
         #[cfg(test)]
         {
-            self.max_root_slots = self.max_root_slots.max(roots.len());
+            self.max_root_slots = self.max_root_slots.max(state.roots.len());
         }
-        if !self.visited.insert((node_id, roots.clone())) {
+        if !self.visited.insert((node_id, state.clone())) {
             return;
         }
         let Some(node) = self.plan.graph.node(node_id) else {
@@ -93,41 +100,51 @@ impl ReachabilityCalculator<'_> {
             DispatchNode::Fail => self.fail_reachable = true,
             DispatchNode::Outcome { outcome, .. } => {
                 self.outcomes.insert(*outcome);
-                self.outcome_inputs.insert((*outcome, roots));
+                self.outcome_inputs.insert((*outcome, state.roots));
             }
             DispatchNode::Test { on_match, on_miss, .. } => {
-                if let Some(next) = self.apply_proofs(&roots, &on_match.evidence.proofs) {
+                if let Some(next) = self.apply_proofs(&state, &on_match.evidence.proofs) {
                     self.visit(on_match.target, next);
                 }
-                if let Some(next) = self.apply_proofs(&roots, &on_miss.evidence.proofs) {
+                if let Some(next) = self.apply_proofs(&state, &on_miss.evidence.proofs) {
                     self.visit(on_miss.target, next);
                 }
             }
         }
     }
 
-    fn apply_proofs(&mut self, roots: &[Ty], proofs: &[crate::dispatch_matrix::Proof<Ty>]) -> Option<Vec<Ty>> {
-        let mut refined = roots.to_vec();
+    fn apply_proofs(
+        &mut self,
+        state: &ReachabilityState,
+        proofs: &[crate::dispatch_matrix::Proof<Ty>],
+    ) -> Option<ReachabilityState> {
+        let mut refined = state.clone();
         for proof in proofs {
-            refined = self.apply_proof(&refined, &proof.predicate, proof.sense)?;
+            refined = self.apply_proof(refined, &proof.predicate, proof.sense)?;
         }
         Some(refined)
     }
 
-    fn apply_proof(&mut self, roots: &[Ty], predicate: &RegionPredicate<Ty>, sense: ProofSense) -> Option<Vec<Ty>> {
+    fn apply_proof(
+        &mut self,
+        mut state: ReachabilityState,
+        predicate: &RegionPredicate<Ty>,
+        sense: ProofSense,
+    ) -> Option<ReachabilityState> {
         let Some(subject) = self.plan.subject_ref(predicate.subject) else {
-            return Some(roots.to_vec());
+            return Some(state);
         };
+        self.record_list_shape(&state.roots, &mut state.list_shapes, predicate, subject, sense)?;
         let Some(target) = predicate_target(self.types, &predicate.region) else {
-            return Some(roots.to_vec());
+            return Some(state);
         };
         let ordinal = subject_input(subject)?;
-        let root = *roots.get(ordinal)?;
+        let root = *state.roots.get(ordinal)?;
         let alternatives = self.types.projection_alternatives(root);
         let mut matched = None;
         let mut missed = None;
         for alternative in alternatives {
-            let mut row = roots.to_vec();
+            let mut row = state.roots.clone();
             row[ordinal] = alternative;
             let projected = project_subject(self.types, &row, subject);
             let overlap = self.types.intersect(projected, target.ty);
@@ -163,9 +180,45 @@ impl ReachabilityCalculator<'_> {
             ProofSense::Holds => matched,
             ProofSense::DoesNotHold => missed,
         }?;
-        let mut refined = roots.to_vec();
-        refined[ordinal] = selected;
-        Some(refined)
+        state.roots[ordinal] = selected;
+        Some(state)
+    }
+
+    fn record_list_shape(
+        &mut self,
+        roots: &[Ty],
+        list_shapes: &mut [Option<ListRegion>],
+        predicate: &RegionPredicate<Ty>,
+        subject: &PatternSubjectRef,
+        sense: ProofSense,
+    ) -> Option<()> {
+        let Region::List(region) = predicate.region else {
+            return Some(());
+        };
+        let known = match sense {
+            ProofSense::Holds => region,
+            ProofSense::DoesNotHold => {
+                let projected = project_subject(self.types, roots, subject);
+                let any = self.types.any();
+                let proper_list = self.types.list(any);
+                if !self.types.is_subtype(&projected, &proper_list) {
+                    return Some(());
+                }
+                match region {
+                    ListRegion::Empty => ListRegion::Cons,
+                    ListRegion::Cons => ListRegion::Empty,
+                }
+            }
+        };
+        let slot = list_shapes.get_mut(predicate.subject.0 as usize)?;
+        match slot {
+            Some(previous) if *previous != known => None,
+            Some(_) => Some(()),
+            None => {
+                *slot = Some(known);
+                Some(())
+            }
+        }
     }
 }
 
@@ -341,6 +394,46 @@ mod tests {
             .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
             .map(|outcome| outcome.body_id)
             .collect()
+    }
+
+    fn list_pattern(length: usize, open_tail: bool) -> Pattern {
+        Pattern::List(
+            (0..length).map(|_| Spanned::dummy(Pattern::Wildcard)).collect(),
+            open_tail.then(|| Box::new(Spanned::dummy(Pattern::Wildcard))),
+        )
+    }
+
+    #[test]
+    fn proper_list_domain_is_exhausted_by_zero_one_and_two_plus_rows() {
+        let total = pattern_dispatch_from_source(SourcePatternRows {
+            input_count: 1,
+            rows: vec![
+                row(list_pattern(0, false), 0),
+                row(list_pattern(1, false), 1),
+                row(list_pattern(2, true), 2),
+            ],
+        })
+        .expect("list length partitions should compile");
+        let partial = pattern_dispatch_from_source(SourcePatternRows {
+            input_count: 1,
+            rows: vec![row(list_pattern(0, false), 0), row(list_pattern(2, true), 1)],
+        })
+        .expect("partial list length partitions should compile");
+        let mut types = Types::new();
+        let any = types.any();
+        let input = types.list(any);
+
+        let total_reachability = calculate_dispatch_reachability(&mut types, &total, &[input]);
+        let partial_reachability = calculate_dispatch_reachability(&mut types, &partial, &[input]);
+        let unconstrained_reachability = calculate_dispatch_reachability(&mut types, &total, &[any]);
+
+        assert_eq!(reachable_body_ids(&total, &total_reachability), vec![0, 1, 2]);
+        assert!(!total_reachability.fail_reachable);
+        assert!(partial_reachability.fail_reachable);
+        assert!(
+            unconstrained_reachability.fail_reachable,
+            "the list partition must not consume non-list values"
+        );
     }
 
     #[test]

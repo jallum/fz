@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::fz_ir::ExternTy;
+use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
@@ -74,7 +74,7 @@ pub struct CallArg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredExtern {
-    pub abi: String,
+    pub abi: ExternAbi,
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub variadic: bool,

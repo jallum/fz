@@ -8,7 +8,7 @@ use crate::compiler2::transport::ShapeId;
 use crate::exec::runtime::ExitRecord;
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{ValueKind, closure_addr_from_tagged};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
@@ -38,6 +38,10 @@ struct BackendContinuation {
 }
 
 #[derive(Debug, Clone)]
+/// An explicit `Absent` binding records an omitted semantic value. It is not
+/// an environment miss: missing lane-free inputs can authorize an exact
+/// direct closure target, while `Absent` cannot be called. A `Transport`
+/// tuple or callable retains its structure even when `lanes` is empty.
 enum BackendBoundValue {
     Absent,
     Runtime(AnyValue),
@@ -169,17 +173,7 @@ impl IrInterpRuntime {
         if let Some(&id) = self.tuple_schema_ids.get(&arity) {
             return id;
         }
-        let schema = Schema {
-            name: format!("Tuple{}", arity),
-            size: (arity * 8) as u32,
-            fields: (0..arity)
-                .map(|i| FieldDescriptor {
-                    offset: (i * 8) as u32,
-                    kind: FieldKind::AnyValue,
-                    name: None,
-                })
-                .collect(),
-        };
+        let schema = Schema::tuple_of_arity(arity);
         let id = self.schemas.borrow_mut().register(schema);
         self.tuple_schema_ids.insert(arity, id);
         id
@@ -224,10 +218,6 @@ fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
         AnyValue::FnRef(..) => v.value(proc).expect("materialize fn ref halt value").raw() as i64,
         AnyValue::Ref(v) => v.raw_word() as i64,
     }
-}
-
-fn is_truthy(v: AnyValue) -> bool {
-    !v.is_false() && !v.is_nil()
 }
 
 pub(crate) fn make_resource_in_current_process(

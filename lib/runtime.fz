@@ -1,0 +1,71 @@
+@type keyword() :: [{atom, any}]
+@type keyword(t) :: [{atom, t}]
+
+alias Atom
+alias Enum
+alias Enumerable
+alias Float
+alias Integer
+alias Json
+alias Kernel
+alias Keyword
+alias List
+alias Map
+alias Process
+alias Range
+alias String
+alias StringChars
+alias Utf8
+
+import Kernel, only: [
+  +: 2,
+  -: 2,
+  *: 2,
+  /: 2,
+  %: 2,
+  <: 2,
+  <=: 2,
+  >: 2,
+  >=: 2,
+  ==: 2,
+  !=: 2,
+  ===: 2,
+  !==: 2,
+  assert: 1,
+  assert: 2,
+  dbg: 1,
+  div: 2,
+  make_ref: 0,
+  byte_size: 1,
+  make_resource: 2,
+  panic: 1,
+  range: 3,
+  refute: 1,
+  rem: 2,
+  refute: 2,
+  self: 0,
+  send: 2,
+  spawn: 1,
+  spawn: 2,
+  to_string: 1
+]
+
+defmacro fn(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+
+defmacro fnp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+
+defmacro defmacro(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+
+defmacro defmodule(name, kw) do
+  quote do: Fz.Compiler.define(unquote({:defmodule, %{}, [name, kw]}), unquote(__CALLER__))
+end
+
+defmacro defprotocol(name, kw) do
+  source = {:defprotocol, %{}, [name, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defimpl(protocol, kw) do
+  source = {:defimpl, %{}, [protocol, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end

@@ -1,0 +1,44 @@
+#---
+# purpose: "the Map surface over a flat sorted array: size, keys, values, to_list, has_key?, delete"
+# oracle: oracle.exs
+#---
+#
+# # map_surface
+#
+# A map here is a FLAT SORTED ARRAY, not a HAMT, so this module's emphasis is
+# the opposite of Elixir's: the bulk functions are the surface to reach for, and
+# `put/3` and `delete/2` each copy the whole array.
+#
+# `delete/2` did not exist at all before this -- there was no `fz_map_delete`
+# anywhere in the runtime.
+#
+# ## Why binary keys
+#
+# Everything printed here is keyed by BINARIES, deliberately. Elixir orders
+# binary keys by content and fz now does too (fz-5xp.48), so iteration order
+# matches. ATOM-keyed order cannot match: Elixir orders atoms by an internal
+# identity fz does not share (fz-5xp.50), and fz also renders `%{:a => 1}`
+# where Elixir renders `%{a: 1}` (fz-5xp.51). Either would sink an oracle.
+#
+# The goal program is on the matching side of that line: JSON object keys are
+# strings.
+fn main() do
+  m = %{"b" => 2, "a" => 1, "c" => 3}
+
+  dbg(Map.size(m))
+  dbg(Map.keys(m))
+  dbg(Map.values(m))
+  dbg(Map.to_list(m))
+
+  dbg(Map.has_key?(m, "a"))
+  dbg(Map.has_key?(m, "zz"))
+
+  dbg(Map.to_list(Map.delete(m, "b")))
+  dbg(Map.to_list(Map.delete(m, "zz")))
+  dbg(Map.size(Map.delete(m, "a")))
+
+  # a key built at runtime is the same key
+  built = "a"
+  dbg(Map.has_key?(m, built))
+  dbg(Map.to_list(Map.delete(m, built)))
+end

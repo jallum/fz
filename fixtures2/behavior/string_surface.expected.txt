@@ -1,0 +1,40 @@
+5
+true
+false
+true
+"world"
+"HEllo"
+"helLO"
+"XXXbc"
+"abYYY"
+"hi"
+"hi"
+"hi"
+"HÉLLO"
+"STRASSE"
+"héllo"
+"i̇"
+"ababab"
+true
+2
+["a", "b", "c"]
+"a+b+c"
+["h", "é", "l", "l", "o"]
+{"h", "éllo"}
+true
+[97, 98, 99]
+"olléh"
+"h"
+"o"
+42
+-7
+2.5
+-0.25
+true
+false
+"h?i"
+["hi"]
+["h", <<255>>, "i"]
+"hi"
+["h", "é", "l", "l", "o"]
+{"h", "éllo"}

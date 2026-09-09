@@ -7,6 +7,10 @@ use crate::compiler2::keying::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
 
+fn module_name(text: &str) -> ModuleName {
+    ModuleName::parse_dotted(text).expect("test source module path")
+}
+
 #[test]
 fn ty_is_an_integer_handle() {
     assert_eq!(mem::size_of::<Ty>(), mem::size_of::<u32>());
@@ -250,12 +254,12 @@ fn runtime_type_predicate_projects_tuple_positions_and_list_heads() {
 #[test]
 fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
     let mut t = Types::new();
-    let named_ty = t.opaque_of("impl-target::box");
+    let named_ty = t.nominal_protocol_target(module_name("box"));
     let named = t.runtime_type_predicate(&named_ty);
     assert_eq!(
         named,
         RuntimeTypePredicate {
-            named_structs: FiniteSet::lit("box".to_string()),
+            named_structs: FiniteSet::lit(module_name("box")),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -276,13 +280,17 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
 
     let mut t = Types::new();
     let int = t.int();
-    let foo = t.struct_map(ModuleId::GLOBAL, "Pkg.Foo", &[(MapKey::Atom("value".to_string()), int)]);
+    let foo = t.struct_map(
+        ModuleId::GLOBAL,
+        module_name("Pkg.Foo"),
+        &[(MapKey::Atom("value".to_string()), int)],
+    );
     let foo_envelope = t.runtime_type_test_envelope(foo);
     let any = t.any();
     let not_foo = t.difference(any, foo_envelope);
     assert_eq!(
         t.runtime_type_predicate(&not_foo).named_structs,
-        FiniteSet::cofinite(["Pkg.Foo".to_string()]),
+        FiniteSet::cofinite([module_name("Pkg.Foo")]),
         "a negative struct predicate must retain the exact typed schema exclusion"
     );
     assert_eq!(
@@ -292,7 +300,7 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
     );
 
     let generic_opaque_complement = t.intern(Descr {
-        opaques: FiniteSet::cofinite(["known".to_string()]),
+        opaques: FiniteSet::cofinite([OpaqueTag::Named("known".to_string())]),
         ..Descr::unbranded()
     });
     let generic = t.runtime_type_predicate(&generic_opaque_complement);
@@ -308,7 +316,7 @@ fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_ge
 #[test]
 fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_unions() {
     let mut world = crate::compiler2::World::new();
-    let foo = world.reference_module("Pkg.Foo");
+    let foo = world.reference_module(module_name("Pkg.Foo"));
     let int = world.types_mut().int();
     let foo_value = world.struct_value_ty(foo, &["value".to_string()], &[int]);
     let foo_envelope = world.types_mut().runtime_type_test_envelope(foo_value);
@@ -321,7 +329,7 @@ fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_un
     );
     assert_eq!(
         not_foo_predicate.named_structs,
-        FiniteSet::cofinite(["Pkg.Foo".to_string()]),
+        FiniteSet::cofinite([module_name("Pkg.Foo")]),
         "subtracting the observable struct envelope rejects Foo and admits every other struct"
     );
 
@@ -348,7 +356,7 @@ fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_un
     );
     assert_eq!(
         foo_or_map_predicate.named_structs,
-        FiniteSet::lit("Pkg.Foo".to_string())
+        FiniteSet::lit(module_name("Pkg.Foo"))
     );
     assert!(
         !world.types().runtime_type_predicate(&foo_value).maps,
@@ -357,16 +365,22 @@ fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_un
 }
 
 #[test]
-fn typed_struct_identity_survives_the_type_algebra_even_when_runtime_names_match() {
+fn typed_struct_identity_survives_the_type_algebra_even_when_display_names_match() {
     use super::sigs::StructTag;
     use crate::compiler2::identity::ModuleId;
 
     let mut t = Types::new();
     let left_module = ModuleId::for_test(1);
     let right_module = ModuleId::for_test(2);
-    let left = t.struct_map(left_module, "Pkg.Same", &[]);
-    let right = t.struct_map(right_module, "Pkg.Same", &[]);
-    assert_ne!(left, right, "distinct ModuleIds must intern as distinct struct types");
+    let left_name = ModuleName::from_segments(vec!["Pkg.Same".into()]);
+    let right_name = ModuleName::from_segments(vec!["Pkg".into(), "Same".into()]);
+    assert_eq!(left_name.dotted(), right_name.dotted());
+    let left = t.struct_map(left_module, left_name.clone(), &[]);
+    let right = t.struct_map(right_module, right_name.clone(), &[]);
+    assert_ne!(
+        left, right,
+        "distinct source paths must intern as distinct struct types"
+    );
     assert!(t.is_disjoint(&left, &right));
     let meet = t.intersect(left, right);
     assert!(t.is_empty(&meet));
@@ -378,17 +392,56 @@ fn typed_struct_identity_survives_the_type_algebra_even_when_runtime_names_match
     );
     let difference = t.difference(left, right);
     assert!(t.is_equivalent(&difference, &left));
+    assert!(
+        !t.runtime_type_predicate(&left)
+            .overlaps(&t.runtime_type_predicate(&right))
+    );
+    assert_eq!(
+        t.runtime_type_predicate(&left).named_structs,
+        FiniteSet::lit(left_name.clone())
+    );
+    assert_eq!(
+        t.runtime_type_predicate(&right).named_structs,
+        FiniteSet::lit(right_name)
+    );
 
     assert_eq!(
         StructTag {
             module: left_module,
-            name: "display one".to_string(),
+            name: left_name.clone(),
         },
         StructTag {
-            module: left_module,
-            name: "display two".to_string(),
+            module: right_module,
+            name: left_name,
         },
-        "the derived runtime/display name must not participate in semantic identity"
+        "World-local interner coordinates do not define source identity"
+    );
+}
+
+#[test]
+fn nominal_protocol_targets_keep_typed_identity_through_the_opaque_algebra() {
+    let mut t = Types::new();
+    let left_name = ModuleName::from_segments(vec!["A.B".into()]);
+    let right_name = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+    assert_eq!(left_name.dotted(), right_name.dotted());
+    let left = t.nominal_protocol_target(left_name.clone());
+    let right = t.nominal_protocol_target(right_name.clone());
+    let ordinary = t.opaque_of("protocol-target(A.B)");
+    assert!(t.is_disjoint(&left, &right));
+    assert!(
+        t.is_disjoint(&left, &ordinary),
+        "ordinary opaque spelling cannot manufacture a protocol target"
+    );
+    let union = t.union(left, right);
+    let remaining = t.difference(union, right);
+    assert!(t.is_equivalent(&remaining, &left));
+    assert_eq!(
+        t.runtime_type_predicate(&union).named_structs,
+        FiniteSet::finite([left_name, right_name])
+    );
+    assert!(
+        !t.runtime_type_predicate(&left).maps,
+        "nominal targets remain in the opaque axis"
     );
 }
 
@@ -402,7 +455,7 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
     let step = t.atom_lit("step");
     let range_value = t.struct_map(
         ModuleId::GLOBAL,
-        "Range",
+        module_name("Range"),
         &[
             (MapKey::Atom("first".to_string()), first),
             (MapKey::Atom("last".to_string()), last),
@@ -415,7 +468,7 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
 
     assert_eq!(
         range_predicate.named_structs,
-        FiniteSet::lit("Range".to_string()),
+        FiniteSet::lit(module_name("Range")),
         "a struct value should keep its named runtime identity even though it also has structural field evidence",
     );
     assert!(
@@ -435,7 +488,7 @@ fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
     let mut t = Types::new();
     let int = t.int();
     let key = MapKey::Atom("value".to_string());
-    let foo = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), int)]);
+    let foo = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), int)]);
     let plain = t.map(&[(key.clone(), int)]);
     let joined = t.union(foo, plain);
 
@@ -450,7 +503,7 @@ fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
     assert_eq!(t.map_field_lookup(&refined, &extra), Some(int));
     assert_eq!(
         t.runtime_type_predicate(&refined).named_structs,
-        FiniteSet::lit("Pkg.Foo".to_string()),
+        FiniteSet::lit(module_name("Pkg.Foo")),
         "field refinement must preserve the record's nominal tag"
     );
     assert_eq!(
@@ -487,9 +540,9 @@ fn substitution_descends_only_through_equal_record_tags() {
     let key = MapKey::Atom("value".to_string());
     let alpha = t.type_var(TypeVarId(0));
     let int = t.int();
-    let foo_pattern = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), alpha)]);
-    let foo_witness = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), int)]);
-    let other_witness = t.struct_map(ModuleId::for_test(2), "Pkg.Bar", &[(key, int)]);
+    let foo_pattern = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), alpha)]);
+    let foo_witness = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Foo"), &[(key.clone(), int)]);
+    let other_witness = t.struct_map(ModuleId::for_test(2), module_name("Pkg.Bar"), &[(key, int)]);
 
     let mut sigma = HashMap::new();
     t.collect_instantiation_subst(&foo_pattern, &foo_witness, &mut sigma);

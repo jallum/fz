@@ -1,0 +1,26 @@
+defmodule Atom do
+  @moduledoc "Functions for working with atoms."
+
+  extern "fz" fn fz_atom_to_binary(atom) :: binary
+
+  # The atom's name, so `nil` gives "nil". The empty string Elixir produces for
+  # `nil` comes from `String.Chars.Atom`, not from here.
+  @doc """
+  Returns the atom's name as a binary.
+
+  This always returns the atom's literal name, so `nil` gives `"nil"` here.
+  That differs from `to_string/1`, which gives `""` for `nil` by way of the
+  `StringChars` protocol's special case for it.
+
+  ## Examples
+
+      Atom.to_string(:hello)
+      #=> "hello"
+
+      Atom.to_string(nil)
+      #=> "nil"
+
+  """
+  @spec to_string(atom) :: binary
+  fn to_string(a), do: fz_atom_to_binary(a)
+end

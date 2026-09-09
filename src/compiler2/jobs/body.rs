@@ -7,7 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    AfterClause, BitField, BitSize, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
+    AfterClause, BitField, BitSize, CallableName, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
+    WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -17,10 +18,12 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
+use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::Span;
 
 use super::super::body::{
@@ -605,8 +608,9 @@ fn collect_local_dispatch_requirements(
                 collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
             }
         }
-        Expr::Lambda(_) => {}
+        Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
+        | Expr::Module(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
         | Expr::Int(_)
@@ -725,7 +729,7 @@ fn collect_local_pattern_requirements(
 /// rather than guess an order from the literal/pattern's own field list.
 ///
 /// Module resolution mirrors `Lowerer::resolve_struct_module` exactly (same
-/// `resolve_module_name` call against the same `owner_module`/`namespace`),
+/// `resolve_module_target` call against the same `owner_module`/`namespace`),
 /// so the module identity this pre-pass records obligations/waits against is
 /// always the module the later `Lowerer` pass will actually consume. If
 /// resolution itself fails, this records nothing and defers to
@@ -739,13 +743,13 @@ fn record_struct_reference<'a>(
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
-    module: &crate::modules::identity::ModuleName,
+    module: &crate::ast::ModuleTarget,
     fields: impl Iterator<Item = &'a str>,
     span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    let Some(module_id) = world.resolve_module_name(owner_module, namespace, module) else {
+    let Some(module_id) = world.resolve_module_target(owner_module, namespace, module) else {
         return Ok(());
     };
     let requester = InterfaceRequester {
@@ -1009,7 +1013,8 @@ fn collect_unquote_dispatch_requirements(
             }
             Ok(())
         }
-        Expr::Lambda(_)
+        Expr::Lambda { .. }
+        | Expr::Module(_)
         | Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1093,6 +1098,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.lowerer.push_const(self.steps, GroundValue::Nil)),
             Expr::Var(name) => self.lower_variable(name),
+            Expr::Module(module) => Ok(self.lower_module(module)),
             Expr::List(items, None) => {
                 let values = items
                     .iter()
@@ -1192,7 +1198,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             | Expr::Cond(_)
             | Expr::With(_, _, _)
             | Expr::Receive { .. }
-            | Expr::Lambda(_) => Err(emit_job_diagnostic(
+            | Expr::Lambda { .. } => Err(emit_job_diagnostic(
                 self.lowerer.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
@@ -1255,6 +1261,33 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         }
         let tail = self.push_list(items, None);
         Ok(self.push_ast_node(head, tail))
+    }
+
+    fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
+        let head = self
+            .lowerer
+            .push_const(self.steps, GroundValue::Atom("__aliases__".into()));
+        let tail = self.module_path(module.display_segments());
+        let (tag, paths) = module.quoted_parts();
+        let tag = self.lowerer.push_const(self.steps, GroundValue::Atom(tag.into()));
+        let mut fields = vec![tag];
+        for path in paths {
+            fields.push(self.module_path(path.segments().iter()));
+        }
+        let identity = self.push_tuple(fields);
+        let key = self.lowerer.push_const(
+            self.steps,
+            GroundValue::Atom(super::super::source::META_MODULE_KEY.into()),
+        );
+        let meta = self.push_map(vec![(key, identity)]);
+        self.push_tuple(vec![head, meta, tail])
+    }
+
+    fn module_path<'s>(&mut self, segments: impl Iterator<Item = &'s String>) -> ValueId {
+        let items = segments
+            .map(|segment| self.lowerer.push_const(self.steps, GroundValue::Atom(segment.clone())))
+            .collect();
+        self.push_list(items, None)
     }
 
     fn lower_index(&mut self, base: &Spanned<Expr>, key: &Spanned<Expr>, span: Span) -> Result<ValueId, FatalError> {
@@ -1348,23 +1381,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
-        if let Some(abi) = self.surface.extern_abi.clone() {
+        if self.surface.extern_abi.is_some() {
             let signature = self.resolve_extern_signature()?;
-            return Ok((
-                LoweredBody::Extern {
-                    signature: LoweredExtern {
-                        abi,
-                        symbol: extern_symbol_from_name(&self.surface.name).to_string(),
-                        params: signature.params,
-                        variadic: self.surface.variadic,
-                        ret: signature.ret,
-                        return_ty: signature.return_ty,
-                        semantic_contract: signature.semantic_contract,
-                    },
-                },
-                Vec::new(),
-                Vec::new(),
-            ));
+            return Ok((LoweredBody::Extern { signature }, Vec::new(), Vec::new()));
         }
 
         let mut clause_defs = Vec::new();
@@ -1384,7 +1403,97 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         ))
     }
 
+    /// The declared calling convention, or a diagnostic.
+    ///
+    /// Four ways to get it wrong, and every one of them is refused HERE rather
+    /// than in a door's lowering, because a diagnostic raised in the shared
+    /// front end is the only kind every door raises identically. Each of these
+    /// was, at some point, a per-door check that protected fewer doors than it
+    /// appeared to.
+    ///
+    /// 1. An unrecognised name must not fall back to C: the conventions
+    ///    disagree about the implicit process argument and about what a
+    ///    `binary` parameter is, so a wrong guess is a crash inside the callee.
+    ///
+    /// 2. `"fz"` is reserved to the runtime library. It passes fz's own
+    ///    `*mut Process` and fz's internal value representation, which nothing
+    ///    outside the runtime can accept; worse, the symbols it can name are
+    ///    the ones both doors also claim by name in their lowerings, and those
+    ///    two claim sets are not equal, so a foreign declaration of one is a
+    ///    question the doors would answer differently.
+    ///
+    /// 3. There is no variadic `"fz"`: a variadic call goes through a
+    ///    fixed-arity C dispatcher with nowhere to put the process.
+    ///
+    /// 4. A declaration may not contradict what the runtime actually provides.
+    ///    `fz_dbg_value` is `fn(*mut Process, u64)` however it is declared, so
+    ///    an `extern "C"` one reached it as `fn(u64)` -- nil under `interp`,
+    ///    and for the same shape on `fz_process_heap_alloc_stats`, a segfault
+    ///    under `run` and `build`.
+    fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
+        let declared = self
+            .surface
+            .extern_abi
+            .as_deref()
+            .expect("extern signatures only resolve for extern fns");
+        let Some(abi) = ExternAbi::parse(declared) else {
+            return Err(self.extern_abi_error(format!(
+                "unknown extern ABI `{}` on `{}`; expected one of {}",
+                declared,
+                self.surface.name,
+                ExternAbi::ALL
+                    .iter()
+                    .map(|known| format!("`{known}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
+        if abi.takes_process() && !self.declared_by_runtime_library() {
+            return Err(self.extern_abi_error(format!(
+                "`{}` declares the `fz` ABI, which is reserved for fz's own runtime library; \
+                 it passes the running process and fz's internal value representation, \
+                 so declare a foreign symbol `extern \"C\"` instead",
+                self.surface.name
+            )));
+        }
+        if abi.takes_process() && self.surface.variadic {
+            return Err(self.extern_abi_error(format!(
+                "`{}` is variadic and declares the `fz` ABI; every variadic call goes through a \
+                 fixed-arity C dispatcher, which has nowhere to put the implicit process argument",
+                self.surface.name
+            )));
+        }
+        let symbol = extern_symbol_from_name(&self.surface.name);
+        if let Some(provided) = runtime_symbol_abi(symbol)
+            && provided != abi
+        {
+            return Err(self.extern_abi_error(format!(
+                "`{}` names `{}`, which the fz runtime provides with the `{}` ABI, \
+                 but declares `extern \"{}\"`; the two disagree about the implicit process \
+                 argument and about how a binary is passed, so the call would reach the \
+                 symbol with arguments it never accepts",
+                self.surface.name, symbol, provided, abi
+            )));
+        }
+        Ok(abi)
+    }
+
+    fn declared_by_runtime_library(&self) -> bool {
+        self.world
+            .is_bootstrap(super::super::CodeId::from_source(self.surface.name_span.code_id))
+    }
+
+    fn extern_abi_error(&self, message: String) -> FatalError {
+        emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(codes::LOWER_UNSUPPORTED, message, self.surface.name_span),
+        )
+    }
+
     fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
+        // Checked first: it is the cheapest question, and a wrong answer makes
+        // every later one moot.
+        let abi = self.resolve_extern_abi()?;
         let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
             emit_job_diagnostic(
                 self.telemetry,
@@ -1425,11 +1534,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             &semantic_contract.constraints,
         );
         Ok(LoweredExtern {
-            abi: self
-                .surface
-                .extern_abi
-                .clone()
-                .expect("extern signatures only resolve for extern fns"),
+            abi,
             symbol: extern_symbol_from_name(&self.surface.name).to_string(),
             params,
             variadic: self.surface.variadic,
@@ -1496,6 +1601,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
+            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps).lower_module(module)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1567,7 +1673,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             }
             Expr::FnRef { name, arity } => {
                 let value = self.fresh_value();
-                let function = self.resolve_runtime_function(name, *arity, expr.span, "captured runtime function")?;
+                let function = self.resolve_callable_name(name, *arity, expr.span, "captured runtime function")?;
                 steps.push(ExprStep::FunctionRef { value, function });
                 Ok(value)
             }
@@ -1663,7 +1769,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     steps.push(ExprStep::DirectCall {
                         value,
                         callsite,
-                        callee: self.resolve_direct_callee(&name, args.len(), target.span)?,
+                        callee: self.resolve_callable_name(&name, args.len(), target.span, "direct runtime callee")?,
                         args: lowered_args,
                     });
                     return Ok(value);
@@ -1784,7 +1890,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 self.lower_with(expr.span, bindings, body, else_clauses, env, steps)
             }
             Expr::Receive { clauses, after } => self.lower_receive(expr.span, clauses, after.as_deref(), env, steps),
-            Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
+            Expr::Lambda { occurrence, clauses } => self.lower_lambda(*occurrence, expr.span, clauses, env, steps),
             Expr::Quote(inner) => QuoteLowerer::new(self, env, steps).lower(inner),
             Expr::Unquote(_) => Err(emit_job_diagnostic(
                 self.telemetry,
@@ -1810,6 +1916,54 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         Ok(function)
     }
 
+    fn resolve_callable_name(
+        &mut self,
+        name: &CallableName,
+        arity: usize,
+        span: Span,
+        context: &str,
+    ) -> Result<FunctionId, FatalError> {
+        match &name.module {
+            Some(module) => {
+                let module = self.world.reference_module_denotation(module.clone());
+                self.resolve_module_callee(module, &name.name, arity, span)
+            }
+            None => self.resolve_runtime_function(&name.name, arity, span, context),
+        }
+    }
+
+    fn resolve_module_callee(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+        span: Span,
+    ) -> Result<FunctionId, FatalError> {
+        let minimum = self.world.min_module_variadic_arity(module, name);
+        if minimum.is_some_and(|minimum| arity < minimum) {
+            let label = format!(
+                "{}.{}",
+                self.world.module_denotation(module).expect("qualified callee module"),
+                name
+            );
+            self.check_variadic_arity(&label, arity, span, minimum)?;
+        }
+        if let Some(function) = self
+            .world
+            .module_interface_if_present(module)
+            .and_then(|interface| interface.public_function_with_name_arity(name, arity))
+        {
+            return Ok(function);
+        }
+        Ok(self.world.reference_module_interface_callable(
+            module,
+            name.to_string(),
+            arity,
+            InterfaceCallableKind::PublicFunction,
+            Some(self.interface_requester(span)),
+        ))
+    }
+
     fn resolve_runtime_function(
         &mut self,
         name: &str,
@@ -1818,24 +1972,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         context: &str,
     ) -> Result<FunctionId, FatalError> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let Some(module) = self.world.lookup_module_path(self.namespace, module_path) else {
+            let Ok(module_path) = ModuleName::parse_dotted(module_path) else {
                 return Err(self.unbound_runtime_function(name, arity, span, context));
             };
-            self.reject_too_few_variadic_args(name, arity, span)?;
-            if let Some(function) = self
-                .world
-                .module_interface_if_present(module)
-                .and_then(|interface| interface.public_function_with_name_arity(local_name, arity))
-            {
-                return Ok(function);
-            }
-            return Ok(self.world.reference_module_interface_callable(
-                module,
-                local_name.to_string(),
-                arity,
-                InterfaceCallableKind::PublicFunction,
-                Some(self.interface_requester(span)),
-            ));
+            let Some(module) = self.world.lookup_module_path(self.namespace, &module_path) else {
+                return Err(self.unbound_runtime_function(name, arity, span, context));
+            };
+            return self.resolve_module_callee(module, local_name, arity, span);
         }
 
         match self.world.lookup_callable_namespace(self.namespace, name, arity) {
@@ -1859,7 +2002,18 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn reject_too_few_variadic_args(&mut self, name: &str, arity: usize, span: Span) -> Result<(), FatalError> {
-        if let Some(fixed_arity) = self.world.min_variadic_arity(self.namespace, name)
+        let minimum = self.world.min_variadic_arity(self.namespace, name);
+        self.check_variadic_arity(name, arity, span, minimum)
+    }
+
+    fn check_variadic_arity(
+        &self,
+        name: &str,
+        arity: usize,
+        span: Span,
+        minimum: Option<usize>,
+    ) -> Result<(), FatalError> {
+        if let Some(fixed_arity) = minimum
             && arity < fixed_arity
         {
             return Err(emit_job_diagnostic(
@@ -1919,7 +2073,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_struct_expr(
         &mut self,
         span: Span,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Expr>)],
         env: &mut HashMap<String, ValueId>,
         steps: &mut Vec<ExprStep>,
@@ -2032,17 +2186,17 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn resolve_struct_module(
         &mut self,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         span: Span,
     ) -> Result<super::super::identity::ModuleId, FatalError> {
         self.world
-            .resolve_module_name(self.source.owner_module, self.namespace, module)
+            .resolve_module_target(self.source.owner_module, self.namespace, module)
             .ok_or_else(|| {
                 emit_job_diagnostic(
                     self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNBOUND,
-                        format!("compiler2 could not resolve struct module `{}`", module.dotted()),
+                        format!("compiler2 could not resolve struct module `{module}`"),
                         span,
                     ),
                 )
@@ -2324,7 +2478,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         rows: Vec<PatternRow<super::super::types::Ty>>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows { input_count: 1, rows };
-        let mut resolver = |name: &str,
+        let mut resolver = |name: &CallableName,
                             arity: usize,
                             args: Vec<PatternGuardExpr<super::super::types::Ty>>|
          -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
@@ -2531,13 +2685,15 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower_lambda(
         &mut self,
+        occurrence: crate::ast::LambdaOccurrence,
         span: Span,
         clauses: &[LambdaClause],
         env: &HashMap<String, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
+        let value = self.fresh_value();
         let surface = FunctionSurface {
-            name: format!("#lambda:{}:{}-{}", self.owner.as_u32(), span.start, span.end),
+            name: "#lambda".to_string(),
             name_span: span,
             clauses: clauses
                 .iter()
@@ -2569,7 +2725,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             .collect::<Vec<_>>();
 
         let (function, changed) = super::super::drive::ExecutionContext::new(self.world, self.telemetry)
-            .define_generated_function(self.owner, self.namespace, capture_params, surface);
+            .define_generated_function(self.owner, occurrence, self.namespace, capture_params, surface);
         self.generated.push(FactKey::FunctionDefined(function));
         if changed {
             self.generated_changed.push(FactKey::FunctionDefined(function));
@@ -2577,7 +2733,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         self.generated_ids.push(function);
 
         let captures = captures.into_iter().collect::<Vec<_>>();
-        let value = self.fresh_value();
         steps.push(ExprStep::Lambda {
             value,
             function,
@@ -3125,7 +3280,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower_struct_pattern(
         &mut self,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
@@ -3894,6 +4049,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
+        | Expr::Module(_)
         | Expr::FnRef { .. }
         | Expr::CaptureArg(_) => {}
         Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
@@ -4011,7 +4167,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
                 collect_expr_free_names(&expr.node, bound, free);
             }
         }
-        Expr::Lambda(clauses) => {
+        Expr::Lambda { clauses, .. } => {
             for clause in clauses {
                 let mut lambda_bound = bound.clone();
                 for param in &clause.params {
@@ -4183,6 +4339,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Nil => "Nil",
         Expr::Var(_) => "Var",
         Expr::FnRef { .. } => "FnRef",
+        Expr::Module(_) => "Module",
         Expr::Capture(_) => "Capture",
         Expr::CaptureArg(_) => "CaptureArg",
         Expr::List(_, _) => "List",
@@ -4204,7 +4361,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Receive { .. } => "Receive",
         Expr::Match(_, _) => "Match",
         Expr::Block(_) => "Block",
-        Expr::Lambda(_) => "Lambda",
+        Expr::Lambda { .. } => "Lambda",
         Expr::Quote(_) => "Quote",
         Expr::Unquote(_) => "Unquote",
     }
@@ -4244,8 +4401,7 @@ fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
     }
 }
 
-fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Option<String> {
-    let mut path = Vec::new();
+fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Option<CallableName> {
     let mut current = &expr.node;
     loop {
         match current {
@@ -4253,20 +4409,16 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
                 if env.contains_key(name) {
                     return None;
                 }
-                path.push(name.clone());
-                path.reverse();
-                return Some(path.join("."));
+                break;
             }
-            Expr::Index(target, key) => {
-                let Expr::Atom(name) = &key.node else {
-                    return None;
-                };
-                path.push(name.clone());
+            Expr::Module(_) => break,
+            Expr::Index(target, _) => {
                 current = &target.node;
             }
             _ => return None,
         }
     }
+    CallableName::from_expr(&expr.node)
 }
 
 fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {

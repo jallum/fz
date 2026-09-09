@@ -313,8 +313,8 @@ tiny always-loaded prelude root: root runtime types and imports from core
 prelude modules. <code>Kernel</code> lives in its own file and owns the raw
 primitive extern contracts plus public helpers such as <code>dbg/1</code>
 and <code>assert/1</code>. Ordinary runtime modules live next to it in
-individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
-<code>src/modules/runtime_library/process.fz</code>. <code>List</code>,
+individual files such as <code>lib/utf8.fz</code> and
+<code>lib/process.fz</code>. <code>List</code>,
 <code>Enumerable</code>, and <code>Enum</code> follow the same rule: operator
 helpers, protocol facts, and the public enumeration wrapper API, including
 <code>Enum.sort</code>'s merge sort, are ordinary runtime-library source, not
@@ -326,7 +326,7 @@ interfaces the same way imports do, so operator sugar can depend on modules
 such as <code>List</code> without importing those names into every program.</p>
 
 <p>Adding a runtime module means adding a new file under
-<code>src/modules/runtime_library/</code>, putting one ordinary
+<code>lib/</code>, putting one ordinary
 <code>defmodule</code> in it, and registering that file in the runtime-library
 source manifest in <code>src/modules/runtime_library.rs</code>. Public
 functions should have specs. Primitive <code>extern "C"</code> declarations
@@ -334,7 +334,7 @@ stay inside modules; core prelude modules expose selected functions through
 imports in <code>runtime.fz</code>.</p>
 
 <p>Runtime modules are keyed by module identity, not by filename.
-<code>src/modules/runtime_library/utf8.fz</code> defines the module
+<code>lib/utf8.fz</code> defines the module
 <code>Utf8</code>; the graph loader discovers that module by name and compiles
 its checked-in source when it becomes reachable.</p>
 

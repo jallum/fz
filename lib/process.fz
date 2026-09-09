@@ -1,0 +1,26 @@
+defmodule Process do
+  @moduledoc "Runtime process inspection helpers."
+
+  extern "fz" fn fz_process_heap_alloc_stats() :: any
+
+  @doc """
+  Returns allocation and scheduling counters for the current process, as a map.
+
+  The map carries an allocation count and a byte count for each value family
+  the runtime allocates -- list cells, structs, closures, maps, bitstrings,
+  process binaries, shared binaries, scalar boxes, call frames, resources, and
+  everything else under `other` -- plus running totals across all of them in
+  `allocs` and `bytes`, and the process's reduction and scheduler-yield
+  counters.
+
+  ## Examples
+
+      Process.heap_alloc_stats()
+      #=> %{:allocs => 8, :bytes => 144, :list_cons_allocs => 0, :list_cons_bytes => 0, :struct_allocs => 0, :struct_bytes => 0, :closure_allocs => 0, :closure_bytes => 0, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 7, :bitstring_bytes => 128, :procbin_allocs => 0, :procbin_bytes => 0, :shared_bin_allocs => 0, :shared_bin_bytes => 0, :scalar_box_allocs => 1, :scalar_box_bytes => 16, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0, :scheduler_yields => 0, :interpreter_yields => 0, :reductions_remaining => 4000, :reductions_per_quantum => 4000, :reductions_executed => 0, :reduction_yields => 0, :yield_reasons => 0, :max_yield_continuation_bytes => 0, :min_yield_continuation_margin_before_bytes => 0, :min_yield_continuation_margin_after_bytes => 0}
+
+  The exact counts vary by run and by how much work already happened on this
+  process before the call.
+  """
+  @spec heap_alloc_stats() :: any
+  fn heap_alloc_stats(), do: fz_process_heap_alloc_stats()
+end

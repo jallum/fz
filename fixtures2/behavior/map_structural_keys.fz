@@ -1,0 +1,23 @@
+#---
+# purpose: independently allocated equal composite map keys collapse and fresh lookups find the last value
+#---
+fn tuple(x), do: {:x, x}
+fn list(x), do: [x, 2]
+fn nested(x), do: %{tuple(x) => list(x)}
+
+fn main() do
+  tuples = %{tuple(1) => :first, tuple(1) => :last}
+  lists = %{list(1) => :first, list(1) => :last}
+  maps = %{nested(1) => :first, nested(1) => :last}
+  dbg({Map.size(tuples), tuples[tuple(1)]})
+  dbg({Map.size(lists), lists[list(1)]})
+  dbg({Map.size(maps), maps[nested(1)]})
+  rebuilt = Map.new([{list(1), :first}, {list(1), :last}])
+  updated = Map.put(tuples, tuple(1), :updated)
+  dbg({rebuilt === lists, updated === %{tuple(1) => :updated}})
+  dbg({Map.size(Map.delete(maps, nested(1))), Map.size(maps)})
+  strict = Map.new([{tuple(1.0), :float}, {tuple(1), :int}])
+  dbg({Map.size(strict), strict[tuple(1)], strict[tuple(1.0)]})
+  dbg(Map.keys(strict) === [tuple(1), tuple(1.0)])
+  0
+end

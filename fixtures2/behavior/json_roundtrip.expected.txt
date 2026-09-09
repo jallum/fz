@@ -1,0 +1,55 @@
+{:ok, true}
+{:ok, false}
+{:ok, nil}
+{:ok, 0}
+{:ok, 42}
+{:ok, -45}
+{:ok, 3.5}
+{:ok, -0.25}
+{:ok, "hi"}
+{:ok, []}
+{:ok, [1, 2.5, true, nil]}
+{:ok, [[1], [2, [3]]]}
+{:ok, %{}}
+{:ok, %{"a" => 1}}
+{:ok, %{"a" => [1, nil], "b" => 2}}
+{:ok, %{"n" => %{"m" => %{"deep" => true}}}}
+{:ok, 1000.0}
+{:ok, 150.0}
+{:ok, 2000.0}
+{:ok, 1.0e-7}
+{:ok, -150.0}
+{:ok, "a\nb"}
+{:ok, "q\"q"}
+{:ok, "s\\s"}
+{:ok, "sl/sl"}
+{:ok, "A"}
+{:ok, "é"}
+{:ok, "日"}
+"true"
+"null"
+"42"
+"-45"
+"2.5"
+"\"hi\""
+"[]"
+"[1,2.5,null]"
+"{}"
+"{\"a\":[1,null],\"b\":2}"
+{:error, {:invalid_byte, 3, 32}}
+{:error, {:invalid_byte, 3, 93}}
+{:error, {:invalid_byte, 8, 125}}
+{:error, {:invalid_byte, 5, 49}}
+{:error, {:unexpected_end, 0}}
+{:error, {:unexpected_end, 3}}
+{:error, {:invalid_byte, 3, 50}}
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true

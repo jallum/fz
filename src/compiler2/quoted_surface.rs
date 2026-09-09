@@ -82,7 +82,7 @@ pub struct FunctionForm {
 #[derive(Debug, Clone)]
 pub struct ModuleForm {
     pub source: QuotedSourceRoot,
-    pub name: String,
+    pub name: ModuleName,
     pub span: Span,
 }
 
@@ -117,7 +117,7 @@ pub struct MacroCallForm {
 #[derive(Debug, Clone)]
 pub(crate) enum ReservedSourceDefinition {
     Function { name: String, arity: usize, is_macro: bool },
-    Module { local_name: String },
+    Module { name: ModuleName },
     Protocol { name: ModuleName },
     ProtocolImpl,
 }
@@ -600,7 +600,7 @@ fn parse_module_form(source: QuotedSourceRoot) -> Result<ModuleForm, QuotedSourc
     if args.is_empty() {
         return Err(QuotedSourceError::new("defmodule expects a module alias"));
     }
-    let name = parse_alias_segments(&args[0])?.join(".");
+    let name = ModuleName::from_segments(parse_alias_segments(&args[0])?);
     Ok(ModuleForm { source, name, span })
 }
 
@@ -688,11 +688,8 @@ pub(crate) fn reserved_source_definition(
             let Some(name) = args.first() else {
                 return Err(QuotedSourceError::new("defmodule expects a module alias"));
             };
-            let local_name = parse_alias_segments(name)?
-                .last()
-                .cloned()
-                .ok_or_else(|| QuotedSourceError::new("defmodule expects a module alias"))?;
-            Some(ReservedSourceDefinition::Module { local_name })
+            let name = ModuleName::from_segments(parse_alias_segments(name)?);
+            Some(ReservedSourceDefinition::Module { name })
         }
         "defprotocol" => {
             let node = expect_surface_node(source)?;
@@ -705,9 +702,9 @@ pub(crate) fn reserved_source_definition(
             })
         }
         "defimpl" => {
-            // Recognition only: a `defimpl` is hoisted to its own `Protocol.Target`
-            // module, parsed in full (`register_protocol_impl`) at scope time where
-            // the namespace resolves its protocol/target. Validate just the arity.
+            // Recognition only: scope-time registration resolves the protocol
+            // and target into the implementation's typed owner pair. Validate
+            // just the arity here.
             let node = expect_surface_node(source)?;
             let args = node.tail.list_items()?;
             if args.len() != 2 {

@@ -1,0 +1,25 @@
+#---
+# purpose: "One source closure projects its retained capture into each activation's demanded ABI"
+#---
+fn mailbox(x, acc), do: x * acc
+fn wrap(reducer), do: fn (x, acc) -> reducer.(x, acc) end
+fn select(choose, reducer) do
+  case choose do
+    true -> wrap(&mailbox/2)
+    _ -> wrap(reducer)
+  end
+end
+
+fn main() do
+  send(self(), fn (x, acc) -> x * acc end)
+  reducer = receive do f -> f end
+  dbg(Enum.reduce(1..7//2, reducer))
+  nested = fn (x, acc) -> reducer.(x, acc) end
+  dbg(Enum.reduce(1..7//2, nested))
+  send(self(), true)
+  choose = receive do value -> value end
+  dbg(Enum.reduce(1..7//2, select(choose, reducer)))
+  send(self(), false)
+  choose = receive do value -> value end
+  dbg(Enum.reduce(1..7//2, select(choose, reducer)))
+end

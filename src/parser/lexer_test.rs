@@ -373,3 +373,105 @@ fn null_telemetry_is_a_silent_no_op() {
         .expect("lex");
     assert!(!toks.is_empty());
 }
+
+/// Elixir's float-literal grammar requires a fractional part before any
+/// exponent: `1e10` is a SyntaxError there, not a float, so accepting it here
+/// would be a divergence rather than a convenience.
+#[test]
+fn float_literals_take_an_exponent_only_after_a_fraction() {
+    for (source, expected) in [
+        ("1.0e14", 1.0e14f64),
+        ("1.0e-7", 1.0e-7),
+        ("1.0E3", 1000.0),
+        ("1.5e+3", 1500.0),
+        ("1_000.5e-3", 1.0005),
+        ("5.0e-324", 5.0e-324),
+        ("1.7976931348623157e308", 1.7976931348623157e308),
+    ] {
+        assert_eq!(toks_of(source), vec![Tok::Float(expected)], "`{source}`");
+    }
+}
+
+/// The exponent is taken only when a digit actually follows, so an `e` that
+/// begins the next token is left alone -- `1.0end` must keep its `end`.
+#[test]
+fn a_trailing_e_without_digits_is_not_an_exponent() {
+    assert_eq!(toks_of("1.0e"), vec![Tok::Float(1.0), Tok::Ident("e".to_string())]);
+    // `end` is a keyword, so this also shows the number stopping cleanly at a
+    // token boundary rather than at a character class.
+    assert_eq!(toks_of("1.0end"), vec![Tok::Float(1.0), Tok::End]);
+    assert_eq!(toks_of("1.0 e5"), vec![Tok::Float(1.0), Tok::Ident("e5".to_string())],);
+}
+
+// DROP: heredoc lexing, lexer infrastructure
+#[test]
+fn heredoc_is_one_token_holding_its_lines() {
+    // `"""` used to be three quote characters: an empty string, then an
+    // opening quote. The whole heredoc lexed as several tokens and the
+    // content was silently dropped (fz-5xp.78).
+    let toks = Lexer::with_source_name("\"\"\"\nhello\n\"\"\"", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    match &toks[0].tok {
+        Tok::Binary(b) => assert_eq!(b, b"hello\n", "a heredoc keeps each content line's newline"),
+        other => panic!("expected one Tok::Binary, got {:?}", other),
+    }
+    assert!(
+        matches!(toks[1].tok, Tok::Eof | Tok::Newline),
+        "the heredoc should consume its closing delimiter, leaving nothing behind: {:?}",
+        toks[1].tok
+    );
+}
+
+// DROP: heredoc indentation rule, lexer infrastructure
+#[test]
+fn heredoc_strips_the_closing_delimiters_indentation() {
+    // Elixir measures indentation from the closing `"""`, so text indented
+    // further than the delimiter keeps the difference.
+    let toks = Lexer::with_source_name("\"\"\"\n  indented\n    deeper\n  \"\"\"", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    match &toks[0].tok {
+        Tok::Binary(b) => assert_eq!(b, b"indented\n  deeper\n"),
+        other => panic!("expected Tok::Binary, got {:?}", other),
+    }
+}
+
+// DROP: heredoc edge case, lexer infrastructure
+#[test]
+fn heredoc_with_no_lines_is_the_empty_binary() {
+    let toks = Lexer::with_source_name("\"\"\"\n\"\"\"", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    match &toks[0].tok {
+        Tok::Binary(b) => assert!(b.is_empty(), "an empty heredoc is the empty binary, not a newline"),
+        other => panic!("expected Tok::Binary, got {:?}", other),
+    }
+}
+
+// DROP: heredoc escapes, lexer infrastructure
+#[test]
+fn heredoc_decodes_escapes_like_any_other_string() {
+    let toks = Lexer::with_source_name("\"\"\"\na\\tb\n\"\"\"", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    match &toks[0].tok {
+        Tok::Binary(b) => assert_eq!(b, b"a\tb\n"),
+        other => panic!("expected Tok::Binary, got {:?}", other),
+    }
+}
+
+// DROP: heredoc opening-line rule, lexer infrastructure
+#[test]
+fn heredoc_refuses_content_on_its_opening_line() {
+    // Elixir rejects this outright rather than guessing what the author
+    // meant, and so does fz: the text after `"""` has no defined indentation.
+    let err = Lexer::with_source_name("\"\"\"oops\nx\n\"\"\"", "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect_err("content on the opening line should not lex");
+    assert!(
+        err.msg.contains("heredoc"),
+        "the diagnostic should name the construct it is rejecting: {}",
+        err.msg
+    );
+}

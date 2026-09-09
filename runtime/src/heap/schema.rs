@@ -1,36 +1,59 @@
 //! Strict struct layout descriptors + per-process registry.
 
+use crate::module_name::ModuleName;
+use std::borrow::Cow;
+use std::cmp::Ordering;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaIdentity {
+    Tuple(usize),
+    Named(ModuleName),
+    Internal(String),
+}
+
+impl SchemaIdentity {
+    pub fn semantic_cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Tuple(a), Self::Tuple(b)) => a.cmp(b),
+            (Self::Named(a), Self::Named(b)) => a.cmp(b),
+            (Self::Tuple(_), Self::Named(_)) => Ordering::Less,
+            (Self::Named(_), Self::Tuple(_)) => Ordering::Greater,
+            _ => panic!("internal storage schema is not a language value"),
+        }
+    }
+
+    pub fn display_name(&self) -> Cow<'_, str> {
+        match self {
+            Self::Tuple(arity) => Cow::Owned(format!("Tuple{arity}")),
+            Self::Named(name) => Cow::Owned(name.to_string()),
+            Self::Internal(name) => Cow::Borrowed(name),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
     /// Dynamic field stored as a raw payload plus compact kind metadata.
     /// GC traces heap-kind payloads.
     AnyValue,
-    /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
-    /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
-    /// instead of as a tagged heap object.
+    /// Eight bytes of raw f64 payload, not traced by GC.
     RawF64,
-    /// 8 bytes of raw i64 — an int payload with the tag/shift stripped.
-    /// GC tracer skips this slot. Introduced by fz-ul4.27.5.3 so typed-int
-    /// entry-frame params can live as raw i64 instead of the tagged
-    /// `(n << 3) | TAG_INT` form, letting arithmetic ops skip the
-    /// per-op sshr/ishl round trip.
+    /// Eight bytes of raw i64 payload, not traced by GC.
     RawI64,
-    /// Generic raw bytes — width in bytes. GC tracer skips this slot. Used
-    /// by miscellaneous non-frame schemas (bitstrings, etc.) and reserved
-    /// for VR.3.3 (raw i64 entry-param slots).
+    /// A fixed-width byte field, not traced by GC.
     RawBytes(u32),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDescriptor {
     pub offset: u32,
     pub kind: FieldKind,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
-    pub name: String,
+    pub identity: SchemaIdentity,
     pub size: u32,
     pub fields: Vec<FieldDescriptor>,
 }
@@ -38,14 +61,14 @@ pub struct Schema {
 impl Schema {
     pub const RANGE_NAME: &str = "Range";
 
-    /// fz-ul4.38 — canonical `Tuple{N}` schema. N typed any values at offsets
-    /// 0, 8, 16, … Used by every path that registers tuple schemas: JIT
-    /// codegen (`ir_codegen::compile_with_backend`), interp lazy
-    /// registration (`ir_interp::interp_tuple_schema_id`), and the AOT
-    /// startup hook (`aot_shim::fz_aot_setup`). Single source of truth.
+    pub fn is_range(&self) -> bool {
+        matches!(&self.identity, SchemaIdentity::Named(name) if name.segments().len() == 1 && name.last_segment() == Self::RANGE_NAME)
+    }
+
+    /// One typed arity and layout shared by interpreter, JIT, and AOT tuples.
     pub fn tuple_of_arity(arity: usize) -> Self {
         Self {
-            name: format!("Tuple{}", arity),
+            identity: SchemaIdentity::Tuple(arity),
             size: (arity * 8) as u32,
             fields: (0..arity)
                 .map(|i| FieldDescriptor {
@@ -57,7 +80,7 @@ impl Schema {
         }
     }
 
-    pub fn named_struct(name: impl Into<String>, fields: impl IntoIterator<Item = String>) -> Self {
+    pub fn named_struct(name: ModuleName, fields: impl IntoIterator<Item = String>) -> Self {
         let fields = fields
             .into_iter()
             .enumerate()
@@ -68,7 +91,7 @@ impl Schema {
             })
             .collect::<Vec<_>>();
         Self {
-            name: name.into(),
+            identity: SchemaIdentity::Named(name),
             size: (fields.len() * 8) as u32,
             fields,
         }
@@ -78,35 +101,10 @@ impl Schema {
     /// a distinct heap tag. Its field layout comes from the source-level
     /// `defstruct [:first, :last, :step]` declaration.
     pub fn range() -> Self {
-        Self {
-            ..Self::named_struct(
-                Self::RANGE_NAME,
-                ["first".to_string(), "last".to_string(), "step".to_string()],
-            )
-        }
-    }
-
-    /// Closure environment schema. Payload offset 0 is the raw code pointer
-    /// and is never traced. Captures are ordinary `AnyValue` fields starting
-    /// at payload offset 8, so closure environments use the same field
-    /// access and GC tracing machinery as tuples.
-    pub fn closure_env(captures: usize) -> Self {
-        let mut fields = Vec::with_capacity(captures + 1);
-        fields.push(FieldDescriptor {
-            offset: 0,
-            kind: FieldKind::RawBytes(8),
-            name: None,
-        });
-        fields.extend((0..captures).map(|i| FieldDescriptor {
-            offset: 8 + (i * 8) as u32,
-            kind: FieldKind::AnyValue,
-            name: None,
-        }));
-        Self {
-            name: format!("ClosureEnv{}", captures),
-            size: ((captures + 1) * 8) as u32,
-            fields,
-        }
+        Self::named_struct(
+            ModuleName::from_segments(vec![Self::RANGE_NAME.into()]),
+            ["first".to_string(), "last".to_string(), "step".to_string()],
+        )
     }
 
     pub fn value_field_count(&self) -> usize {
@@ -131,7 +129,11 @@ impl Schema {
                 index += 1;
             }
         }
-        panic!("schema {} has no AnyValue field at offset {}", self.name, field_offset);
+        panic!(
+            "schema {} has no AnyValue field at offset {}",
+            self.identity.display_name(),
+            field_offset
+        );
     }
 
     pub fn any_value_fields_with_kind_offsets(&self) -> impl Iterator<Item = (&FieldDescriptor, u32)> {
@@ -157,12 +159,13 @@ impl SchemaRegistry {
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {
-        if let Some((id, _)) = self
+        if let Some((id, existing)) = self
             .schemas
             .iter()
             .enumerate()
-            .find(|(_, existing)| existing.name == schema.name)
+            .find(|(_, existing)| existing.identity == schema.identity)
         {
+            assert_eq!(existing, &schema, "one schema identity must have one layout");
             return id as u32;
         }
         let id = self.schemas.len() as u32;
@@ -170,23 +173,7 @@ impl SchemaRegistry {
         id
     }
 
-    pub fn closure_env(&mut self, captures: usize) -> u32 {
-        let name = format!("ClosureEnv{}", captures);
-        if let Some((id, _)) = self.schemas.iter().enumerate().find(|(_, schema)| schema.name == name) {
-            return id as u32;
-        }
-        self.register(Schema::closure_env(captures))
-    }
-
     pub fn range(&mut self) -> u32 {
-        if let Some((id, _)) = self
-            .schemas
-            .iter()
-            .enumerate()
-            .find(|(_, schema)| schema.name == Schema::RANGE_NAME)
-        {
-            return id as u32;
-        }
         self.register(Schema::range())
     }
 

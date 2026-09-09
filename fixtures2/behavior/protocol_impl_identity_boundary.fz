@@ -1,0 +1,109 @@
+#---
+# purpose: Protocol/target boundaries distinguish implementations whose display paths coincide
+#---
+defmacro self_val(x) do
+  quote do: unquote(__CALLER__.module).val(unquote(x))
+end
+
+defmacro self_val_after_display_edit(x) do
+  {head, meta, _} = __CALLER__.module
+  changed = {head, meta, [:Wrong, :Display]}
+  quote do: unquote(changed).val(unquote(x))
+end
+
+defmacro self_struct(x) do
+  {:"%", %{}, [__CALLER__.module, {:"%{}", %{}, [{:x, x}]}]}
+end
+
+defmodule Decoy do
+  defstruct [:x]
+end
+
+defmodule Original do
+  defstruct [:x]
+  alias Decoy, as: Original
+  fn make(x), do: self_struct(x)
+  fn matches(value) do
+    case value do
+      self_struct(_) -> true
+      _ -> false
+    end
+  end
+end
+
+defmodule B do
+  defmodule C do
+    defstruct [:x]
+  end
+end
+
+alias B.C, as: TargetOne
+
+defmodule C do
+  defstruct [:x]
+end
+
+alias C, as: TargetTwo
+
+defprotocol A do
+  @spec val(t) :: integer
+  fn val(x)
+  @spec key(t) :: any
+  fn key(x)
+  @spec relay(t) :: integer
+  fn relay(x)
+end
+
+defprotocol A.B do
+  @spec val(t) :: integer
+  fn val(x)
+  @spec key(t) :: any
+  fn key(x)
+  @spec relay(t) :: integer
+  fn relay(x)
+end
+
+defmodule A.B.C do
+  fn val(x), do: 3
+end
+
+defimpl A, for: TargetOne do
+  fn val(x), do: 1
+  fn key(x), do: &val/1
+  fn relay(x) do
+    case x do
+      value when self_val(value) > 0 -> self_val_after_display_edit(value)
+    end
+  end
+end
+
+defimpl A.B, for: TargetTwo do
+  fn val(x), do: 2
+  fn key(x), do: &val/1
+  fn relay(x), do: self_val(x)
+end
+
+defprotocol Solo do
+  @spec val(t) :: integer
+  fn val(x)
+  @spec relay(t) :: integer
+  fn relay(x)
+end
+
+defimpl Solo, for: List do
+  fn val(x), do: 4
+  fn relay(x), do: self_val(x)
+end
+
+fn main() do
+  left = %TargetOne{x: 0}
+  right = %TargetTwo{x: 0}
+  dbg({A.val(left), A.B.val(right), A.B.C.val(0)})
+  left_key = A.key(left)
+  right_key = A.B.key(right)
+  named_key = &A.B.C.val/1
+  keys = %{left_key => 1, right_key => 2, named_key => 3}
+  dbg({left_key == right_key, Map.get(keys, left_key), Map.get(keys, right_key), Map.get(keys, named_key)})
+  dbg({A.relay(left), A.B.relay(right), Solo.relay([])})
+  dbg({Original.make(5) == %Original{x: 5}, Original.matches(%Original{x: 5})})
+end

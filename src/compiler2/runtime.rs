@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library;
 
 use super::CodeId;
@@ -23,7 +24,7 @@ pub(crate) fn bootstrap(modules: &mut ModuleMap) -> HashMap<ModuleId, RuntimeMod
     let mut runtime_modules = HashMap::new();
 
     for (name, source) in runtime_library::module_sources() {
-        let module = modules.reference_named(name.to_string());
+        let module = modules.reference_named(ModuleName::parse_dotted(name).expect("runtime module name"));
         runtime_modules.insert(
             module,
             RuntimeModuleCode {

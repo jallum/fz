@@ -1,0 +1,43 @@
+#---
+# purpose: "several binary literals over the shared-binary threshold can all be matched, and the program still exits cleanly"
+# oracle: oracle.exs
+#---
+#
+# # binary_literal_over_threshold
+#
+# A binary literal above `SHARED_BIN_THRESHOLD_BYTES` (64) is compiled into a
+# static shared binary baked into the program's own data. Matching MORE THAN ONE
+# of them printed the right answers and then died at teardown with SIGBUS, on
+# `run` only, silently -- exit 138 after a clean-looking run.
+#
+#     one big literal, matched         ->  exit 0
+#     TWO big literals, both matched   ->  exit 138
+#
+# `TAG_MASK` is four bits and `TAG_FWD` is `0x8`. A ProcBin stub keeps its
+# SharedBin's address in word 0, and word 0 is where the collector writes its
+# forwarding marker -- so a SharedBin sitting at an address ending in 8 makes a
+# LIVE stub read as forwarded. The sweep then took the SharedBin itself for a
+# to-space stub, wrote into it, and made the chain head point eight bytes below
+# it; the release that followed did an atomic decrement into read-only memory.
+#
+# Two statics emitted back to back are exactly how you land there: the first is
+# 16-aligned and safe, the second sits 40 bytes later and ends in 8. Half of all
+# heap-allocated shared binaries were a coin flip on the same hazard.
+#
+# The fix is the invariant the heap already keeps -- 16-byte alignment, so the
+# low four bits are never part of an address. This fixture is FOUR literals over
+# the threshold, matched, so no single alignment accident can make it pass.
+fnp first_byte(<<c, _rest :: binary>>), do: c
+fnp first_byte(_b), do: :no_match
+
+fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+fnp walk(_b, n), do: n
+
+fn main() do
+  dbg(first_byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+  dbg(first_byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+  dbg(walk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0))
+  dbg(walk("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 0))
+  dbg(walk("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 0))
+  dbg(walk("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 0))
+end

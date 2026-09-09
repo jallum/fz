@@ -3,6 +3,30 @@ use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
+#[test]
+fn separate_macro_expansions_keep_distinct_lambda_denotations() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = crate::telemetry::Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_lambda_denotations.fz".into()),
+        text: "defmacro make(value) do\n  {:fn, %{}, [{:\"->\", %{}, [[], value]}]}\nend\n\nfn main() do\n  first = make(1)\n  second = make(2)\n  first.() * 10 + second.()\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(12),
+        "separate expansion sites must not alias the lambda definition through its shared quote span: {:?}",
+        diagnostics.find(&["fz", "diag"]),
+    );
+}
+
 // Ported from src/frontend/macros_test.rs: macro quote+unquote expands arithmetic at compile time
 #[test]
 fn macro_quote_unquote_arithmetic() {

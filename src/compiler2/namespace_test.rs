@@ -6,13 +6,13 @@ fn compiler2_namespace_type_binding_coexists_with_a_value_of_the_same_name() {
     let mut functions = FunctionMap::new();
     let mut namespaces = NamespaceStore::new();
 
-    let module = modules.reference_named("Range");
+    let module = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Range").unwrap());
     let type_t = TypeName {
         module,
         name: "t".to_string(),
         arity: 0,
     };
-    let value_t = functions.reference(module, "t", 0);
+    let value_t = functions.reference(module, None, "t", 0);
 
     // Reserve the type first (deepest), then bind a value of the same name on
     // top — exactly as `define_scope` does, so values shadow types.
@@ -39,15 +39,15 @@ fn compiler2_namespace_store_shadows_and_restores_by_head() {
     let mut namespaces = NamespaceStore::new();
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
-    let kernel = modules.reference_named("Kernel");
+    let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
     let _ = modules.define(
         kernel,
         code_id,
         BindingId::END,
         crate::compiler2::ModuleInterface::default(),
     );
-    let dbg_fn = functions.reference(kernel, "dbg", 1);
-    let plus_fn = functions.reference(kernel, "+", 2);
+    let dbg_fn = functions.reference(kernel, None, "dbg", 1);
+    let plus_fn = functions.reference(kernel, None, "+", 2);
 
     let prelude = namespaces.bind(BindingId::END, "dbg", NamespaceSymbol::Function(dbg_fn));
     namespaces.set_prelude_head(prelude);
@@ -88,14 +88,14 @@ fn compiler2_namespace_store_reuses_identical_binding_chains() {
     let mut namespaces = NamespaceStore::new();
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
-    let kernel = modules.reference_named("Kernel");
+    let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
     let _ = modules.define(
         kernel,
         code_id,
         BindingId::END,
         crate::compiler2::ModuleInterface::default(),
     );
-    let dbg_fn = functions.reference(kernel, "dbg", 1);
+    let dbg_fn = functions.reference(kernel, None, "dbg", 1);
 
     let first = namespaces.bind(BindingId::END, "dbg", NamespaceSymbol::Function(dbg_fn));
     let second = namespaces.bind(BindingId::END, "dbg", NamespaceSymbol::Function(dbg_fn));

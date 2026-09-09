@@ -318,8 +318,11 @@ brand; it is called once, where the name is defined (see
 [`type-naming`](type-naming.md)), so the symbol is complete from birth. There is
 no constructor for a bare tag with no inner: a refinement of nothing denotes
 nothing. Opaque source definitions publish the tag itself. Structs are not
-opaques: a `MapSig` carries `MapTag::Struct(ModuleId, name)` and its fields in
-one atomic record leaf.
+opaques: a `MapSig` carries a `StructTag` and its fields in one atomic record
+leaf. The tag's parsed `ModuleName` owns equality, hashing, and order; its
+`ModuleId` identifies the World dependency. Nominal protocol targets use the
+typed `OpaqueTag::ProtocolTarget(ModuleName)` variant of the existing opaque
+set axis, distinct from ordinary `OpaqueTag::Named(String)` source names.
 
 **Brands carry no runtime witness.** There is no brand `ValueKind` (the runtime
 kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the

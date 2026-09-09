@@ -27,7 +27,7 @@ use crate::any_value::{
     bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_object_word,
 };
 use crate::sync::{AtomicUsize, Ordering, fence};
-use std::mem::{forget, size_of};
+use std::mem::{align_of, forget, size_of};
 use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 
 // ===== SharedBin layout =====================================================
@@ -35,7 +35,14 @@ use std::ptr::{NonNull, read, slice_from_raw_parts_mut, write};
 /// Off-heap refcounted binary. `refcount` controls lifetime; `destructor` is
 /// invoked exactly once when the refcount transitions to zero, with the
 /// SharedBin pointer as its argument.
-#[repr(C)]
+///
+/// 16-ALIGNED ON PURPOSE. A ProcBin stub holds this address in word 0, and
+/// that word is also where the Cheney collector writes its forwarding
+/// marker -- a pointer with `TAG_FWD` (0x8) in the low four bits. At 8-byte
+/// alignment half of all SharedBin addresses end in 8, and a live stub read
+/// as forwarded (fz-5xp.60). Sharing the heap's own 16-alignment invariant
+/// is what makes a real pointer and a tag distinguishable by construction.
+#[repr(C, align(16))]
 pub struct SharedBin {
     pub refcount: AtomicUsize,                            // offset 0..8
     pub bit_len: u64,                                     // offset 8..16
@@ -44,8 +51,14 @@ pub struct SharedBin {
     pub destructor: unsafe extern "C" fn(*mut SharedBin), // offset 32..40
 }
 
+/// 40 bytes of fields, rounded to the 16-byte alignment above. The field
+/// offsets are unchanged, and `define_static_sharedbin` emits this many
+/// bytes for the compiler-baked copies.
+pub const SHARED_BIN_BYTES: usize = 48;
+
 const _: () = {
-    assert!(size_of::<SharedBin>() == 40);
+    assert!(size_of::<SharedBin>() == SHARED_BIN_BYTES);
+    assert!(align_of::<SharedBin>() == 16);
 };
 
 // Safety: refcount is atomic; the byte buffer is either an owned Box<[u8]>
@@ -204,13 +217,33 @@ impl Drop for SharedBinHandle {
 
 // ===== ProcBin newtype ======================================================
 
-/// Per-heap stub referencing a `SharedBin`. 16 bytes total:
-///   offset 0..8   shared_ptr: *mut SharedBin
-///   offset 8..16  mso_next:   u64 tagged MSO link, or 0
+/// Per-heap stub naming a byte-aligned SUFFIX of a `SharedBin`'s bytes.
+/// `PROCBIN_BYTES` total:
+///   offset 0..8    shared_ptr:  *mut SharedBin
+///   offset 8..16   mso_next:    u64 tagged MSO link, or 0
+///   offset 16..24  byte_offset: u64 first byte of this stub's view
+///   offset 24..32  unused -- the heap rounds every object to a 16-byte
+///                  slot, so 24 and 32 cost the same.
+///
+/// A whole binary is the suffix at offset 0. A tail match allocates another
+/// stub over the SAME SharedBin at a later offset, which is what makes
+/// `<<_c, rest :: binary>>` copy nothing (fz-5xp.55).
+///
+/// SUFFIX, not an arbitrary window, is the load-bearing constraint. The
+/// buffer carries one invisible trailing NUL ([[fz-wu9]]), and a suffix
+/// ends where the buffer ends -- so the parent's NUL is also every
+/// suffix's NUL and `fz_binary_as_cstring` needs no flattening copy. An
+/// arbitrary window would not have that, which is why one cannot be built:
+/// `alloc_procbin` derives the length from the offset rather than taking
+/// it.
 ///
 /// Cheney forwarding overwrites offset 0 with a headerless forwarding marker.
 /// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
 /// old stub and `shared_ptr` from the to-space copy if the stub survived.
+/// Size of a ProcBin stub in bytes. The single authority: allocation, GC
+/// copying and `object_size` all read it here.
+pub const PROCBIN_BYTES: usize = 32;
+
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ProcBin(NonNull<u8>);
@@ -247,16 +280,27 @@ impl ProcBin {
         }
     }
 
+    /// First byte of this stub's view into the shared buffer.
+    pub fn byte_offset(&self) -> u64 {
+        unsafe { read(self.as_raw().add(16) as *const u64) }
+    }
+
+    fn byte_offset_set(&self, offset: u64) {
+        unsafe {
+            write(self.as_raw().add(16) as *mut u64, offset);
+        }
+    }
+
     pub fn bit_len(&self) -> u64 {
-        unsafe { (*self.shared_raw()).bit_len }
+        unsafe { (*self.shared_raw()).bit_len - self.byte_offset() * 8 }
     }
 
     pub fn bytes_ptr(&self) -> *const u8 {
-        unsafe { (*self.shared_raw()).bytes_ptr }
+        unsafe { (*self.shared_raw()).bytes_ptr.add(self.byte_offset() as usize) }
     }
 
     pub fn bytes_len(&self) -> usize {
-        unsafe { (*self.shared_raw()).bytes_len }
+        unsafe { (*self.shared_raw()).bytes_len - self.byte_offset() as usize }
     }
 }
 
@@ -264,14 +308,23 @@ impl ProcBin {
 
 use crate::heap::{Heap, HeapAllocKind};
 
-/// Allocate a 16-byte ProcBin stub on `heap`, taking ownership of the
-/// SharedBin reference encapsulated in `handle`. The new ProcBin is
-/// pushed onto `heap.mso_head` as the new chain head.
-pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
-    let p = heap.alloc_kind(HeapAllocKind::ProcBin, 16);
+/// Allocate a ProcBin stub on `heap` viewing `handle`'s bytes from
+/// `byte_offset` to the end, taking ownership of the SharedBin reference
+/// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`
+/// as the new chain head.
+///
+/// Pass `0` for the whole binary. The length is derived, not passed: see
+/// the `ProcBin` layout note for why only suffixes are constructible.
+pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64) -> ProcBin {
+    assert!(
+        byte_offset as usize <= handle.bytes_len(),
+        "ProcBin suffix offset {byte_offset} past the shared buffer"
+    );
+    let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
+    pb.byte_offset_set(byte_offset);
     heap.mso_head = heap_object_word(p, ValueKind::PROCBIN);
     pb
 }
@@ -568,5 +621,28 @@ mod loom_tests {
             unsafe { shared_bin_release(p_addr as *mut SharedBin) };
             assert!(flag.load(LoomOrdering::SeqCst), "destructor must fire on last release");
         });
+    }
+}
+
+/// fz-5xp.60 — a ProcBin stub holds its SharedBin's address in word 0, and
+/// that is the word Cheney overwrites with a `TAG_FWD` (0x8) forwarding
+/// marker. At 8-byte alignment half of all SharedBin addresses end in 8 and
+/// a LIVE stub reads as forwarded, so the sweep treats the SharedBin itself
+/// as a to-space stub and writes into it. 16-alignment is what makes a real
+/// pointer and a tag distinguishable.
+#[cfg(test)]
+mod shared_bin_alignment_test {
+    use super::*;
+
+    #[test]
+    fn a_shared_bin_address_is_never_mistakable_for_a_forwarding_marker() {
+        assert_eq!(align_of::<SharedBin>(), 16);
+        // Many at once: at 8-alignment about half of these would end in 8.
+        let bins: Vec<SharedBinHandle> = (0..64u8).map(|i| SharedBinHandle::from_bytes(&[i; 8], 64)).collect();
+        for bin in &bins {
+            let addr = bin.as_raw() as u64;
+            assert_eq!(addr % 16, 0, "SharedBin at {addr:#x} is not 16-aligned");
+            assert_ne!(addr & TAG_MASK, TAG_FWD);
+        }
     }
 }

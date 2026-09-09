@@ -573,6 +573,15 @@ capture/input contributions while an exact non-self target is absent. Product
 producers read settled full `RuntimeDemand(E)` values through ordinary fact
 dependencies; neither demand fact has a product memo entry or bridge.
 
+A first-class closure retains every lexical capture completely, but that
+retention joins an available exact target's capture demand in the same formula
+step. An absent target input vector is unknown, not permission to publish a
+generic callable escape. Available targets contribute without waiting for
+other targets or settlement; their missing peers remain ordinary Current fact
+dependencies. Retention does not feed Whole demand back into member input
+contracts. Members execute only their demanded projections of the one retained
+environment.
+
 Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
 and every position-owned semantic fact nameable from the key in the same
 evaluation (`ActivationInputs` for an executable input; `ReturnType` for an
@@ -699,23 +708,39 @@ lowers one complete body and creates wrappers only for positioned owners whose
 callable facts with no construction, so lowering does not rejoin boundary
 publications to recover first-class eligibility.
 
-A value whose positioned layout settled to `Nothing` carries no runtime lanes.
-Its lexical capture metadata can still be consumed by a callable wrapper.
-Backend lowering applies the lane-absence proof once, in the
-shared backend lowering: every fresh construction step
+A value whose materialized layout is `Nothing` with an `Absent` carrier is
+semantically absent. Its lexical capture metadata can still be consumed by a
+callable wrapper. `BackendLowerer` reads this proof from
+`AbiReadyExecutable::value_layouts`, the same table consumed by the runtimes.
+That table includes clause parameters' semantic input layouts; lowering does
+not derive a second table from transport positions. Every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
 when its own value is proven absent — a closure the plan proves is never invoked
 is never built, on any path. Runtime consumers therefore read an artifact that
 already carries no dead construction. The proof is derived once, in lowering;
 the runtimes honor it rather than re-derive it for constructions — an `Omitted`
-step binds an absent value in both runtimes, and call-argument encoding elides
-any position whose layout carries no reprs, so an absent operand is skipped by
-the same fact that omitted its construction. The same proof holds at the other
-end of a body: a return contract whose layout publishes no lanes has nothing to
-encode, so a value tail returning through it reads no value at all
+step binds an explicit absent value in both runtimes.
+
+ABI width is a separate question. `BackendValueLayout::publishes_no_lanes`
+means its repr list is empty. `Nothing`/`Absent`, exact zero-capture callables,
+and recursively zero-width tuples can all satisfy that rule; only `Nothing`
+is a semantically absent shape. Call-argument encoding elides zero-lane
+positions without reading operands. A return contract whose layout publishes
+no lanes likewise needs no operand to encode
 (`return_lane_vars` in `jobs/native.rs`, the `BackendTail::Value` arm in
-`ir_interp/backend.rs`).
+`ir_interp/backend.rs`). When the interpreter has no return operand binding,
+it decodes the zero-lane contract to retain any tuple or callable structure.
+
+The interpreter environment supplies a third kind of evidence. Only a callee
+ordinal absent from the sparse published semantic inputs is missing and permits
+its exact direct target to run. `bind_executable_inputs` decodes every published
+layout: `Nothing` becomes explicit `BackendBoundValue::Absent`, and zero-lane
+tuples or callables retain their concrete `Transport` binding. Neither is a
+missing input. `BackendStep::Omitted` likewise installs explicit absence.
+Entry selection materializes only
+`ExecutableDispatch::required_input_ordinals`; unused structural inputs can
+contain absent fields and stay decomposed for the body.
 
 Root membership is a distinct dependency relation, not a read of every member's
 value. Each backend producer commits its exact executable and schema membership
@@ -843,22 +868,24 @@ payload that could retain the allocation or substitute a second authority.
 
 Each pruned `MaterializedExecutable` carries the typed `ModuleId`s of structs
 its surviving construction/assertion steps or retained runtime type surfaces
-name. A struct is one map-DNF leaf whose `MapTag::Struct(ModuleId, name)` and
-fields remain conjunctive through every type operation. It is not recovered
-from `Ty` display/canonical text or the old `impl-target::` string convention.
+name. A struct is one map-DNF leaf whose `StructTag` and fields remain
+conjunctive through every type operation. The tag carries the parsed
+`ModuleName` for semantic identity and the `ModuleId` for World dependency
+tracking. Consumers read that typed identity directly.
 The artifact also drops `value_types`
 for values removed by control pruning before it walks those surfaces, so dead
 types cannot overpackage a schema.
 `RootBackendProduct` unions those sets across its exact reachable executable
 closure, reads each `StructDefined(module)` through `ProductReadContext`, and
-only then materializes the runtime name-to-fields map. The map remains the
+only then materializes the typed `ModuleName`-to-fields map. The map remains the
 single interpreter/native/AOT schema input, but its membership and invalidation
 are root-local and fact-tracked. No product snapshots `StructDefMap`, and a
 struct reached only by another root cannot make retained and fresh calculations
-disagree. `ModuleMap::reference_named` interns one `ModuleId` per fully
-qualified name; the map tag compares that id, while runtime registration and
-artifact rendering keep the full stable name (so `A.Item` and `B.Item` cannot
-collide).
+disagree. `ModuleMap::reference_named` interns one `ModuleId` per parsed
+`ModuleName`. The type tag and runtime schema compare that same typed source
+name. Segment boundaries remain significant even when two names have the
+same dotted display spelling; neither display text nor allocation order is
+an identity authority.
 Record-axis top ranges over plain maps and every struct family; `map_top` is the
 distinct positive `Plain {}` leaf. Runtime test envelopes preserve a struct tag
 while erasing its unobservable positive field predicates, so `not Foo` rejects

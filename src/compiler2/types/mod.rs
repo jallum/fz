@@ -43,12 +43,14 @@ pub use arrow_match::ArrowMatch;
 
 pub(crate) use canon::TyCanon;
 
+use crate::modules::identity::ModuleName;
 use addressed::AddrStep;
 #[cfg(test)]
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
+use descr::OpaqueTag;
 use dnf::{dnf_intersect_with, list_clause_subsumed, tuple_clause_subsumed};
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
@@ -89,7 +91,7 @@ pub struct Types {
     /// The stable label of every callable a closure literal can name. A raw
     /// `FnId` is a mint-order index, so it cannot decide canonical clause order
     /// (`order`); the owner names each callable as it mints the id.
-    callable_labels: order::CallableLabels,
+    callable_origins: order::CallableOrigins,
     /// Correlated-input row sets widened to their column-wise join since the
     /// last drain, because they crossed `ACTIVATION_INPUT_ROW_BUDGET`
     /// (fz-0xp). `World::take_activation_input_collapses` is the drain and
@@ -380,11 +382,11 @@ impl Types {
     }
 
     fn clause_order(&self) -> order::ClauseOrder<'_> {
-        order::ClauseOrder::new(self.ctx(), &self.callable_labels)
+        order::ClauseOrder::new(self.ctx(), &self.callable_origins)
     }
 
     fn activation_order(&self) -> order::ClauseOrder<'_> {
-        order::ClauseOrder::for_activation(self.ctx(), &self.callable_labels)
+        order::ClauseOrder::for_activation(self.ctx(), &self.callable_origins)
     }
 
     /// Test evidence for the storage-canonical relation. Production consumers
@@ -399,7 +401,7 @@ impl Types {
     /// clause order, callable arrows compare arguments and return before their
     /// literal identity, preserving the established observable precedence
     /// without rendering either type. The interned descriptors and callable
-    /// labels are immutable, so one normalized pair has one verdict for this
+    /// origins are immutable, so one normalized pair has one verdict for this
     /// `Types`/`World` lifetime and the reverse direction reuses its inverse.
     pub(crate) fn cmp_activation_ty(&self, a: Ty, b: Ty) -> std::cmp::Ordering {
         if a == b {
@@ -410,8 +412,8 @@ impl Types {
         let normalized = if let Some(outcome) = self.comparisons.borrow_mut().hit(key) {
             outcome.order()
         } else {
-            self.assert_activation_labels_registered(low);
-            self.assert_activation_labels_registered(high);
+            self.assert_activation_origins_registered(low);
+            self.assert_activation_origins_registered(high);
             let order = self.activation_order().cmp_ty(low, high);
             self.comparisons.borrow_mut().miss(key, ComparisonOutcome::Order(order));
             order
@@ -430,7 +432,7 @@ impl Types {
         a.len().cmp(&b.len())
     }
 
-    fn assert_activation_labels_registered(&self, root: Ty) {
+    fn assert_activation_origins_registered(&self, root: Ty) {
         self.activation_reachable(root, |ty| {
             let d = self.descr(&ty);
             for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
@@ -438,7 +440,7 @@ impl Types {
                     && let Some(fn_id) = lit.fn_id
                 {
                     assert!(
-                        self.callable_labels.contains_key(&fn_id),
+                        self.callable_origins.contains_key(&fn_id),
                         "activation arrow names unregistered callable {}",
                         fn_id.0
                     );
@@ -589,7 +591,7 @@ impl Types {
     pub(crate) fn activation_order_evidence_for_test(&self, left: Ty, right: Ty) -> String {
         format!(
             "left={left:?} right={right:?}; left_descr={:?}; right_descr={:?}; \
-             activation=({:?}, {:?}); storage=({:?}, {:?}); address_paths={:?}; callable_labels={:?}",
+             activation=({:?}, {:?}); storage=({:?}, {:?}); address_paths={:?}; callable_origins={:?}",
             self.descr(&left),
             self.descr(&right),
             self.cmp_activation_ty(left, right),
@@ -597,7 +599,7 @@ impl Types {
             self.cmp_ty(left, right),
             self.cmp_ty(right, left),
             self.address_paths,
-            self.callable_labels,
+            self.callable_origins,
         )
     }
 
@@ -822,14 +824,20 @@ impl Types {
         self.intern(Descr::opaque_of(name))
     }
 
-    pub(crate) fn struct_map(&mut self, module: super::identity::ModuleId, name: &str, fields: &[(MapKey, Ty)]) -> Ty {
-        self.intern(Descr::struct_map(
-            StructTag {
-                module,
-                name: name.to_string(),
-            },
-            fields.iter().cloned(),
-        ))
+    pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
+        self.intern(Descr {
+            opaques: FiniteSet::lit(OpaqueTag::ProtocolTarget(name)),
+            ..Descr::unbranded()
+        })
+    }
+
+    pub(crate) fn struct_map(
+        &mut self,
+        module: super::identity::ModuleId,
+        name: ModuleName,
+        fields: &[(MapKey, Ty)],
+    ) -> Ty {
+        self.intern(Descr::struct_map(StructTag { module, name }, fields.iter().cloned()))
     }
 
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
@@ -1606,6 +1614,9 @@ impl Types {
         let descr = self.descr(&ty);
         if let Some(tags) = descr.opaques.finite_elems() {
             obligations.extend(tags.filter_map(|tag| {
+                let OpaqueTag::Named(tag) = tag else {
+                    return None;
+                };
                 is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
             }));
         }
@@ -2097,32 +2108,51 @@ impl Types {
 }
 
 impl Types {
-    /// Record the stable, version-independent name of one callable.
-    ///
-    /// A closure literal carries an `FnId`, which is a mint-order index: it
-    /// shifts whenever the source gains or loses a function, so it cannot be
-    /// what decides canonical clause order (see `order`). The owner knows the
-    /// `Module.name/arity` behind the id and names it here as the id is minted,
-    /// which is before any literal can reference it.
-    pub(crate) fn name_callable(&mut self, target: ClosureTarget, label: impl Into<Arc<str>>) {
+    /// Share the function interner's typed origin before a literal can name it.
+    /// The ID denotes equality in this World; its origin supplies semantic order.
+    pub(crate) fn define_callable_origin(&mut self, target: ClosureTarget, origin: Arc<super::identity::FunctionRef>) {
+        let origin = Arc::clone(&origin.denotation);
         let target = target.into();
-        let label = label.into();
-        if let Some(existing) = self.callable_labels.get(&target) {
-            assert_eq!(existing, &label, "callable labels are immutable once registered");
+        if let Some(existing) = self.callable_origins.get(&target) {
+            assert_eq!(existing, &origin, "callable origins are immutable once registered");
         } else {
-            assert!(
-                self.callable_labels.values().all(|existing| existing != &label),
-                "distinct callable identities require distinct stable labels"
-            );
-            self.callable_labels.insert(target, label);
+            self.callable_origins.insert(target, origin);
         }
     }
 
-    /// Every callable a closure literal in the arena names, that the owner
-    /// never named. Empty in production — the gate that says so is
-    /// `canon_test`'s `every_closure_literal_names_a_labelled_callable`.
+    pub(crate) fn callable_source_origin(
+        &self,
+        function: super::identity::FunctionId,
+    ) -> Arc<fz_runtime::function_denotation::FunctionDenotation> {
+        Arc::clone(
+            self.callable_origins
+                .get(&crate::fz_ir::FnId(function.as_u32()))
+                .expect("registered source function"),
+        )
+    }
+
     #[cfg(test)]
-    pub(crate) fn unnamed_callables(&self) -> BTreeSet<u32> {
+    pub(crate) fn define_test_callable(&mut self, target: ClosureTarget, name: &str, arity: usize) {
+        self.define_callable_origin(
+            target,
+            Arc::new(super::identity::FunctionRef {
+                module: super::identity::ModuleId::GLOBAL,
+                denotation: Arc::new(super::identity::FunctionDenotation {
+                    origin: super::identity::FunctionOrigin::Named {
+                        module: None,
+                        name: name.to_string(),
+                    },
+                    arity,
+                }),
+            }),
+        );
+    }
+
+    /// Every callable literal whose owner never registered an origin.
+    /// Empty in production — the gate that says so is
+    /// `canon_test`'s `every_closure_literal_has_a_registered_origin`.
+    #[cfg(test)]
+    pub(crate) fn unregistered_callables(&self) -> BTreeSet<u32> {
         self.interner
             .arena
             .iter()
@@ -2130,7 +2160,7 @@ impl Types {
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
             .filter_map(|lit| lit.fn_id)
-            .filter(|fn_id| !self.callable_labels.contains_key(fn_id))
+            .filter(|fn_id| !self.callable_origins.contains_key(fn_id))
             .map(|fn_id| fn_id.0)
             .collect()
     }
@@ -2821,14 +2851,17 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
 }
 
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
-    const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
-        || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
+        || descr
+            .opaques
+            .values
+            .iter()
+            .any(|tag| matches!(tag, OpaqueTag::Named(_)))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
 
-fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<String>) {
+fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName>) {
     let mut plain = false;
     let mut structs = FiniteSet::none();
     for clause in &descr.maps {
@@ -2956,20 +2989,16 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
     Some(targets)
 }
 
-fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<String>) -> FiniteSet<String> {
-    const STRUCT_PREFIX: &str = "impl-target::";
-    let legacy = if descr.opaques.cofinite {
+fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<ModuleName>) -> FiniteSet<ModuleName> {
+    let nominal = if descr.opaques.cofinite {
         FiniteSet::none()
     } else {
-        FiniteSet::finite(
-            descr
-                .opaques
-                .values
-                .iter()
-                .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
-        )
+        FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
+            OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
+            OpaqueTag::Named(_) => None,
+        }))
     };
-    legacy.union(&structs)
+    nominal.union(&structs)
 }
 
 fn runtime_type_predicate_remove<T>(set: &FiniteSet<T>, value: &T) -> FiniteSet<T>

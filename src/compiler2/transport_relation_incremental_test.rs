@@ -27,6 +27,93 @@ struct Relations {
     pending: Vec<Vec<ProductEvent>>,
 }
 
+#[test]
+fn recursive_callable_input_sources_settle_in_either_root_order() {
+    let source = "fn self_loop(f, 0), do: f.(2)\nfn self_loop(f, n), do: self_loop(f, n - 1)\nfn left(f, 0), do: f.(2)\nfn left(f, n), do: right(f, n - 1)\nfn right(f, 0), do: f.(2)\nfn right(f, n), do: left(f, n - 1)\nfn self_root(), do: self_loop(fn x -> x + 40 end, 3)\nfn mutual_root(), do: left(fn x -> x + 40 end, 3)\n";
+    let mut canonical = HashMap::new();
+    for order in [["self_root", "mutual_root"], ["mutual_root", "self_root"]] {
+        let telemetry = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(telemetry);
+        compiler.submit_code(CodeSubmission {
+            name: Some("recursive_input_sources.fz".into()),
+            text: source.into(),
+        });
+        for name in order {
+            let root = root(&mut compiler, name);
+            assert_eq!(compiler.run_root_interp(root), Ok(42), "{name} in {order:?}");
+            let program = compiler.retained_backend_program(root);
+            let actual = super::canon::canon_backend_program(compiler.world(), &program);
+            if let Some(expected) = canonical.insert(name, actual.clone()) {
+                assert_eq!(
+                    actual, expected,
+                    "{name} has the same physical program in either root order"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_nested_source_union_retains_both_environments_of_the_same_function() {
+    let telemetry = ConfiguredTelemetry::new();
+    let relations = observe(&telemetry);
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("closure_capture_requirement_projection.fz".into()),
+        text: include_str!("../../fixtures2/behavior/closure_capture_requirement_projection.fz").into(),
+    });
+    let root = root(&mut compiler, "main");
+    let result = compiler.run_root_interp(root);
+    let tys = relations.borrow().abis[&root]
+        .iter()
+        .flat_map(|(executable, _)| {
+            compiler
+                .world()
+                .executable_facts(executable)
+                .unwrap()
+                .analysis()
+                .value_types
+                .values()
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    let mut witness = false;
+    let any = compiler.world_mut().types_mut().any();
+    for ty in tys {
+        let clauses = compiler
+            .world_mut()
+            .types_mut()
+            .callable_clauses(&ty)
+            .unwrap_or_default();
+        let closures = clauses
+            .iter()
+            .filter_map(|clause| clause.closure.as_ref())
+            .collect::<Vec<_>>();
+        witness |= closures.iter().any(|left| {
+            left.captures.as_slice() == [any]
+                && closures.iter().any(|right| {
+                    left.target == right.target
+                        && right.captures.len() == 1
+                        && compiler
+                            .world()
+                            .types()
+                            .closure_lit_parts(&right.captures[0])
+                            .is_some_and(|capture| {
+                                compiler
+                                    .world()
+                                    .function_ref(super::identity::function_id_of_closure_target(capture.target))
+                                    .is_named("mailbox")
+                            })
+                })
+        });
+    }
+    assert!(
+        witness,
+        "one source union must name the same lambda with [mailbox] and [Any] environments"
+    );
+    assert_eq!(result, Ok(105));
+}
+
 enum ProductEvent {
     Requested(ProductKey),
     Cached(ProductKey),
@@ -210,7 +297,9 @@ fn root(compiler: &mut Compiler2<ConfiguredTelemetry>, name: &str) -> super::Roo
 }
 
 fn apply_slot(compiler: &mut Compiler2<ConfiguredTelemetry>, relations: &Relations, root: super::RootId) -> InputSlot {
-    let helpers = compiler.world_mut().reference_module("Helpers");
+    let helpers = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Helpers").unwrap());
     let apply = compiler.world_mut().reference_function(helpers, "apply", 1);
     let slots = relations
         .facts
@@ -255,7 +344,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     assert_eq!(compiler.run_root_interp(root), Ok(0));
     let (main, abi) = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "main")
+        .find(|(key, _)| compiler.world().function_ref(key.activation.function).is_named("main"))
         .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
         .unwrap();
     let super::body::LoweredBody::Clauses { entries, .. } = &abi.materialized.body else {
@@ -265,7 +354,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         .iter()
         .find_map(|entry| match &entry.tail {
             super::body::LoweredTail::DirectCall { value, callee, .. }
-                if compiler.world().function_ref(*callee).name == "value" =>
+                if compiler.world().function_ref(*callee).is_named("value") =>
             {
                 Some(*value)
             }
@@ -345,7 +434,12 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let forward = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "forward")
+        .find(|(key, _)| {
+            compiler
+                .world()
+                .function_ref(key.activation.function)
+                .is_named("forward")
+        })
         .map(|(key, _)| key.clone())
         .unwrap();
     let slot = InputSlot {
@@ -380,7 +474,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_absent(&compiler, &relations.borrow());
     let retained = relations.borrow().abis[&root]
         .iter()
-        .find(|(key, _)| compiler.world().function_ref(key.activation.function).name == "apply")
+        .find(|(key, _)| compiler.world().function_ref(key.activation.function).is_named("apply"))
         .map(|(key, abi)| (key.clone(), Rc::clone(abi)))
         .unwrap();
     let retained_owner = retained

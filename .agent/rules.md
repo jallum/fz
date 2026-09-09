@@ -11,6 +11,7 @@
 ## Work Rules
 - Don't commit until you're proud of the work.
 - Understand each task thoroughly before undertaking it. Do not guess; research and verify No hidden surprises.
+- Before building a subsystem of any complexity, examine the existing patterns, authorities, and analogous code; reuse or collapse them unless evidence proves they cannot serve.
 - Elegance, simplicity and "correct by construction" are what we push for.
 - Research material can be found in the .agent/docs.md (agent facing), .agent/strategies.md (working loops), and in the guides (user facing).
 - TDD is the law. Prove things work the way you say they do. Tests must pass.

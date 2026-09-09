@@ -33,6 +33,12 @@ fn atom_order(program: &BackendProgram) -> Vec<&str> {
 
 fn with_wrapper(backend: &Rc<BackendExecutable>) -> Rc<BackendExecutable> {
     let wrapper = BackendConstructionWrapper {
+        denotation: backend.key.activation.function.denotation(),
+        source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(
+            None,
+            "test".into(),
+            0,
+        )),
         identity: backend.abi.transport.return_position.clone(),
         callable: CallableId::for_test(0),
         captures: Box::default(),
@@ -226,11 +232,15 @@ fn a_real_same_body_edit_retains_its_equal_atom_and_callable_wrapper() {
     assert!(Rc::ptr_eq(&retained_atom, &atom(&before, "retained")));
 }
 
-fn schema_allocations(program: &BackendProgram, name: &str) -> (Rc<String>, Rc<Vec<String>>) {
+fn schema_allocations(
+    program: &BackendProgram,
+    segment: &str,
+) -> (Rc<fz_runtime::module_name::ModuleName>, Rc<Vec<String>>) {
+    let name = fz_runtime::module_name::ModuleName::from_segments(vec![segment.into()]);
     program
         .struct_schemas
         .entries()
-        .find(|(candidate, _)| candidate.as_str() == name)
+        .find(|(candidate, _)| candidate.as_ref() == &name)
         .map(|(name, fields)| (Rc::clone(name), Rc::clone(fields)))
         .expect("reached schema must be packaged")
 }
@@ -271,8 +281,12 @@ fn a_real_leaf_edit_retains_schema_allocations_without_schema_work() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(1));
-    let item = compiler.world_mut().reference_module("Item");
-    let other = compiler.world_mut().reference_module("Other");
+    let item = compiler
+        .world_mut()
+        .reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Item".into()]));
+    let other = compiler
+        .world_mut()
+        .reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Other".into()]));
     let item_key = ProductKey::StructSchema(item);
     let other_key = ProductKey::StructSchema(other);
     let item_generation = compiler
@@ -344,8 +358,8 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut sessions = ProductSessions::default();
     let before = drive_retained_root_backend_product(&mut world, &tel, &mut sessions, root, None).unwrap();
-    let item = world.reference_module("Item");
-    let other = world.reference_module("Other");
+    let item = world.reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Item".into()]));
+    let other = world.reference_module(fz_runtime::module_name::ModuleName::from_segments(vec!["Other".into()]));
     let item_key = ProductKey::StructSchema(item);
     let other_key = ProductKey::StructSchema(other);
     let item_generation = sessions.get(root).unwrap().memo().generation(&item_key).unwrap();
@@ -390,6 +404,11 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
         evaluations.borrow().iter().cloned().collect::<HashSet<_>>(),
         HashSet::from([item_key])
     );
-    assert_eq!(before.schema("Item").unwrap(), &["value".to_string()]);
+    assert_eq!(
+        before
+            .schema(&fz_runtime::module_name::ModuleName::from_segments(vec!["Item".into()]))
+            .unwrap(),
+        &["value".to_string()]
+    );
     assert!(Rc::ptr_eq(&item_allocations.1, &schema_allocations(&before, "Item").1));
 }

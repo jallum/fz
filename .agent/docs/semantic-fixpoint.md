@@ -132,6 +132,14 @@ GROUNDNESS. Collapsing any pair of them is a known defect class.
   really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
   is `!has_vars`.
 
+The semantic-to-executable boundary closes one further distinction only after
+the fixpoint settles. A call result omitted while analysis is climbing means
+"no return evidence yet"; the same omission in a settled callsite summary means
+the callee provably never returns. `project_executable_facts` records that
+result value as `none`. This gives a structurally retained resume entry a
+truthful bottom payload type without manufacturing `any` or pretending its
+unreachable body can execute.
+
 The ARGUMENT decides which specialization a closure call reaches, and nothing
 narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that
 lambda has already been analyzed at — not a contract the caller is checked
@@ -236,19 +244,19 @@ caller's caller and silently drops everything the call was supposed to return
 to (fz-kdt.130).
 
 The other half of the same idea decides what a callable position PHYSICALLY
-carries. `exact_direct_callable_layout` (`jobs/transport.rs`) asks how many
-distinct callable LAYOUTS a position's settled target set names, not how many
-targets: a layout is pure physics, so several activations of one function —
-specializations reached at different argument types, describing the same
-captures — name one layout, and the value travels as those captures with no
-runtime identity at all (`TransportCarrier::Absent`). Which activation a
+carries. `exact_direct_callable_layout` (`jobs/transport.rs`) combines the
+compatible capture requirements of a position's settled targets. Several
+activations of one function can share one physical callable descriptor:
+function, source arity, and ordered capture layouts. An absent capture requires
+nothing; compatible tuple and callable requirements combine recursively.
+Source capture annotations belong to construction wrappers and never split
+this physical identity. The value travels as the required captures with no
+runtime identity lane (`TransportCarrier::Absent`). Which activation a
 callsite reaches is decided at the callsite from the argument types it holds
 (fz-kdt.132), so that choice never has to travel with the value. Only where
-the targets disagree about the callable they describe (full CallableDescr
-equality: function, arity, capture types, shapes and lanes -- two different
-functions with identical captures also disagree, and must) does no exact
-layout exist, and the
-position falls back to the generic joined layout. Counting targets instead of
+the targets name different functions or incompatible physical capture
+requirements does no exact shared layout exist, and the position uses its
+generic layout. Counting targets instead of
 layouts made a many-target position carry NOTHING while the callsite still
 ground a direct call to one of them — the shape a mailbox-delivered reducer
 takes through `Enum.reduce/3`, where the accumulator specialization splits one

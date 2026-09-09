@@ -1,0 +1,86 @@
+#---
+# purpose: "the String module: byte operations, codepoints and search, checked against Elixir"
+# oracle: oracle.exs
+#---
+#
+# # string_surface
+#
+# fz had no String module at all -- `Utf8` (4 functions) was the entire text
+# surface. This is the core of one, and what makes it WRITABLE IN fz rather
+# than in Rust is the work that came before it: almost every function here is a
+# byte scanner, and until recently a byte scanner was quadratic, because
+# matching `<<c, rest :: binary>>` copied the whole remainder at every step
+# (fz-5xp.55) and a segment whose size was computed could not be matched at all
+# (fz-5xp.54).
+#
+# So the module declares exactly TWO primitives beyond what `Kernel` already
+# gives it -- `byte_size/1`, which is a header read, and `to_atom/1`, which
+# must reach the node's atom table. Everything else is ordinary fz recursion
+# over a binary.
+#
+# CASE MAPPING IS FULL UNICODE, matching Elixir's default mode -- `"straße"`
+# upcases to `"STRASSE"`, which is one of the 103 special casings where one
+# codepoint becomes several. The table lives in the runtime rather than in fz
+# source: 2,723 codepoint pairs written as fz clauses would go through the
+# dispatch matrix and make compile work proportional to the TABLE rather than to
+# the program, which is the opposite of what fz is for (fz-5xp.68).
+#
+# `to_byte_list/1` is NOT Elixir's `to_charlist/1`. Elixir's returns a charlist,
+# which `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so
+# fz has no such type. The value is the same list of integers, and the name says
+# so rather than claiming a parity it cannot show -- the oracle asks Elixir for
+# `charlists: :as_lists` to compare the values at all.
+fn main() do
+  dbg(String.length("héllo"))
+  dbg(String.starts_with?("hello", "he"))
+  dbg(String.starts_with?("hello", "xx"))
+  dbg(String.ends_with?("hello", "lo"))
+  dbg(String.byte_slice("hello world", 6, 5))
+  dbg(String.replace_prefix("hello", "he", "HE"))
+  dbg(String.replace_suffix("hello", "lo", "LO"))
+  dbg(String.replace_leading("aaabc", "a", "X"))
+  dbg(String.replace_trailing("abccc", "c", "Y"))
+  dbg(String.trim("  hi  "))
+  dbg(String.trim_leading("  hi"))
+  dbg(String.trim_trailing("hi  "))
+  dbg(String.upcase("héllo"))
+  dbg(String.upcase("straße"))
+  dbg(String.downcase("HÉLLO"))
+  dbg(String.downcase("İ"))
+  dbg(String.duplicate("ab", 3))
+  dbg(String.contains?("hello", "ell"))
+  dbg(String.count("banana", "an"))
+  dbg(String.split("a,b,c", ","))
+  dbg(String.replace("a-b-c", "-", "+"))
+  dbg(String.codepoints("héllo"))
+  dbg(String.next_codepoint("héllo"))
+  dbg(String.valid?("hi"))
+  dbg(String.to_byte_list("abc"))
+  dbg(String.reverse("héllo"))
+  dbg(String.first("héllo"))
+  dbg(String.last("héllo"))
+
+  # numbers, which Elixir's String parses strictly: `to_float/1` REQUIRES a
+  # decimal point, so `"1"` raises where `"1.0"` is 1.0
+  dbg(String.to_integer("42"))
+  dbg(String.to_integer("-7"))
+  dbg(String.to_float("2.5"))
+  dbg(String.to_float("-0.25"))
+
+  # printability, and the two functions that have to reason about INVALID
+  # UTF-8 rather than assume it away
+  dbg(String.printable?("héllo"))
+  dbg(String.printable?(<<0>>))
+  dbg(String.replace_invalid(<<104, 255, 105>>, "?"))
+  dbg(String.chunk("hi"))
+  dbg(String.chunk(<<104, 255, 105>>))
+
+  # trimming is over the UNICODE whitespace set, not the ASCII one -- the
+  # ideographic space below is U+3000, and it is the small table Elixir owns
+  dbg(String.trim("　hi　"))
+
+  # the grapheme seam: a grapheme IS a codepoint until UAX #29 lands, which is
+  # correct outside combining marks, regional indicators and emoji sequences
+  dbg(String.graphemes("héllo"))
+  dbg(String.next_grapheme("héllo"))
+end

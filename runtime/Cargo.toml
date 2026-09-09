@@ -11,6 +11,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libc = "0.2"
+ryu = "1.0.23"
 
 [dev-dependencies]
 # Tests that change process-global state, such as umask, require exclusivity.
