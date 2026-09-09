@@ -8,13 +8,33 @@ use crate::function_surface::FunctionSurface;
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
+fn module_identity_preserves_source_segment_boundaries() {
+    use crate::modules::identity::ModuleName;
+    let flat = ModuleName::from_segments(vec!["A.B".into()]);
+    let nested = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+    assert_eq!(flat.dotted(), nested.dotted());
+    let mut modules = ModuleMap::new();
+    let left = modules.reference_named(flat.clone());
+    let right = modules.reference_named(nested.clone());
+    assert_ne!(
+        left, right,
+        "distinct source paths cannot collapse through display spelling"
+    );
+    assert_eq!(modules.name(left), Some(&flat));
+    assert_eq!(modules.name(right), Some(&nested));
+}
+
+#[test]
 fn function_denotation_is_retained_across_new_functions_and_generated_sites() {
     let mut functions = FunctionMap::new();
     let owner = functions.reference(ModuleId::GLOBAL, None, "make", 1);
     let first = functions.reference_generated(owner, ModuleId::GLOBAL, crate::ast::LambdaOccurrence::from_u32(2), 0);
     let second = functions.reference_generated(owner, ModuleId::GLOBAL, crate::ast::LambdaOccurrence::from_u32(3), 0);
     let retained = functions.shared_reference_for(first);
-    assert!(std::ptr::eq(retained.lexical_owner(), functions.reference_for(owner),));
+    assert!(std::ptr::eq(
+        retained.lexical_owner(),
+        functions.reference_for(owner).denotation.as_ref()
+    ));
     let denotation = first.denotation();
     functions.reference(ModuleId::GLOBAL, None, "earlier_in_source_order", 0);
     assert_ne!(
@@ -107,7 +127,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let code_id = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
     let namespace = namespaces.prelude_head();
 
-    let math_ref = modules.reference_named("Math");
+    let math_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["Math".into()]));
     let math_def = math_ref;
     let math_changed = modules.define(
         math_def,
@@ -130,7 +150,12 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         !same_math_changed,
         "replaying the same module definition should not signal a change"
     );
-    assert_eq!(modules.name(math_def), Some("Math"));
+    assert_eq!(
+        modules.name(math_def),
+        Some(&crate::modules::identity::ModuleName::from_segments(vec![
+            "Math".into()
+        ]))
+    );
     let module = modules.get(math_def);
     match module {
         ModuleState::Defined { base, interface, .. } => {
@@ -140,13 +165,14 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         other => panic!("module should promote from placeholder to defined, got {other:?}"),
     }
 
-    let scoped_ref = modules.reference_named("Scoped");
+    let scoped_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec![
+        "Scoped".into(),
+    ]));
     let scoped_source = quoted_source("scoped.fz", "defmodule Scoped do\nend\n");
     let indexed_changed = modules.index_body(
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
-        "Scoped".to_string(),
         scoped_source.clone(),
         empty_scope_surface(),
     );
@@ -154,7 +180,6 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         scoped_ref,
         code_id,
         ModuleId::GLOBAL,
-        "Scoped".to_string(),
         scoped_source,
         empty_scope_surface(),
     );

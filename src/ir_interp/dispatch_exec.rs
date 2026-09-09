@@ -12,7 +12,6 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
-use fz_runtime::ir_runtime::fz_value_cmp_ref;
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
     fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -335,35 +334,7 @@ where
 /// `Kernel` operators, so a guard cannot answer a comparison differently from
 /// the expression that spells it out.
 fn guard_cmp(proc: *mut Process, left: AnyValue, right: AnyValue) -> Option<i64> {
-    // Numbers are answered without boxing either operand — `as_ref_word` would
-    // allocate a scalar box, and a guard comparing two unboxed integers is the
-    // hot path quicksort's `when h < p` is made of.
-    // Integers are ordered as integers; only a mixed pair is widened.
-    if let (AnyValue::Int(l), AnyValue::Int(r)) = (left, right) {
-        return Some(match l.cmp(&r) {
-            std::cmp::Ordering::Less => -1,
-            std::cmp::Ordering::Greater => 1,
-            std::cmp::Ordering::Equal => 0,
-        });
-    }
-    if let (Some(l), Some(r)) = (left.as_float(), right.as_float()) {
-        return Some(order_of(l, r));
-    }
-    Some(fz_value_cmp_ref(
-        proc,
-        left.as_ref_word(proc).ok()?,
-        right.as_ref_word(proc).ok()?,
-    ))
-}
-
-fn order_of(left: f64, right: f64) -> i64 {
-    if left < right {
-        -1
-    } else if left > right {
-        1
-    } else {
-        0
-    }
+    interp_cmp(proc, left, right).ok()
 }
 
 pub(super) fn eval_dispatch_guard<TypeHandle, F>(

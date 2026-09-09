@@ -8,23 +8,17 @@ defmodule Map do
   `filter/2`, and `split/2` each do one pass and one allocation instead --
   reach for one of those when a call site touches more than one key.
 
+  Keys use strict structural identity: independently built equal tuples,
+  lists, maps, and binaries are the same key, and the last input value wins.
+  Integer and float keys stay distinct, including inside composite keys.
+  Closures use their source function and complete captured values; resources
+  keep their identity across copying and garbage collection.
+
   Iteration follows fz key order. Binary keys sort by content, as in Elixir.
   Atom keys sort by name, using the same order as `Kernel.compare/2` and
   `Enum.sort/1`; Elixir orders atoms by VM identity instead, so atom-keyed map
   iteration can differ between the two runtimes.
   """
-
-  # A map is a flat sorted array. Structural sharing does not transfer:
-  # `put/3` and `delete/2` each copy the whole array, so a loop over n keys is
-  # O(n^2). The bulk functions below do one pass and one allocation each, and
-  # are the surface to reach for; use `put/3` and `delete/2` for a single key.
-  #
-  # `get` is a binary search, which needs the array's order to agree with its
-  # key equality, and every map to actually be sorted.
-  #
-  # Iteration order is by fz key order. Atom keys use the node's name order,
-  # shared with Kernel.compare/2; binary keys use content order. JSON object
-  # keys are binaries, so decoded objects order the same way in fz and Elixir.
 
   extern "C" fn fz_map_count(any) :: integer
   extern "C" fn fz_map_entry_key(any, integer) :: any

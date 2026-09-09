@@ -844,14 +844,6 @@ fn callable_boundary_input_demand_contributions_product(
 ) -> Vec<(ExecutableKey, usize, RuntimeDemand)> {
     let mut required = Vec::new();
     for flow in demand.callable_flows.values() {
-        for edge in flow.direct_edges.iter().chain(&flow.first_class_edges) {
-            for (&semantic_index, capture) in edge.capture_semantic_inputs.iter().zip(flow.captures.iter()) {
-                let Some(capture_demand) = demand.value_demands.get(capture) else {
-                    continue;
-                };
-                required.push((edge.resolution.clone(), semantic_index, capture_demand.clone()));
-            }
-        }
         if flow.first_class_surfaces.is_empty() {
             continue;
         }
@@ -1998,7 +1990,11 @@ fn propagate_lambda_capture_demands(
         };
         for (capture, demand) in captures.iter().zip(callee_inputs) {
             callable_flows.record_direct_surfaces(facts, *capture, &demand.callable.resolved);
-            let demand = closure_capture_boundary_demand(facts, callable_flows, *capture, demand.clone(), &callable);
+            let mut demand =
+                closure_capture_boundary_demand(facts, callable_flows, *capture, demand.clone(), &callable);
+            if callable.is_first_class() {
+                demand.shape = ShapeDemand::Whole;
+            }
             note_live_demand(out, live, *capture, demand);
         }
     }
@@ -2559,6 +2555,111 @@ mod tests {
     use crate::compiler2::semantic::{CallTargetSummary, SelectedCallee};
     use crate::compiler2::types::Types;
     use crate::source::Span;
+
+    #[test]
+    fn first_class_capture_retention_joins_available_exact_targets_without_guessing_missing_inputs() {
+        use crate::compiler2::identity::{ActivationKey, RootId};
+        use crate::compiler2::semantic::{ActivationAnalysis, EntryReachability, RuntimeDemandTypeInputs};
+
+        let mut types = Types::new();
+        let (any, int, atom) = (types.any(), types.int(), types.atom());
+        let function = FunctionId::for_test(1);
+        let root = RootId::for_test(0);
+        let target = |input, types: &mut Types| ExecutableKey {
+            activation: ActivationKey::from_inputs(root, function, &[any, input], types),
+            need: ExecutableNeed::Value,
+        };
+        let int_target = target(int, &mut types);
+        let atom_target = target(atom, &mut types);
+        let int_surface = CallableSurface::new(vec![int], &mut types);
+        let atom_surface = CallableSurface::new(vec![atom], &mut types);
+        let facts = ExecutableFacts {
+            analysis: ActivationAnalysis {
+                input_rows: Vec::new(),
+                entry_reachability: EntryReachability::new(Vec::new(), false),
+                reachable_entries: Vec::new(),
+                callsites: Vec::new(),
+                value_types: HashMap::new(),
+            },
+            body: LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            entry_dispatch: None,
+            entry_dispatch_inputs: HashSet::new(),
+            callsites: HashMap::new(),
+            callsite_needs: HashMap::new(),
+            delivered_value_joins: HashMap::new(),
+            callsite_return_origins: HashMap::new(),
+            value_origins: HashMap::new(),
+            callable_origins: HashMap::new(),
+            return_origins: Box::new([]),
+            demand_types: RuntimeDemandTypeInputs::new(any),
+            callable_activation_inputs: Vec::new(),
+        };
+        let projections = HashMap::new();
+        let facts = facts.runtime_demand_facts(&projections);
+        let value = ValueId::from_u32(0);
+        let capture = ValueId::from_u32(1);
+        let mut inputs = RuntimeDemandFormulaSnapshot {
+            member: int_target.clone(),
+            own: RuntimeDemandOwnInput {
+                return_demand: RuntimeDemand::ignore(),
+                input_demands: Vec::new(),
+            },
+            target_inputs: HashMap::new(),
+            construction_targets: HashMap::from([
+                ((value, int_surface.clone()), int_target.clone()),
+                ((value, atom_surface.clone()), atom_target.clone()),
+            ]),
+        };
+        let derive = |inputs: &RuntimeDemandFormulaSnapshot| {
+            let mut live = HashMap::new();
+            let mut out = ExecutableRuntimeDemand::default();
+            propagate_lambda_capture_demands(
+                &types,
+                value,
+                function,
+                &[capture],
+                RuntimeDemand::callable(CallableDemand::escaped()),
+                &facts,
+                inputs,
+                &mut live,
+                &mut out,
+                &mut CallableFlowBuilder::new(),
+            );
+            out.value_demands
+        };
+        assert!(
+            derive(&inputs).is_empty(),
+            "missing target inputs are unknown, not a Whole escape"
+        );
+        let capture_demand = |surface: CallableSurface| {
+            RuntimeDemand::callable(CallableDemand {
+                resolved: BTreeSet::from([surface]),
+                ..CallableDemand::default()
+            })
+        };
+        inputs
+            .target_inputs
+            .insert(int_target, vec![capture_demand(int_surface.clone())]);
+        let partial = derive(&inputs);
+        let retained = partial
+            .get(&capture)
+            .expect("one available target can publish retention");
+        assert_eq!(retained.shape, ShapeDemand::Whole);
+        assert_eq!(retained.callable.resolved, BTreeSet::from([int_surface.clone()]));
+        inputs
+            .target_inputs
+            .insert(atom_target, vec![capture_demand(atom_surface.clone())]);
+        let complete = derive(&inputs);
+        assert_eq!(complete[&capture].shape, ShapeDemand::Whole);
+        assert_eq!(
+            complete[&capture].callable.resolved,
+            BTreeSet::from([int_surface, atom_surface])
+        );
+    }
 
     #[test]
     fn lowered_call_kind_is_preserved_in_transport_origins() {

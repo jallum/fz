@@ -1,5 +1,7 @@
 use super::*;
-use crate::any_value::{AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count};
+use crate::any_value::{
+    AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count, list_addr_from_tagged, map_entry,
+};
 use crate::heap::{Schema, SchemaRegistry};
 use crate::procbin::{PROCBIN_BYTES, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
@@ -34,9 +36,9 @@ fn map_int_value_by_atom_name(process: &Process, map_ref_word: u64, name: &str) 
 fn range_ref(process: &mut Process, first: i64, last: i64, step: i64) -> u64 {
     let schema_id = process.heap.register_schema(Schema::range());
     let p = process.heap.alloc_struct(schema_id);
-    process.heap.write_field_slot(p, 0, AnyValue::int(first));
-    process.heap.write_field_slot(p, 8, AnyValue::int(last));
-    process.heap.write_field_slot(p, 16, AnyValue::int(step));
+    unsafe { process.heap.write_field_slot(p, 0, AnyValue::int(first)) };
+    unsafe { process.heap.write_field_slot(p, 8, AnyValue::int(last)) };
+    unsafe { process.heap.write_field_slot(p, 16, AnyValue::int(step)) };
     AnyValueRef::from_heap_object(ValueKind::STRUCT, p)
         .expect("range ref")
         .raw_word()
@@ -251,9 +253,12 @@ fn ref_projection_helpers_load_scalar_payloads() {
 #[test]
 fn map_typed_get_projects_expected_scalar_value() {
     with_process(|process| {
-        let key_slot = 1u64;
+        let key_atom = process.node.intern_atom("key");
+        let key_slot = u64::from(key_atom);
         let key_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-        let map_bits = process.heap.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(42))]);
+        let map_bits = process
+            .heap
+            .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::int(42))]);
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
@@ -264,7 +269,8 @@ fn map_typed_get_projects_expected_scalar_value() {
 #[test]
 fn typed_map_put_ffi_round_trips_atom_key_int_value() {
     with_process(|process| {
-        let key = fz_box_atom_for_any(process, 1);
+        let key_atom = process.node.intern_atom("key");
+        let key = fz_box_atom_for_any(process, key_atom as u64);
         let map = fz_map_put_int(process, fz_map_empty(process), key, 42);
         let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
         let got = fz_map_get_ref(process, map_ref.raw_word(), key);
@@ -276,9 +282,13 @@ fn typed_map_put_ffi_round_trips_atom_key_int_value() {
 #[should_panic(expected = "fz_ref_load_int")]
 fn map_typed_get_panics_on_wrong_scalar_type() {
     with_process(|process| {
-        let key_slot = 1u64;
+        let key_atom = process.node.intern_atom("key");
+        let value_atom = process.node.intern_atom("value");
+        let key_slot = u64::from(key_atom);
         let key_ref = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-        let map_bits = process.heap.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::atom(7))]);
+        let map_bits = process
+            .heap
+            .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::atom(value_atom))]);
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 

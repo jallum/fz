@@ -50,7 +50,7 @@ pub(super) trait RuntimeTestEmitter<'f> {
     fn builder(&mut self) -> &mut FunctionBuilder<'f>;
     fn atom_names(&self) -> &[String];
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32>;
-    fn named_schema_ids(&self) -> &HashMap<String, u32>;
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32>;
 
     fn kind_evidence(&self, value: Self::Value) -> KindEvidence;
     fn kind_flag(&mut self, value: Self::Value, kind: ValueKind) -> Result<ir::Value, CodegenError>;
@@ -458,7 +458,7 @@ fn emit_tuple_arity_membership<'f, E: RuntimeTestEmitter<'f>>(
 fn emit_named_struct_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     schema: ir::Value,
-    names: &FiniteSet<String>,
+    names: &FiniteSet<fz_runtime::module_name::ModuleName>,
 ) -> ir::Value {
     if names.is_none() {
         return e.builder().ins().iconst(types::I8, 0);

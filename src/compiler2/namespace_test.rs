@@ -6,7 +6,7 @@ fn compiler2_namespace_type_binding_coexists_with_a_value_of_the_same_name() {
     let mut functions = FunctionMap::new();
     let mut namespaces = NamespaceStore::new();
 
-    let module = modules.reference_named("Range");
+    let module = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Range").unwrap());
     let type_t = TypeName {
         module,
         name: "t".to_string(),
@@ -39,7 +39,7 @@ fn compiler2_namespace_store_shadows_and_restores_by_head() {
     let mut namespaces = NamespaceStore::new();
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
-    let kernel = modules.reference_named("Kernel");
+    let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
     let _ = modules.define(
         kernel,
         code_id,
@@ -88,7 +88,7 @@ fn compiler2_namespace_store_reuses_identical_binding_chains() {
     let mut namespaces = NamespaceStore::new();
 
     let code_id = code.define(Some("kernel.fz".to_string()), String::new());
-    let kernel = modules.reference_named("Kernel");
+    let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
     let _ = modules.define(
         kernel,
         code_id,

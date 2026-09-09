@@ -4,6 +4,7 @@ use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::modules::identity::ModuleName;
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
@@ -90,6 +91,19 @@ pub(crate) trait QuotedExpansionCtx {
         if let Some(node) = cursor.ast_node().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted expansion read failed: {error}"))
         })? {
+            if node
+                .meta
+                .module_denotation()
+                .map_err(|error| {
+                    emit_internal_surface_error(
+                        self.telemetry(),
+                        format!("quoted module reference read failed: {error}"),
+                    )
+                })?
+                .is_some()
+            {
+                return Ok(ExpandedValue::Complete(cursor.root()));
+            }
             if let Some(name) = splice_candidate_name(&node)
                 && let Some(NamespaceSymbol::Splice(snippet)) = self.world().lookup_namespace(scope.namespace(), &name)
             {
@@ -233,9 +247,22 @@ pub(crate) trait QuotedExpansionCtx {
         let [module_cursor, function_cursor] = target.as_slice() else {
             return Ok(None);
         };
-        let module_path = match alias_path(module_cursor) {
-            Ok(path) => path,
-            Err(_) => return Ok(None),
+        let denotation = module_cursor
+            .ast_node()
+            .and_then(|node| node.map(|node| node.meta.module_denotation()).transpose())
+            .map_err(|error| {
+                emit_internal_surface_error(
+                    self.telemetry(),
+                    format!("quoted module reference read failed: {error}"),
+                )
+            })?
+            .flatten();
+        let module_path = match &denotation {
+            Some(module) => module.display_segments().cloned().collect(),
+            None => match alias_path(module_cursor) {
+                Ok(path) => path,
+                Err(_) => return Ok(None),
+            },
         };
         let function_name = function_cursor.atom_name().map_err(|error| {
             emit_internal_surface_error(
@@ -245,7 +272,10 @@ pub(crate) trait QuotedExpansionCtx {
         })?;
         let module = {
             let world = self.world();
-            world.lookup_module_path(scope.namespace(), &module_path.join("."))
+            match denotation {
+                Some(module) => Some(world.reference_module_denotation(module)),
+                None => world.lookup_module_path(scope.namespace(), &ModuleName::from_segments(module_path.clone())),
+            }
         };
         let Some(module) = module else {
             return Ok(None);

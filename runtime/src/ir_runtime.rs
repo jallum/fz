@@ -26,11 +26,10 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefPacking, EMPTY_LIST_BITS, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING,
-    TAG_FWD, TAG_LIST, TAG_MASK, TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value,
-    closure_captured_count, closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind,
-    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, object_size,
-    procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
+    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
+    closure_denotation, closure_flags_pack, closure_fn_ptr, closure_halt_kind, heap_object_word, map_addr_from_tagged,
+    map_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -38,17 +37,15 @@ use crate::bitstr::{
 };
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
-use crate::heap::{
-    AllocStat, FieldKind, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs,
-};
+use crate::heap::{AllocStat, HeapAllocKind, closure_capture_ref, list_head_ref, list_tail_ref, map_entry_refs};
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
-    ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, bitstring_like_eq,
-    is_bitstring_like,
+    ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
 use crate::process::{AlignedClosureStorage, Process, ProcessState};
 use crate::resource::ResourceStub;
 use crate::scheduler_hooks::YIELD_PTR;
+use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use std::cell::Cell;
 use std::mem::{size_of, transmute};
@@ -298,14 +295,9 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
 }
 
 fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
-    let slot = (unsafe { &mut *process })
+    (unsafe { &mut *process })
         .heap
-        .alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
-    unsafe {
-        std::ptr::write(slot, raw);
-    }
-    AnyValueRef::from_scalar_slot(tag, slot as *const u64)
-        .expect("scalar ref")
+        .box_any_value_ref(AnyValue::decode_parts(raw, tag.tag()).expect("scalar value"))
         .raw_word()
 }
 
@@ -1235,10 +1227,12 @@ fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
     let proc = unsafe { &mut *process };
     let arity3 = proc.bs_tuple_arity3_schema.expect("bs_tuple_arity3_schema not set");
     let tuple_p = proc.heap.alloc_struct(arity3);
-    proc.heap
-        .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits));
-    proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(bit_len));
-    proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(0));
+    unsafe {
+        proc.heap
+            .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits))
+    };
+    unsafe { proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(bit_len)) };
+    unsafe { proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(0)) };
     heap_ref_word(ValueKind::STRUCT, tuple_p as *const u8)
 }
 
@@ -1319,9 +1313,7 @@ fn fz_bs_read_field_bits(
         .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
         let p = (unsafe { &mut *process }).heap.alloc_struct(arity1);
-        (unsafe { &mut *process })
-            .heap
-            .write_field_slot(p, 0, AnyValue::bool_atom(false));
+        unsafe { (&mut *process).heap.write_field_slot(p, 0, AnyValue::bool_atom(false)) };
         heap_ref_word(ValueKind::STRUCT, p)
     };
 
@@ -1416,39 +1408,42 @@ fn fz_bs_read_field_bits(
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 0, any_value_from_heap_object_word(bs_bits));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 8, AnyValue::int(bit_len as i64));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(new_reader_p, 16, AnyValue::int(new_pos));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 0, any_value_from_heap_object_word(bs_bits))
+    };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 8, AnyValue::int(bit_len as i64))
+    };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(new_reader_p, 16, AnyValue::int(new_pos))
+    };
 
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 0, AnyValue::bool_atom(true));
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 8, extracted_value);
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(result_p, 16, AnyValue::heap_ptr(new_reader_p, ValueKind::STRUCT));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(result_p, 0, AnyValue::bool_atom(true))
+    };
+    unsafe { (&mut *process).heap.write_field_slot(result_p, 8, extracted_value) };
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(result_p, 16, AnyValue::heap_ptr(new_reader_p, ValueKind::STRUCT))
+    };
     heap_ref_word(ValueKind::STRUCT, result_p as *const u8)
 }
 
 // ===== Map cluster (fz-ul4.23.4.8) =====
 //
-// Maps use a heap-backed sorted-array layout. Construction is immutable:
-// start with an empty map, then each put copies the existing entries and
-// returns a new map with the key inserted/replaced.
-//
-// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
-// within each category, by raw bits (Int compares signed). Keys compare
-// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+// Maps publish one sorted sequence with unique strict structural keys.
+// Construction freezes once; immutable updates preserve the same order.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
@@ -1486,9 +1481,7 @@ pub extern "C" fn fz_map_dest_put_parts(
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_parts dest");
     let key = AnyValue::decode_parts(key_raw, key_kind as u8).expect("fz_map_dest_put_parts key");
     let value = AnyValue::decode_parts(value_raw, value_kind as u8).expect("fz_map_dest_put_parts value");
-    (unsafe { &mut *process })
-        .heap
-        .map_destination_put(dest_bits, key, value);
+    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
 }
 
 #[unsafe(no_mangle)]
@@ -1501,9 +1494,7 @@ pub extern "C" fn fz_map_dest_put_ref(
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
     let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
     let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .map_destination_put(dest_bits, key, value);
+    unsafe { (*process).heap.map_destination_put(dest_bits, key, value) };
 }
 
 #[unsafe(no_mangle)]
@@ -1938,9 +1929,7 @@ pub extern "C" fn fz_struct_set_field_ref(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
     let value = any_value_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .write_struct_field_ref(object, field_offset, value)
+    unsafe { (&mut *process).heap.write_struct_field_ref(object, field_offset, value) }
         .expect("fz_struct_set_field_ref");
 }
 
@@ -1948,9 +1937,11 @@ pub extern "C" fn fz_struct_set_field_ref(
 pub extern "C" fn fz_struct_set_field_int(process: *mut Process, struct_ref_word: u64, field_offset: u32, value: i64) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
     let obj = object.struct_addr().expect("fz_struct_set_field_int object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::int(value));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::int(value))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -1962,9 +1953,11 @@ pub extern "C" fn fz_struct_set_field_float(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
     let obj = object.struct_addr().expect("fz_struct_set_field_float object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::float(value));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::float(value))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -1976,9 +1969,11 @@ pub extern "C" fn fz_struct_set_field_atom(
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
     let obj = object.struct_addr().expect("fz_struct_set_field_atom object");
-    (unsafe { &mut *process })
-        .heap
-        .write_field_slot(obj, field_offset, AnyValue::atom(atom_id as u32));
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_field_slot(obj, field_offset, AnyValue::atom(atom_id as u32))
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -2064,10 +2059,12 @@ pub extern "C" fn fz_closure_set_capture_ref(
 ) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
     let value = any_value_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
-    (unsafe { &mut *process })
-        .heap
-        .write_closure_capture_ref(closure, index as usize, value)
-        .expect("fz_closure_set_capture_ref");
+    unsafe {
+        (&mut *process)
+            .heap
+            .write_closure_capture_ref(closure, index as usize, value)
+    }
+    .expect("fz_closure_set_capture_ref");
 }
 
 #[unsafe(no_mangle)]
@@ -2088,7 +2085,7 @@ pub extern "C" fn fz_closure_set_capture_f64(process: *mut Process, closure_ref_
     unsafe {
         (&mut *process)
             .heap
-            .write_closure_capture_value(addr, index as usize, AnyValue::Float(value.to_bits()))
+            .write_closure_capture_value(addr, index as usize, AnyValue::float(value))
     };
 }
 
@@ -2174,14 +2171,14 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
                     raw
                 };
                 let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
-                (unsafe { &mut *process })
-                    .heap
-                    .write_closure_capture_ref(
+                unsafe {
+                    (&mut *process).heap.write_closure_capture_ref(
                         AnyValueRef::from_raw_word(closure_ref_word_from_bits(bits)).expect("materialized closure ref"),
                         i,
                         any,
                     )
-                    .expect("materialized closure capture ref");
+                }
+                .expect("materialized closure capture ref");
             }
             LAZY_CONT_KIND_I64 => unsafe {
                 (&mut *process)
@@ -2191,7 +2188,7 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
             LAZY_CONT_KIND_F64 => unsafe {
                 (&mut *process)
                     .heap
-                    .write_closure_capture_value(addr, i, AnyValue::Float(raw))
+                    .write_closure_capture_value(addr, i, AnyValue::float(f64::from_bits(raw)))
             },
             LAZY_CONT_KIND_ATOM => unsafe {
                 (&mut *process)
@@ -2300,225 +2297,26 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
     u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
 }
 
-/// fz-5xp.18 — the ONE dynamic ordering implementation, the counterpart to
-/// [`fz_value_eq_ref`].
-///
-/// Ordering used to be built twice: the interpreter promoted both operands
-/// through its own `float_cmp!` macro, and native codegen inlined a private
-/// `both_int` tag test whose slow arm boxed an operand and read the resulting
-/// pointer as a number. Two implementations of one question is why the doors
-/// disagreed — `2 >= 1.0` answered `false` on the JIT and `true` everywhere
-/// else. Equality never had that problem because both doors already call
-/// `fz_value_eq_ref`. This is that shape, for ordering.
-///
-/// Numbers are ordered by value across the integer/float boundary, matching
-/// Elixir. `Kernel` reaches this only for operands it could not type as a
-/// numeric pair; a statically or dynamically known pair is answered by a typed
-/// clause and lowers to a direct machine comparison instead.
-///
-/// Returns -1, 0 or 1. Ordering between non-numbers is Erlang term order and is
-/// not implemented yet (fz-5xp.8); reaching it aborts rather than inventing an
-/// answer, because the behaviour it replaces was a silent wrong one.
+/// Widening language term order, borrowed from the same comparator that owns
+/// strict map-key identity. Returns -1, 0, or 1 without boxing scalar adapters.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> i64 {
     let a = any_value_from_ref_word(a_ref, "fz_value_cmp_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_cmp_ref rhs");
-    cmp_any_value(process, a, b)
+    compare_values(process, a, b, NumericMode::Widening) as i64
 }
 
-/// Where a value's KIND sits in the total term order.
-///
-/// Erlang's order, which Elixir inherits and fz follows:
-///
-/// ```text
-/// number < atom < reference < fun < port < pid < tuple < map < list < bitstring
-/// ```
-///
-/// fz has no port or pid values yet; a resource is fz's reference-like thing
-/// and takes that slot. Every number shares one rank because integers and
-/// floats are ordered against each other BY VALUE, not by kind.
-fn term_rank(kind: ValueKind) -> u8 {
-    match kind {
-        ValueKind::INT | ValueKind::FLOAT => 0,
-        ValueKind::ATOM | ValueKind::NULL => 1,
-        ValueKind::RESOURCE => 2,
-        ValueKind::CLOSURE => 3,
-        ValueKind::STRUCT => 4,
-        ValueKind::MAP => 5,
-        ValueKind::LIST => 6,
-        ValueKind::BITSTRING | ValueKind::PROCBIN => 7,
-        _ => 8,
-    }
+/// Exact mixed-number comparison of two unboxed lanes; no process or allocation.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_int_float_cmp(integer: i64, float: f64) -> i64 {
+    crate::term::compare_int_float(integer, float) as i64
 }
 
-/// The total order over every term (fz-5xp.8).
-///
-/// Takes the process because ATOMS ORDER BY NAME, not by id: ids are handed
-/// out in the order atoms are first seen, so `:b < :a` would depend on which
-/// the program mentioned first. The name table lives on the node.
-///
-/// Within a rank:
-///   * numbers by value, integers as integers so the distinction above 2^53
-///     survives (`9007199254740993 > 9007199254740992` was false when both
-///     were widened to f64);
-///   * atoms byte-lexicographically by name;
-///   * tuples by ARITY first, then elementwise -- `{2} < {1, 1}`;
-///   * lists ELEMENTWISE first, a prefix sorting before its extensions --
-///     `[] < [1] < [1, 1] < [2]`, the opposite convention from tuples;
-///   * maps by size, then keys in term order, then values;
-///   * bitstrings byte-lexicographically, a prefix first;
-///   * closures and resources by identity, which is arbitrary but total and
-///     stable within a run -- Erlang's fun order is equally unspecified.
-fn cmp_any_value(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
-    let a_rank = term_rank(a.kind());
-    let b_rank = term_rank(b.kind());
-    if a_rank != b_rank {
-        return if a_rank < b_rank { -1 } else { 1 };
-    }
-    match a.kind() {
-        ValueKind::INT if b.kind() == ValueKind::INT => order_of_i64(a.raw() as i64, b.raw() as i64),
-        ValueKind::INT | ValueKind::FLOAT => {
-            let (Some(left), Some(right)) = (numeric_as_f64(a), numeric_as_f64(b)) else {
-                unreachable!("rank 0 is exactly the numeric kinds")
-            };
-            order_of_f64(left, right)
-        }
-        ValueKind::ATOM | ValueKind::NULL => cmp_atom_names(process, a, b),
-        ValueKind::STRUCT => cmp_struct(process, a, b),
-        ValueKind::MAP => cmp_map(process, a, b),
-        ValueKind::LIST => cmp_list(process, a, b),
-        _ if is_bitstring_kind(a.kind()) => {
-            let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
-            let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
-            cmp_bitstring(ap, bp)
-        }
-        // Closures and resources: identity order. Total and stable, and no
-        // language question depends on WHICH way round two of them sort.
-        _ => order_of_u64(a.raw(), b.raw()),
-    }
-}
-
-fn order_of_u64(left: u64, right: u64) -> i64 {
-    match left.cmp(&right) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Greater => 1,
-        std::cmp::Ordering::Equal => 0,
-    }
-}
-
-fn cmp_atom_names(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
-    let a_id = atom_id_of(a);
-    let b_id = atom_id_of(b);
-    if a_id == b_id {
-        return 0;
-    }
-    let proc = unsafe { &*process };
-    match proc.node.cmp_atom_names(a_id, b_id) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Greater => 1,
-        std::cmp::Ordering::Equal => 0,
-    }
-}
-
-fn atom_id_of(value: AnyValue) -> u32 {
-    match value.kind() {
-        ValueKind::NULL => NIL_ATOM_ID,
-        _ => value.raw() as u32,
-    }
-}
-
-/// Tuples order by ARITY first. `{2} < {1, 1}` because one field is fewer than
-/// two, which is the opposite of how lists compare.
-fn cmp_struct(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
-    let ap = a.raw() as *mut u8;
-    let bp = b.raw() as *mut u8;
-    let a_schema = unsafe { struct_schema_id(ap as *const u8) };
-    let b_schema = unsafe { struct_schema_id(bp as *const u8) };
-    let (a_fields, b_fields) = {
-        let reg = (unsafe { &mut *process }).heap.schemas_registry();
-        let registry = reg.borrow();
-        (
-            registry.get(a_schema).fields.clone(),
-            registry.get(b_schema).fields.clone(),
-        )
-    };
-    if a_fields.len() != b_fields.len() {
-        return if a_fields.len() < b_fields.len() { -1 } else { 1 };
-    }
-    for (a_field, b_field) in a_fields.iter().zip(b_fields.iter()) {
-        let av = (unsafe { &mut *process }).heap.read_field_slot(ap, a_field.offset);
-        let bv = (unsafe { &mut *process }).heap.read_field_slot(bp, b_field.offset);
-        let ordering = cmp_any_value(process, av, bv);
-        if ordering != 0 {
-            return ordering;
-        }
-    }
-    0
-}
-
-/// Maps order by size, then by keys in term order, then by values. Both maps
-/// are flat SORTED arrays, so walking them in step compares the keys in the
-/// order the comparison wants them.
-fn cmp_map(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
-    let ap = a.raw() as *const u8;
-    let bp = b.raw() as *const u8;
-    let a_count = unsafe { map_count(ap) };
-    let b_count = unsafe { map_count(bp) };
-    if a_count != b_count {
-        return if a_count < b_count { -1 } else { 1 };
-    }
-    for i in 0..a_count {
-        let (a_key, _) = unsafe { map_entry(ap, i) };
-        let (b_key, _) = unsafe { map_entry(bp, i) };
-        let ordering = cmp_any_value(process, a_key, b_key);
-        if ordering != 0 {
-            return ordering;
-        }
-    }
-    for i in 0..a_count {
-        let (_, a_value) = unsafe { map_entry(ap, i) };
-        let (_, b_value) = unsafe { map_entry(bp, i) };
-        let ordering = cmp_any_value(process, a_value, b_value);
-        if ordering != 0 {
-            return ordering;
-        }
-    }
-    0
-}
-
-/// Lists order ELEMENTWISE, and a list that runs out first is smaller:
-/// `[] < [1] < [1, 1] < [2]`. The first differing element decides, so a
-/// longer list can still be smaller.
-fn cmp_list(process: *mut Process, a: AnyValue, b: AnyValue) -> i64 {
-    let mut a_bits = if a.raw() == 0 {
-        EMPTY_LIST_BITS
-    } else {
-        a.raw() | TAG_LIST
-    };
-    let mut b_bits = if b.raw() == 0 {
-        EMPTY_LIST_BITS
-    } else {
-        b.raw() | TAG_LIST
-    };
-    loop {
-        let a_addr = list_addr_from_tagged(a_bits).filter(|p| !p.is_null());
-        let b_addr = list_addr_from_tagged(b_bits).filter(|p| !p.is_null());
-        match (a_addr, b_addr) {
-            (None, None) => return 0,
-            (None, Some(_)) => return -1,
-            (Some(_), None) => return 1,
-            (Some(a_addr), Some(b_addr)) => {
-                let ac = unsafe { &*(a_addr as *const ListCons) };
-                let bc = unsafe { &*(b_addr as *const ListCons) };
-                let ordering = cmp_any_value(process, ac.head_value(), bc.head_value());
-                if ordering != 0 {
-                    return ordering;
-                }
-                a_bits = ac.tail_bits();
-                b_bits = bc.tail_bits();
-            }
-        }
-    }
+fn compare_values(process: *mut Process, a: AnyValue, b: AnyValue, mode: NumericMode) -> std::cmp::Ordering {
+    let process = unsafe { &*process };
+    let registry = process.heap.schemas_registry();
+    let schemas = registry.borrow();
+    TermComparator::new(&process.node, &schemas).compare(a, b, mode)
 }
 
 /// Ordering between a dynamic `AnyValueRef` and an unboxed payload, with no
@@ -2550,254 +2348,22 @@ pub extern "C" fn fz_value_cmp_raw_const(
     } else {
         (unboxed, dynamic)
     };
-    cmp_any_value(process, left, right)
+    compare_values(process, left, right, NumericMode::Widening) as i64
 }
 
-fn is_bitstring_kind(kind: ValueKind) -> bool {
-    matches!(kind, ValueKind::BITSTRING | ValueKind::PROCBIN)
-}
-
-/// Byte-lexicographic, with the shorter of two otherwise-equal prefixes first —
-/// Erlang's order for binaries, and so Elixir's for strings: `"a" < "ab"`,
-/// `"Z" < "a"`, `"" < "a"`.
-///
-/// Bit-level ordering between bitstrings whose lengths are not byte multiples
-/// is decided by length once the common bytes agree; a full bit-granular
-/// comparison belongs with term ordering (fz-5xp.8).
-/// Content ordering for two bitstring-like values: bytes first, then bit
-/// length. Shared with map-key ordering, which must agree with the structural
-/// equality map lookup uses (`heap::key_cmp`).
-pub(crate) fn cmp_bitstring(ap: *mut u8, bp: *mut u8) -> i64 {
-    let a_bits = unsafe { bitstring_bit_len(ap) } as usize;
-    let b_bits = unsafe { bitstring_bit_len(bp) } as usize;
-    let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(ap), a_bits.div_ceil(8)) };
-    let b_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(bp), b_bits.div_ceil(8)) };
-    let common = (a_bits.min(b_bits)) / 8;
-    match a_bytes[..common].cmp(&b_bytes[..common]) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Greater => 1,
-        std::cmp::Ordering::Equal => match a_bits.cmp(&b_bits) {
-            std::cmp::Ordering::Less => -1,
-            std::cmp::Ordering::Greater => 1,
-            std::cmp::Ordering::Equal => 0,
-        },
-    }
-}
-
-fn order_of_f64(left: f64, right: f64) -> i64 {
-    if left < right {
-        -1
-    } else if left > right {
-        1
-    } else {
-        0
-    }
-}
-
-fn order_of_i64(left: i64, right: i64) -> i64 {
-    match left.cmp(&right) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Greater => 1,
-        std::cmp::Ordering::Equal => 0,
-    }
-}
-
-fn numeric_as_f64(value: AnyValue) -> Option<f64> {
-    match value.kind() {
-        ValueKind::INT => Some(value.raw() as i64 as f64),
-        ValueKind::FLOAT => Some(f64::from_bits(value.raw())),
-        _ => None,
-    }
-}
-
-/// `==` between two dynamic values.
-///
-/// This is NOT [`fz_value_eq_ref`]. Elixir's `==` compares numbers across the
-/// integer/float boundary, so `1 == 1.0` is true, but STRUCTURAL IDENTITY does
-/// not: a pinned match, `Enum.member?/2`, `--`, a map key and a container
-/// element all ask whether two values are the same value, and for them `1` and
-/// `1.0` are different. Putting the widening inside `eq_value` made every one
-/// of those loose at once — `Enum.member?([1,2,3], 1.0)` answered true and
-/// `[1,2,3] -- [1.0]` answered `[2,3]`. The two questions get two entry points.
+/// Widen numeric values recursively for `==`; map keys remain strict.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_widening_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_widening_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_widening_ref rhs");
-    u64::from(eq_value(process, a, b, true))
-}
-
-/// Numeric equality with Elixir's semantics, or `None` when the pair is not two
-/// numbers. Two integers are compared AS INTEGERS: routing them through `f64`
-/// makes `9007199254740993 == 9007199254740992` answer true.
-fn numeric_eq(a: AnyValue, b: AnyValue) -> Option<bool> {
-    match (a.kind(), b.kind()) {
-        (ValueKind::INT, ValueKind::INT) => Some(a.raw() as i64 == b.raw() as i64),
-        (ValueKind::FLOAT, ValueKind::FLOAT) => Some(f64::from_bits(a.raw()) == f64::from_bits(b.raw())),
-        (ValueKind::INT, ValueKind::FLOAT) => Some(a.raw() as i64 as f64 == f64::from_bits(b.raw())),
-        (ValueKind::FLOAT, ValueKind::INT) => Some(f64::from_bits(a.raw()) == b.raw() as i64 as f64),
-        _ => None,
-    }
+    u64::from(compare_values(process, a, b, NumericMode::Widening).is_eq())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
-    if a_ref == b_ref {
-        return 1;
-    }
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(eq_value(process, a, b, false))
-}
-
-/// `widen` selects between the two equality questions fz asks.
-///
-/// `false` is STRUCTURAL IDENTITY: are these the same value? A pinned match,
-/// `Enum.member?/2`, `--` and a map KEY all ask this, and for them `1` and
-/// `1.0` are different. `true` is the `==` OPERATOR, which compares numbers by
-/// value the way Elixir does -- and does so recursively, so `[1] == [1.0]` and
-/// `%{a: 1} == %{a: 1.0}` are true while `%{1 => :a} == %{1.0 => :a}` is false,
-/// because widening applies to values and never to the keys that decide which
-/// entries line up.
-fn eq_value(process: *mut Process, a: AnyValue, b: AnyValue, widen: bool) -> bool {
-    if widen && let Some(answer) = numeric_eq(a, b) {
-        return answer;
-    }
-    if is_bitstring_kind(a.kind()) && is_bitstring_kind(b.kind()) {
-        let ap = a.heap_object_word().expect("bitstring lhs heap word") as *mut u8;
-        let bp = b.heap_object_word().expect("bitstring rhs heap word") as *mut u8;
-        return (unsafe { is_bitstring_like(ap) }) && (unsafe { is_bitstring_like(bp) }) && eq_bitstring(ap, bp);
-    }
-    if a.kind() != b.kind() {
-        return false;
-    }
-    if a.raw() == b.raw() {
-        return true;
-    }
-    match a.kind() {
-        ValueKind::LIST => {
-            if a.raw() == 0 || b.raw() == 0 {
-                false
-            } else {
-                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8, widen)
-            }
-        }
-        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8, widen),
-        ValueKind::STRUCT => {
-            let a_schema = unsafe { struct_schema_id(a.raw() as *const u8) };
-            let b_schema = unsafe { struct_schema_id(b.raw() as *const u8) };
-            eq_struct(
-                process,
-                a.raw() as *mut u8,
-                b.raw() as *mut u8,
-                a_schema,
-                b_schema,
-                widen,
-            )
-        }
-        ValueKind::BITSTRING | ValueKind::PROCBIN => unreachable!("handled before kind check"),
-        _ => false,
-    }
-}
-
-fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8, widen: bool) -> bool {
-    // Walk both chains in lockstep. NIL terminates both at the same step.
-    let mut a = ap as *const u8;
-    let mut b = bp as *const u8;
-    loop {
-        let ac = unsafe { &*(a as *const ListCons) };
-        let bc = unsafe { &*(b as *const ListCons) };
-        // The kind pre-guard is a fast reject for structural identity, but a
-        // widening `==` must still compare an int head against a float head.
-        if ac.head_kind() != bc.head_kind() && !(widen && numeric_eq(ac.head_value(), bc.head_value()).is_some()) {
-            return false;
-        }
-        if !eq_value(process, ac.head_value(), bc.head_value(), widen) {
-            return false;
-        }
-        // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
-        let at = ac.tail_bits();
-        let bt = bc.tail_bits();
-        if at == bt {
-            return true; // both NIL (same scalar bits) — common terminator
-        }
-        // If either tail is non-list, the chains diverge.
-        let anp = list_addr_from_tagged(at);
-        let bnp = list_addr_from_tagged(bt);
-        let (Some(anp), Some(bnp)) = (anp, bnp) else {
-            return false;
-        };
-        if anp.is_null() || bnp.is_null() {
-            return false;
-        }
-        a = anp as *const u8;
-        b = bnp as *const u8;
-    }
-}
-
-fn eq_struct(process: *mut Process, ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32, widen: bool) -> bool {
-    if a_schema != b_schema {
-        return false;
-    }
-    let reg = (unsafe { &mut *process }).heap.schemas_registry();
-    let registry = reg.borrow();
-    let schema = registry.get(a_schema);
-    for field in &schema.fields {
-        match field.kind {
-            FieldKind::AnyValue => {
-                let av = (unsafe { &mut *process }).heap.read_field_slot(ap, field.offset);
-                let bv = (unsafe { &mut *process }).heap.read_field_slot(bp, field.offset);
-                if !eq_value(process, av, bv, widen) {
-                    return false;
-                }
-            }
-            FieldKind::RawF64 | FieldKind::RawI64 => {
-                let av = unsafe { std::ptr::read(ap.add(8 + field.offset as usize) as *const u64) };
-                let bv = unsafe { std::ptr::read(bp.add(8 + field.offset as usize) as *const u64) };
-                if av != bv {
-                    return false;
-                }
-            }
-            FieldKind::RawBytes(n) => {
-                let av = unsafe { from_raw_parts(ap.add(8 + field.offset as usize), n as usize) };
-                let bv = unsafe { from_raw_parts(bp.add(8 + field.offset as usize), n as usize) };
-                if av != bv {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
-    unsafe { bitstring_like_eq(ap, bp) }
-}
-
-fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8, widen: bool) -> bool {
-    let a_count = unsafe { map_count(ap as *const u8) };
-    let b_count = unsafe { map_count(bp as *const u8) };
-    if a_count != b_count {
-        return false;
-    }
-    // Both maps store entries in canonical sort order (.11.13), so a
-    // pairwise walk suffices — same key-position implies same key.
-    for i in 0..a_count {
-        let (ak, av) = unsafe { map_entry(ap as *const u8, i) };
-        let (bk, bv) = unsafe { map_entry(bp as *const u8, i) };
-        // Keys decide which entries line up, so they are compared by identity
-        // even under `==`: `%{1 => :a} == %{1.0 => :a}` is false in Elixir, and
-        // `%{1 => :a, 1.0 => :b}` genuinely has two keys.
-        if ak.kind() != bk.kind() || !eq_value(process, ak, bk, false) {
-            return false;
-        }
-        if av.kind() != bv.kind() && !(widen && numeric_eq(av, bv).is_some()) {
-            return false;
-        }
-        if !eq_value(process, av, bv, widen) {
-            return false;
-        }
-    }
-    true
+    u64::from(compare_values(process, a, b, NumericMode::Strict).is_eq())
 }
 
 // fz-axu.14 (R1) — utf8 runtime support.

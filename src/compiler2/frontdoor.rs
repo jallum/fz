@@ -2047,6 +2047,7 @@ impl FrontDoorParser {
         span: Span,
     ) -> Result<QuotedSourceMetadata, FrontDoorError> {
         Ok(QuotedSourceMetadata {
+            module: None,
             from_brackets: false,
             lexical_context: Some(QuotedLexicalContext::new(
                 QuotedLexicalContextKind::Source,

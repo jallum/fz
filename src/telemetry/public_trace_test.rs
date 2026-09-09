@@ -1521,11 +1521,12 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                // fz-5xp.2: the cold walk falls 246 -> 245. `Enum.to_list/1`
-                // reaches a list through a clause typed `[a]`, so one
-                // reduce-and-reverse body is never walked.
-                [[245, 0, 0, 9, 179], [592, 0, 0, 58, 394], [1206, 0, 0, 63, 714]][fixture_index][scenario],
-                "{fixture} {name}: count actual body walks, not scheduler completions"
+                [[228, 0, 0, 9, 155], [599, 0, 0, 58, 392], [1106, 0, 0, 63, 661]][fixture_index][scenario],
+                "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
+                reports
+                    .iter()
+                    .map(|report| family_work(report, "DeriveRuntimeDemand").1.runtime_demand_evaluations)
+                    .collect::<Vec<_>>()
             );
             assert_eq!(
                 runtime_demand.uncaused, 0,

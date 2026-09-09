@@ -378,7 +378,7 @@ pub enum Prim {
     MakeTuple(Vec<Var>),
     /// Build a named struct using a source `defstruct` schema.
     MakeStruct {
-        module: String,
+        module: fz_runtime::module_name::ModuleName,
         fields: Vec<(String, Var)>,
     },
     /// Project the i-th element of a tuple.
@@ -454,16 +454,10 @@ pub enum Prim {
     RuntimeTypeTest(Var, Box<RuntimeTypePredicate>),
     /// Read one captured value back out of a closure object.
     ///
-    /// The mirror of `MakeClosure`: a caller that holds a whole closure and a
-    /// callee that wants its captures as separate lanes meet here.
-    /// `constructions` names the code words of every construction that mints
-    /// the callable at the layout the callee grounded -- the same words
-    /// `MakeClosure` stamps -- and those are the authority on how each capture
-    /// was STORED; reading it back any other way would be a guess
-    /// (fz-kdt.127).
+    /// Captures retain lexical source order. The slot's runtime kind describes
+    /// its storage; callers project the complete value to their required ABI.
     ClosureCapture {
         closure: Var,
-        constructions: Box<[FnId]>,
         index: u32,
     },
 }
@@ -887,7 +881,7 @@ pub struct Module {
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
-    pub struct_schemas: BTreeMap<String, Vec<String>>,
+    pub struct_schemas: BTreeMap<fz_runtime::module_name::ModuleName, Vec<String>>,
 }
 
 impl Module {
@@ -1275,18 +1269,7 @@ impl fmt::Display for Prim {
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
-            Prim::ClosureCapture {
-                closure,
-                constructions,
-                index,
-            } => {
-                let constructions = constructions
-                    .iter()
-                    .map(|construction| construction.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "closure_capture({closure}, [{constructions}], {index})")
-            }
+            Prim::ClosureCapture { closure, index } => write!(f, "closure_capture({closure}, {index})"),
         }
     }
 }

@@ -6,25 +6,25 @@ use super::gc::{
     cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
     cheney_trace_struct, forward_any_value_ref_root,
 };
-use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
-    write_any_value_to_storage, write_ref_to_storage,
+    write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, TAG_BITSTRING, TAG_CLOSURE,
-    TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind, bitstring_size_for_bit_len,
-    closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
-    closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged, heap_object_word,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_entry_raw_kinds, map_key_kind, map_keys_ptr,
-    map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot,
-    struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_DESTINATION_FLAG,
+    TAG_BITSTRING, TAG_CLOSURE, TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
+    closure_capture_set, closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_keys_ptr, map_pack_tag,
+    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot,
+    struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use crate::process::Node;
+use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -39,6 +39,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
 // directly, with no `current_process()` and no process argument — which is also
 // why the receive matcher can project list/closure shapes without a process.
+
+fn map_destination_header(capacity: usize, filled: usize) -> u64 {
+    assert!(capacity < (1 << 31) && filled <= capacity, "map destination capacity");
+    MAP_DESTINATION_FLAG | ((filled as u64) << 32) | capacity as u64
+}
+
+fn map_destination_state(addr: *const u8) -> (usize, usize) {
+    let header = unsafe { read(addr.cast::<u64>()) };
+    assert_ne!(header & MAP_DESTINATION_FLAG, 0, "map is already published");
+    (
+        header as u32 as usize,
+        ((header & !MAP_DESTINATION_FLAG) >> 32) as usize,
+    )
+}
 
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
@@ -207,11 +221,7 @@ impl Heap {
         let p = range.struct_addr()?;
         let schema_id = unsafe { struct_schema_id(p.cast_const()) };
         let reg = self.schemas.borrow();
-        assert_eq!(
-            reg.get(schema_id).name.as_str(),
-            Schema::RANGE_NAME,
-            "expected Range schema"
-        );
+        assert!(reg.get(schema_id).is_range(), "expected Range schema");
         drop(reg);
         let first = self.read_struct_named_field_ref(range, "first")?.load_int()?;
         let last = self.read_struct_named_field_ref(range, "last")?.load_int()?;
@@ -266,6 +276,7 @@ impl Heap {
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
             AnyValue::Float(bits) => {
+                let bits = AnyValue::float(f64::from_bits(bits)).raw();
                 let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
                     write(slot, bits);
@@ -335,95 +346,68 @@ impl Heap {
             || classify_fragment(p, &self.fragments).is_some()
     }
 
-    /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
-    /// supplies canonically-sorted typed entries; this performs the heap copy.
-    /// Write a map from refs, sorting and deduping first.
-    ///
-    /// The ref sibling of `alloc_map_slots`, and it holds the same invariant
-    /// for the same reason: a map is a flat SORTED array and every lookup
-    /// assumes it. fz-5xp.49 fixed the slot writer and left this one, whose
-    /// callers all happened to sort beforehand -- until `fz_map_from_kv` did
-    /// not, and `Map.new([{"x", 1}, {"x", 2}])` produced a map holding BOTH
-    /// entries where Elixir keeps the last.
-    ///
-    /// Held here rather than asked of callers, so a new one cannot get it
-    /// wrong. Last key wins, matching Elixir.
+    /// Publish a map, normalizing its strict structural keys exactly once.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
-        let mut sorted: Vec<(AnyValueRef, AnyValueRef)> = entries.to_vec();
-        sorted.sort_by(|a, b| map_key_cmp_refs(&self.node, a.0, b.0));
-        let mut entries: Vec<(AnyValueRef, AnyValueRef)> = Vec::with_capacity(sorted.len());
-        for (key, value) in sorted {
-            if let Some((last_key, last_value)) = entries.last_mut()
-                && same_value_ref(*last_key, key)
-            {
-                *last_value = value;
-                continue;
+        let entries = entries
+            .iter()
+            .map(|&(key, value)| {
+                (
+                    AnyValue::from_ref(key).expect("map key"),
+                    AnyValue::from_ref(value).expect("map value"),
+                )
+            })
+            .collect();
+        self.publish_map_entries(entries)
+    }
+
+    pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
+        self.publish_map_entries(entries.to_vec())
+    }
+
+    fn publish_map_entries(&mut self, mut entries: Vec<(AnyValue, AnyValue)>) -> u64 {
+        self.normalize_map_entries(&mut entries);
+        self.alloc_ordered_map_entries(entries.into_iter())
+    }
+
+    fn normalize_map_entries(&self, entries: &mut Vec<(AnyValue, AnyValue)>) {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
+        entries.dedup_by(|later, earlier| {
+            if comparator.compare(later.0, earlier.0, NumericMode::Strict).is_eq() {
+                earlier.1 = later.1;
+                true
+            } else {
+                false
             }
-            entries.push((key, value));
-        }
-        let entries = &entries[..];
-        let total = map_size_for_count(entries.len());
-        let p = self.alloc_kind(HeapAllocKind::Map, total);
-        unsafe {
-            write(p as *mut u64, entries.len() as u64);
-            let tag_p = map_tag_ptr(p);
-            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
-            let keys = map_keys_ptr(p, entries.len());
-            let values = map_values_ptr(p, entries.len());
-            for (i, (key, value)) in entries.iter().copied().enumerate() {
-                let key_kind = key.tag();
-                let value_kind = value.tag();
-                write(tag_p.add(i), map_pack_tag(key_kind, value_kind));
-                write_ref_to_storage(keys.add(i), None, key);
-                write_ref_to_storage(values.add(i), None, value);
-            }
-        }
+        });
+    }
+
+    /// Copy entries whose ordering is preserved by an immutable map operation.
+    pub(super) fn alloc_ordered_map_entries(
+        &mut self,
+        entries: impl ExactSizeIterator<Item = (AnyValue, AnyValue)>,
+    ) -> u64 {
+        let count = entries.len();
+        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
+        self.write_ordered_map_entries(p, count, entries);
         heap_object_word(p, ValueKind::MAP)
     }
 
-    /// Write a map, sorting and deduping first.
-    ///
-    /// A map is a flat SORTED array and every lookup assumes it. This is the
-    /// raw writer, and it used to trust its caller: `fz_process_heap_alloc_stats`
-    /// handed it insertion order, whose atom ids do not ascend because most of
-    /// those atoms were interned earlier by the compiler. Nothing noticed while
-    /// lookup was a linear scan -- the scan consults the equality and never the
-    /// order, so an unsorted map works. The moment a binary search went in, that
-    /// map returned nil for keys it contained (fz-5xp.49).
-    ///
-    /// So the invariant is held HERE, once, rather than asked of four callers.
-    /// The two that already sort pay a scan over sorted input, which is what a
-    /// merge sort costs on an ordered run.
-    pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
-        let mut sorted: Vec<(AnyValue, AnyValue)> = entries.to_vec();
-        sorted.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
-        let mut entries: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(sorted.len());
-        for (key, value) in sorted {
-            // Last one wins, matching Elixir and the sibling builders.
-            if let Some((last_key, last_value)) = entries.last_mut()
-                && same_any_value(*last_key, key)
-            {
-                *last_value = value;
-                continue;
-            }
-            entries.push((key, value));
-        }
-        let entries = &entries[..];
-        let total = map_size_for_count(entries.len());
-        let p = self.alloc_kind(HeapAllocKind::Map, total);
+    fn write_ordered_map_entries(&self, p: *mut u8, count: usize, entries: impl Iterator<Item = (AnyValue, AnyValue)>) {
         unsafe {
-            write(p as *mut u64, entries.len() as u64);
+            write(p as *mut u64, count as u64);
             let tag_p = map_tag_ptr(p);
-            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
-            let keys = map_keys_ptr(p, entries.len());
-            let values = map_values_ptr(p, entries.len());
-            for (i, (key, value)) in entries.iter().copied().enumerate() {
+            write_bytes(tag_p, 0, map_tag_bytes_len(count));
+            let keys = map_keys_ptr(p, count);
+            let values = map_values_ptr(p, count);
+            for (i, (key, value)) in entries.enumerate() {
+                assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
                 write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                 write_any_value_to_storage(keys.add(i), None, key);
                 write_any_value_to_storage(values.add(i), None, value);
             }
         }
-        heap_object_word(p, ValueKind::MAP)
     }
 
     pub fn alloc_map_destination(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
@@ -437,9 +421,9 @@ impl Heap {
         let base_count = base_addr.map_or(0, |addr| unsafe { map_count(addr as *const u8) });
         let count = base_count + extra;
         let total = map_size_for_count(count);
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            write(p as *mut u64, count as u64);
+            write(p as *mut u64, map_destination_header(count, base_count));
             let tag_p = map_tag_ptr(p);
             write_bytes(tag_p, 0, map_tag_bytes_len(count));
             let keys = map_keys_ptr(p, count);
@@ -458,64 +442,34 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    pub fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
+    /// Append to an exclusively owned, unpublished map destination.
+    ///
+    /// # Safety
+    /// `key` and `value` must be already-published finite immutable terms.
+    /// Neither may reach this or any other unfinished destination.
+    pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
         let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let count = unsafe { map_count(dest as *const u8) };
+        let (count, filled) = map_destination_state(dest);
+        assert!(filled < count, "map destination has no free entry slot");
+        assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
         unsafe {
             let tag_p = map_tag_ptr(dest);
             let keys = map_keys_ptr(dest, count);
             let values = map_values_ptr(dest, count);
-            for i in 0..count {
-                if map_key_kind(read(tag_p.add(i))) == ValueKind::NULL {
-                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
-                    write_any_value_to_storage(keys.add(i), None, key);
-                    write_any_value_to_storage(values.add(i), None, value);
-                    return;
-                }
-            }
+            write(tag_p.add(filled), map_pack_tag(key.kind(), value.kind()));
+            write_any_value_to_storage(keys.add(filled), None, key);
+            write_any_value_to_storage(values.add(filled), None, value);
+            write(dest as *mut u64, map_destination_header(count, filled + 1));
         }
-        panic!("map destination has no free entry slot");
     }
 
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
-        let dest = map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
-        let count = unsafe { map_count(dest as *const u8) };
-        let mut entries = Vec::with_capacity(count);
-        for i in 0..count {
-            let (key_raw, key_kind, value_raw, value_kind) = unsafe { map_entry_raw_kinds(dest as *const u8, i) };
-            if key_kind == ValueKind::NULL {
-                continue;
-            }
-            entries.push((
-                AnyValue::decode_parts(key_raw, key_kind.tag()).expect("map destination key"),
-                AnyValue::decode_parts(value_raw, value_kind.tag()).expect("map destination value"),
-            ));
-        }
-        entries.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
-        let mut deduped: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(entries.len());
-        for (key, value) in entries {
-            if let Some((last_key, last_value)) = deduped.last_mut()
-                && same_any_value(*last_key, key)
-            {
-                *last_value = value;
-                continue;
-            }
-            deduped.push((key, value));
-        }
-        if deduped.len() == count {
-            unsafe {
-                let tag_p = map_tag_ptr(dest);
-                let keys = map_keys_ptr(dest, count);
-                let values = map_values_ptr(dest, count);
-                for (i, (key, value)) in deduped.iter().copied().enumerate() {
-                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
-                    write_any_value_to_storage(keys.add(i), None, key);
-                    write_any_value_to_storage(values.add(i), None, value);
-                }
-            }
-            return dest_bits;
-        }
-        self.alloc_map_slots(&deduped)
+        let dest = map_addr_from_tagged(dest_bits).expect("map destination");
+        let (_, filled) = map_destination_state(dest);
+        let mut entries: Vec<_> = (0..filled).map(|i| unsafe { map_entry(dest, i) }).collect();
+        self.normalize_map_entries(&mut entries);
+        self.write_ordered_map_entries(dest, entries.len(), entries.into_iter());
+        dest_bits
     }
 
     pub fn alloc_map_refs(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, AnyValueRefError> {
@@ -580,75 +534,63 @@ impl Heap {
     }
 
     fn map_put_value_bits(&mut self, map_addr: *mut u8, key: AnyValueRef, value: AnyValueRef) -> u64 {
-        let count = unsafe { map_count(map_addr) };
-        let mut entries = Vec::with_capacity(count + 1);
-        let mut replaced = false;
-
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { map_entry_refs(map_addr, i) };
-            if !replaced && same_value_ref(entry_key, key) {
-                entries.push((key, value));
-                replaced = true;
-            } else {
-                entries.push((entry_key, entry_value));
-            }
-        }
-        if !replaced {
-            entries.push((key, value));
-        }
-
-        entries.sort_by(|a, b| map_key_cmp_refs(&self.node, a.0, b.0));
-        self.alloc_map_refs_bits(&entries)
+        self.map_put_entry(
+            map_addr,
+            AnyValue::from_ref(key).expect("map key"),
+            AnyValue::from_ref(value).expect("map value"),
+        )
     }
 
-    /// A map without `key`, or the same map when the key is absent.
-    ///
-    /// A full copy, like `map_put_value`: the flat array has no hole to leave
-    /// behind. That is why fz-5xp.12 wants `Map.drop/2` to be the first-class
-    /// surface and `delete/2` the one callers are told not to put in a loop --
-    /// the opposite emphasis to Elixir's docs, because the structure underneath
-    /// is a sorted array rather than a HAMT.
+    /// An absent deletion borrows the original map without allocating.
     pub fn map_delete_ref(&mut self, map: AnyValueRef, key: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        let map_addr = map.map_addr()?;
-        let count = unsafe { map_count(map_addr) };
-        let mut entries = Vec::with_capacity(count);
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { map_entry_refs(map_addr, i) };
-            if same_value_ref(entry_key, key) {
-                continue;
-            }
-            entries.push((entry_key, entry_value));
-        }
-        if entries.len() == count {
+        let addr = map.map_addr()?;
+        let Ok(index) = self.map_key_position(addr, AnyValue::from_ref(key)?) else {
             return Ok(map);
-        }
-        // Already in order: removing entries from a sorted run keeps it sorted.
-        let map_bits = self.alloc_map_refs_bits(&entries);
-        let map_addr = map_addr_from_tagged(map_bits).expect("new map addr");
-        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
+        };
+        let count = unsafe { map_count(addr) };
+        let bits = self.alloc_ordered_map_entries(
+            (0..count - 1).map(|i| unsafe { map_entry(addr, if i < index { i } else { i + 1 }) }),
+        );
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("new map"))
     }
 
     pub fn map_put_slot_bits(&mut self, map_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
-        let map_addr = map_addr_from_tagged(map_bits);
-        let count = map_addr.map_or(0, |addr| unsafe { map_count(addr) });
-        let mut entries = Vec::with_capacity(count + 1);
-        let mut replaced = false;
-        if let Some(map_addr) = map_addr {
-            for i in 0..count {
-                let (entry_key, entry_value) = unsafe { map_entry(map_addr, i) };
-                if !replaced && same_any_value(entry_key, key) {
-                    entries.push((key, value));
-                    replaced = true;
-                } else {
-                    entries.push((entry_key, entry_value));
-                }
+        match map_addr_from_tagged(map_bits) {
+            Some(addr) => self.map_put_entry(addr, key, value),
+            None => self.alloc_ordered_map_entries(std::iter::once((key, value))),
+        }
+    }
+
+    fn map_put_entry(&mut self, addr: *mut u8, key: AnyValue, value: AnyValue) -> u64 {
+        let count = unsafe { map_count(addr) };
+        let position = self.map_key_position(addr, key);
+        let (index, inserted) = match position {
+            Ok(index) => (index, 0),
+            Err(index) => (index, 1),
+        };
+        self.alloc_ordered_map_entries((0..count + inserted).map(|i| {
+            if i == index {
+                (key, value)
+            } else {
+                unsafe { map_entry(addr, if i < index { i } else { i - inserted }) }
+            }
+        }))
+    }
+
+    fn map_key_position(&self, addr: *mut u8, key: AnyValue) -> Result<usize, usize> {
+        let schemas = self.schemas.borrow();
+        let comparator = TermComparator::new(&self.node, &schemas);
+        let (mut low, mut high) = (0, unsafe { map_count(addr) });
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let entry_key = unsafe { map_entry(addr, middle).0 };
+            match comparator.compare(entry_key, key, NumericMode::Strict) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(middle),
             }
         }
-        if !replaced {
-            entries.push((key, value));
-        }
-        entries.sort_by(|a, b| map_key_cmp_any(&self.node, a.0, b.0));
-        self.alloc_map_slots(&entries)
+        Err(low)
     }
 
     /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
@@ -784,13 +726,18 @@ impl Heap {
 
     /// # Safety
     ///
-    /// `closure_addr` must point to a live closure allocation with a capture
-    /// slot at `idx`.
+    /// The caller exclusively owns the live, unpublished closure allocation at
+    /// `closure_addr`, and `idx` is an allocated capture slot. `value` must be a
+    /// published immutable finite acyclic term with no path to this closure.
     pub unsafe fn write_closure_capture_value(&mut self, closure_addr: *mut u8, idx: usize, value: AnyValue) {
         unsafe { closure_capture_set(closure_addr, idx, value) };
     }
 
-    pub fn write_closure_capture_ref(
+    /// # Safety
+    /// The caller exclusively owns this live, unpublished closure, and `idx` is
+    /// an allocated capture slot. Captures must be published immutable finite
+    /// acyclic terms and cannot reach the closure being built.
+    pub unsafe fn write_closure_capture_ref(
         &mut self,
         closure: AnyValueRef,
         idx: usize,
@@ -809,12 +756,20 @@ impl Heap {
         unsafe { closure_capture_value(closure_addr, idx) }
     }
 
-    /// Write a canonical value into a Struct's generic payload slot.
-    pub fn write_field_slot(&mut self, obj: *mut u8, field_offset: u32, value: AnyValue) {
+    /// Initialize an unpublished Struct's generic payload slot.
+    ///
+    /// # Safety
+    /// The caller exclusively owns the unpublished object. The written value
+    /// must be a published finite immutable term, with no path back to this object.
+    /// Collector tests may construct non-language graphs only while keeping them
+    /// outside all runtime term operations.
+    pub unsafe fn write_field_slot(&mut self, obj: *mut u8, field_offset: u32, value: AnyValue) {
         self.write_struct_field_value(obj, field_offset, value);
     }
 
-    pub fn write_struct_field_ref(
+    /// # Safety
+    /// The same unpublished finite-term contract as `write_field_slot` applies.
+    pub unsafe fn write_struct_field_ref(
         &mut self,
         obj: AnyValueRef,
         field_offset: u32,
@@ -920,22 +875,10 @@ impl Heap {
         addr: *mut u8,
         key: AnyValueRef,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        // Binary search. Two things make it valid, and both had to be fixed:
-        // the ORDER agrees with the EQUALITY (fz-5xp.48, which was a silent
-        // wrong answer for binary keys), and every map is actually sorted
-        // (fz-5xp.49, held by `alloc_map_slots`).
-        let count = unsafe { map_count(addr) };
-        let (mut low, mut high) = (0usize, count);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let (entry_key, entry_value) = unsafe { map_entry_refs(addr, middle) };
-            match map_key_cmp_refs(&self.node, entry_key, key) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => return Ok(Some(entry_value)),
-            }
-        }
-        Ok(None)
+        Ok(self
+            .map_key_position(addr, AnyValue::from_ref(key)?)
+            .ok()
+            .map(|index| unsafe { map_entry_refs(addr, index).1 }))
     }
 
     pub fn read_map_value_for_any_key(
@@ -943,24 +886,11 @@ impl Heap {
         map: AnyValueRef,
         key: AnyValue,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        // The `AnyValue` sibling of `read_map_addr_value_ref`, searched the same
-        // way: `map_key_cmp_any` agrees with `same_any_value`.
         let addr = map.map_addr()?;
-        let count = unsafe { map_count(addr) };
-        let (mut low, mut high) = (0usize, count);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let (entry_key, _) = unsafe { map_entry(addr, middle) };
-            match map_key_cmp_any(&self.node, entry_key, key) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => {
-                    let (_, entry_value) = unsafe { map_entry_refs(addr, middle) };
-                    return Ok(Some(entry_value));
-                }
-            }
-        }
-        Ok(None)
+        Ok(self
+            .map_key_position(addr, key)
+            .ok()
+            .map(|index| unsafe { map_entry_refs(addr, index).1 }))
     }
 
     pub fn read_struct_field_ref(&self, obj: AnyValueRef, field_offset: u32) -> Result<AnyValueRef, AnyValueRefError> {
@@ -987,7 +917,13 @@ impl Heap {
                 .fields
                 .iter()
                 .find(|field| field.name.as_deref() == Some(field_name))
-                .unwrap_or_else(|| panic!("schema {} has no field named {}", schema.name, field_name))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "schema {} has no field named {}",
+                        schema.identity.display_name(),
+                        field_name
+                    )
+                })
                 .offset
         };
         self.read_struct_field_ref(obj, field_offset)

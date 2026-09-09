@@ -2,7 +2,12 @@ use std::collections::HashSet;
 
 use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, function_id};
 use super::{CallSiteSummary, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
+use crate::modules::identity::ModuleName;
 use crate::telemetry::ConfiguredTelemetry;
+
+fn module_name(text: &str) -> ModuleName {
+    ModuleName::parse_dotted(text).unwrap()
+}
 
 /// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
 /// name (`Mini`) used to be dropped — `DefineModule` is demand-gated, nothing
@@ -55,16 +60,15 @@ fn main(), do: make(fn x -> x + 1 end)
 }
 
 /// fz-hwn.19.2.4.16.1: a `defimpl Susp, for: List` lexically nested in `Mini` is
-/// hoisted to its own module `Susp.List` (Elixir's `__concat__`). Dispatch on a
-/// `List` receiver demands exactly that impl — `DefineModule(Susp.List)` — and
-/// never the lexical host `Mini`. This is the B-model win: the impl is the unit
-/// of demand, not the arbitrarily-named module it happens to sit inside.
+/// owned by its typed protocol/target pair. Dispatch on a `List` receiver demands
+/// exactly that impl through `DefineModule(impl_module)`, never the lexical host
+/// `Mini`: the impl is the unit of demand, not the module it happens to sit inside.
 #[test]
-fn compiler2_protocol_impl_resolves_to_concat_module_not_host() {
+fn compiler2_protocol_impl_resolves_to_owned_module_not_host() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
-        Some("impl_concat_module.fz".to_string()),
+        Some("impl_owned_module.fz".to_string()),
         r#"
 defprotocol Greet do
   @spec hello(t(a)) :: a
@@ -87,11 +91,13 @@ fn main(), do: Greet.hello([1, 2, 3])
         &mut world,
         &tel,
         root,
-        "nested defimpl should resolve via its concat module",
+        "nested defimpl should resolve via its owned module",
     );
 
-    let impl_module = world.reference_module("Greet.List".to_string());
-    let host_module = world.reference_module("Mini".to_string());
+    let protocol = world.reference_module(module_name("Greet"));
+    let target = world.reference_module(module_name("List"));
+    let impl_module = world.reference_protocol_impl_module(protocol, target);
+    let host_module = world.reference_module(module_name("Mini"));
     assert!(
         world.fact_is_settled(&FactKey::ModuleDefined(impl_module)),
         "the hoisted impl module `Greet.List` should be defined to resolve the call"
@@ -154,14 +160,14 @@ fn main(), do: Peek.first(Shadow.List.new(1, 2))
          dispatch: fact-backed classification must not misroute it to the built-in list shape",
     );
 
-    let global_list = world.reference_module("List");
-    let shadow_list = world.reference_module("Shadow.List".to_string());
+    let global_list = world.reference_module(module_name("List"));
+    let shadow_list = world.reference_module(module_name("Shadow.List"));
     assert_ne!(
         global_list, shadow_list,
         "the nested struct and the built-in runtime List module must be distinct identities"
     );
 
-    let protocol = world.reference_module("Peek");
+    let protocol = world.reference_module(module_name("Peek"));
     let dispatch = world
         .protocol_dispatch(protocol)
         .expect("Peek should publish a dispatch fact for its single defimpl");
@@ -303,7 +309,7 @@ fn probe(), do: Boxy.ident(1)
         world.types().is_empty(&drive2_map_overlap),
         "a named struct must stay disjoint from a same-shaped plain map"
     );
-    let boxy = world.reference_module("Boxy");
+    let boxy = world.reference_module(module_name("Boxy"));
     assert_eq!(
         world.types().struct_modules([drive2_return]),
         [boxy].into_iter().collect(),
@@ -313,7 +319,7 @@ fn probe(), do: Boxy.ident(1)
 }
 
 /// fz-hwn.19.2.4.16.3: a `defimpl` co-located with its `defprotocol` at file root
-/// (no enclosing module) registers as `Protocol.Target` when the file is scoped —
+/// (no enclosing module) registers its typed owner pair when the file is scoped —
 /// the same path a runtime protocol file takes when its protocol is referenced.
 /// This is what lets a built-in impl ride in on its protocol's reference (T4),
 /// dissolving the "scan the receiver type's module" convention.
@@ -343,13 +349,15 @@ fn main(), do: Greet.hello([1, 2, 3])
         &mut world,
         &tel,
         root,
-        "co-located defimpl should resolve via its concat module",
+        "co-located defimpl should resolve via its owned module",
     );
 
-    let impl_module = world.reference_module("Greet.List".to_string());
+    let protocol = world.reference_module(module_name("Greet"));
+    let target = world.reference_module(module_name("List"));
+    let impl_module = world.reference_protocol_impl_module(protocol, target);
     assert!(
         world.fact_is_settled(&FactKey::ModuleDefined(impl_module)),
-        "a defimpl co-located with its protocol should register as `Greet.List` and resolve the call"
+        "a defimpl co-located with its protocol should register its typed owner and resolve the call"
     );
 }
 
@@ -441,7 +449,7 @@ fn main(), do: 1
         root,
         "a program with an unused `defimpl` must still close",
     );
-    let mini = world.reference_module("Mini".to_string());
+    let mini = world.reference_module(module_name("Mini"));
     assert!(
         world.module_defined_revision(mini).is_none(),
         "an unused `defimpl`'s provider module must stay cold — never defined"

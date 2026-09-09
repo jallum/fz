@@ -36,6 +36,9 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     )],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
+    reg_closure_denotations_id: FuncId,
+    closure_denotations_data: Option<DataId>,
+    closure_denotations_len: u32,
     setup_id: FuncId,
     reg_id: FuncId,
     run_id: FuncId,
@@ -94,6 +97,21 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
             ],
         );
         let proc_v = b.inst_results(setup_call)[0];
+
+        // Install the same typed source-denotation table used by the compiler
+        // before any user closure can participate in term comparison.
+        {
+            let denotations_addr = match closure_denotations_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let denotations_len = b.ins().iconst(types::I32, closure_denotations_len as i64);
+            let register = jmod.declare_func_in_func(reg_closure_denotations_id, b.func);
+            b.ins().call(register, &[proc_v, denotations_addr, denotations_len]);
+        }
 
         // Register tuple schemas before any code that might allocate one.
         // Static closures use AllocStruct (not MakeTuple), but keeping

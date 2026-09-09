@@ -573,6 +573,15 @@ capture/input contributions while an exact non-self target is absent. Product
 producers read settled full `RuntimeDemand(E)` values through ordinary fact
 dependencies; neither demand fact has a product memo entry or bridge.
 
+A first-class closure retains every lexical capture completely, but that
+retention joins an available exact target's capture demand in the same formula
+step. An absent target input vector is unknown, not permission to publish a
+generic callable escape. Available targets contribute without waiting for
+other targets or settlement; their missing peers remain ordinary Current fact
+dependencies. Retention does not feed Whole demand back into member input
+contracts. Members execute only their demanded projections of the one retained
+environment.
+
 Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
 and every position-owned semantic fact nameable from the key in the same
 evaluation (`ActivationInputs` for an executable input; `ReturnType` for an
@@ -723,12 +732,13 @@ no lanes likewise needs no operand to encode
 `ir_interp/backend.rs`). When the interpreter has no return operand binding,
 it decodes the zero-lane contract to retain any tuple or callable structure.
 
-The interpreter environment supplies a third kind of evidence. A missing
-lane-free callee input permits its exact direct target to run; an explicit
-`BackendBoundValue::Absent`, installed by `BackendStep::Omitted`, does not.
-`bind_executable_inputs` leaves lane-free non-tuple inputs missing, while
-zero-lane tuple inputs retain a concrete `Transport` binding for structural
-captures and projections. Entry selection materializes only
+The interpreter environment supplies a third kind of evidence. Only a callee
+ordinal absent from the sparse published semantic inputs is missing and permits
+its exact direct target to run. `bind_executable_inputs` decodes every published
+layout: `Nothing` becomes explicit `BackendBoundValue::Absent`, and zero-lane
+tuples or callables retain their concrete `Transport` binding. Neither is a
+missing input. `BackendStep::Omitted` likewise installs explicit absence.
+Entry selection materializes only
 `ExecutableDispatch::required_input_ordinals`; unused structural inputs can
 contain absent fields and stay decomposed for the body.
 
@@ -858,22 +868,24 @@ payload that could retain the allocation or substitute a second authority.
 
 Each pruned `MaterializedExecutable` carries the typed `ModuleId`s of structs
 its surviving construction/assertion steps or retained runtime type surfaces
-name. A struct is one map-DNF leaf whose `MapTag::Struct(ModuleId, name)` and
-fields remain conjunctive through every type operation. It is not recovered
-from `Ty` display/canonical text or the old `impl-target::` string convention.
+name. A struct is one map-DNF leaf whose `StructTag` and fields remain
+conjunctive through every type operation. The tag carries the parsed
+`ModuleName` for semantic identity and the `ModuleId` for World dependency
+tracking. Consumers read that typed identity directly.
 The artifact also drops `value_types`
 for values removed by control pruning before it walks those surfaces, so dead
 types cannot overpackage a schema.
 `RootBackendProduct` unions those sets across its exact reachable executable
 closure, reads each `StructDefined(module)` through `ProductReadContext`, and
-only then materializes the runtime name-to-fields map. The map remains the
+only then materializes the typed `ModuleName`-to-fields map. The map remains the
 single interpreter/native/AOT schema input, but its membership and invalidation
 are root-local and fact-tracked. No product snapshots `StructDefMap`, and a
 struct reached only by another root cannot make retained and fresh calculations
-disagree. `ModuleMap::reference_named` interns one `ModuleId` per fully
-qualified name; the map tag compares that id, while runtime registration and
-artifact rendering keep the full stable name (so `A.Item` and `B.Item` cannot
-collide).
+disagree. `ModuleMap::reference_named` interns one `ModuleId` per parsed
+`ModuleName`. The type tag and runtime schema compare that same typed source
+name. Segment boundaries remain significant even when two names have the
+same dotted display spelling; neither display text nor allocation order is
+an identity authority.
 Record-axis top ranges over plain maps and every struct family; `map_top` is the
 distinct positive `Plain {}` leaf. Runtime test envelopes preserve a struct tag
 while erasing its unobservable positive field predicates, so `not Foo` rejects

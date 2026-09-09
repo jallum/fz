@@ -547,19 +547,12 @@ impl ProgramCanon<'_> {
             .function
             .map(|function| function_label(self.world, function))
             .unwrap_or_else(|| "<unknown>".to_string());
-        let tys: Vec<String> = descr.capture_tys.iter().map(|ty| self.ty(*ty)).collect();
         let layouts: Vec<String> = descr
             .capture_layouts
             .iter()
             .map(|layout| self.transport_layout(*layout))
             .collect();
-        let text: Arc<str> = format!(
-            "{function}/{} captures=[{}] layouts=[{}]",
-            descr.arity,
-            tys.join(", "),
-            layouts.join(", ")
-        )
-        .into();
+        let text: Arc<str> = format!("{function}/{} layouts=[{}]", descr.arity, layouts.join(", ")).into();
         self.callables.insert(id, Arc::clone(&text));
         text
     }
@@ -1405,7 +1398,7 @@ impl ProgramCanon<'_> {
     }
 
     fn construction_capture(&mut self, capture: &BackendConstructionCapture) -> String {
-        self.layout(&capture.layout)
+        format!("{} {}", self.ty(capture.ty), self.layout(&capture.layout))
     }
 
     fn member_adapter(&mut self, member: &BackendConstructionMemberAdapter) -> String {

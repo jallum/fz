@@ -567,7 +567,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     module: &Module,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    named_schema_ids: &HashMap<String, u32>,
+    named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
     dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
     receive_matched_sites: &[(FnId, BlockId)],
     tel: &impl RawSpanTelemetry,
@@ -748,6 +748,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
         let next = NativeCallableBoundarySurface {
             boundary_id: boundary.id(),
             denotation: boundary.denotation,
+            source_origin: std::sync::Arc::clone(&boundary.source_origin),
             identity_fn: boundary.identity_fn,
             shape: boundary.shape.clone(),
             target_fn: boundary.wrapper_fn,
@@ -1068,6 +1069,11 @@ pub(crate) fn compile_with_backend_surface<
     drop(emit_runtime_span);
 
     let metadata = CompiledMetadata {
+        closure_denotations: surface
+            .callable_boundaries
+            .values()
+            .map(|boundary| (boundary.denotation, std::sync::Arc::clone(&boundary.source_origin)))
+            .collect(),
         fn_ids,
         user_schemas,
         frame_sizes,

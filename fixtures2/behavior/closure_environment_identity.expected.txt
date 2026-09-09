@@ -1,0 +1,9 @@
+false
+true
+{2, :last, :other}
+true
+true
+false
+true
+true
+{:same, :same, :same}

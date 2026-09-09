@@ -10,9 +10,19 @@
 - The durable source key is `{heap, root}`:
   `QuotedSourceKey { heap_id, root }`.
 - Structural comparison is separate:
-  `QuotedSourceRoot::semantically_eq(&other, Horizon)` — a two-sided lockstep
+  `QuotedSourceRoot::semantically_eq(&other, Horizon)` — a two-sided structural
   walk over both graphs that fast-fails at the first difference. No canonical
   rendering or digest is ever materialized.
+- Maps retain the heap's normalized strict structural key order. Quoted
+  construction calls the one runtime publisher; reads use stored entries
+  directly, with no compiler sort. Independently allocated equal composite
+  keys occupy one entry, so structural addresses do not depend on allocation.
+- Quoted equality erases diagnostic metadata, including metadata nested inside
+  composite keys. Runtime order includes that data, so it cannot order this
+  different relation; semantic map equality retains content matching without
+  adding another sort or comparator.
+- Tuple arity and named struct identity come from `SchemaIdentity`. The
+  `TupleN` spelling is display only and is never decoded into an identity.
 
 ## Why The Split Matters
 
@@ -141,6 +151,8 @@
 
 ## Private Metadata Keys
 
+- `__fz_module__`: exact portable module denotation on a reflected alias;
+  semantic content, compared by `semantically_eq`.
 - `__fz_lexical__`: stable lexical context; semantic content, compared by
   `semantically_eq`.
 - `__fz_span__`: diagnostic-only span payload; not semantic content, skipped
@@ -163,6 +175,21 @@
   snapshot.
 - `World::project_module_value` and `World::project_env_value` project
   `__MODULE__` / `__ENV__` as Fz-shaped values from the same snapshot.
+- A projected module alias carries its exact portable `ModuleDenotation` in
+  existing quoted metadata, encoded as `{:named, segments}` or
+  `{:protocol_impl, protocol_segments, target_segments}`. Its visible alias
+  remains macro-readable display data. Semantic quoted equality retains the
+  metadata; copying/unquoting an alias or editing its visible path cannot retarget
+  it. Expansion and decoding retain the typed module reference through calls,
+  explicit function references, guards, and struct expressions/patterns.
+  Struct `ModuleTarget` distinguishes unresolved source aliases from exact
+  reflected identities, so a namespace alias cannot retarget the latter.
+  `World` interns that denotation in
+  the ordinary `ModuleMap`; no World-local number crosses this carrier.
+- `__CALLER__.module` may be unquoted as a call target. Thus an implementation
+  alias displaying `A.B.C` still addresses its exact `(A, B.C)` or `(A.B, C)`
+  owner even when a separate named module `A.B.C` exists. Source publication
+  itself continues to use the live `ScopeSnapshot` for definition ownership.
 - The namespace id carried in quoted metadata is transport only; it helps jobs
   and tests line contexts back up with the live namespace chain, but it is not
   semantic identity.

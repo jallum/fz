@@ -27,6 +27,7 @@
 
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
+use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
@@ -152,55 +153,84 @@ fn parse_atom_blob(blob: *const u8, len: u32) -> Vec<String> {
     out
 }
 
-fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String>)> {
-    if blob.is_null() || len == 0 {
-        return Vec::new();
-    }
-    let bytes = unsafe { from_raw_parts(blob, len as usize) };
-    let mut pos = 0usize;
-    fn read_u32(bytes: &[u8], pos: &mut usize) -> u32 {
-        let end = *pos + 4;
-        if end > bytes.len() {
-            eprintln!("parse_named_schema_blob: truncated u32");
-            abort();
-        }
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(&bytes[*pos..end]);
-        *pos = end;
-        u32::from_ne_bytes(raw)
-    }
-    fn read_string(bytes: &[u8], pos: &mut usize) -> String {
-        let len = read_u32(bytes, pos) as usize;
-        let end = *pos + len;
-        if end > bytes.len() {
-            eprintln!("parse_named_schema_blob: truncated string");
-            abort();
-        }
-        let s = from_utf8(&bytes[*pos..end])
-            .unwrap_or_else(|_| {
-                eprintln!("parse_named_schema_blob: invalid utf-8");
-                abort();
-            })
-            .to_string();
-        *pos = end;
-        s
+struct BlobReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    context: &'static str,
+}
+
+impl<'a> BlobReader<'a> {
+    fn new(bytes: &'a [u8], context: &'static str) -> Self {
+        Self { bytes, pos: 0, context }
     }
 
-    let schema_count = read_u32(bytes, &mut pos);
+    fn read_u32(&mut self) -> u32 {
+        let end = self.pos + 4;
+        let Some(bytes) = self.bytes.get(self.pos..end) else {
+            eprintln!("{}: truncated u32", self.context);
+            abort();
+        };
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(bytes);
+        self.pos = end;
+        u32::from_ne_bytes(raw)
+    }
+
+    fn read_string(&mut self) -> String {
+        let len = self.read_u32() as usize;
+        let end = self.pos + len;
+        let Some(bytes) = self.bytes.get(self.pos..end) else {
+            eprintln!("{}: truncated string", self.context);
+            abort();
+        };
+        let value = from_utf8(bytes).unwrap_or_else(|_| {
+            eprintln!("{}: invalid utf-8", self.context);
+            abort();
+        });
+        self.pos = end;
+        value.to_string()
+    }
+
+    fn finish(self) {
+        if self.pos != self.bytes.len() {
+            eprintln!("{}: trailing bytes", self.context);
+            abort();
+        }
+    }
+}
+
+/// # Safety
+/// `blob` must point at `len` readable bytes when `len > 0`.
+unsafe fn blob_bytes<'a>(blob: *const u8, len: u32, context: &'static str) -> Option<&'a [u8]> {
+    if len == 0 {
+        return None;
+    }
+    if blob.is_null() {
+        eprintln!("{context}: null blob with len > 0");
+        abort();
+    }
+    Some(unsafe { from_raw_parts(blob, len as usize) })
+}
+
+fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(crate::module_name::ModuleName, Vec<String>)> {
+    let Some(bytes) = (unsafe { blob_bytes(blob, len, "parse_named_schema_blob") }) else {
+        return Vec::new();
+    };
+    let mut reader = BlobReader::new(bytes, "parse_named_schema_blob");
+    let schema_count = reader.read_u32();
     let mut out = Vec::with_capacity(schema_count as usize);
     for _ in 0..schema_count {
-        let name = read_string(bytes, &mut pos);
-        let field_count = read_u32(bytes, &mut pos);
+        let segment_count = reader.read_u32();
+        let segments = (0..segment_count).map(|_| reader.read_string()).collect();
+        let name = crate::module_name::ModuleName::from_segments(segments);
+        let field_count = reader.read_u32();
         let mut fields = Vec::with_capacity(field_count as usize);
         for _ in 0..field_count {
-            fields.push(read_string(bytes, &mut pos));
+            fields.push(reader.read_string());
         }
         out.push((name, fields));
     }
-    if pos != bytes.len() {
-        eprintln!("parse_named_schema_blob: trailing bytes");
-        abort();
-    }
+    reader.finish();
     out
 }
 
@@ -370,6 +400,31 @@ pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const
     let mut reg = registry.borrow_mut();
     for (name, fields) in parse_named_schema_blob(blob, len) {
         reg.register(Schema::named_struct(name, fields));
+    }
+}
+
+/// Register the typed source denotations used to order closures in this AOT
+/// program. The binary carrier preserves the denotation tree directly; no
+/// rendered function label participates in identity or ordering.
+///
+/// # Safety
+/// `proc` must be a process produced by `fz_aot_setup`. `blob` must point at
+/// `len` bytes emitted by AOT codegen when `len > 0`.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_closure_denotations(proc: *mut Process, blob: *const u8, len: u32) {
+    assert!(!proc.is_null(), "fz_aot_register_closure_denotations: null process");
+    if len == 0 {
+        return;
+    }
+    let node = unsafe { &*proc }.node.clone();
+    let bytes = unsafe { blob_bytes(blob, len, "fz_aot_register_closure_denotations") }.unwrap_or_default();
+    let denotations = decode_closure_denotations(bytes).unwrap_or_else(|error| {
+        eprintln!("fz_aot_register_closure_denotations: {error}");
+        abort();
+    });
+    for (id, denotation) in denotations {
+        node.register_closure_denotation(id, denotation);
     }
 }
 

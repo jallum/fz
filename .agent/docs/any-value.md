@@ -249,59 +249,65 @@ Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
 
-The closure header word's low half is `flags` — captured count plus halt kind,
-the environment facts the collector sizes and traces by. Its high half is
-`arity`: the closure's user-visible parameter count, supplied by the callable
-boundary that decides the call surface. The two halves answer different
-questions and must not be confused. Arity is fixed by the source, so it is what
-a rendered fun reports (`#fn<denotation/arity>`, matching Elixir's
-`#Function<index.uniq/arity>`); the environment half moves whenever demand
-elides a capture or inlining folds one away, which is why rendering it produced
-goldens that changed without the program changing.
+The closure header separates user arity from captured count and scheduler halt
+kind. A user closure has exactly one slot per lexical capture, in the immutable
+source binding order fixed before specialization. Each slot retains the whole
+runtime value: raw scalar payload plus kind byte, or one composite/callable
+reference. Demand, inlining, and wrapper ABI choices do not erase captured
+information. Invocation projects those values into the selected execution ABI;
+capture reads ask the slot's kind byte and carry no construction-set lookup.
+Construction wrappers retain the source type annotation beside each capture
+layout. Physical callable descriptors share function, arity, and layouts only;
+specialization never replaces the wrapper's capture annotations.
 
-`ClosureDenotationId` is the owning World's `FunctionId` projected into the
-runtime. Code pointers, construction wrappers, captures, and schema allocation
-do not mint identities. Allocation, static publication, deep copy, and GC retain
-that same word. Closures have no `ClosureEnv` schema; their own count and kind
-bytes describe storage. Scheduler-only closures carry the typed `INTERNAL`
-sentinel, which user rendering rejects.
+`ClosureDenotationId` projects the World's `FunctionId` into the header.
+The Node retains the same shared typed `FunctionDenotation` source origin for
+ordering. Code pointers and wrappers own execution; source denotation plus the
+one immutable environment owns runtime identity. GC and transport preserve
+both. Scheduler-only closures use `INTERNAL`, which user rendering and
+comparison reject.
 
-### A map is a flat SORTED array
+### A map is a flat sorted array
 
-Not a HAMT. Elixir's structural-sharing intuitions do not transfer: `put` and
-`delete` each copy the whole array, so a loop over n keys is O(n^2). `Map`'s
-module docs say this and put the BULK functions first, which is the opposite of
-Elixir's emphasis and deliberate.
+Every map has one entry per strict structural key, stored in comparator order.
+`TermComparator` borrows Node and SchemaRegistry and is the authority for
+construction, lookup, updates, equality, order, and iteration. Equal tuple,
+list, nested-map, and binary keys collide even when separately allocated.
+Integer and float kinds remain distinct recursively; numeric ordering compares
+exact mathematical values before using kind to break strict ties. Signed float
+zeros are distinct strict keys but equal under widening comparison. Equal binary
+bits share identity across inline and ProcBin storage. Named schemas retain
+typed module segments, and tuples use typed arity, so display collisions never
+alias identities. AOT transports the same segments without a rendered-name bridge.
+Resource keys retain the generative ID in their existing off-heap owner.
+After validity checks, retained value identity proves equality without visiting
+children; a shared immutable DAG is not expanded into a tree of comparisons.
+Distinct allocations still compare by structural contents.
 
-Sortedness is an INVARIANT, not a convention, because lookup binary-searches it.
-Two things have to hold and both were once false:
+Public slot/ref builders normalize once: stable sort, then last-value-wins
+deduplication. An unpublished destination header records capacity and filled
+count, so each input entry writes its next slot directly. Freeze normalizes
+and compacts that same allocation, then clears construction state. A published
+map cannot be reopened for mutation. `put`, `delete`, and lookup share one
+binary search; put/delete preserve order while copying the new sequence, and
+an absent deletion returns the original map with no allocation. GC and
+cross-heap transport preserve structural order without a sort.
 
-- the key ORDER has to agree with the key EQUALITY. Bitstrings were ordered by
-  ADDRESS while `same_value_ref` compared them structurally, so two equal binary
-  keys never became adjacent, a dedup driven by the order never saw them
-  collide, and `%{"ab" => 1, ("a" <> "b") => 2}` kept both entries -- the JIT
-  door answering `1` where Elixir and the interpreter answer `2` (fz-5xp.48).
-  Binary keys now order by CONTENT, and `BITSTRING` and `PROCBIN` of equal
-  content order together. Lists, tuples and maps as keys are still ordered AND
-  compared by address, so they agree with each other but not with structural
-  equality — that is fz-5xp.27;
+A single update copies the flat array, so repeated updates remain quadratic.
+Use bulk operations when touching several keys. Iteration follows strict fz
+term order, including atom names and binary content; Elixir's atom-key
+iteration may differ because it uses VM identity.
 
-- every map has to actually BE sorted. Both raw writers -- `alloc_map_slots` and
-  `alloc_map_refs_bits` -- now sort and dedup, holding the invariant in two
-  places rather than asking it of every caller. They were fixed a commit apart
-  for the same reason each time: a caller that did not sort. `fz_process_heap_alloc_stats`
-  handed insertion order to the first (fz-5xp.49); `fz_map_from_kv` handed
-  unsorted pairs to the second (fz-5xp.12). A linear scan hides this completely,
-  because a scan consults the equality and never the order.
-
-Dedup keeps the LAST value for a duplicate key, matching Elixir.
-
-ITERATION ORDER is by key, and matches Elixir exactly for BINARY keys. It cannot
-for ATOM keys: Elixir orders atoms by an internal identity fz does not share, so
-`Map.keys(%{a: 1, b: 2, c: 3})` is `[:c, :a, :b]` there and `[:a, :b, :c]` here
-(fz-5xp.50). A fixture that prints an atom-keyed map cannot have an Elixir
-oracle; one that prints a binary-keyed map can. JSON object keys are strings,
-which is why the goal program can be oracled at all.
+Published language values are finite immutable DAGs. Low-level struct, closure,
+and map-destination writes are unsafe construction operations whose caller must own the
+unpublished object exclusively and supply published values with no path back.
+Proper lists admit only a list tail or `[]`; collector tests may deliberately
+construct cycles, but never publish them to term comparison. The comparator
+allocates no visited set, temporary Process, schema copies, or scalar boxes.
+Checked float construction, ref decoding, and scalar-box ingress reject
+nonfinite payloads before publication. Unfinished maps, internal absence
+(`NULL`), forged nonfinite float payloads, and unregistered atoms also have no
+language comparison semantics and are rejected at comparator entry.
 
 The list link's **alias bit** is a conservative cell-local reuse guard. A cons
 is the single owner of its tail link until it is *published*; publication turns
@@ -377,8 +383,8 @@ because the ref is self-describing — a scalar ref has no children, a heap ref 
 scanned by object layout, and sentinels have no children. The process mailbox is
 `VecDeque<AnyValueRef>` (`runtime/src/process.rs`); a parked receive
 (`runtime/src/park.rs`) keeps its pinned snapshot, per-clause matcher outputs,
-and bound values as `Vec<AnyValueRef>`. Map construction has no process-root
-builder — a map is a fold of immutable put operations.
+and bound values as `Vec<AnyValueRef>`. Map construction carries its unpublished
+heap destination through the same value representation.
 
 ## Policy: one value model, copy on cross-process send
 

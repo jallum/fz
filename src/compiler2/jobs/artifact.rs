@@ -1955,12 +1955,10 @@ fn call_reaches_no_target(
     // definition panics -- which is how the first attempt at this diagnostic
     // traded one crash for another.
     let callee = world.function_ref(callee);
-    let module = world.module_name(callee.module).unwrap_or("").to_string();
-    let qualified = if module.is_empty() {
-        callee.display_name()
-    } else {
-        format!("{module}.{}", callee.display_name())
-    };
+    let qualified = world.module_denotation(callee.module).map_or_else(
+        || callee.display_name(),
+        |module| format!("{module}.{}", callee.display_name()),
+    );
     let diagnostic = Diagnostic::error(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         format!(

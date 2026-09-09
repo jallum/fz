@@ -8,12 +8,15 @@
 //! register, the interpreter threads it as a parameter — so there is no
 //! ambient current-process and two schedulers can be live at once (fz-vdt).
 
+use crate::any_value::ClosureDenotationId;
+use crate::function_denotation::FunctionDenotation;
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::any_value::{AnyValueRef, TAG_MASK, closure_header_word, closure_size_for_count};
 use crate::bitstr::BitWriter;
@@ -286,6 +289,7 @@ pub struct Node {
     /// (the JIT `fz_alloc_frame_dyn` reads it via `frame_size`); empty under
     /// the interpreter and AOT, which do not use compiled frame tables.
     frame_sizes: Vec<u32>,
+    closure_denotations: RefCell<HashMap<ClosureDenotationId, Arc<FunctionDenotation>>>,
 }
 
 impl Node {
@@ -293,12 +297,55 @@ impl Node {
         Self {
             atoms: RefCell::new(AtomTable::new(atoms)),
             frame_sizes,
+            closure_denotations: RefCell::new(HashMap::new()),
         }
     }
 
     /// No node-global tables: the shape a bare `Process::new` carries.
     pub fn empty() -> Self {
         Self::new(Vec::new(), Vec::new())
+    }
+
+    pub fn register_closure_denotation(&self, id: ClosureDenotationId, origin: Arc<FunctionDenotation>) {
+        id.user_index();
+        let mut origins = self.closure_denotations.borrow_mut();
+        match origins.entry(id) {
+            std::collections::hash_map::Entry::Occupied(existing) => {
+                if !Arc::ptr_eq(existing.get(), &origin) {
+                    assert_eq!(existing.get(), &origin, "closure source denotations are immutable");
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(origin);
+            }
+        }
+    }
+
+    pub fn compare_closure_denotations(&self, left: ClosureDenotationId, right: ClosureDenotationId) -> Ordering {
+        left.user_index();
+        right.user_index();
+        let origins = self.closure_denotations.borrow();
+        let left = origins
+            .get(&left)
+            .expect("published closure must have a source denotation");
+        let right = origins
+            .get(&right)
+            .expect("published closure must have a source denotation");
+        if Arc::ptr_eq(left, right) {
+            Ordering::Equal
+        } else {
+            left.semantic_cmp(right)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn closure_denotation(&self, id: ClosureDenotationId) -> Arc<FunctionDenotation> {
+        Arc::clone(
+            self.closure_denotations
+                .borrow()
+                .get(&id)
+                .expect("registered denotation"),
+        )
     }
 
     /// Intern an atom into the node-global table, returning its id.
@@ -313,20 +360,12 @@ impl Node {
     }
 
     /// Compare atom ids by their node-global names without cloning either
-    /// name. Production values always name registered atoms. Keeping unknown
-    /// ids after named atoms, ordered by id, gives bare-Heap tests a total
-    /// fallback without making program atom order depend on intern order.
+    /// name. Published values always name registered atoms.
     pub fn cmp_atom_names(&self, left_id: u32, right_id: u32) -> Ordering {
-        if left_id == right_id {
-            return Ordering::Equal;
-        }
         let atoms = self.atoms.borrow();
-        match (atoms.name(left_id), atoms.name(right_id)) {
-            (Some(left), Some(right)) => left.as_bytes().cmp(right.as_bytes()),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => left_id.cmp(&right_id),
-        }
+        let left = atoms.name(left_id).expect("published atom must be registered");
+        let right = atoms.name(right_id).expect("published atom must be registered");
+        left.cmp(right)
     }
 
     pub fn atom_names(&self) -> Vec<String> {

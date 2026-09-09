@@ -76,7 +76,7 @@ use super::{Ty, TyCtx, TypeVarId};
 /// by the `FnId` the literal carries. `World` registers it when minting ids;
 /// a `Types` built standalone (unit tests) leaves it empty and falls back to id
 /// order, which is deterministic within one instance but not across versions.
-pub(super) type CallableOrigins = HashMap<FnId, Arc<crate::compiler2::identity::FunctionRef>>;
+pub(super) type CallableOrigins = HashMap<FnId, Arc<fz_runtime::function_denotation::FunctionDenotation>>;
 
 /// A signature that knows its own place in the canonical order. One impl per
 /// DNF axis, so the clause and axis walks below are written once.

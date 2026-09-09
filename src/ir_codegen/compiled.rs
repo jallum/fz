@@ -207,6 +207,10 @@ impl CompiledModule {
 /// Everything compiler2 native codegen collects during the shared pipeline,
 /// handed to the backend's `emit_metadata_carriers` and `finalize`.
 pub struct CompiledMetadata {
+    pub closure_denotations: Vec<(
+        fz_runtime::any_value::ClosureDenotationId,
+        std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
+    )>,
     pub fn_ids: HashMap<u32, FuncId>,
     pub user_schemas: Rc<RefCell<SchemaRegistry>>,
     pub frame_sizes: Vec<u32>,
@@ -214,7 +218,7 @@ pub struct CompiledMetadata {
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     pub tuple_arities: Vec<u32>,
-    pub named_schemas: Vec<(String, Vec<String>)>,
+    pub named_schemas: Vec<(fz_runtime::module_name::ModuleName, Vec<String>)>,
     pub diagnostics: Diagnostics,
     pub main_fn_id: Option<FnId>,
     pub static_closure_targets: Vec<(u32, u32, FuncId, u32, fz_runtime::any_value::ClosureDenotationId)>,

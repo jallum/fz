@@ -216,7 +216,9 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
 fn compiler2_world_define_module_panics_for_unscoped_module() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    let module = world.reference_module("Unscoped");
+    let module = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+        "Unscoped".into(),
+    ]));
 
     let _ = world.define_module(module, Namespace::default(), ModuleInterface::default());
 }
@@ -226,7 +228,9 @@ fn compiler2_world_define_module_panics_for_unscoped_module() {
 fn compiler2_world_module_interface_panics_for_unscoped_module() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    let module = world.reference_module("Unscoped");
+    let module = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+        "Unscoped".into(),
+    ]));
 
     let _ = world.module_interface(module);
 }
@@ -251,11 +255,40 @@ fn compiler2_world_submitted_module_interface_is_available_without_module_defini
 }
 
 #[test]
+fn builtin_protocol_targets_require_the_exact_top_level_source_name() {
+    use crate::modules::identity::ModuleName;
+    let mut world = World::new();
+    let builtin_name = ModuleName::from_segments(vec!["List".into()]);
+    let qualified_name = ModuleName::from_segments(vec!["X".into(), "List".into()]);
+    let builtin = world.reference_module(builtin_name);
+    let qualified = world.reference_module(qualified_name.clone());
+    let mut reads = Vec::new();
+    let builtin_ty = world.module_impl_target_ty(builtin, &mut reads);
+    let qualified_ty = world.module_impl_target_ty(qualified, &mut reads);
+    assert!(
+        world.types().is_disjoint(&builtin_ty, &qualified_ty),
+        "a matching last segment does not make X.List the builtin List"
+    );
+    let predicate = world.types().runtime_type_predicate(&qualified_ty);
+    assert_eq!(
+        predicate.named_structs,
+        crate::finite_set::FiniteSet::lit(qualified_name)
+    );
+    assert!(predicate.lists.shapes().is_none());
+    assert!(
+        reads.contains(&super::FactKey::StructDefined(qualified)),
+        "an eventual struct definition must still trigger reclassification"
+    );
+}
+
+#[test]
 #[should_panic(expected = "modules should be indexed before scoping")]
 fn compiler2_world_scope_module_panics_for_unindexed_module() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    let module = world.reference_module("Unindexed");
+    let module = world.reference_module(crate::modules::identity::ModuleName::from_segments(vec![
+        "Unindexed".into(),
+    ]));
 
     world.scope_module(module, Namespace::default());
 }

@@ -1344,3 +1344,13 @@ fn notation_is_chosen_by_length_not_magnitude() {
     assert_eq!(float_to_string(0.0001), "0.0001");
     assert_eq!(float_to_string(1.0e-5), "1.0e-5");
 }
+#[test]
+fn float_ingress_rejects_nonfinite_payloads_before_publication() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(std::panic::catch_unwind(|| AnyValue::float(value)).is_err());
+        assert!(std::panic::catch_unwind(|| AnyValue::decode_parts(value.to_bits(), ValueKind::FLOAT.tag())).is_err());
+        let bits = value.to_bits();
+        let reference = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &bits).unwrap();
+        assert!(std::panic::catch_unwind(|| AnyValue::from_ref(reference)).is_err());
+    }
+}

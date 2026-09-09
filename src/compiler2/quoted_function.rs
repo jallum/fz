@@ -1,6 +1,6 @@
 use crate::ast::{
-    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
+    AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
+    LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
 };
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
@@ -280,6 +280,9 @@ fn decode_expr(
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
         let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+        if let Some(module) = node.meta.module_denotation()? {
+            return Ok(Spanned::new(Expr::Module(module), span));
+        }
         if !is_list_like(&node.tail) {
             return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
         }
@@ -765,7 +768,7 @@ fn decode_struct_expr(
     args: &[QuotedSourceCursor],
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
-    let module = decode_module_name(&args[0])?;
+    let module = decode_module_target(&args[0])?;
     let map = expect_ast_node(&args[1], "struct map payload")?;
     if atom_name(&map.head)? != "%{}" {
         return Err(QuotedSourceError::new("quoted struct payload must be a `%{}` node"));
@@ -821,7 +824,9 @@ fn decode_fn_ref_expr(cursor: &QuotedSourceCursor, span: Span) -> Result<Spanned
             "quoted function reference expects target and arity",
         ));
     }
-    let name = decode_fn_ref_name(&parts[0], Some(span))?;
+    let target = decode_expr(&mut LambdaOccurrences::default(), &parts[0], Some(span))?;
+    let name = CallableName::from_expr(&target.node)
+        .ok_or_else(|| QuotedSourceError::new("unsupported quoted function-ref target"))?;
     let arity = parts[1].int_value()? as usize;
     Ok(Spanned::new(Expr::FnRef { name, arity }, span))
 }
@@ -959,7 +964,7 @@ fn decode_map_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned
 }
 
 fn decode_struct_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
-    let module = decode_module_name(&args[0])?;
+    let module = decode_module_target(&args[0])?;
     let map = expect_ast_node(&args[1], "struct pattern payload")?;
     if atom_name(&map.head)? != "%{}" {
         return Err(QuotedSourceError::new("quoted struct pattern payload must be `%{}`"));
@@ -1177,34 +1182,20 @@ fn decode_keyword_entries(cursor: &QuotedSourceCursor) -> Result<Vec<(String, Qu
     Ok(out)
 }
 
-fn decode_module_name(cursor: &QuotedSourceCursor) -> Result<ModuleName, QuotedSourceError> {
+fn decode_module_target(cursor: &QuotedSourceCursor) -> Result<crate::ast::ModuleTarget, QuotedSourceError> {
     let node = expect_ast_node(cursor, "module alias")?;
+    if let Some(module) = node.meta.module_denotation()? {
+        if module.named_path().is_none() {
+            return Err(QuotedSourceError::new("a protocol implementation cannot name a struct"));
+        }
+        return Ok(crate::ast::ModuleTarget::Exact(module));
+    }
     if atom_name(&node.head)? != "__aliases__" {
         return Err(QuotedSourceError::new("quoted module path expects an __aliases__ node"));
     }
-    Ok(ModuleName::from_segments(node.tail.list_atom_names()?))
-}
-
-fn decode_fn_ref_name(cursor: &QuotedSourceCursor, fallback_span: Option<Span>) -> Result<String, QuotedSourceError> {
-    if let Some(node) = cursor.ast_node()? {
-        let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
-        if !is_list_like(&node.tail) {
-            return atom_name(&node.head);
-        }
-        let args = node.tail.list_items()?;
-        return match atom_name(&node.head)?.as_str() {
-            "__aliases__" => alias_name_from_args(&args),
-            "." if args.len() == 2 => Ok(format!(
-                "{}.{}",
-                decode_fn_ref_name(&args[0], Some(span))?,
-                args[1].atom_name()?
-            )),
-            other => Err(QuotedSourceError::new(format!(
-                "unsupported quoted function-ref target head `{other}`"
-            ))),
-        };
-    }
-    Err(QuotedSourceError::new("unsupported quoted function-ref target"))
+    Ok(crate::ast::ModuleTarget::Unresolved(ModuleName::from_segments(
+        node.tail.list_atom_names()?,
+    )))
 }
 
 fn pattern_var_name(

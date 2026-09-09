@@ -5003,7 +5003,6 @@ mod tests {
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: Some(FunctionId::for_test(355)),
             arity: 0,
-            capture_tys: Box::default(),
             capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(8);
@@ -5999,7 +5998,6 @@ mod tests {
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: None,
             arity: 0,
-            capture_tys: Box::default(),
             capture_layouts: Box::default(),
         });
         for answer in pair_forward.0 {
@@ -6044,7 +6042,6 @@ mod tests {
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: None,
             arity: 0,
-            capture_tys: Box::default(),
             capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(10);

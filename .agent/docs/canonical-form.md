@@ -98,7 +98,9 @@ Built on `canon(Ty)`, by four rules:
 
 - **interned ids expand** to what they describe. A `ShapeId` becomes its
   descriptor tree, bottoming out in lanes (a type plus a class) and callables (a
-  function label plus capture types); a `FunctionId` renders its typed
+  function label, source arity, and ordered capture layouts). Construction
+  captures render their source type annotations beside those layouts.
+  A `FunctionId` renders its typed
   `FunctionOrigin`: `Module.name/arity` for named functions, or the shared owner
   label followed by `#lambda@<source-occurrence>/arity` for generated lambdas.
   Both canonical artifacts and fixture call-edge reports use this same renderer;

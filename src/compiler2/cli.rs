@@ -448,11 +448,12 @@ fn collect_tests(
             // `quoted_surface::build_form`) but handle it defensively in case
             // a future canonicalized read ever lands here.
             ScopeForm::Module(module) => {
-                module_path.push(module.name.clone());
+                let parent_len = module_path.len();
+                module_path.extend_from_slice(module.name.segments());
                 let nested_result = read_module_body_surface(module)
                     .map_err(|error| format!("{error}"))
                     .and_then(|nested| collect_tests(&nested, module_path, out));
-                module_path.pop();
+                module_path.truncate(parent_len);
                 nested_result?;
             }
             ScopeForm::MacroCall(macro_call) => {

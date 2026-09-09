@@ -1421,7 +1421,11 @@ mod tests {
         let range_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "range_impl", 1);
         let any = world.types_mut().any();
         let list = world.types_mut().list(any);
-        let range = world.types_mut().opaque_of("impl-target::Range");
+        let range = world
+            .types_mut()
+            .nominal_protocol_target(crate::modules::identity::ModuleName::from_segments(vec![
+                "Range".into(),
+            ]));
         let summary = CallSiteSummary {
             targets: vec![
                 CallTargetSummary {

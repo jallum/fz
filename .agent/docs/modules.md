@@ -15,12 +15,15 @@ later fills the state behind that id.
 
 - `ModuleId` — `reference_named(name)` for a top-level/runtime module,
   `reference_child_module(parent, local)` for a nested one. `ModuleId::GLOBAL`
-  (`0`) is the top-level scope.
+  (`0`) is the top-level scope. `ModuleMap` keys and retains `ModuleDenotation`:
+  a named module's parsed `ModuleName`, or an implementation's exact
+  protocol/target pair. Source boundaries survive reservation, definition,
+  lookup, function denotations, and reflected quoted references.
 - `FunctionId` — `reference_function(module, name, arity)`; generated lambdas get
   ids through `reference_generated`.
-- `FunctionRef { module, name, arity }` is the reverse identity — compiler2's
-  module/function/arity key. Names are display spellings; the id is the identity,
-  so resolution and facts key on the id.
+- `FunctionRef { module, denotation }` pairs a World-local module coordinate
+  with the shared immutable `FunctionDenotation`. Its typed source origin owns
+  semantic order; local ids key resolution and facts.
 
 A function or module can be *referenced* without being *defined*: a placeholder
 id exists, callers can name it, and the surface fills in when its source is
@@ -38,8 +41,10 @@ Scoped { source, base, interface? }    a base namespace head has been chosen
 Defined { source, base, interface }    the module body is published
 ```
 
-`ModuleSource { code, parent, local_name, attrs, kind }` carries the source
-facts, where `kind` is `Body { items }` or `Protocol { callbacks }` (see
+`ModuleSource { code, parent, source, kind }` carries the source facts and
+parent ownership edge. `ModuleMap` supplies the full module denotation directly;
+consumers do not reconstruct it from parent and local display spellings.
+`kind` is `Body`, `Protocol`, or `ProtocolImpl` (see
 [`protocols`](protocols.md)). `ModuleInterface` is the module-owned callable
 surface: exported callables are represented by `FunctionId`-backed entries plus
 callable kind (`PublicFunction` or `Macro`) and variadic metadata.

@@ -97,7 +97,7 @@ pub fn deep_copy_any_value(
                 };
                 copied_entries.push((new_key, new_value));
             }
-            let new_bits = dst_heap.alloc_map_slots(&copied_entries);
+            let new_bits = dst_heap.alloc_ordered_map_entries(copied_entries.into_iter());
             let new_p = map_addr_from_tagged(new_bits).expect("new map ptr");
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::MAP)
@@ -240,7 +240,7 @@ fn deep_copy_strict_struct(
         } else {
             child
         };
-        dst_heap.write_field_slot(dp, f.offset, copied);
+        unsafe { dst_heap.write_field_slot(dp, f.offset, copied) };
     }
     for f in &schema.fields {
         match f.kind {

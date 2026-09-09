@@ -22,6 +22,168 @@ fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
 }
 
 #[test]
+fn schema_identity_preserves_module_segments_across_display_collisions() {
+    use crate::module_name::ModuleName;
+    let one = ModuleName::from_segments(vec!["A.B".into()]);
+    let two = ModuleName::from_segments(vec!["A".into(), "B".into()]);
+    assert_eq!(one.to_string(), two.to_string());
+    let mut registry = SchemaRegistry::new();
+    let first = registry.register(Schema::named_struct(one, Vec::new()));
+    let second = registry.register(Schema::named_struct(two, Vec::new()));
+    assert_ne!(first, second, "rendering cannot merge distinct source identities");
+}
+
+#[test]
+#[should_panic(expected = "map is already published")]
+fn published_map_cannot_reenter_mutable_construction() {
+    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let map = heap.alloc_map_slots(&[(AnyValue::int(1), AnyValue::int(2))]);
+    heap.map_destination_freeze(map);
+}
+
+#[test]
+fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
+    let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+    let a = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
+    let b = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
+    heap.reset_alloc_stats();
+    let dest = heap.alloc_map_destination(None, 3);
+    unsafe {
+        heap.map_destination_put(dest, heap_root(a), AnyValue::int(1));
+        heap.map_destination_put(dest, AnyValue::int(0), AnyValue::int(2));
+        heap.map_destination_put(dest, heap_root(b), AnyValue::int(3));
+    }
+    assert_eq!(
+        heap.map_destination_freeze(dest),
+        dest,
+        "freezing compacts the unpublished allocation in place"
+    );
+    let allocation = heap.alloc_stats_snapshot();
+    assert_eq!(allocation.total.allocs, 1);
+    assert_eq!(allocation.total.bytes, 64);
+    assert_eq!(
+        allocation.map, allocation.total,
+        "the one destination allocation belongs to Map"
+    );
+    assert_eq!(allocation.other.allocs, 0);
+    let mut roots = [heap_root(dest)];
+    heap.gc_with_extra_root_slots(&mut null_mut(), &mut roots);
+    let fresh = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
+    let map = AnyValueRef::from_heap_object(ValueKind::MAP, roots[0].raw() as *const u8).unwrap();
+    assert_eq!(unsafe { map_count(map.map_addr().unwrap()) }, 2);
+    assert_eq!(
+        heap.read_map_value_for_any_key(map, heap_root(fresh))
+            .unwrap()
+            .unwrap()
+            .load_int(),
+        Ok(3)
+    );
+    let before = heap.alloc_stats_snapshot();
+    let missing = 99u64;
+    let missing = AnyValueRef::from_scalar_slot(ValueKind::INT, &missing).unwrap();
+    assert_eq!(heap.map_delete_ref(map, missing).unwrap(), map);
+    assert_eq!(
+        heap.alloc_stats_snapshot(),
+        before,
+        "an absent deletion neither allocates nor copies"
+    );
+}
+
+#[test]
+fn tuple_display_name_cannot_alias_a_named_struct_identity() {
+    let mut registry = SchemaRegistry::new();
+    let named = registry.register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Tuple2".into()]),
+        ["a".into(), "b".into()],
+    ));
+    let tuple = registry.register(Schema::tuple_of_arity(2));
+    assert_ne!(named, tuple, "a display label is not a schema denotation");
+}
+
+#[test]
+fn named_struct_key_order_is_independent_of_schema_registration_order() {
+    let registry = empty_registry();
+    let z = registry.borrow_mut().register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Zed".into()]),
+        ["x".into()],
+    ));
+    let a = registry.borrow_mut().register(Schema::named_struct(
+        crate::module_name::ModuleName::from_segments(vec!["Alpha".into()]),
+        ["x".into()],
+    ));
+    let mut heap = Heap::new(SIZE_TABLE[0], registry);
+    let zp = heap.alloc_struct(z);
+    let ap = heap.alloc_struct(a);
+    unsafe { heap.write_field_slot(zp, 0, AnyValue::int(1)) };
+    unsafe { heap.write_field_slot(ap, 0, AnyValue::int(1)) };
+    let map = heap.alloc_map_slots(&[
+        (AnyValue::heap_ptr(zp, ValueKind::STRUCT), AnyValue::int(0)),
+        (AnyValue::heap_ptr(ap, ValueKind::STRUCT), AnyValue::int(1)),
+    ]);
+    let addr = map_addr_from_tagged(map).unwrap();
+    assert_eq!(
+        unsafe { map_entry(addr, 0).0.raw() },
+        ap as u64,
+        "source schema identity owns key order"
+    );
+}
+
+#[test]
+fn map_publication_collapses_independently_allocated_structural_keys_last_wins() {
+    let registry = empty_registry();
+    let tuple_schema = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut heap = Heap::new(SIZE_TABLE[0], registry);
+    let keys: Vec<_> = (0..3)
+        .map(|_| {
+            let tuple = heap.alloc_struct(tuple_schema);
+            unsafe { heap.write_field_slot(tuple, 0, AnyValue::int(1)) };
+            unsafe { heap.write_field_slot(tuple, 8, AnyValue::int(2)) };
+            AnyValue::heap_ptr(tuple, ValueKind::STRUCT)
+        })
+        .collect();
+    assert_ne!(keys[0].raw(), keys[1].raw());
+    let slots = heap.alloc_map_slots(&[(keys[0], AnyValue::int(10)), (keys[1], AnyValue::int(20))]);
+    let slots = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(slots).unwrap()).unwrap();
+    assert_eq!(
+        unsafe { map_count(slots.map_addr().unwrap()) },
+        1,
+        "one strict structural key must occupy one entry"
+    );
+    assert_eq!(
+        heap.read_map_value_for_any_key(slots, keys[2])
+            .unwrap()
+            .unwrap()
+            .load_int(),
+        Ok(20)
+    );
+
+    let first = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[0].raw() as *const u8).unwrap();
+    let second = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[1].raw() as *const u8).unwrap();
+    let old_value = 10u64;
+    let new_value = 20u64;
+    let refs = heap
+        .alloc_map_refs(&[
+            (
+                first,
+                AnyValueRef::from_scalar_slot(ValueKind::INT, &old_value).unwrap(),
+            ),
+            (
+                second,
+                AnyValueRef::from_scalar_slot(ValueKind::INT, &new_value).unwrap(),
+            ),
+        ])
+        .unwrap();
+    assert_eq!(unsafe { map_count(refs.map_addr().unwrap()) }, 1);
+    assert_eq!(
+        heap.read_map_value_for_any_key(refs, keys[2])
+            .unwrap()
+            .unwrap()
+            .load_int(),
+        Ok(20)
+    );
+}
+
+#[test]
 fn closure_allocation_does_not_change_struct_schema_identity() {
     let registry = empty_registry();
     let mut heap = Heap::new(SIZE_TABLE[0], Rc::clone(&registry));
@@ -168,17 +330,23 @@ fn any_value_ref_list_reads_heap_object_head() {
 #[test]
 fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let child_bits = h.alloc_list_cons_slot(AnyValue::atom(1), EMPTY_LIST_BITS);
+    let child_atom = h.node.intern_atom("child");
+    let key_atom = h.node.intern_atom("key");
+    let missing_atom = h.node.intern_atom("missing");
+    let child_bits = h.alloc_list_cons_slot(AnyValue::atom(child_atom), EMPTY_LIST_BITS);
     let child_addr = list_addr_from_tagged(child_bits).expect("child addr");
     let map_bits = h.alloc_map_slots(&[
         (AnyValue::int(1), AnyValue::int(10)),
-        (AnyValue::atom(2), AnyValue::heap_ptr(child_addr, ValueKind::LIST)),
+        (
+            AnyValue::atom(key_atom),
+            AnyValue::heap_ptr(child_addr, ValueKind::LIST),
+        ),
     ]);
     let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
     let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
     let int_key_slot = 1u64;
-    let atom_key_slot = 2u64;
-    let missing_key_slot = 3u64;
+    let atom_key_slot = u64::from(key_atom);
+    let missing_key_slot = u64::from(missing_atom);
 
     let scalar = h
         .read_map_value_ref(
@@ -216,8 +384,8 @@ fn any_value_ref_struct_reads_scalar_and_heap_fields() {
     let child_bits = h.alloc_list_cons_slot(AnyValue::atom(1), EMPTY_LIST_BITS);
     let child_addr = list_addr_from_tagged(child_bits).expect("child addr");
     let obj = h.alloc_struct(schema_id);
-    h.write_field_slot(obj, 0, AnyValue::float(2.5));
-    h.write_field_slot(obj, 8, AnyValue::heap_ptr(child_addr, ValueKind::LIST));
+    unsafe { h.write_field_slot(obj, 0, AnyValue::float(2.5)) };
+    unsafe { h.write_field_slot(obj, 8, AnyValue::heap_ptr(child_addr, ValueKind::LIST)) };
     let obj_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, obj).expect("struct ref");
 
     assert_eq!(h.read_struct_field_ref(obj_ref, 0).unwrap().load_float(), Ok(2.5));
@@ -292,11 +460,13 @@ fn any_value_ref_list_construction_rejects_non_list_tail() {
 #[test]
 fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let child_bits = h.alloc_list_cons_slot(AnyValue::atom(1), EMPTY_LIST_BITS);
+    let child_atom = h.node.intern_atom("child");
+    let key_atom = h.node.intern_atom("key");
+    let child_bits = h.alloc_list_cons_slot(AnyValue::atom(child_atom), EMPTY_LIST_BITS);
     let child_addr = list_addr_from_tagged(child_bits).expect("child addr");
     let child_ref = AnyValueRef::from_heap_object(ValueKind::LIST, child_addr).expect("child ref");
     let int_key_slot = 1u64;
-    let atom_key_slot = 2u64;
+    let atom_key_slot = u64::from(key_atom);
     let int_any_value = 10u64;
     let int_key = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_key_slot).expect("int key");
     let atom_key = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_key_slot).expect("atom key");
@@ -331,7 +501,7 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
             .list_addr(),
         Ok(child_addr)
     );
-    let atom_key_by_value = h.box_any_value_ref(AnyValue::atom(2));
+    let atom_key_by_value = h.box_any_value_ref(AnyValue::atom(key_atom));
     assert_eq!(
         h.read_map_value_ref(map_ref, atom_key_by_value)
             .unwrap()
@@ -378,10 +548,8 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
 
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
-    h.write_struct_field_ref(struct_ref, 0, scalar_ref)
-        .expect("write scalar field");
-    h.write_struct_field_ref(struct_ref, 8, child_ref)
-        .expect("write heap field");
+    unsafe { h.write_struct_field_ref(struct_ref, 0, scalar_ref) }.expect("write scalar field");
+    unsafe { h.write_struct_field_ref(struct_ref, 8, child_ref) }.expect("write heap field");
     assert_eq!(h.read_struct_field_ref(struct_ref, 0).unwrap().load_atom(), Ok(99));
     assert_eq!(
         h.read_struct_field_ref(struct_ref, 8).unwrap().map_addr(),
@@ -391,10 +559,8 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 2, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
-    h.write_closure_capture_ref(closure_ref, 0, scalar_ref)
-        .expect("write scalar capture");
-    h.write_closure_capture_ref(closure_ref, 1, child_ref)
-        .expect("write heap capture");
+    unsafe { h.write_closure_capture_ref(closure_ref, 0, scalar_ref) }.expect("write scalar capture");
+    unsafe { h.write_closure_capture_ref(closure_ref, 1, child_ref) }.expect("write heap capture");
     assert_eq!(h.read_closure_capture_ref(closure_ref, 0).unwrap().load_atom(), Ok(99));
     assert_eq!(
         h.read_closure_capture_ref(closure_ref, 1).unwrap().map_addr(),
@@ -424,14 +590,12 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
 
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
-    h.write_struct_field_ref(struct_ref, 0, child_list_ref)
-        .expect("write struct field");
+    unsafe { h.write_struct_field_ref(struct_ref, 0, child_list_ref) }.expect("write struct field");
 
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
-    h.write_closure_capture_ref(closure_ref, 0, child_map_ref)
-        .expect("write closure capture");
+    unsafe { h.write_closure_capture_ref(closure_ref, 0, child_map_ref) }.expect("write closure capture");
 
     let mut root = null_mut();
     let mut roots = [
@@ -468,15 +632,24 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
 }
 
 #[test]
+#[should_panic(expected = "one schema identity must have one layout")]
+fn schema_identity_cannot_silently_replace_its_published_layout() {
+    let mut registry = SchemaRegistry::new();
+    let name = crate::module_name::ModuleName::from_segments(vec!["Item".into()]);
+    registry.register(Schema::named_struct(name.clone(), ["value".into()]));
+    registry.register(Schema::named_struct(name, ["value".into(), "extra".into()]));
+}
+
+#[test]
 fn schema_registry_register_and_get() {
     let mut reg = SchemaRegistry::new();
     let id_a = reg.register(Schema {
-        name: "A".into(),
+        identity: SchemaIdentity::Internal("A".into()),
         size: 0,
         fields: vec![],
     });
     let id_b = reg.register(Schema {
-        name: "Pair".into(),
+        identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
         fields: vec![
             FieldDescriptor {
@@ -493,8 +666,8 @@ fn schema_registry_register_and_get() {
     });
     assert_eq!(id_a, 0);
     assert_eq!(id_b, 1);
-    assert_eq!(reg.get(id_a).name, "A");
-    assert_eq!(reg.get(id_b).name, "Pair");
+    assert_eq!(reg.get(id_a).identity.display_name(), "A");
+    assert_eq!(reg.get(id_b).identity.display_name(), "Pair");
 }
 
 /// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
@@ -879,8 +1052,8 @@ fn gc_stats_count_struct_slots_by_layout_kind() {
     let child_bits = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let child_addr = list_addr_from_tagged(child_bits).unwrap();
     let tuple = h.alloc_struct(schema_id);
-    h.write_field_slot(tuple, 0, any_value(decoy_addr as u64, ValueKind::INT));
-    h.write_field_slot(tuple, 8, AnyValue::heap_ptr(child_addr, ValueKind::LIST));
+    unsafe { h.write_field_slot(tuple, 0, any_value(decoy_addr as u64, ValueKind::INT)) };
+    unsafe { h.write_field_slot(tuple, 8, AnyValue::heap_ptr(child_addr, ValueKind::LIST)) };
     let mut root = heap_object_word(tuple, ValueKind::STRUCT) as *mut u8;
 
     let stats = h.gc(&mut root);
@@ -1040,13 +1213,14 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     let reg = empty_registry();
     let pair_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
-    let mut dst = Heap::new(SIZE_TABLE[0], reg);
+    let mut dst = Heap::with_node(SIZE_TABLE[0], reg, Rc::clone(&src.node));
+    let keys = ["a", "b", "c", "d", "e", "f"].map(|name| src.node.intern_atom(name));
 
     let list_bits = alloc_int_list_cons(&mut src, 7, EMPTY_LIST);
 
     let struct_p = src.alloc_struct(pair_id);
-    src.write_field_slot(struct_p, 0, heap_root(list_bits));
-    src.write_field_slot(struct_p, 8, AnyValue::int(11));
+    unsafe { src.write_field_slot(struct_p, 0, heap_root(list_bits)) };
+    unsafe { src.write_field_slot(struct_p, 8, AnyValue::int(11)) };
 
     let closure_bits = src.alloc_closure(
         crate::any_value::ClosureDenotationId::user(0),
@@ -1070,27 +1244,24 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
 
     let entries = [
         (
-            any_value(1, ValueKind::ATOM),
+            AnyValue::atom(keys[0]),
             AnyValue::heap_ptr(list_addr_from_tagged(list_bits).unwrap(), ValueKind::LIST),
         ),
+        (AnyValue::atom(keys[1]), AnyValue::heap_ptr(struct_p, ValueKind::STRUCT)),
         (
-            any_value(2, ValueKind::ATOM),
-            AnyValue::heap_ptr(struct_p, ValueKind::STRUCT),
-        ),
-        (
-            any_value(3, ValueKind::ATOM),
+            AnyValue::atom(keys[2]),
             AnyValue::heap_ptr(closure_addr_from_tagged(closure_bits).unwrap(), ValueKind::CLOSURE),
         ),
         (
-            any_value(4, ValueKind::ATOM),
+            AnyValue::atom(keys[3]),
             AnyValue::heap_ptr(bitstring_p, ValueKind::BITSTRING),
         ),
         (
-            any_value(5, ValueKind::ATOM),
+            AnyValue::atom(keys[4]),
             AnyValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
         ),
         (
-            any_value(7, ValueKind::ATOM),
+            AnyValue::atom(keys[5]),
             AnyValue::heap_ptr(resource.as_raw(), ValueKind::RESOURCE),
         ),
     ];
@@ -1298,7 +1469,7 @@ fn alloc_large_struct_succeeds_and_grows_size_class() {
         });
     }
     let id = reg.borrow_mut().register(Schema {
-        name: "Big".into(),
+        identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
     });
@@ -1335,8 +1506,8 @@ fn struct_field_read_at_new_offset() {
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let p = h.alloc_struct(id);
 
-    h.write_field_slot(p, 0, AnyValue::int(11));
-    h.write_field_slot(p, 8, AnyValue::int(22));
+    unsafe { h.write_field_slot(p, 0, AnyValue::int(11)) };
+    unsafe { h.write_field_slot(p, 8, AnyValue::int(22)) };
 
     unsafe {
         assert_eq!(read(p.add(8) as *const u64), 11);
@@ -1355,7 +1526,7 @@ fn struct_forwarding_marker_through_gc() {
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let p = h.alloc_struct(id);
     let old_addr = p;
-    h.write_field_slot(p, 0, AnyValue::int(9));
+    unsafe { h.write_field_slot(p, 0, AnyValue::int(9)) };
     let mut root = heap_object_word(p, ValueKind::STRUCT) as *mut u8;
 
     h.gc(&mut root);
@@ -1481,14 +1652,18 @@ fn strict_heap_decoder_accepts_static_closure_pointer() {
 fn map_packed_tags_round_trip() {
     let cases = [1usize, 2, 3, 7, 8, 9];
     for count in cases {
+        let mut h = Heap::new(1024, empty_registry());
         let entries: Vec<(AnyValue, AnyValue)> = (0..count)
             .map(|i| {
-                let key_kind = if i % 2 == 0 { ValueKind::ATOM } else { ValueKind::INT };
+                let key = if i % 2 == 0 {
+                    AnyValue::atom(h.node.intern_atom(&format!("key_{i}")))
+                } else {
+                    AnyValue::int(i as i64)
+                };
                 let value_kind = if i % 3 == 0 { ValueKind::FLOAT } else { ValueKind::INT };
-                (any_value(i as u64, key_kind), any_value((100 + i) as u64, value_kind))
+                (key, any_value((100 + i) as u64, value_kind))
             })
             .collect();
-        let mut h = Heap::new(1024, empty_registry());
         let bits = h.alloc_map_slots(&entries);
         let p = map_addr_from_tagged(bits).unwrap();
         // The SET of entries round-trips, not their positions. A map is a
@@ -1496,12 +1671,10 @@ fn map_packed_tags_round_trip() {
         // entry lands is the map's business; what this test is about is that
         // the packed key/value KIND tags survive the write and read back as the
         // same values.
-        let mut written: Vec<(AnyValue, AnyValue)> = (0..entries.len()).map(|i| unsafe { map_entry(p, i) }).collect();
-        let mut expected = entries.clone();
-        let by_debug = |pair: &(AnyValue, AnyValue)| format!("{:?}", pair);
-        written.sort_by_key(by_debug);
-        expected.sort_by_key(by_debug);
-        assert_eq!(written, expected, "count {count}");
+        assert_eq!(unsafe { map_count(p) }, entries.len());
+        for i in 0..entries.len() {
+            assert!(entries.contains(&unsafe { map_entry(p, i) }), "entry {i} of {count}");
+        }
     }
 }
 
@@ -1610,7 +1783,7 @@ fn gc_keeps_arena_bounded_across_many_cycles() {
 fn gc_handles_cycle_via_forwarding() {
     let reg = empty_registry();
     let pair_id = reg.borrow_mut().register(Schema {
-        name: "Pair".into(),
+        identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
         fields: vec![
             FieldDescriptor {
@@ -1628,10 +1801,10 @@ fn gc_handles_cycle_via_forwarding() {
     let mut h = Heap::new(1024, reg);
     let a = h.alloc_struct(pair_id);
     let b = h.alloc_struct(pair_id);
-    h.write_field_slot(a, 0, AnyValue::heap_ptr(b, ValueKind::STRUCT));
-    h.write_field_slot(a, 8, AnyValue::nil_atom());
-    h.write_field_slot(b, 0, AnyValue::heap_ptr(a, ValueKind::STRUCT));
-    h.write_field_slot(b, 8, AnyValue::nil_atom());
+    unsafe { h.write_field_slot(a, 0, AnyValue::heap_ptr(b, ValueKind::STRUCT)) };
+    unsafe { h.write_field_slot(a, 8, AnyValue::nil_atom()) };
+    unsafe { h.write_field_slot(b, 0, AnyValue::heap_ptr(a, ValueKind::STRUCT)) };
+    unsafe { h.write_field_slot(b, 8, AnyValue::nil_atom()) };
     let mut root = heap_object_word(a as *const u8, ValueKind::STRUCT) as *mut u8;
     h.gc(&mut root);
     assert_eq!(h.live_count(), 2);
@@ -1806,7 +1979,7 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     let witness = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
     let reg = empty_registry();
     let pair_id = reg.borrow_mut().register(Schema {
-        name: "Pair".into(),
+        identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
         fields: vec![
             FieldDescriptor {
@@ -1827,8 +2000,8 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     let proc_bits = heap_object_word(src_pb.as_raw() as *const u8, ValueKind::PROCBIN);
     let pair = src.alloc_struct(pair_id);
     let proc_value = heap_root(proc_bits);
-    src.write_field_slot(pair, 0, proc_value);
-    src.write_field_slot(pair, 8, proc_value);
+    unsafe { src.write_field_slot(pair, 0, proc_value) };
+    unsafe { src.write_field_slot(pair, 8, proc_value) };
     let mut fwd = HashMap::new();
     let _ = deep_copy_slot(AnyValue::heap_ptr(pair, ValueKind::STRUCT), &src, &mut dst, &mut fwd);
     assert_eq!(mso_chain(&dst).len(), 1, "dedup");
@@ -1967,7 +2140,7 @@ fn rooted_fragment_survives_gc() {
         });
     }
     let id = reg.borrow_mut().register(Schema {
-        name: "Big".into(),
+        identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
     });
@@ -2009,7 +2182,7 @@ fn mixed_fragment_liveness() {
         });
     }
     let id = reg.borrow_mut().register(Schema {
-        name: "Big".into(),
+        identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
     });
@@ -2022,7 +2195,7 @@ fn mixed_fragment_liveness() {
     // pair {a, c} into a typed tuple in the bump arena; that becomes a
     // root containing both.
     let pair_id = reg.borrow_mut().register(Schema {
-        name: "Pair".into(),
+        identity: SchemaIdentity::Internal("Pair".into()),
         size: 16,
         fields: vec![
             FieldDescriptor {
@@ -2038,8 +2211,8 @@ fn mixed_fragment_liveness() {
         ],
     });
     let pair = h.alloc_struct(pair_id);
-    h.write_field_slot(pair, 0, AnyValue::heap_ptr(a, ValueKind::STRUCT));
-    h.write_field_slot(pair, 8, AnyValue::heap_ptr(c, ValueKind::STRUCT));
+    unsafe { h.write_field_slot(pair, 0, AnyValue::heap_ptr(a, ValueKind::STRUCT)) };
+    unsafe { h.write_field_slot(pair, 8, AnyValue::heap_ptr(c, ValueKind::STRUCT)) };
     let mut root = heap_object_word(pair as *const u8, ValueKind::STRUCT) as *mut u8;
     h.gc(&mut root);
     assert_eq!(h.fragments.len(), 2, "the unrooted fragment was reclaimed");
@@ -2061,14 +2234,14 @@ fn fragment_to_fragment_edge_survives_gc() {
         });
     }
     let id = reg.borrow_mut().register(Schema {
-        name: "Big".into(),
+        identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
     });
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let head = h.alloc_struct(id);
     let tail = h.alloc_struct(id);
-    h.write_field_slot(head, 0, AnyValue::heap_ptr(tail, ValueKind::STRUCT));
+    unsafe { h.write_field_slot(head, 0, AnyValue::heap_ptr(tail, ValueKind::STRUCT)) };
     let mut root = heap_object_word(head as *const u8, ValueKind::STRUCT) as *mut u8;
     h.gc(&mut root);
     assert_eq!(h.fragments.len(), 2, "both fragments survive");
@@ -2090,14 +2263,14 @@ fn fragment_to_block_edge_promotes_block_object() {
         });
     }
     let id = reg.borrow_mut().register(Schema {
-        name: "Big".into(),
+        identity: SchemaIdentity::Internal("Big".into()),
         size: (n_fields * 8) as u32,
         fields,
     });
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let cons = alloc_int_list_cons(&mut h, 7, EMPTY_LIST);
     let big = h.alloc_struct(id);
-    h.write_field_slot(big, 0, heap_root(cons));
+    unsafe { h.write_field_slot(big, 0, heap_root(cons)) };
     let mut root = heap_object_word(big as *const u8, ValueKind::STRUCT) as *mut u8;
     h.gc(&mut root);
     assert_eq!(h.fragments.len(), 1, "fragment survives");

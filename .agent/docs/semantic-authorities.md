@@ -37,7 +37,17 @@ code or changing capture layout does not change it. The ID answers equality of
 source denotations, not order: `FunctionRef::semantic_cmp` compares typed origins
 and numeric arity. `Types` shares these immutable origins with `FunctionMap`;
 neither canonical labels nor generated display names are comparator inputs.
-Runtime closure comparison remains the separate fz-5xp.27 cutover.
+The same immutable `FunctionDenotation` is shared with the runtime Node. Closure
+construction registers the source origin; JIT/AOT publish typed origin data
+with their program. Runtime comparison asks the Node for source order, never
+orders numeric denotation IDs. A closure's one retained environment stores one
+complete value per lexical capture; execution wrappers project that environment
+into their own ABI layouts without changing its identity.
+`CallableDescr` interns only function, arity, and ordered physical capture
+layouts. Each construction owns its ordered source capture annotations, carried
+unchanged into the backend wrapper and its runtime type predicate. Distinct
+annotations can therefore share one physical descriptor without sharing a
+construction's semantic type; invocation target prefixes supply neither.
 
 **Truthiness** — owner `fz_truthy_ref` (`runtime/src/ir_runtime.rs`). The rule is
 "every value is true except `false` and `nil`". `fn_ctx::truthy_ref` and
@@ -49,19 +59,19 @@ for a known-Atom operand and answer a constant `1` for a known Int or Float;
 those are sound because a number is never false, but the Atom arm is a
 restatement and would have to move with the rule.
 
-**Equality — two questions, and the IR names both.** `eq_value(a, b, widen)`
-(`runtime/src/ir_runtime.rs`) is the owner, and the `widen` flag is not a
-tuning knob: it selects which question is being asked.
+**Equality — two questions, and the IR names both.** `TermComparator::compare`
+(`runtime/src/term.rs`) owns comparison over borrowed immutable values, Node,
+and SchemaRegistry. `NumericMode` selects the semantic question:
 
-  * `widen: true` is the `==` OPERATOR. Numbers compare by value, recursively,
+  * `Widening` is the `==` OPERATOR. Numbers compare by value, recursively,
     so `1 == 1.0`, `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}` are all true —
     while `%{1 => :a} == %{1.0 => :a}` is false, because widening applies to
     values and never to the keys that decide which entries line up. Entry
     points `fz_value_eq_widening_ref`, `interp_operator_eq`, and IR
     `BinOp::Eq`/`Neq`.
-  * `widen: false` is STRUCTURAL IDENTITY: `===`, a pinned match, a map key,
+  * `Strict` is STRUCTURAL IDENTITY: `===`, a pinned match, a map key,
     `Enum.member?/2`, `--`, and every kind of pattern matching. `1` and `1.0`
-    are different values. Entry points `fz_value_eq_ref`, `interp_value_eq`,
+    are different values, as are the two signed floating zeros. Entry points `fz_value_eq_ref`, `interp_value_eq`,
     and IR `BinOp::Identical`/`NotIdentical`.
 
 The IR ops are the load-bearing part. One `BinOp::Eq` used to serve both, with
@@ -72,9 +82,8 @@ call site, answered `same?(1, 1.0)` as `:different` where Elixir says `:equal`
 operator with two meanings, not a divergence. The lowering now derives the
 question from the op, so a call site cannot get it wrong.
 
-**Ordering** — owner `cmp_any_value` / `fz_value_cmp_ref`
-(`runtime/src/ir_runtime.rs`), shared since fz-5xp.18 and TOTAL since
-fz-5xp.8: every pair of values has an order, Erlang's
+**Ordering** — the same `TermComparator`, reached through `fz_value_cmp_ref`
+and unboxed scalar adapters, owns every published finite term's order:
 `number < atom < reference < fun < port < pid < tuple < map < list < bitstring`.
 For the atom category it delegates to `Node::cmp_atom_names`, the single owner
 of atom name order. Atom ids are handed out in first-seen order, so ordering by
@@ -82,10 +91,14 @@ id would depend on which atom the program mentioned first. Ordinary comparison
 reaches the node through its process; each process heap shares that same node so
 map ordering asks the same question without ambient process state (fz-5xp.90).
 
-`guard_cmp` (`ir_interp/dispatch_exec.rs`) has integer and float fast paths and
-then delegates; `fz_value_cmp_raw_const` exists so codegen can compare a ref
-against an unboxed payload without allocating a scalar box. Two integers are
-ordered AS INTEGERS — widening both to `f64` loses the distinction above 2^53.
+`interp_cmp` shares unboxed numeric handling across expressions, intrinsics,
+and guards. Same-kind native lanes use integer/float instructions; mixed lanes
+call `term::compare_int_float` through `fz_int_float_cmp`, the same exact helper
+used by `TermComparator`. No integer is rounded through `f64` before comparing
+its magnitude. Strict mode breaks equal numeric magnitudes by kind and retains
+signed-zero identity; widening mode equates signed zeros.
+`fz_value_cmp_raw_const` compares a ref against an unboxed payload without
+allocating a scalar box.
 
 `Kernel` declares a typed clause per orderable pair — numbers and binaries —
 and NO `any`/`any` clause, so `1 < :atom` is refused at compile time rather
@@ -137,22 +150,37 @@ function now asserts every ordinal it returns is inside its own plan, which
 keeps a recurrence at the plan that produced it rather than at whichever door
 reads it first.
 
-**Map key identity and order** — owner `runtime/src/heap/key_cmp.rs`. Order must
-agree with equality, because a map is a flat sorted array: if two equal keys are
-not adjacent, a dedup driven by the order never sees them collide and a binary
-search misses what a linear scan finds (fz-5xp.48). Both raw writers
-(`alloc_map_slots`, `alloc_map_refs_bits`) sort and dedup, so callers do not
-pre-sort — `compiler2/source.rs` did, with a comparator that ordered binary keys
-by address, and the result was discarded by the re-sort. A second authority
-whose answer is thrown away is still a second authority.
+**Map key identity and order** — `TermComparator` in `Strict` mode owns both.
+Tuple/list/map keys compare structurally; binary storage kinds share bit
+identity; `SchemaIdentity` distinguishes tuple arity from named source module
+segments. Neither flattening a module name nor parsing a rendered schema label
+participates in schema publication, transport, or comparison.
+The registry rejects a second layout for an existing identity, so one borrowed
+schema can read both compared objects without a layout compatibility path.
+Closures compare source denotation then exact environment; resources compare
+the generative `ResourceId` on their existing off-heap owner. Schema indices,
+display labels, wrapper IDs, and physical capture lanes never decide map key
+identity or order. After validity checks, exact retained value identity proves
+equality without descending; distinct addresses prove neither inequality nor
+semantic order.
 
-The map comparator owns map category order and key identity, but atom ordering
-is not a private restatement: it delegates to `Node::cmp_atom_names`. `Heap`
-carries the process's node as construction data, so allocation, mutation, and
-binary-search lookup cannot accidentally use intern-id order. Consequently
-`Map.keys/1`, `Map.values/1`, and `Map.to_list/1` agree with `Kernel.compare/2`
-and `Enum.sort/1` for atom keys regardless of which atom the program mentioned
-first (fz-5xp.90).
+Both public heap builders feed one normalization function: a stable sort and
+last-value-wins dedup at publication. Destination freeze compacts that same
+allocation. Put, delete, and lookup share one binary search; updates copy the
+ordered sequence directly, absent deletion returns the original allocation,
+and GC/transport preserve order without sorting. Iteration consumes this stored
+order directly. Quoted-source equality erases diagnostic metadata, which can
+change key order; its distinct relation matches entries without assuming that
+metadata-erased keys retain runtime order.
+
+Published terms are finite immutable DAGs. Proper list construction rejects
+non-list tails; low-level struct/closure/map writes require exclusive unpublished
+ownership. Map destinations carry construction state and cannot re-enter it
+after freeze. Checked float construction, ref decoding, and scalar-box ingress
+reject nonfinite payloads. Collector-only cyclic test graphs stay outside term
+comparison. Comparison defensively rejects unfinished maps, internal absence,
+forged nonfinite floats, and unregistered atom IDs; none receives a fallback
+language order.
 
 **Binary representation** — owner `ValueKind::BINARY_REPRS`
 (`runtime/src/any_value.rs`). Inline `Bitstring` below

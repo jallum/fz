@@ -7,7 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    AfterClause, BitField, BitSize, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
+    AfterClause, BitField, BitSize, CallableName, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned,
+    WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -22,6 +23,7 @@ use crate::extern_contract::{
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
 use crate::ground_value::GroundValue;
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::Span;
 
 use super::super::body::{
@@ -608,6 +610,7 @@ fn collect_local_dispatch_requirements(
         }
         Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
+        | Expr::Module(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
         | Expr::Int(_)
@@ -726,7 +729,7 @@ fn collect_local_pattern_requirements(
 /// rather than guess an order from the literal/pattern's own field list.
 ///
 /// Module resolution mirrors `Lowerer::resolve_struct_module` exactly (same
-/// `resolve_module_name` call against the same `owner_module`/`namespace`),
+/// `resolve_module_target` call against the same `owner_module`/`namespace`),
 /// so the module identity this pre-pass records obligations/waits against is
 /// always the module the later `Lowerer` pass will actually consume. If
 /// resolution itself fails, this records nothing and defers to
@@ -740,13 +743,13 @@ fn record_struct_reference<'a>(
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
-    module: &crate::modules::identity::ModuleName,
+    module: &crate::ast::ModuleTarget,
     fields: impl Iterator<Item = &'a str>,
     span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
-    let Some(module_id) = world.resolve_module_name(owner_module, namespace, module) else {
+    let Some(module_id) = world.resolve_module_target(owner_module, namespace, module) else {
         return Ok(());
     };
     let requester = InterfaceRequester {
@@ -1011,6 +1014,7 @@ fn collect_unquote_dispatch_requirements(
             Ok(())
         }
         Expr::Lambda { .. }
+        | Expr::Module(_)
         | Expr::CaptureArg(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1094,6 +1098,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.lowerer.push_const(self.steps, GroundValue::Nil)),
             Expr::Var(name) => self.lower_variable(name),
+            Expr::Module(module) => Ok(self.lower_module(module)),
             Expr::List(items, None) => {
                 let values = items
                     .iter()
@@ -1256,6 +1261,33 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         }
         let tail = self.push_list(items, None);
         Ok(self.push_ast_node(head, tail))
+    }
+
+    fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
+        let head = self
+            .lowerer
+            .push_const(self.steps, GroundValue::Atom("__aliases__".into()));
+        let tail = self.module_path(module.display_segments());
+        let (tag, paths) = module.quoted_parts();
+        let tag = self.lowerer.push_const(self.steps, GroundValue::Atom(tag.into()));
+        let mut fields = vec![tag];
+        for path in paths {
+            fields.push(self.module_path(path.segments().iter()));
+        }
+        let identity = self.push_tuple(fields);
+        let key = self.lowerer.push_const(
+            self.steps,
+            GroundValue::Atom(super::super::source::META_MODULE_KEY.into()),
+        );
+        let meta = self.push_map(vec![(key, identity)]);
+        self.push_tuple(vec![head, meta, tail])
+    }
+
+    fn module_path<'s>(&mut self, segments: impl Iterator<Item = &'s String>) -> ValueId {
+        let items = segments
+            .map(|segment| self.lowerer.push_const(self.steps, GroundValue::Atom(segment.clone())))
+            .collect();
+        self.push_list(items, None)
     }
 
     fn lower_index(&mut self, base: &Spanned<Expr>, key: &Spanned<Expr>, span: Span) -> Result<ValueId, FatalError> {
@@ -1569,6 +1601,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
+            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps).lower_module(module)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1640,7 +1673,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             }
             Expr::FnRef { name, arity } => {
                 let value = self.fresh_value();
-                let function = self.resolve_runtime_function(name, *arity, expr.span, "captured runtime function")?;
+                let function = self.resolve_callable_name(name, *arity, expr.span, "captured runtime function")?;
                 steps.push(ExprStep::FunctionRef { value, function });
                 Ok(value)
             }
@@ -1736,7 +1769,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     steps.push(ExprStep::DirectCall {
                         value,
                         callsite,
-                        callee: self.resolve_direct_callee(&name, args.len(), target.span)?,
+                        callee: self.resolve_callable_name(&name, args.len(), target.span, "direct runtime callee")?,
                         args: lowered_args,
                     });
                     return Ok(value);
@@ -1883,6 +1916,54 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         Ok(function)
     }
 
+    fn resolve_callable_name(
+        &mut self,
+        name: &CallableName,
+        arity: usize,
+        span: Span,
+        context: &str,
+    ) -> Result<FunctionId, FatalError> {
+        match &name.module {
+            Some(module) => {
+                let module = self.world.reference_module_denotation(module.clone());
+                self.resolve_module_callee(module, &name.name, arity, span)
+            }
+            None => self.resolve_runtime_function(&name.name, arity, span, context),
+        }
+    }
+
+    fn resolve_module_callee(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        arity: usize,
+        span: Span,
+    ) -> Result<FunctionId, FatalError> {
+        let minimum = self.world.min_module_variadic_arity(module, name);
+        if minimum.is_some_and(|minimum| arity < minimum) {
+            let label = format!(
+                "{}.{}",
+                self.world.module_denotation(module).expect("qualified callee module"),
+                name
+            );
+            self.check_variadic_arity(&label, arity, span, minimum)?;
+        }
+        if let Some(function) = self
+            .world
+            .module_interface_if_present(module)
+            .and_then(|interface| interface.public_function_with_name_arity(name, arity))
+        {
+            return Ok(function);
+        }
+        Ok(self.world.reference_module_interface_callable(
+            module,
+            name.to_string(),
+            arity,
+            InterfaceCallableKind::PublicFunction,
+            Some(self.interface_requester(span)),
+        ))
+    }
+
     fn resolve_runtime_function(
         &mut self,
         name: &str,
@@ -1891,24 +1972,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         context: &str,
     ) -> Result<FunctionId, FatalError> {
         if let Some((module_path, local_name)) = name.rsplit_once('.') {
-            let Some(module) = self.world.lookup_module_path(self.namespace, module_path) else {
+            let Ok(module_path) = ModuleName::parse_dotted(module_path) else {
                 return Err(self.unbound_runtime_function(name, arity, span, context));
             };
-            self.reject_too_few_variadic_args(name, arity, span)?;
-            if let Some(function) = self
-                .world
-                .module_interface_if_present(module)
-                .and_then(|interface| interface.public_function_with_name_arity(local_name, arity))
-            {
-                return Ok(function);
-            }
-            return Ok(self.world.reference_module_interface_callable(
-                module,
-                local_name.to_string(),
-                arity,
-                InterfaceCallableKind::PublicFunction,
-                Some(self.interface_requester(span)),
-            ));
+            let Some(module) = self.world.lookup_module_path(self.namespace, &module_path) else {
+                return Err(self.unbound_runtime_function(name, arity, span, context));
+            };
+            return self.resolve_module_callee(module, local_name, arity, span);
         }
 
         match self.world.lookup_callable_namespace(self.namespace, name, arity) {
@@ -1932,7 +2002,18 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn reject_too_few_variadic_args(&mut self, name: &str, arity: usize, span: Span) -> Result<(), FatalError> {
-        if let Some(fixed_arity) = self.world.min_variadic_arity(self.namespace, name)
+        let minimum = self.world.min_variadic_arity(self.namespace, name);
+        self.check_variadic_arity(name, arity, span, minimum)
+    }
+
+    fn check_variadic_arity(
+        &self,
+        name: &str,
+        arity: usize,
+        span: Span,
+        minimum: Option<usize>,
+    ) -> Result<(), FatalError> {
+        if let Some(fixed_arity) = minimum
             && arity < fixed_arity
         {
             return Err(emit_job_diagnostic(
@@ -1992,7 +2073,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn lower_struct_expr(
         &mut self,
         span: Span,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Expr>)],
         env: &mut HashMap<String, ValueId>,
         steps: &mut Vec<ExprStep>,
@@ -2105,17 +2186,17 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn resolve_struct_module(
         &mut self,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         span: Span,
     ) -> Result<super::super::identity::ModuleId, FatalError> {
         self.world
-            .resolve_module_name(self.source.owner_module, self.namespace, module)
+            .resolve_module_target(self.source.owner_module, self.namespace, module)
             .ok_or_else(|| {
                 emit_job_diagnostic(
                     self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNBOUND,
-                        format!("compiler2 could not resolve struct module `{}`", module.dotted()),
+                        format!("compiler2 could not resolve struct module `{module}`"),
                         span,
                     ),
                 )
@@ -2397,7 +2478,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         rows: Vec<PatternRow<super::super::types::Ty>>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows { input_count: 1, rows };
-        let mut resolver = |name: &str,
+        let mut resolver = |name: &CallableName,
                             arity: usize,
                             args: Vec<PatternGuardExpr<super::super::types::Ty>>|
          -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
@@ -3199,7 +3280,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower_struct_pattern(
         &mut self,
-        module: &crate::modules::identity::ModuleName,
+        module: &crate::ast::ModuleTarget,
         fields: &[(String, Spanned<Pattern>)],
         span: Span,
         source: ValueId,
@@ -3968,6 +4049,7 @@ fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut 
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
+        | Expr::Module(_)
         | Expr::FnRef { .. }
         | Expr::CaptureArg(_) => {}
         Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
@@ -4257,6 +4339,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Nil => "Nil",
         Expr::Var(_) => "Var",
         Expr::FnRef { .. } => "FnRef",
+        Expr::Module(_) => "Module",
         Expr::Capture(_) => "Capture",
         Expr::CaptureArg(_) => "CaptureArg",
         Expr::List(_, _) => "List",
@@ -4318,8 +4401,7 @@ fn quoted_unop_atom(op: crate::ast::UnOp) -> &'static str {
     }
 }
 
-fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Option<String> {
-    let mut path = Vec::new();
+fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Option<CallableName> {
     let mut current = &expr.node;
     loop {
         match current {
@@ -4327,20 +4409,16 @@ fn direct_call_name(expr: &Spanned<Expr>, env: &HashMap<String, ValueId>) -> Opt
                 if env.contains_key(name) {
                     return None;
                 }
-                path.push(name.clone());
-                path.reverse();
-                return Some(path.join("."));
+                break;
             }
-            Expr::Index(target, key) => {
-                let Expr::Atom(name) = &key.node else {
-                    return None;
-                };
-                path.push(name.clone());
+            Expr::Module(_) => break,
+            Expr::Index(target, _) => {
                 current = &target.node;
             }
             _ => return None,
         }
     }
+    CallableName::from_expr(&expr.node)
 }
 
 fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {

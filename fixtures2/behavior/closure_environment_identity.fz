@@ -1,0 +1,25 @@
+#---
+# purpose: closure keys retain complete lexical environments across specialization and nested callable transport
+#---
+fn first({value, _}), do: value
+fn make(pair), do: fn () -> first(pair) end
+fn hold(value), do: fn (_) -> value end
+
+fn main() do
+  a = make({:same, 11})
+  b = make({:same, 22})
+  c = make({:same, 11})
+  dbg(a === b)
+  dbg(a === c)
+  keys = %{a => :first, b => :other, c => :last}
+  dbg({Map.size(keys), keys[make({:same, 11})], keys[make({:same, 22})]})
+  dbg(hold({}) === hold({}))
+  dbg(hold(a) === hold(c))
+  dbg(hold(a) === hold(b))
+  send(self(), 11)
+  observed = receive do value -> value end
+  dbg(hold(observed) === hold(11))
+  dbg(make({:same, observed}) === a)
+  dbg({a.(), b.(), c.()})
+  0
+end

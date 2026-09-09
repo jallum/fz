@@ -37,7 +37,9 @@ fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
     let before = compiler.retained_backend_program(root);
-    let module = compiler.world_mut().reference_module("Cycle");
+    let module = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Cycle").unwrap());
     let first = compiler.world_mut().reference_function(module, "first", 1);
     let second = compiler.world_mut().reference_function(module, "second", 1);
     let recursive = before

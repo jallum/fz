@@ -12,7 +12,7 @@ fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
     capture.install(&tel, &[]);
     let mut world = World::new();
     let prelude = world.runtime_prelude();
-    let kernel = world.reference_module("Kernel".to_string());
+    let kernel = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
 
     let index = index_code(&mut world, &tel, prelude).expect("runtime prelude should index");
     world.complete_job(Job::IndexCode(prelude), index);

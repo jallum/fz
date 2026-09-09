@@ -27,9 +27,8 @@ use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 /// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects once it knows
-/// both operand kinds. All of them answer through `fz_value_cmp_ref`, the same
-/// runtime function native codegen calls, so the doors cannot drift apart the
-/// way they did while each had its own coercion.
+/// both operand kinds. Numeric lanes use the shared exact comparison without
+/// boxing; composite values use the borrowed runtime term comparator.
 ///
 /// Only ORDERING has typed intrinsics. Equality is total, so `Kernel` keeps a
 /// single `fz_op_eq`/`fz_op_neq` and a single `===`/`!==`, handled above.
@@ -57,32 +56,7 @@ fn eval_interp_operator_extern(
             return Err(format!("{symbol}/2 got {} args", args.len()));
         }
         let proc = runtime.cur_proc();
-        // The intrinsic's suffix already names both operand kinds, so a numeric
-        // pair is compared directly. Boxing them through `as_ref_word` would
-        // allocate a scalar box per comparison — visible immediately in
-        // `Enum.sort`'s allocation golden.
-        // Two integers are compared AS INTEGERS -- going through f64 loses the
-        // distinction above 2^53. Only a mixed pair is widened, and anything
-        // that is not two numbers goes to the shared comparator.
-        let ordering = match (args[0], args[1]) {
-            (AnyValue::Int(left), AnyValue::Int(right)) => match left.cmp(&right) {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Greater => 1,
-                std::cmp::Ordering::Equal => 0,
-            },
-            _ => match (args[0].as_float(), args[1].as_float()) {
-                (Some(left), Some(right)) => {
-                    if left < right {
-                        -1
-                    } else if left > right {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                _ => fz_value_cmp_ref(proc, args[0].as_ref_word(proc)?, args[1].as_ref_word(proc)?),
-            },
-        };
+        let ordering = interp_cmp(proc, args[0], args[1])?;
         let answer = match op {
             crate::fz_ir::BinOp::Lt => ordering < 0,
             crate::fz_ir::BinOp::Le => ordering <= 0,
@@ -92,9 +66,7 @@ fn eval_interp_operator_extern(
         };
         return Ok(Some(super::value::interp_bool_value(answer)));
     }
-    // `fz_op_eq`/`fz_op_neq` are the `==`/`!=` OPERATORS, which widen numerics.
-    // `eval_binop`'s Eq/Neq is structural identity and stays strict, so the
-    // operator cannot be routed through it.
+    // Operator equality widens numeric values; structural identity stays strict.
     if matches!(symbol, "fz_op_identical" | "fz_op_not_identical") {
         if args.len() != 2 {
             return Err(format!("{symbol}/2 got {} args", args.len()));

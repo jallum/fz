@@ -19,7 +19,7 @@ pub(crate) fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schem
         });
     }
     Schema {
-        name: format!("Frame_{}", name),
+        identity: fz_runtime::heap::SchemaIdentity::Internal(format!("Frame_{}", name)),
         size: HEADER_SIZE as u32 + (n_fields as u32) * SLOT_BYTES as u32,
         fields,
     }

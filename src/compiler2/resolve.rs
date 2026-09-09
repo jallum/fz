@@ -287,8 +287,8 @@ impl World {
             TypeExpr::StructRecord { module, fields } => {
                 let module_name = ModuleName::from_segments(module.clone());
                 let module_id = self
-                    .lookup_module_path(namespace, &module_name.dotted())
-                    .unwrap_or_else(|| self.reference_module(module_name.dotted()));
+                    .lookup_module_path(namespace, &module_name)
+                    .unwrap_or_else(|| self.reference_module(module_name));
                 // The durable `defstruct` store. Every consumer that reaches
                 // this arm — `@type` (`note_pending_types`), `@spec`, and
                 // param annotations (`record_function_type_refs`) — records

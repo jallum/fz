@@ -98,6 +98,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_box_atom_for_any" => (&[I64, I64], &[I64]),
         "fz_map_is_map" => (&[I64], &[I8]),
         "fz_value_cmp_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_int_float_cmp" => (&[I64, F64], &[I64]),
         "fz_value_cmp_raw_const" => (&[I64, I64, I32, I64, I32], &[I64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
         "fz_op_rem_ff" => (&[F64, F64], &[F64]),
@@ -226,6 +227,7 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         value_eq_ref_id: arith.value_eq_ref_id,
         value_eq_widening_ref_id: arith.value_eq_widening_ref_id,
         value_cmp_ref_id: arith.value_cmp_ref_id,
+        int_float_cmp_id: arith.int_float_cmp_id,
         value_cmp_raw_const_id: arith.value_cmp_raw_const_id,
         value_eq_raw_const_id: arith.value_eq_raw_const_id,
         matcher_eq_bytes_id: matcher.matcher_eq_bytes_id,
@@ -449,6 +451,7 @@ struct ArithRefs {
     value_eq_ref_id: FuncId,
     value_eq_widening_ref_id: FuncId,
     value_cmp_ref_id: FuncId,
+    int_float_cmp_id: FuncId,
     value_cmp_raw_const_id: FuncId,
     value_eq_raw_const_id: FuncId,
 }
@@ -464,6 +467,7 @@ fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, Codegen
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
         value_eq_widening_ref_id: decl_import(jmod, "fz_value_eq_widening_ref")?,
         value_cmp_ref_id: decl_import(jmod, "fz_value_cmp_ref")?,
+        int_float_cmp_id: decl_import(jmod, "fz_int_float_cmp")?,
         value_cmp_raw_const_id: decl_import(jmod, "fz_value_cmp_raw_const")?,
         value_eq_raw_const_id: decl_import(jmod, "fz_value_eq_raw_const")?,
     })
@@ -739,6 +743,7 @@ pub(crate) struct RuntimeRefs {
     pub(crate) value_eq_widening_ref_id: FuncId,
     /// fz-5xp.18 — dynamic ordering, the counterpart to `value_eq_ref_id`.
     pub(crate) value_cmp_ref_id: FuncId,
+    pub(crate) int_float_cmp_id: FuncId,
     /// Ordering against an unboxed payload, allocating nothing — the counterpart
     /// to `value_eq_raw_const_id`.
     pub(crate) value_cmp_raw_const_id: FuncId,

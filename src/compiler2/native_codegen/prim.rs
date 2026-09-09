@@ -1128,52 +1128,22 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
-        Prim::ClosureCapture {
-            closure,
-            constructions,
-            index,
-        } => lower_closure_capture(body, env, var_env, *closure, constructions, *index),
+        Prim::ClosureCapture { closure, index } => lower_closure_capture(body, var_env, *closure, *index),
     }
 }
 
-/// Read capture `index` back out of a closure, in the representation the
-/// CONSTRUCTION that minted it wrote it in.
-///
-/// `emit_capturing_closure` stores each capture through the boundary's
-/// `capture_reprs`; this is the same table read the other way, so the load and
-/// the store cannot drift. The prim names every construction of the ONE
-/// callable layout the callee grounded on -- one layout, several mint
-/// positions -- and those agree about this slot by construction, because the
-/// reprs are derived from the layout. The check stays as a tripwire over
-/// exactly that set (fz-kdt.157).
+/// The captured value's kind byte makes every lexical slot self-describing.
 fn lower_closure_capture<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     closure: Var,
-    constructions: &[FnId],
     index: u32,
 ) -> Result<LowerOut, CodegenError> {
-    let mut reprs = constructions.iter().map(|identity_fn| {
-        env.surface
-            .callable_boundary_for_identity(*identity_fn)
-            .and_then(|boundary| boundary.capture_reprs.get(index as usize).copied())
-    });
-    let repr = match reprs.next() {
-        Some(Some(repr)) if reprs.all(|other| other == Some(repr)) => repr,
-        _ => {
-            return Err(CodegenError::new(format!(
-                "closure capture {index} of constructions {constructions:?} has no single settled representation",
-            )));
-        }
-    };
     let value = *var_env.get(&closure.0).expect("closure capture subject");
     let closure_ref = body.value_as_any_ref(value);
-    Ok(LowerOut::Strict(body.closure_capture_as_binding(
-        closure_ref,
-        index as usize,
-        repr,
-    )))
+    Ok(LowerOut::ValueRef(
+        body.closure_capture_ref_at(closure_ref, index as usize),
+    ))
 }
 
 /// Lower a `RuntimeTypeTest` prim.
@@ -1297,7 +1267,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         self.env.tuple_schema_ids
     }
 
-    fn named_schema_ids(&self) -> &HashMap<String, u32> {
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32> {
         self.env.named_schema_ids
     }
 
@@ -1686,8 +1656,8 @@ where
 /// fully generic `fz_value_eq_ref`. Instead the runtime checks the dynamic
 /// side's actual tag against the known kind and compares raw payloads
 /// directly — `fz_value_eq_raw_const` — with no allocation on either side.
-/// Float is deliberately excluded: float equality has IEEE-754 semantics
-/// (-0.0 == 0.0, NaN != NaN) that a bitwise payload compare would violate.
+/// Float is deliberately excluded: widening equality equates signed zeros,
+/// while structural identity distinguishes their bits.
 fn raw_scalar_vs_dynamic(
     var_env: &HashMap<u32, CodegenValue>,
     raw_side: Var,
@@ -1745,24 +1715,16 @@ where
     // fz-5xp.18 — an integer and a float are value-disjoint for MATCHING
     // (Elixir's `case 1.0 do 1 -> ...` does not match, and neither does fz's)
     // but not for `==`, which compares numbers by value: `1 == 1.0` is true.
-    // So a mixed numeric pair skips the disjointness fold and is answered by
-    // widening the integer, the same way the ordering operators answer it.
+    // A mixed numeric pair therefore skips the disjointness fold and asks the
+    // exact numeric comparator without rounding the integer through f64.
     let a_is_int = ty_is_int(t, value_types, a);
     let b_is_int = ty_is_int(t, value_types, bv);
     let a_is_float = ty_is_float(t, value_types, a);
     let b_is_float = ty_is_float(t, value_types, bv);
     let mixed_numeric = widen_numerics && ((a_is_int && b_is_float) || (a_is_float && b_is_int));
     if mixed_numeric {
-        let (left, right) = if a_is_int {
-            let raw = body.as_raw_i64(var_env, a.0);
-            let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
-            (widened, body.as_raw_f64(var_env, bv.0))
-        } else {
-            let raw = body.as_raw_i64(var_env, bv.0);
-            let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
-            (body.as_raw_f64(var_env, a.0), widened)
-        };
-        let cmp = body.b.ins().fcmp(f_cc, left, right);
+        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let cmp = body.b.ins().icmp_imm(int_cc, ordering, 0);
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
@@ -1892,9 +1854,8 @@ where
 }
 
 /// Lower a `Prim::BinOp` ordered comparison (Lt/Le/Gt/Ge). Typed fast
-/// paths emit native fcmp/icmp; the dispatch fallback splits on the
-/// int-tag test and falls back to an inlined float promote+fcmp slow
-/// path for any non-int-int operand mix.
+/// paths emit native fcmp/icmp for same-kind lanes and the shared exact
+/// comparator for mixed numeric lanes; dynamic values ask the term comparator.
 fn lower_cmp_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1924,6 +1885,17 @@ where
         BinOp::Ge => FloatCC::GreaterThanOrEqual,
         _ => unreachable!(),
     };
+    let a_is_int = ty_is_int(t, value_types, a);
+    if (a_is_int && ty_is_float(t, value_types, bv))
+        || (ty_is_float(t, value_types, a) && ty_is_int(t, value_types, bv))
+    {
+        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let cmp = body.b.ins().icmp_imm(icc, ordering, 0);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
     // Typed fast paths: float and int.
     // Safety: the two closures are mutually exclusive — only the
     // float arm fires for float operands and only the int arm fires
@@ -2134,11 +2106,8 @@ where
 /// matching clause and is refused at compile time rather than answered wrongly
 /// at run time. Equality is total and keeps its structural default.
 ///
-/// `ii` and `ff` compare two raw lanes directly. `if`/`fi` widen the integer
-/// with one `fcvt_from_sint` and compare — no tag test, no boxing, and no
-/// promotion helper reading a value it was not handed, which is what the
-/// deleted coercion path did. `bb` asks the runtime for byte-lexicographic
-/// order, the same function the interpreter asks.
+/// `ii` and `ff` compare raw lanes directly. `if`/`fi` call the shared exact
+/// numeric comparator without boxing. `bb` asks the runtime for byte order.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CmpOperands {
     IntInt,
@@ -2186,22 +2155,16 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
             let right = body.as_raw_i64(var_env, args[1].0);
             body.b.ins().icmp(icc, left, right)
         }
-        CmpOperands::FloatFloat | CmpOperands::IntFloat | CmpOperands::FloatInt => {
+        CmpOperands::FloatFloat => {
             let fcc = float_cc_for(op)?;
-            let (left, right) = match kinds {
-                CmpOperands::FloatFloat => (body.as_raw_f64(var_env, args[0].0), body.as_raw_f64(var_env, args[1].0)),
-                CmpOperands::IntFloat => {
-                    let raw = body.as_raw_i64(var_env, args[0].0);
-                    let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
-                    (widened, body.as_raw_f64(var_env, args[1].0))
-                }
-                _ => {
-                    let raw = body.as_raw_i64(var_env, args[1].0);
-                    let widened = body.b.ins().fcvt_from_sint(types::F64, raw);
-                    (body.as_raw_f64(var_env, args[0].0), widened)
-                }
-            };
+            let left = body.as_raw_f64(var_env, args[0].0);
+            let right = body.as_raw_f64(var_env, args[1].0);
             body.b.ins().fcmp(fcc, left, right)
+        }
+        CmpOperands::IntFloat | CmpOperands::FloatInt => {
+            let ordering =
+                emit_mixed_numeric_cmp(body, var_env, runtime, args[0], args[1], kinds == CmpOperands::IntFloat);
+            body.b.ins().icmp_imm(int_cc_for(op)?, ordering, 0)
         }
         CmpOperands::BinaryBinary => {
             let icc = int_cc_for(op)?;
@@ -2219,6 +2182,29 @@ fn lower_typed_cmp<M: cranelift_module::Module>(
         return Ok(LowerOut::Condition(cmp));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+}
+
+fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    left: Var,
+    right: Var,
+    left_is_int: bool,
+) -> ir::Value {
+    let (integer, float) = if left_is_int {
+        (body.as_raw_i64(var_env, left.0), body.as_raw_f64(var_env, right.0))
+    } else {
+        (body.as_raw_i64(var_env, right.0), body.as_raw_f64(var_env, left.0))
+    };
+    let compare = body.jmod.declare_func_in_func(runtime.int_float_cmp_id, body.b.func);
+    let call = body.b.ins().call(compare, &[integer, float]);
+    let ordering = body.b.inst_results(call)[0];
+    if left_is_int {
+        ordering
+    } else {
+        body.b.ins().ineg(ordering)
+    }
 }
 
 fn int_cc_for(op: BinOp) -> Result<IntCC, CodegenError> {

@@ -432,9 +432,11 @@ waits test the exact position product.
 The input inventory comes from `RuntimeDemand::is_ignore()`: an input with
 neither physical nor callable demand has no ABI position. An ignored transport
 recipe produces its zero-lane contract without requesting origin products.
-Lexical captures are a different obligation. The local callable flow names each
-capture's `Value` position, retaining the source layout needed by a wrapper even
-when its parameter input has no physical or callable demand.
+Lexical captures are a different obligation. A first-class closure demands each
+lexical capture's complete value, including fields unused by its executable
+body and the complete environments of captured callables. The local callable
+flow names those `Value` positions in the source function's fixed capture
+order. Direct-only calls may still project the smaller ABI they consume.
 Product entries retain exact product generations and fact-use states. Producers
 record dependencies at the read site; waits name those reads without restamping
 or rereading the world. Scheduler movements are reconciled to their final exact
@@ -641,12 +643,16 @@ outer carrier separately.
 Encoding and decoding obey the carrier before the structure: a carrier consumes
 one typed value lane, while an absent carrier walks the recursive layout. Thus
 an unboxed tuple remains decomposed even when one child is boxed, and field
-projection interprets that child later without rebuilding the parent. ABI
+projection interprets that child later without rebuilding the parent. A single
+`ValueRef` lane can therefore be a callable's capture, not its outer carrier;
+wrapper adapters read the layout, never infer semantic form from ABI width. ABI
 physical-layout contracts retain this provenance, so a carrier lane is always `ValueRef`; only a
 structural scalar lane may use a raw representation. A callable boundary keeps
 surface argument layouts and its callable descriptor keeps capture layouts.
-Construction wrappers consume those exact layouts and semantic input mappings;
-there is no separate seam-lane inventory.
+Construction stores one complete runtime value per lexical capture. Wrappers
+project those values to the member's exact layouts through the existing
+semantic input mappings. A zero-lane empty tuple remains a concrete value:
+decoding consults its tuple shape, rather than treating zero lanes as absence.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
@@ -802,19 +808,21 @@ body; exact caller and wrapper changes update only their arity buckets. Equal
 contributions leave those buckets alone. Packaging rejects a retained mismatch
 witness, preserving the calling-convention check without a whole-root scan.
 
-Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
-the producer wrapper when the runtime object is created; the resulting code
-pointer and environment are the callable's identity thereafter. Generic calls
-do not carry a parallel construction ID or per-variable boundary table. Exact
-calls may bypass the public object and use a member's private ABI.
+`MakeFnRef` or `MakeClosure` selects the producer wrapper at construction. The
+runtime value retains its typed source denotation and one complete immutable
+environment; the code pointer selects execution. Generic calls carry no
+parallel construction ID or per-variable boundary table. Exact calls may
+bypass the public object and use a member's private ABI.
 
-That code pointer is the whole construction, not merely its function: a wrapper
-is one function at one capture layout, so each `NativeCallableBoundary` records
-the projected shape it mints (`shape`) beside the layout it mints it at
-(`callable`). A runtime callable test compares a value's word against the
-addresses of the wrappers whose shape it names, and `Prim::ClosureCapture`
-reads a capture back through the wrappers that minted the layout the reader
-grounded on — never through the function, which several layouts can share.
+Each construction retains its source function and ordered capture annotations.
+`NativeCallableBoundary` records their runtime predicate (`shape`) separately
+from the physical descriptor (`callable`): function, source arity, and ordered
+capture layouts. Different annotations can share that descriptor. A runtime
+callable test compares a value's code word against the
+addresses of the wrappers whose shape it names. `Prim::ClosureCapture` reads
+one lexical slot through its runtime kind byte, independently of the wrapper
+or specialization that stored it. The same capture value then projects to
+the requested ABI; there is no construction-set lookup or duplicated payload.
 
 Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
 `Deliver { source, entry }`. Every settled-empty callsite or exact target

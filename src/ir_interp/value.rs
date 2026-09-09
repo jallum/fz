@@ -168,7 +168,7 @@ pub(super) fn interp_runtime_type_predicate_schema_ids(
     runtime: &mut IrInterpRuntime,
     module: &Module,
     predicate: &RuntimeTypePredicate,
-) -> (HashMap<usize, u32>, HashMap<String, u32>) {
+) -> (HashMap<usize, u32>, HashMap<fz_runtime::module_name::ModuleName, u32>) {
     // Every arity the test can ask about, NESTED ONES INCLUDED: a nested tuple
     // position is only answerable where the runtime has a schema to name, and
     // an unregistered one leaves that position blind (fz-kdt.119).

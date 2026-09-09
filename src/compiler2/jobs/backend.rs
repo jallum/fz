@@ -210,7 +210,7 @@ pub(crate) fn produce_struct_schema(
     PullOutcome::Produced(ProductValue::StructSchema(Rc::new(
         super::super::backend_program::BackendSchema {
             module,
-            name: Rc::new(world.module_name(module).expect("reachable struct name").to_string()),
+            name: Rc::new(world.module_name(module).expect("reachable struct name").clone()),
             fields: Rc::new(world.struct_def_fields(module).expect("settled schema").to_vec()),
         },
     )))
@@ -612,16 +612,17 @@ fn package_backend_construction_wrappers(
                     if layout.structural != capture.layout.structural || layout.carrier != capture.layout.carrier {
                         return Err(FatalError);
                     }
-                    Ok(BackendConstructionCapture { layout })
+                    Ok(BackendConstructionCapture { ty: capture.ty, layout })
                 })
                 .collect::<Result<Box<_>, FatalError>>()?;
+            let function = world
+                .callable(construction.callable)
+                .function
+                .expect("construction names a source function");
             Ok(Rc::new(BackendConstructionWrapper {
                 identity: positioned.position.clone(),
-                denotation: world
-                    .callable(construction.callable)
-                    .function
-                    .expect("construction names a source function")
-                    .denotation(),
+                source_origin: std::sync::Arc::clone(&world.function_ref(function).denotation),
+                denotation: function.denotation(),
                 callable: construction.callable,
                 captures,
                 call_arity,
@@ -906,7 +907,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                         .world
                         .module_name(*module)
                         .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
-                        .to_string(),
+                        .clone(),
                     fields: fields.clone(),
                 },
             ),
@@ -969,7 +970,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     .world
                     .module_name(*module)
                     .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
-                    .to_string(),
+                    .clone(),
             },
             LoweredStep::RequireMapValue { value, source, key } => BackendStep::RequireMapValue {
                 value: *value,
@@ -1510,6 +1511,11 @@ mod tests {
             };
             let wrapper = Rc::new(BackendConstructionWrapper {
                 denotation: executable.key.activation.function.denotation(),
+                source_origin: std::sync::Arc::new(fz_runtime::function_denotation::FunctionDenotation::named(
+                    None,
+                    "test".into(),
+                    0,
+                )),
                 identity,
                 callable: CallableId::for_test(0),
                 captures: Box::default(),

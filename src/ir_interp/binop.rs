@@ -23,7 +23,7 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
     // of one question is why the doors disagreed on `2 >= 1.0`.
     macro_rules! float_cmp {
         ($op:tt) => {{
-            let ordering = fz_value_cmp_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?);
+            let ordering = interp_cmp(proc, a, b)?;
             Ok(interp_bool_value(ordering $op 0))
         }};
     }
@@ -70,9 +70,26 @@ pub(super) fn interp_operator_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -
     Ok(match (a, b) {
         (AnyValue::Int(left), AnyValue::Int(right)) => left == right,
         (AnyValue::Float(left), AnyValue::Float(right)) => left == right,
-        (AnyValue::Int(left), AnyValue::Float(right)) => left as f64 == right,
-        (AnyValue::Float(left), AnyValue::Int(right)) => left == right as f64,
+        (AnyValue::Int(integer), AnyValue::Float(float)) | (AnyValue::Float(float), AnyValue::Int(integer)) => {
+            fz_runtime::term::compare_int_float(integer, float).is_eq()
+        }
         _ => fz_value_eq_widening_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?) != 0,
+    })
+}
+
+/// Compare unboxed numeric lanes without allocating scalar adapters.
+pub(super) fn interp_cmp(proc: *mut Process, a: AnyValue, b: AnyValue) -> Result<i64, String> {
+    Ok(match (a, b) {
+        (AnyValue::Int(left), AnyValue::Int(right)) => left.cmp(&right) as i64,
+        (AnyValue::Float(left), AnyValue::Float(right)) => {
+            left.partial_cmp(&right)
+                .ok_or_else(|| "nonfinite float is not a language value".to_string())? as i64
+        }
+        (AnyValue::Int(left), AnyValue::Float(right)) => fz_runtime::term::compare_int_float(left, right) as i64,
+        (AnyValue::Float(left), AnyValue::Int(right)) => {
+            fz_runtime::term::compare_int_float(right, left).reverse() as i64
+        }
+        _ => fz_value_cmp_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?),
     })
 }
 

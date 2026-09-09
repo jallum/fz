@@ -9,6 +9,22 @@ use super::emptiness::{
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
 use super::{MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
+use crate::modules::identity::ModuleName;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum OpaqueTag {
+    Named(String),
+    ProtocolTarget(ModuleName),
+}
+
+impl std::fmt::Display for OpaqueTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Named(name) => f.write_str(name),
+            Self::ProtocolTarget(module) => write!(f, "protocol-target({module})"),
+        }
+    }
+}
 
 /// Singleton-type precision for atoms (and the atom-shaped nominal axes:
 /// opaques, brands, vars — see [`VarSet`]). Numbers deliberately have no
@@ -30,7 +46,7 @@ type VarSet = FiniteSet<TypeVarId>;
 pub(super) struct Descr {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
-    pub(super) opaques: FiniteSet<String>,
+    pub(super) opaques: FiniteSet<OpaqueTag>,
     pub(super) brands: FiniteSet<String>,
     pub(super) vars: VarSet,
     pub(super) tuples: Vec<Conj<TupleSig>>,
@@ -85,7 +101,7 @@ impl Descr {
 
     pub(super) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
-        d.opaques = FiniteSet::lit(name.into());
+        d.opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
         d
     }
 
@@ -225,7 +241,12 @@ impl Descr {
 
     pub(super) fn as_opaque_singleton(&self) -> Option<&str> {
         (!self.opaques.cofinite && self.opaques.values.len() == 1)
-            .then(|| self.opaques.values.iter().next().map(String::as_str))
+            .then(|| {
+                self.opaques.values.iter().next().and_then(|tag| match tag {
+                    OpaqueTag::Named(name) => Some(name.as_str()),
+                    OpaqueTag::ProtocolTarget(_) => None,
+                })
+            })
             .flatten()
     }
 

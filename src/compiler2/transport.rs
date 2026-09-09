@@ -224,6 +224,8 @@ impl SemanticOrd<Types> for ExecutableSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Physical callable shape. Construction annotations live on its captures,
+/// independently of this shared layout identity.
 pub struct CallableDescr {
     pub function: Option<FunctionId>,
     /// The callable's user-visible parameter count — what a rendered fun
@@ -232,10 +234,6 @@ pub struct CallableDescr {
     /// may elide to nothing. Functionally determined by `function`, so it
     /// never splits an interner pool (fz-gk4).
     pub arity: u16,
-    /// The settled types of the closure's lexical captures. They remain part
-    /// of callable identity even when demand elides every physical capture
-    /// lane, preventing distinct groundings from pooling at the interner.
-    pub capture_tys: Box<[Ty]>,
     pub capture_layouts: Box<[TransportLayout]>,
 }
 
@@ -268,6 +266,8 @@ pub struct CallableConstructionOwner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableConstructionCapture {
     pub source: TransportPosition,
+    /// Source annotation retained by this construction, not its invocation ABI.
+    pub ty: Ty,
     pub layout: TransportLayout,
 }
 

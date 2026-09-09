@@ -43,12 +43,14 @@ pub use arrow_match::ArrowMatch;
 
 pub(crate) use canon::TyCanon;
 
+use crate::modules::identity::ModuleName;
 use addressed::AddrStep;
 #[cfg(test)]
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
 use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
+use descr::OpaqueTag;
 use dnf::{dnf_intersect_with, list_clause_subsumed, tuple_clause_subsumed};
 use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
@@ -822,14 +824,20 @@ impl Types {
         self.intern(Descr::opaque_of(name))
     }
 
-    pub(crate) fn struct_map(&mut self, module: super::identity::ModuleId, name: &str, fields: &[(MapKey, Ty)]) -> Ty {
-        self.intern(Descr::struct_map(
-            StructTag {
-                module,
-                name: name.to_string(),
-            },
-            fields.iter().cloned(),
-        ))
+    pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
+        self.intern(Descr {
+            opaques: FiniteSet::lit(OpaqueTag::ProtocolTarget(name)),
+            ..Descr::unbranded()
+        })
+    }
+
+    pub(crate) fn struct_map(
+        &mut self,
+        module: super::identity::ModuleId,
+        name: ModuleName,
+        fields: &[(MapKey, Ty)],
+    ) -> Ty {
+        self.intern(Descr::struct_map(StructTag { module, name }, fields.iter().cloned()))
     }
 
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
@@ -1606,6 +1614,9 @@ impl Types {
         let descr = self.descr(&ty);
         if let Some(tags) = descr.opaques.finite_elems() {
             obligations.extend(tags.filter_map(|tag| {
+                let OpaqueTag::Named(tag) = tag else {
+                    return None;
+                };
                 is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
             }));
         }
@@ -2100,6 +2111,7 @@ impl Types {
     /// Share the function interner's typed origin before a literal can name it.
     /// The ID denotes equality in this World; its origin supplies semantic order.
     pub(crate) fn define_callable_origin(&mut self, target: ClosureTarget, origin: Arc<super::identity::FunctionRef>) {
+        let origin = Arc::clone(&origin.denotation);
         let target = target.into();
         if let Some(existing) = self.callable_origins.get(&target) {
             assert_eq!(existing, &origin, "callable origins are immutable once registered");
@@ -2108,17 +2120,30 @@ impl Types {
         }
     }
 
+    pub(crate) fn callable_source_origin(
+        &self,
+        function: super::identity::FunctionId,
+    ) -> Arc<fz_runtime::function_denotation::FunctionDenotation> {
+        Arc::clone(
+            self.callable_origins
+                .get(&crate::fz_ir::FnId(function.as_u32()))
+                .expect("registered source function"),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn define_test_callable(&mut self, target: ClosureTarget, name: &str, arity: usize) {
         self.define_callable_origin(
             target,
             Arc::new(super::identity::FunctionRef {
                 module: super::identity::ModuleId::GLOBAL,
-                origin: super::identity::FunctionOrigin::Named {
-                    module: None,
-                    name: name.to_string(),
-                },
-                arity,
+                denotation: Arc::new(super::identity::FunctionDenotation {
+                    origin: super::identity::FunctionOrigin::Named {
+                        module: None,
+                        name: name.to_string(),
+                    },
+                    arity,
+                }),
             }),
         );
     }
@@ -2826,14 +2851,17 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
 }
 
 fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
-    const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
-        || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
+        || descr
+            .opaques
+            .values
+            .iter()
+            .any(|tag| matches!(tag, OpaqueTag::Named(_)))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
 
-fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<String>) {
+fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<ModuleName>) {
     let mut plain = false;
     let mut structs = FiniteSet::none();
     for clause in &descr.maps {
@@ -2961,20 +2989,16 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
     Some(targets)
 }
 
-fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<String>) -> FiniteSet<String> {
-    const STRUCT_PREFIX: &str = "impl-target::";
-    let legacy = if descr.opaques.cofinite {
+fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<ModuleName>) -> FiniteSet<ModuleName> {
+    let nominal = if descr.opaques.cofinite {
         FiniteSet::none()
     } else {
-        FiniteSet::finite(
-            descr
-                .opaques
-                .values
-                .iter()
-                .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
-        )
+        FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
+            OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
+            OpaqueTag::Named(_) => None,
+        }))
     };
-    legacy.union(&structs)
+    nominal.union(&structs)
 }
 
 fn runtime_type_predicate_remove<T>(set: &FiniteSet<T>, value: &T) -> FiniteSet<T>

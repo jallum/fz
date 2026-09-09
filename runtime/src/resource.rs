@@ -60,6 +60,25 @@ use std::mem::{align_of, forget, size_of};
 #[cfg(test)]
 use std::ptr::null_mut;
 use std::ptr::{NonNull, addr_of, read, write};
+use std::sync::atomic::AtomicU64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct ResourceId(u64);
+
+impl ResourceId {
+    fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(
+            NEXT.fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .expect("resource identity exhausted"),
+        )
+    }
+}
 
 pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 
@@ -77,9 +96,10 @@ pub struct Resource {
     pub refcount: AtomicUsize,                          // offset 0..8
     pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
     pub payload: u64,                                   // offset 16..24
+    id: ResourceId,                                     // offset 24..32
 }
 
-/// 24 bytes of fields, rounded to the 16-byte alignment above.
+/// The identity occupies the owner's existing alignment padding.
 pub const RESOURCE_BYTES: usize = 32;
 
 const _: () = {
@@ -127,6 +147,7 @@ pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Res
         refcount: AtomicUsize::new(1),
         destructor: dtor,
         payload,
+        id: ResourceId::fresh(),
     });
     Box::into_raw(r)
 }
@@ -252,7 +273,7 @@ impl Drop for ResourceHandle {
 
 // ===== ResourceStub (on-heap strict tagged stub) ============================
 
-const RESOURCE_STUB_SIZE: usize = 48;
+pub(crate) const RESOURCE_STUB_SIZE: usize = 48;
 const RESOURCE_STUB_MAGIC_OFFSET: usize = 8;
 const RESOURCE_STUB_CLOSURE_RAW_OFFSET: usize = 16;
 const RESOURCE_STUB_CLOSURE_KIND_OFFSET: usize = 24;
@@ -325,6 +346,10 @@ impl ResourceStub {
 
     pub fn payload(&self) -> u64 {
         unsafe { (*self.shared_raw()).payload }
+    }
+
+    pub fn id(&self) -> ResourceId {
+        unsafe { (*self.shared_raw()).id }
     }
 
     pub fn payload_slot(&self) -> *const u64 {

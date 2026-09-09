@@ -7,6 +7,7 @@ use std::hash::{Hash, Hasher};
 use crate::fz_ir::FnId;
 
 use crate::compiler2::identity::ModuleId;
+use crate::modules::identity::ModuleName;
 
 use super::{CallableValueKind, MapKey, Sigma, Ty, TyCtx, Types};
 
@@ -22,17 +23,17 @@ pub(super) enum MapTag {
 }
 
 /// Typed nominal identity for a runtime struct schema. `World` interns a
-/// qualified module name to one `ModuleId`; `name` is derived runtime-schema
-/// and display payload, while equality, hashing, and ordering use only the id.
+/// qualified source path to one `ModuleId`. The parsed name owns semantic
+/// equality and order; the local id identifies the World dependency.
 #[derive(Clone)]
 pub(super) struct StructTag {
     pub(super) module: ModuleId,
-    pub(super) name: String,
+    pub(super) name: ModuleName,
 }
 
 impl PartialEq for StructTag {
     fn eq(&self, other: &Self) -> bool {
-        self.module == other.module
+        self.name == other.name
     }
 }
 
@@ -40,7 +41,7 @@ impl Eq for StructTag {}
 
 impl Hash for StructTag {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.module.hash(state);
+        self.name.hash(state);
     }
 }
 
@@ -58,7 +59,7 @@ impl PartialOrd for StructTag {
 
 impl Ord for StructTag {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.module.cmp(&other.module)
+        self.name.cmp(&other.name)
     }
 }
 

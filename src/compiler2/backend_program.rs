@@ -18,7 +18,7 @@ use super::types::Types;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendSchema {
     pub module: ModuleId,
-    pub name: Rc<String>,
+    pub name: Rc<fz_runtime::module_name::ModuleName>,
     pub fields: Rc<Vec<String>>,
 }
 
@@ -87,7 +87,7 @@ fn changed_wrappers(
 pub struct BackendProgram {
     entry: ExecutableKey,
     pub atom_names: SharedOrder<AtomOccurrence, Rc<String>>,
-    pub struct_schemas: SharedOrder<Rc<String>, Rc<Vec<String>>>,
+    pub struct_schemas: SharedOrder<Rc<fz_runtime::module_name::ModuleName>, Rc<Vec<String>>>,
     executables: SharedOrder<ExecutableKey, Rc<BackendExecutable>>,
     construction_wrappers: SharedOrder<Rc<TransportPosition>, Rc<BackendConstructionWrapper>>,
     atom_owners: SharedOrder<Rc<String>, AtomOwners>,
@@ -122,9 +122,9 @@ impl BackendProgram {
             .lookup(key, &|left, right| left.semantic_cmp(right, types))
     }
 
-    pub fn schema(&self, name: &str) -> Option<&Vec<String>> {
+    pub fn schema(&self, name: &fz_runtime::module_name::ModuleName) -> Option<&Vec<String>> {
         self.struct_schemas
-            .lookup(name, &|left, right| left.cmp(right.as_str()))
+            .lookup(name, &|left, right| left.cmp(right.as_ref()))
             .map(Rc::as_ref)
     }
 
@@ -385,7 +385,7 @@ impl BackendProgram {
     pub fn new(
         entry: ExecutableKey,
         atoms: Vec<String>,
-        schemas: BTreeMap<String, Vec<String>>,
+        schemas: BTreeMap<fz_runtime::module_name::ModuleName, Vec<String>>,
         executables: Vec<Rc<BackendExecutable>>,
         wrappers: Vec<Rc<BackendConstructionWrapper>>,
         types: &Types,

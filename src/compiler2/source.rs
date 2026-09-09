@@ -15,6 +15,7 @@ use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::Span;
 
 const NIL_ATOM: &str = "nil";
@@ -24,6 +25,7 @@ const FALSE_ATOM: &str = "false";
 const META_LEXICAL_KEY: &str = "__fz_lexical__";
 const META_NAMESPACE_ID_KEY: &str = "__fz_namespace_id__";
 const META_SPAN_KEY: &str = "__fz_span__";
+pub(crate) const META_MODULE_KEY: &str = "__fz_module__";
 /// Stamped on the callee of a `lhs[key]` access so decoding can recognise the
 /// front door's own bracket sugar. The alias in that callee is NOT sufficient:
 /// decoding runs before alias resolution, so `alias Foo, as: Access` is
@@ -145,6 +147,9 @@ impl QuotedLexicalContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuotedSourceMetadata {
+    /// Exact portable target of a projected module alias. Its visible segments
+    /// remain macro-readable display data.
+    pub module: Option<ModuleDenotation>,
     pub lexical_context: Option<QuotedLexicalContext>,
     /// True only on the callee this front door synthesises for `lhs[key]`.
     /// See [`META_FROM_BRACKETS_KEY`].
@@ -321,17 +326,16 @@ impl QuotedSourceBuilder {
         let schema_id = self.heap.tuple_schema_id(&mut proc, items.len());
         let ptr = proc.heap.alloc_struct(schema_id);
         for (index, item) in items.iter().copied().enumerate() {
-            proc.heap
-                .write_field_slot(ptr, (index * 8) as u32, any_value_from_ref(item)?);
+            unsafe {
+                proc.heap
+                    .write_field_slot(ptr, (index * 8) as u32, any_value_from_ref(item)?)
+            };
         }
         AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).map_err(QuotedSourceError::from)
     }
 
-    /// The heap owns map key order. `alloc_map_refs` sorts and dedups with
-    /// `map_key_cmp_refs`, so a pre-sort here would be discarded — and the one
-    /// that used to be here ordered binary keys by ADDRESS, never having
-    /// received fz-5xp.48's content ordering. A second authority whose answer
-    /// is thrown away is still a second authority (fz-5xp.21).
+    /// The heap publishes strict structural key order once. Quoted source
+    /// consumes that order directly.
     pub fn map(&self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, QuotedSourceError> {
         let mut proc = self.heap.process.borrow_mut();
         proc.heap.alloc_map_refs(entries).map_err(QuotedSourceError::from)
@@ -367,6 +371,9 @@ impl QuotedSourceBuilder {
 
     pub fn meta(&self, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
         let mut entries = Vec::new();
+        if let Some(module) = &meta.module {
+            entries.push((self.atom(META_MODULE_KEY), self.module_denotation(module)?));
+        }
         if let Some(context) = &meta.lexical_context {
             entries.push((self.atom(META_LEXICAL_KEY), self.lexical_context(context)?));
         }
@@ -386,6 +393,15 @@ impl QuotedSourceBuilder {
         tail: AnyValueRef,
     ) -> Result<AnyValueRef, QuotedSourceError> {
         self.tuple(&[head, self.meta(meta)?, tail])
+    }
+
+    fn module_denotation(&self, module: &ModuleDenotation) -> Result<AnyValueRef, QuotedSourceError> {
+        let (tag, paths) = module.quoted_parts();
+        let mut fields = vec![self.atom(tag)];
+        for path in paths {
+            fields.push(self.atom_list(path.segments())?);
+        }
+        self.tuple(&fields)
     }
 
     pub fn variable(&self, name: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
@@ -545,6 +561,34 @@ pub struct QuotedAstNode {
 }
 
 impl QuotedSourceCursor {
+    pub(crate) fn module_denotation(&self) -> Result<Option<ModuleDenotation>, QuotedSourceError> {
+        if self.root.tag() != ValueKind::MAP {
+            return Ok(None);
+        }
+        let Some(value) = self.map_value(META_MODULE_KEY)? else {
+            return Ok(None);
+        };
+        let fields = value.tuple_items()?;
+        let Some(tag) = fields.first() else {
+            return Err(QuotedSourceError::new("empty module denotation"));
+        };
+        fn name(cursor: &QuotedSourceCursor) -> Result<ModuleName, QuotedSourceError> {
+            let segments = cursor.list_atom_names()?;
+            if segments.is_empty() || segments.iter().any(String::is_empty) {
+                return Err(QuotedSourceError::new("module denotation requires nonempty segments"));
+            }
+            Ok(ModuleName::from_segments(segments))
+        }
+        Ok(Some(match (tag.atom_name()?.as_str(), fields.as_slice()) {
+            ("named", [_, path]) => ModuleDenotation::Named(name(path)?),
+            ("protocol_impl", [_, protocol, target]) => ModuleDenotation::ProtocolImpl {
+                protocol: name(protocol)?,
+                target: name(target)?,
+            },
+            _ => return Err(QuotedSourceError::new("invalid module denotation tag or arity")),
+        }))
+    }
+
     pub fn root(&self) -> AnyValueRef {
         self.root
     }
@@ -627,7 +671,7 @@ impl QuotedSourceCursor {
             if field.kind != fz_runtime::heap::FieldKind::AnyValue {
                 return Err(QuotedSourceError::new(format!(
                     "quoted source tuple cannot read raw field in schema {}",
-                    schema.get(schema_id).name
+                    schema.get(schema_id).identity.display_name()
                 )));
             }
             let value = proc
@@ -696,9 +740,9 @@ impl QuotedSourceCursor {
 
 /// Two-sided semantic equality over two quoted graphs in (possibly) different
 /// heaps, comparing in lockstep and fast-failing — no canonical rendering is
-/// ever built. Atoms compare by rendered name (atom ids differ per heap);
-/// structs by schema name + fields; lists by spine; maps by content (storage
-/// order is not cross-heap-stable).
+/// ever built. Atoms compare by name (atom ids differ per heap); structs by
+/// typed schema identity + fields; lists by spine; maps by metadata-erased
+/// content, whose relation differs from runtime key identity.
 fn values_eq(
     pa: &Process,
     a: AnyValueRef,
@@ -757,8 +801,8 @@ fn list_eq(
 }
 
 /// Map entries minus the non-semantic metadata keys (span + namespace-id).
-/// Storage order is not cross-heap-stable (atom ids and pointer payloads
-/// differ), so callers match by content.
+/// Runtime order includes metadata inside composite keys. Erasing that
+/// metadata can change order, so callers match the projected content.
 fn included_map_entries(
     proc: &Process,
     value: AnyValueRef,
@@ -795,8 +839,8 @@ fn map_eq(
     if left.len() != right.len() {
         return Ok(false);
     }
-    // Metadata maps are tiny; match each left entry to an unused right entry by
-    // content (key + value), consuming it, since order is not comparable.
+    // Match each left entry to one right entry under metadata-erased equality.
+    // Stable runtime order does not order this different relation.
     for (left_key, left_value) in &left {
         let mut matched = None;
         for (index, (right_key, right_value)) in right.iter().enumerate() {
@@ -818,7 +862,7 @@ fn map_eq(
 }
 
 struct StructLayout {
-    name: String,
+    identity: fz_runtime::heap::SchemaIdentity,
     offsets: Vec<u32>,
 }
 
@@ -837,11 +881,11 @@ fn struct_layout(proc: &Process, value: AnyValueRef) -> Result<StructLayout, Quo
     {
         return Err(QuotedSourceError::new(format!(
             "quoted source struct {} contains raw fields",
-            schema.name
+            schema.identity.display_name()
         )));
     }
     Ok(StructLayout {
-        name: schema.name.clone(),
+        identity: schema.identity.clone(),
         offsets: schema.fields.iter().map(|field| field.offset).collect(),
     })
 }
@@ -855,14 +899,14 @@ fn struct_eq(
 ) -> Result<bool, QuotedSourceError> {
     let left = struct_layout(pa, a)?;
     let right = struct_layout(pb, b)?;
-    if left.name != right.name || left.offsets.len() != right.offsets.len() {
+    if left.identity != right.identity || left.offsets.len() != right.offsets.len() {
         return Ok(false);
     }
 
     // Surface horizon: a `do:` keyword is a 2-tuple (atom "do", body). Compare
     // the key but skip the body — bodies belong to their own per-function facts,
     // so a body-only edit must not move the surface.
-    if horizon == Horizon::Surface && tuple_arity(&left.name) == Some(2) {
+    if horizon == Horizon::Surface && left.identity == fz_runtime::heap::SchemaIdentity::Tuple(2) {
         let left_key = pa
             .heap
             .read_struct_field_ref(a, left.offsets[0])
@@ -937,8 +981,4 @@ fn render_atom_name(proc: &Process, atom_id: u32) -> Result<String, QuotedSource
 
 fn any_value_from_ref(value: AnyValueRef) -> Result<AnyValue, QuotedSourceError> {
     AnyValue::from_ref(value).map_err(QuotedSourceError::from)
-}
-
-fn tuple_arity(name: &str) -> Option<usize> {
-    name.strip_prefix("Tuple").and_then(|suffix| suffix.parse().ok())
 }

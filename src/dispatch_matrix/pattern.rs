@@ -201,7 +201,7 @@ pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
 ) -> Result<PatternGuardDispatch<TypeHandle>, SourcePatternError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -305,7 +305,7 @@ pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -384,19 +384,15 @@ where
             )?),
         },
         Expr::Call(target, args) => {
-            let callee = match &target.node {
-                Expr::Var(name) => Some((name.as_str(), args.len())),
-                Expr::FnRef { name, arity } if *arity == args.len() => Some((name.as_str(), *arity)),
-                _ => None,
-            };
-            let Some((name, arity)) = callee else {
+            let arity = args.len();
+            let Some(name) = crate::ast::CallableName::for_call(&target.node, arity) else {
                 return Err(SourcePatternError::UnsupportedGuardExpr);
             };
             let args = args
                 .iter()
                 .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, guard_call_resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            match guard_call_resolver(name, arity, args)? {
+            match guard_call_resolver(&name, arity, args)? {
                 Some(expr) => expr,
                 None => return Err(SourcePatternError::UnsupportedGuardExpr),
             }
@@ -408,7 +404,7 @@ where
 pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
-    let mut resolver = |_name: &str,
+    let mut resolver = |_name: &crate::ast::CallableName,
                         _arity: usize,
                         _args: Vec<PatternGuardExpr<TypeHandle>>|
      -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> { Ok(None) };
@@ -421,7 +417,7 @@ pub(crate) fn pattern_dispatch_from_source_with_guard_resolver<F, TypeHandle>(
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError>
 where
     F: FnMut(
-        &str,
+        &crate::ast::CallableName,
         usize,
         Vec<PatternGuardExpr<TypeHandle>>,
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -496,7 +492,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     ) -> Result<(), SourcePatternError>
     where
         F: FnMut(
-            &str,
+            &crate::ast::CallableName,
             usize,
             Vec<PatternGuardExpr<TypeHandle>>,
         ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
@@ -510,7 +506,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn add_row<F>(&mut self, row: PatternRow<TypeHandle>, guard_call_resolver: &mut F) -> Result<(), SourcePatternError>
     where
         F: FnMut(
-            &str,
+            &crate::ast::CallableName,
             usize,
             Vec<PatternGuardExpr<TypeHandle>>,
         ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,

@@ -1,5 +1,5 @@
 #---
-# purpose: "boxed predicate identities share equivalent native reducer code without changing the result"
+# purpose: "grounded predicate captures retain distinct semantics without boxed invocation"
 # oracle: oracle.exs
 #---
 fn reduce_plain([], acc, _reducer), do: acc

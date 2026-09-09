@@ -64,6 +64,7 @@ impl<T: Copy> CallTarget<T> {
 pub struct BackendConstructionWrapper {
     pub identity: TransportPosition,
     pub denotation: fz_runtime::any_value::ClosureDenotationId,
+    pub source_origin: std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
     pub callable: CallableId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub call_arity: usize,
@@ -121,6 +122,8 @@ pub struct BackendReturnLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionCapture {
+    /// The source capture annotation, independent of its physical layout.
+    pub ty: Ty,
     pub layout: BackendValueLayout,
 }
 
@@ -745,7 +748,7 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
 }
 
 /// Visit CPS control edges, never callable construction words carried by
-/// `MakeFnRef`, `MakeClosure`, or `ClosureCapture`.
+/// `MakeFnRef` or `MakeClosure`.
 fn visit_ir_control_fn_ids(function: &mut IrFn, mut visit: impl FnMut(&mut FnId)) {
     for block in &mut function.blocks {
         match &mut block.terminator {
@@ -890,10 +893,11 @@ pub(crate) struct NativeBody {
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
     pub denotation: fz_runtime::any_value::ClosureDenotationId,
+    pub source_origin: std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
     pub identity_fn: FnId,
-    /// The callable LAYOUT this boundary mints: function, capture types and
-    /// physical capture lanes. Several boundaries can mint one layout -- one
-    /// per construction position -- and each stamps its own `identity_fn`.
+    /// The physical specialization: function, arity and ordered capture layouts.
+    /// Several construction positions may share it. Runtime captures retain
+    /// complete values in source order, independent of these ABI layouts.
     pub callable: CallableId,
     /// The CONSTRUCTION this boundary mints, as a runtime test names it: the
     /// function the lattice's closure literal names, plus the projected
@@ -1336,7 +1340,7 @@ pub enum BackendStep {
     },
     Struct {
         value: ValueId,
-        module_name: String,
+        module_name: fz_runtime::module_name::ModuleName,
         fields: Vec<(String, ValueId)>,
     },
     Bitstring {
@@ -1381,7 +1385,7 @@ pub enum BackendStep {
     },
     AssertStruct {
         source: ValueId,
-        module_name: String,
+        module_name: fz_runtime::module_name::ModuleName,
     },
     RequireMapValue {
         value: ValueId,

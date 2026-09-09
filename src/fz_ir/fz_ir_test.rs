@@ -152,7 +152,7 @@ fn module_holds_schemas() {
     use fz_runtime::heap::{FieldDescriptor, FieldKind};
     let mut mb = ModuleBuilder::new();
     let id = mb.add_schema(Schema {
-        name: "Frame_identity".into(),
+        identity: fz_runtime::heap::SchemaIdentity::Internal("Frame_identity".into()),
         size: 16,
         fields: vec![FieldDescriptor {
             offset: 0,
@@ -163,7 +163,7 @@ fn module_holds_schemas() {
     assert_eq!(id, 0);
     let m = mb.build();
     assert_eq!(m.schemas.len(), 1);
-    assert_eq!(m.schemas[0].name, "Frame_identity");
+    assert_eq!(m.schemas[0].identity.display_name(), "Frame_identity");
 }
 
 #[test]

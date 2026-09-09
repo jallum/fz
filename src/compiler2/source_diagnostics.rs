@@ -73,6 +73,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
         | Expr::Nil
         | Expr::Var(_)
         | Expr::FnRef { .. }
+        | Expr::Module(_)
         | Expr::CaptureArg(_)
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}

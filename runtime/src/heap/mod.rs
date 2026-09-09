@@ -22,7 +22,6 @@ mod deep_copy;
 mod fragment;
 mod gc;
 mod imp;
-mod key_cmp;
 mod ref_io;
 mod schema;
 mod stats;
@@ -43,7 +42,7 @@ pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
 pub use self::deep_copy::{deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits};
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
-pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaIdentity, SchemaRegistry};
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
 /// fz-cty.5 — bitstrings above this many bytes are routed through the

@@ -1,3 +1,4 @@
+use crate::modules::identity::{ModuleDenotation, ModuleName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -206,7 +207,6 @@ impl ModuleState {
 pub struct ModuleSource {
     pub code: CodeId,
     pub parent: ModuleId,
-    pub local_name: String,
     pub source: QuotedSourceRoot,
     pub kind: ModuleSourceKind,
 }
@@ -215,12 +215,10 @@ pub struct ModuleSource {
 pub enum ModuleSourceKind {
     Body(ScopeSurface),
     Protocol(ScopeSurface),
-    /// A `defimpl Protocol, for: Target` hoisted to its own module named
-    /// `Protocol.Target` (Elixir's `__concat__`). It is independently
-    /// demandable via `DefineModule(Protocol.Target)`: the impl is defined
-    /// without defining its lexical host module. `protocol`/`target`/`owner`
-    /// are resolved name-accurately at the defimpl's lexical site; `owner` is
-    /// the enclosing module that supplies the callbacks' resolution context.
+    /// A `defimpl Protocol, for: Target` owned by its typed protocol/target
+    /// pair. `DefineModule(impl_module)` demands it independently of its
+    /// lexical host. The protocol and target resolve at the declaration site;
+    /// the saved namespace supplies the callbacks' lexical resolution context.
     ProtocolImpl(ProtocolImplSource),
 }
 
@@ -236,7 +234,6 @@ impl ModuleSource {
         Self {
             code,
             parent: ModuleId::GLOBAL,
-            local_name: String::new(),
             source: QuotedSourceRoot::empty(),
             kind: ModuleSourceKind::Body(ScopeSurface {
                 attrs: Vec::new(),
@@ -304,100 +301,18 @@ struct GeneratedFunctionKey {
     arity: usize,
 }
 
+pub use fz_runtime::function_denotation::{FunctionDenotation, FunctionOrigin};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionRef {
     pub module: ModuleId,
-    pub origin: FunctionOrigin,
-    pub arity: usize,
+    pub denotation: Arc<FunctionDenotation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FunctionOrigin {
-    Named {
-        module: Option<crate::modules::identity::ModuleName>,
-        name: String,
-    },
-    Generated {
-        owner: Arc<FunctionRef>,
-        occurrence: crate::ast::LambdaOccurrence,
-    },
-}
-
-impl FunctionRef {
-    pub fn source_name(&self) -> Option<&str> {
-        match &self.origin {
-            FunctionOrigin::Named { name, .. } => Some(name),
-            FunctionOrigin::Generated { .. } => None,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        self.source_name().expect("a named function has a source identifier")
-    }
-
-    pub fn lexical_owner(&self) -> &Self {
-        match &self.origin {
-            FunctionOrigin::Named { .. } => self,
-            FunctionOrigin::Generated { owner, .. } => owner.lexical_owner(),
-        }
-    }
-
-    pub fn is_named(&self, name: &str) -> bool {
-        self.source_name() == Some(name)
-    }
-
-    pub fn is_generated(&self) -> bool {
-        matches!(self.origin, FunctionOrigin::Generated { .. })
-    }
-
-    pub fn display_name(&self) -> String {
-        match self.source_name() {
-            Some(name) => name.to_string(),
-            None => self.label(),
-        }
-    }
-
-    pub fn semantic_cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-        match (&self.origin, &other.origin) {
-            (
-                FunctionOrigin::Named {
-                    module: left_module,
-                    name: left,
-                },
-                FunctionOrigin::Named {
-                    module: right_module,
-                    name: right,
-                },
-            ) => left_module.cmp(right_module).then_with(|| left.cmp(right)),
-            (FunctionOrigin::Named { .. }, FunctionOrigin::Generated { .. }) => Ordering::Less,
-            (FunctionOrigin::Generated { .. }, FunctionOrigin::Named { .. }) => Ordering::Greater,
-            (
-                FunctionOrigin::Generated {
-                    owner: left,
-                    occurrence: left_occurrence,
-                },
-                FunctionOrigin::Generated {
-                    owner: right,
-                    occurrence: right_occurrence,
-                },
-            ) => left
-                .semantic_cmp(right)
-                .then_with(|| left_occurrence.cmp(right_occurrence)),
-        }
-        .then_with(|| self.arity.cmp(&other.arity))
-    }
-
-    pub fn label(&self) -> String {
-        match &self.origin {
-            FunctionOrigin::Named { module, name } => match module {
-                Some(module) => format!("{module}.{name}/{}", self.arity),
-                None => format!("{name}/{}", self.arity),
-            },
-            FunctionOrigin::Generated { owner, occurrence } => {
-                format!("{}#lambda@{}/{}", owner.label(), occurrence.as_u32(), self.arity)
-            }
-        }
+impl std::ops::Deref for FunctionRef {
+    type Target = FunctionDenotation;
+    fn deref(&self) -> &Self::Target {
+        &self.denotation
     }
 }
 
@@ -430,8 +345,8 @@ pub struct NotedTypeDecl {
 #[derive(Debug, Default)]
 pub struct ModuleMap {
     slots: Vec<ModuleState>,
-    names: Vec<Option<String>>,
-    by_name: HashMap<String, ModuleId>,
+    denotations: Vec<Option<ModuleDenotation>>,
+    by_denotation: HashMap<ModuleDenotation, ModuleId>,
 }
 
 impl ModuleMap {
@@ -442,20 +357,23 @@ impl ModuleMap {
                 base: Namespace::default(),
                 interface: ModuleInterface::default(),
             }],
-            names: vec![None],
-            by_name: HashMap::new(),
+            denotations: vec![None],
+            by_denotation: HashMap::new(),
         }
     }
 
-    pub fn reference_named(&mut self, name: impl Into<String>) -> ModuleId {
-        let name = name.into();
-        if let Some(id) = self.by_name.get(&name) {
+    pub fn reference_named(&mut self, name: ModuleName) -> ModuleId {
+        self.reference(ModuleDenotation::Named(name))
+    }
+
+    pub fn reference(&mut self, denotation: ModuleDenotation) -> ModuleId {
+        if let Some(id) = self.by_denotation.get(&denotation) {
             return *id;
         }
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(ModuleState::Placeholder { interface: None });
-        self.names.push(Some(name.clone()));
-        self.by_name.insert(name, id);
+        self.denotations.push(Some(denotation.clone()));
+        self.by_denotation.insert(denotation, id);
         id
     }
 
@@ -524,7 +442,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> bool {
@@ -533,7 +450,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::Body(surface),
             },
@@ -547,7 +463,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
     ) -> bool {
@@ -556,7 +471,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::Protocol(surface),
             },
@@ -570,7 +484,6 @@ impl ModuleMap {
         id: ModuleId,
         code: CodeId,
         parent: ModuleId,
-        local_name: String,
         source: QuotedSourceRoot,
         impl_source: ProtocolImplSource,
     ) -> bool {
@@ -579,7 +492,6 @@ impl ModuleMap {
             source: ModuleSource {
                 code,
                 parent,
-                local_name,
                 source,
                 kind: ModuleSourceKind::ProtocolImpl(impl_source),
             },
@@ -594,11 +506,15 @@ impl ModuleMap {
             .expect("module ids should be known before reading module slots")
     }
 
-    pub fn name(&self, id: ModuleId) -> Option<&str> {
-        self.names
+    pub fn name(&self, id: ModuleId) -> Option<&ModuleName> {
+        self.denotation(id).and_then(ModuleDenotation::named_path)
+    }
+
+    pub fn denotation(&self, id: ModuleId) -> Option<&ModuleDenotation> {
+        self.denotations
             .get(id.0 as usize)
             .expect("module ids should be known before reading module names")
-            .as_deref()
+            .as_ref()
     }
 }
 
@@ -618,7 +534,7 @@ impl FunctionMap {
     pub fn reference(
         &mut self,
         module: ModuleId,
-        module_name: Option<crate::modules::identity::ModuleName>,
+        module_denotation: Option<ModuleDenotation>,
         name: impl Into<String>,
         arity: usize,
     ) -> FunctionId {
@@ -635,11 +551,13 @@ impl FunctionMap {
         self.slots.push(FunctionState::Placeholder);
         self.refs.push(Arc::new(FunctionRef {
             module,
-            origin: FunctionOrigin::Named {
-                module: module_name,
-                name,
-            },
-            arity,
+            denotation: Arc::new(FunctionDenotation {
+                origin: FunctionOrigin::Named {
+                    module: module_denotation,
+                    name,
+                },
+                arity,
+            }),
         }));
         self.by_key.insert(key, id);
         id
@@ -664,11 +582,13 @@ impl FunctionMap {
         self.slots.push(FunctionState::Placeholder);
         self.refs.push(Arc::new(FunctionRef {
             module,
-            origin: FunctionOrigin::Generated {
-                owner: Arc::clone(&self.refs[owner.0 as usize]),
-                occurrence,
-            },
-            arity,
+            denotation: Arc::new(FunctionDenotation {
+                origin: FunctionOrigin::Generated {
+                    owner: Arc::clone(&self.refs[owner.0 as usize].denotation),
+                    occurrence,
+                },
+                arity,
+            }),
         }));
         self.generated_by_key.insert(key, id);
         id
@@ -1028,7 +948,6 @@ impl ModuleSource {
     fn same_source(&self, other: &Self) -> bool {
         self.code == other.code
             && self.parent == other.parent
-            && self.local_name == other.local_name
             && self.source.semantically_eq(&other.source, Horizon::Surface)
     }
 }

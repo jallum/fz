@@ -213,7 +213,15 @@ pub fn cheney_forward_resource(
     if let Some(fwd) = is_forwarded_resource(p) {
         return fwd as *mut u8;
     }
-    copy_to_space_with_first_word_forwarding(p, 32, TAG_RESOURCE, free, to_end, copied_objects, stats)
+    copy_to_space_with_first_word_forwarding(
+        p,
+        crate::resource::RESOURCE_STUB_SIZE,
+        TAG_RESOURCE,
+        free,
+        to_end,
+        copied_objects,
+        stats,
+    )
 }
 
 pub fn copy_to_space_with_confirmed_forwarding(

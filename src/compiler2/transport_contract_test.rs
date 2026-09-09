@@ -3699,7 +3699,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
 }
 
 #[test]
-fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_capture() {
+fn compiler2_transport_plan_retains_whole_callable_capture_independently_of_member_inputs() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3743,7 +3743,7 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
         "the capturing lambda must retain executable targets"
     );
     assert!(
-        resolutions.iter().all(|executable| {
+        resolutions.iter().any(|executable| {
             retained_layout_at(
                 &plan,
                 &TransportPosition::ExecutableInput {
@@ -3751,15 +3751,14 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
                     semantic_index: 0,
                 },
             )
-            .is_some_and(|layout| layout.carrier.is_value_ref())
+            .is_some_and(|layout| !layout.carrier.is_value_ref())
         }),
-        "each generated lambda executable must receive its first-class callable capture through a ValueRef-owned input layout: callable={callable:?}; layouts={:?}",
-        retained_layouts(&plan).collect::<Vec<_>>(),
+        "a member may need less than the whole retained callable; execution demand must not erase that semantic capture",
     );
 }
 
 #[test]
-fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix() {
+fn compiler2_singleton_callable_input_retains_its_source_environment_layout() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3800,7 +3799,6 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
     };
     let descr = world.callable(*callable);
     assert_eq!(descr.function, Some(target.activation.function));
-    assert_eq!(descr.capture_tys.as_ref(), &target.activation_inputs[..2]);
     assert_eq!(descr.capture_layouts.len(), 2);
     assert_eq!(callable_capture_lanes(&world, *callable).len(), 2);
     assert_eq!(layout.carrier, TransportCarrier::Absent);
@@ -4151,6 +4149,7 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
     driver.finish_session();
     let session = &*driver.session();
     let mut checked = 0;
+    let mut narrower_members = 0;
     for wrapper in program.construction_wrappers().iter() {
         let construction = owner_at(session, &wrapper.identity)
             .construction
@@ -4164,33 +4163,43 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
             wrapper
                 .captures
                 .iter()
-                .map(|capture| capture.layout.carrier)
+                .map(|capture| (capture.ty, capture.layout.carrier))
                 .collect::<Vec<_>>(),
             construction
                 .captures
                 .iter()
-                .map(|capture| capture.layout.carrier)
+                .map(|capture| (capture.ty, capture.layout.carrier))
                 .collect::<Vec<_>>(),
-            "backend packaging must preserve the construction fact's callable capture carriers",
+            "backend packaging preserves source capture annotations and physical carriers independently",
         );
-        for (capture_index, _) in construction.captures.iter().enumerate() {
-            for member in &wrapper.members {
+        for member in &wrapper.members {
+            let target = program
+                .executables()
+                .iter()
+                .find(|target| target.key == member.target)
+                .expect("member target");
+            assert_eq!(
+                member.target_inputs, target.abi.semantic_inputs,
+                "member execution views use the target's authoritative sparse input layouts",
+            );
+            assert_eq!(member.capture_semantic_inputs.len(), wrapper.captures.len());
+            for (capture_index, capture) in wrapper.captures.iter().enumerate() {
                 let semantic_index = member.capture_semantic_inputs[capture_index];
                 let target_carries = member
                     .target_inputs
                     .iter()
                     .find(|input| input.semantic_index == semantic_index)
                     .is_some_and(|input| !input.layout.reprs.is_empty());
-                assert_eq!(
-                    target_carries,
-                    !wrapper.captures[capture_index].layout.reprs.is_empty(),
-                    "the construction fact must agree with every member target capture ABI",
-                );
+                narrower_members += usize::from(!target_carries && !capture.layout.reprs.is_empty());
             }
         }
         checked += usize::from(callable_capture);
     }
     assert!(checked > 0, "the fixture should package a callable capture");
+    assert!(
+        narrower_members > 0,
+        "complete retention must survive an unused member input"
+    );
 }
 
 /// A published whole-value lane is a CONTRACT, so it may only ever be wider
@@ -4669,10 +4678,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 105),
-                    (("metadata", true), 302)
+                    (("metadata", false), 223),
+                    (("metadata", true), 184)
                 ]),
-                "fz-kdt.182 removed ten metadata-only positions whose list-union executable identities were redundant, and fz-5xp.2 removes ten more by letting a list reach Enum.to_list/1 as itself instead of through reverse(reverse(_)); every retained owner preserves its obligation"
+                "all 445 owners preserve their obligations; separating retained closure values from member execution demand removes lanes from 118 metadata-only positions"
             );
         }
     }
@@ -4742,7 +4751,7 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
 }
 
 #[test]
-fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
+fn compiler2_unused_lexical_capture_is_retained_without_expanding_the_member_abi() {
     let source = r#"
 fn discard(_), do: 0
 
@@ -4780,7 +4789,7 @@ fn main(), do: make(41).(1)
     assert_eq!(
         capture.layout.carrier,
         TransportCarrier::Absent,
-        "a capture used only by an ignored callee input should have no physical carrier",
+        "a captured scalar needs no boxed carrier",
     );
     let TransportPosition::Value {
         executable: capture_executable,
@@ -4798,7 +4807,11 @@ fn main(), do: make(41).(1)
         capture_abi.transport.value_positions.contains(&capture.source),
         "the lexical source owns capture metadata directly, independent of parameter transport"
     );
-    assert!(capture_abi.value_layouts[value].reprs.is_empty());
+    assert_eq!(
+        capture_abi.value_layouts[value].reprs.as_ref(),
+        [super::artifact::AbiValueRepr::RawInt],
+        "first-class closure identity retains the complete lexical capture",
+    );
     for (key, abi) in session.memo().abi_executables() {
         for (semantic_index, demand) in world.runtime_demand(key).unwrap().input_demands.iter().enumerate() {
             if demand.is_ignore() {
@@ -4828,7 +4841,7 @@ fn main(), do: make(41).(1)
                 .iter()
                 .find(|input| input.semantic_index == semantic_index)
                 .is_none_or(|input| input.layout.reprs.is_empty()),
-            "an absent construction capture must agree with every member target capture ABI",
+            "retaining closure identity does not make member execution consume an unused capture",
         );
     }
 }

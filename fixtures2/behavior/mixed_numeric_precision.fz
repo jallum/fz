@@ -1,0 +1,23 @@
+#---
+# purpose: mixed numeric expressions and guards compare exact values without losing integer precision
+#---
+fn greater?(left, right) when left > right, do: true
+fn greater?(_, _), do: false
+
+fn check(integer :: integer, float :: float) do
+  assert(integer != float, "a rounded float is not the adjacent integer")
+  assert(integer > float, "mixed expression order retains the integer's low bit")
+  assert(float < integer, "reverse mixed expression order agrees")
+  assert(greater?(integer, float), "a mixed guard shares exact expression order")
+  assert(not greater?(float, integer), "reverse mixed guard order agrees")
+end
+
+fn main() do
+  check(9007199254740993, 9007199254740992.0)
+  check(-9007199254740993, -9007199254740994.0)
+  check(0, -0.5)
+  assert(0.0 == -0.0, "widening comparison equates signed zeros")
+  assert(0.0 !== -0.0, "strict identity distinguishes signed zeros")
+  assert(Map.size(%{0.0 => 1, -0.0 => 2}) == 2, "signed zeros remain distinct strict map keys")
+  0
+end

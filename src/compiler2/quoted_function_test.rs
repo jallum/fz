@@ -15,6 +15,52 @@ fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
 }
 
 #[test]
+fn projected_module_identity_survives_call_and_function_reference_decoding() {
+    use super::{QuotedSourceHeap, QuotedSourceMetadata};
+    use crate::modules::identity::{ModuleDenotation, ModuleName};
+    let heap = std::rc::Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let module = ModuleDenotation::ProtocolImpl {
+        protocol: ModuleName::parse_dotted("A").unwrap(),
+        target: ModuleName::parse_dotted("B.C").unwrap(),
+    };
+    let empty = QuotedSourceMetadata::default();
+    let meta = QuotedSourceMetadata {
+        module: Some(module.clone()),
+        ..Default::default()
+    };
+    // Even a non-alias display head/tail is inert once the module is resolved.
+    let alias = builder
+        .ast_node(builder.int(99), &meta, builder.atom("display"))
+        .unwrap();
+    let target = builder.call(".", &empty, &[alias, builder.atom("val")]).unwrap();
+    let call = builder.call_callee(target, &empty, &[builder.int(1)]).unwrap();
+    let quotient = builder.call("/", &empty, &[target, builder.int(1)]).unwrap();
+    let reference = builder.call("&", &empty, &[quotient]).unwrap();
+    let body = builder.call("{}", &empty, &[call, reference]).unwrap();
+    let head = builder.call("probe", &empty, &[]).unwrap();
+    let keyword = builder.list(&[builder.keyword("do", body).unwrap()]).unwrap();
+    let function = builder.call("fn", &empty, &[head, keyword]).unwrap();
+    let source = builder.root(builder.list(&[function]).unwrap()).unwrap();
+    let decoded = derive_function_surface(&source).unwrap();
+    let Expr::Tuple(items) = &decoded.clauses[0].body.node else {
+        panic!("tuple body")
+    };
+    let Expr::Call(target, _) = &items[0].node else {
+        panic!("qualified call")
+    };
+    let call = crate::ast::CallableName::for_call(&target.node, 1).unwrap();
+    assert_eq!(call.module, Some(module.clone()));
+    assert_eq!(call.name, "val");
+    let Expr::FnRef { name, arity } = &items[1].node else {
+        panic!("explicit function reference")
+    };
+    assert_eq!(name.module, Some(module));
+    assert_eq!(name.name, "val");
+    assert_eq!(*arity, 1);
+}
+
+#[test]
 fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
     let root = grouped_function_root(
         "lambda_occurrences.fz",
@@ -181,7 +227,7 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
         panic!("expected %Range{{}} to decode as a struct literal");
     };
-    assert_eq!(module.dotted(), "Range");
+    assert_eq!(module.to_string(), "Range");
     assert_eq!(
         fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
         ["first", "last", "step"]

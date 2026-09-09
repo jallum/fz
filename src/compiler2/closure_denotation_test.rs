@@ -27,6 +27,75 @@ fn tuple_denotations(process: &Process, tuple: AnyValueRef, count: usize) -> Vec
 }
 
 #[test]
+fn first_class_closures_retain_complete_lexical_values_in_interp_and_jit() {
+    for jit in [false, true] {
+        let tel = ConfiguredTelemetry::new();
+        let observed = Rc::new(RefCell::new(false));
+        let captured = Rc::clone(&observed);
+        tel.attach_raw_event2::<crate::ir_codegen::PidId, Process, _>(
+            &["fz", "runtime", "process_exited"],
+            move |_, _, _, _, process| {
+                let tuple = *process.mailbox.front().expect("root exposes its closures");
+                for (index, expected) in [11, 22].into_iter().enumerate() {
+                    let closure = process.heap.read_struct_field_ref(tuple, (index * 8) as u32).unwrap();
+                    assert_eq!(
+                        unsafe { fz_runtime::any_value::closure_captured_count(closure.closure_addr().unwrap()) },
+                        1,
+                        "one lexical capture remains one value regardless of member ABI",
+                    );
+                    let pair = process.heap.read_closure_capture_ref(closure, 0).unwrap();
+                    assert_eq!(
+                        process.heap.read_struct_field_ref(pair, 8).unwrap().load_int(),
+                        Ok(expected),
+                        "closure identity retains the field unused by its executable body",
+                    );
+                }
+                let empty_holder = process.heap.read_struct_field_ref(tuple, 16).unwrap();
+                let empty = process.heap.read_closure_capture_ref(empty_holder, 0).unwrap();
+                let schema = unsafe { fz_runtime::any_value::struct_schema_id(empty.struct_addr().unwrap()) };
+                assert!(
+                    process.heap.schemas_registry().borrow().get(schema).fields.is_empty(),
+                    "a zero-lane empty tuple is still one captured value",
+                );
+                let callable_holder = process.heap.read_struct_field_ref(tuple, 24).unwrap();
+                let inner = process.heap.read_closure_capture_ref(callable_holder, 0).unwrap();
+                let pair = process.heap.read_closure_capture_ref(inner, 0).unwrap();
+                assert_eq!(
+                    process.heap.read_struct_field_ref(pair, 8).unwrap().load_int(),
+                    Ok(33),
+                    "captured callables recursively retain their complete environment",
+                );
+                *captured.borrow_mut() = true;
+            },
+        );
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("closure_exact_environment.fz".into()),
+            text: r#"
+fn first({value, _}), do: value
+fn make(pair), do: fn () -> first(pair) end
+fn hold(value), do: fn () -> value end
+fn main() do
+  send(self(), {make({self(), 11}), make({self(), 22}), hold({}), hold(make({self(), 33}))})
+  0
+end
+"#
+            .into(),
+        });
+        let root = submit_root(&mut compiler, "main");
+        if jit {
+            compiler.run_root_jit(root).unwrap();
+        } else {
+            compiler.run_root_interp(root).unwrap();
+        }
+        assert!(
+            *observed.borrow(),
+            "production execution must expose the closure payload"
+        );
+    }
+}
+
+#[test]
 fn closure_denotation_survives_repeated_allocation_and_specialization_in_interp_and_jit() {
     for jit in [false, true] {
         let tel = ConfiguredTelemetry::new();
@@ -151,6 +220,11 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
         panic!("tuple result")
     };
     let second_id = tuple_denotations(&process, second_tuple, 1)[0];
+    assert_eq!(
+        process.node.compare_closure_denotations(second_id, first_id),
+        std::cmp::Ordering::Less,
+        "a later-published alpha closure sorts before the retained zeta closure by source origin",
+    );
     assert_ne!(
         first_id, second_id,
         "separately published programs cannot reuse package-local closure identities"

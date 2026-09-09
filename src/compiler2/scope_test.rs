@@ -5,10 +5,46 @@ use super::{Job, ModuleId, NamespaceSymbol, QuotedLexicalContextKind, QuotedSour
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
+fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
+    use crate::modules::identity::ModuleName;
+    let mut world = World::new();
+    let protocol = world.reference_module(ModuleName::parse_dotted("A").unwrap());
+    let target = world.reference_module(ModuleName::parse_dotted("B.C").unwrap());
+    let owner = world.reference_protocol_impl_module(protocol, target);
+    let named = world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap());
+    let scope = ScopeSnapshot::module(owner, world.prelude_head());
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let env = builder
+        .root(
+            world
+                .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
+                .unwrap(),
+        )
+        .unwrap();
+    let projected = env
+        .cursor()
+        .map_value("module")
+        .unwrap()
+        .unwrap()
+        .ast_node()
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected.tail.list_atom_names().unwrap(), ["A", "B", "C"]);
+    assert_eq!(scope.module_id(), owner);
+    assert_ne!(
+        scope.module_id(),
+        named,
+        "projecting an alias cannot change the implementation's owner"
+    );
+    assert_eq!(world.reference_protocol_impl_module(protocol, target), owner);
+}
+
+#[test]
 fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
-    let module = world.reference_module("App.Tools");
+    let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("App.Tools").unwrap());
     let function = world.reference_function(module, "run", 2);
     let namespace = world.bind_namespace(world.prelude_head(), "Tools", NamespaceSymbol::Module(module));
     let scope = ScopeSnapshot::function(module, namespace, function);
@@ -89,14 +125,13 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
         super::DriveOutcome::Resolved
     ));
 
-    let module = world.reference_module("Scoped");
-    let parent = world.reference_module("Parent");
+    let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Scoped").unwrap());
+    let parent = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Parent").unwrap());
     let namespace = world.bind_namespace(world.prelude_head(), "Parent", NamespaceSymbol::Module(parent));
     world.index_module_body(
         module,
         code,
         ModuleId::GLOBAL,
-        "Scoped".to_string(),
         super::QuotedSourceRoot::empty(),
         ScopeSurface {
             attrs: Vec::new(),
@@ -135,7 +170,7 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
         "top-level scope should resolve"
     );
 
-    let app = world.reference_module("App");
+    let app = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("App").unwrap());
     assert!(
         world.demand(Job::DefineModule(app)),
         "module definition should be demandable"

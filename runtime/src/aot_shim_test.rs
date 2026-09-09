@@ -65,6 +65,33 @@ fn parse_atom_blob_null_pointer_returns_empty() {
 }
 
 #[test]
+fn empty_closure_denotation_registration_has_no_work() {
+    let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    fz_aot_register_closure_denotations(&mut process, null(), 0);
+}
+
+#[test]
+fn named_schema_blob_preserves_module_segment_boundaries() {
+    let mut blob = Vec::new();
+    blob.extend(2u32.to_ne_bytes());
+    for segments in [&["A.B"][..], &["A", "B"][..]] {
+        blob.extend((segments.len() as u32).to_ne_bytes());
+        for segment in segments {
+            blob.extend((segment.len() as u32).to_ne_bytes());
+            blob.extend(segment.as_bytes());
+        }
+        blob.extend(0u32.to_ne_bytes());
+    }
+    let schemas = parse_named_schema_blob(blob.as_ptr(), blob.len() as u32);
+    assert_eq!(schemas[0].0.segments(), &["A.B"]);
+    assert_eq!(schemas[1].0.segments(), &["A", "B"]);
+    let mut registry = SchemaRegistry::new();
+    let left = registry.register(Schema::named_struct(schemas[0].0.clone(), vec![]));
+    let right = registry.register(Schema::named_struct(schemas[1].0.clone(), vec![]));
+    assert_ne!(left, right, "transport must not merge distinct source module paths");
+}
+
+#[test]
 fn aot_send_deep_copies_message_into_receiver_heap() {
     let mut sched = test_scheduler();
 

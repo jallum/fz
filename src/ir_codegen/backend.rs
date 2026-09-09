@@ -277,6 +277,7 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ("fz_box_atom_for_any", ir_runtime::fz_box_atom_for_any as *const u8),
         ("fz_map_is_map", ir_runtime::fz_map_is_map as *const u8),
         ("fz_value_cmp_ref", ir_runtime::fz_value_cmp_ref as *const u8),
+        ("fz_int_float_cmp", ir_runtime::fz_int_float_cmp as *const u8),
         (
             "fz_value_eq_widening_ref",
             ir_runtime::fz_value_eq_widening_ref as *const u8,
@@ -444,6 +445,9 @@ impl Backend for JitBackend {
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
         // Build the module's shared node once; every Process clones the Rc.
         let node = Rc::new(Node::new(meta.atom_names.clone(), meta.frame_sizes.clone()));
+        for (id, denotation) in &meta.closure_denotations {
+            node.register_closure_denotation(*id, Arc::clone(denotation));
+        }
         Ok(CompiledModule {
             _module: jmod,
             fn_ptrs,
@@ -580,6 +584,15 @@ impl Backend for AotBackend {
             .omod
             .declare_function("fz_aot_register_named_schemas", Linkage::Import, &reg_named_schemas_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_register_named_schemas: {}", e)))?;
+        let reg_closure_denotations_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
+        let reg_closure_denotations_id = self
+            .omod
+            .declare_function(
+                "fz_aot_register_closure_denotations",
+                Linkage::Import,
+                &reg_closure_denotations_sig,
+            )
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_closure_denotations: {}", e)))?;
 
         let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) = if meta.tuple_arities.is_empty() {
             (None, 0)
@@ -622,14 +635,35 @@ impl Backend for AotBackend {
                 .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
             (Some(id), len)
         };
+        let (closure_denotations_data, closure_denotations_len) = if meta.closure_denotations.is_empty() {
+            (None, 0)
+        } else {
+            let bytes = fz_runtime::function_denotation::encode_closure_denotations(&meta.closure_denotations)
+                .map_err(CodegenError::new)?;
+            let len =
+                u32::try_from(bytes.len()).map_err(|_| CodegenError::new("closure denotation metadata exceeds u32"))?;
+            let id = self
+                .omod
+                .declare_data("fz_aot_closure_denotations", Linkage::Local, false, false)
+                .map_err(|e| CodegenError::new(format!("declare closure denotations: {e}")))?;
+            let mut desc = DataDescription::new();
+            desc.define(bytes.into_boxed_slice());
+            self.omod
+                .define_data(id, &desc)
+                .map_err(|e| CodegenError::new(format!("define closure denotations: {e}")))?;
+            (Some(id), len)
+        };
         let (named_schemas_data, named_schemas_len): (Option<DataId>, u32) = if meta.named_schemas.is_empty() {
             (None, 0)
         } else {
             let mut bytes: Vec<u8> = Vec::new();
             bytes.extend_from_slice(&(meta.named_schemas.len() as u32).to_ne_bytes());
             for (name, fields) in &meta.named_schemas {
-                bytes.extend_from_slice(&(name.len() as u32).to_ne_bytes());
-                bytes.extend_from_slice(name.as_bytes());
+                bytes.extend_from_slice(&(name.segments().len() as u32).to_ne_bytes());
+                for segment in name.segments() {
+                    bytes.extend_from_slice(&(segment.len() as u32).to_ne_bytes());
+                    bytes.extend_from_slice(segment.as_bytes());
+                }
                 bytes.extend_from_slice(&(fields.len() as u32).to_ne_bytes());
                 for field in fields {
                     bytes.extend_from_slice(&(field.len() as u32).to_ne_bytes());
@@ -670,6 +704,9 @@ impl Backend for AotBackend {
             &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,
+            reg_closure_denotations_id,
+            closure_denotations_data,
+            closure_denotations_len,
             setup_id,
             reg_id,
             run_id,

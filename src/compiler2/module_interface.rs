@@ -208,11 +208,13 @@ mod tests {
             function: FunctionId::from_fn_id(crate::fz_ir::FnId(id)),
             reference: FunctionRef {
                 module: ModuleId::GLOBAL,
-                origin: super::super::identity::FunctionOrigin::Named {
-                    module: None,
-                    name: name.to_string(),
-                },
-                arity,
+                denotation: std::sync::Arc::new(super::super::identity::FunctionDenotation {
+                    origin: super::super::identity::FunctionOrigin::Named {
+                        module: None,
+                        name: name.to_string(),
+                    },
+                    arity,
+                }),
             },
             kind,
             variadic: false,

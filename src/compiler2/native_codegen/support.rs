@@ -98,13 +98,9 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 
 // ----- Map runtime fns -----
 //
-// Maps use a heap-backed sorted-array layout. Codegen constructs maps by
-// folding immutable put operations: start with an empty map, then each put
-// copies/replaces/inserts and returns the new map.
-//
-// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
-// within each category, by raw bits (Int compares signed). Keys compare
-// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+// Maps use an immutable heap-backed sorted array. Construction fills unpublished
+// slots once, then normalizes them with the runtime's strict structural order.
+// Later put/delete operations preserve that order in the returned allocation.
 
 // ----- Bitstring runtime fns -----
 //

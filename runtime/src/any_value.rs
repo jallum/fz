@@ -585,6 +585,7 @@ impl AnyValue {
     }
 
     pub const fn float(value: f64) -> Self {
+        assert!(value.is_finite(), "nonfinite float is not a language value");
         Self::Float(value.to_bits())
     }
 
@@ -618,7 +619,7 @@ impl AnyValue {
         Ok(match value.tag() {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(value.load_int()?),
-            ValueKind::FLOAT => Self::Float(value.load_float()?.to_bits()),
+            ValueKind::FLOAT => Self::float(value.load_float()?),
             ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
             tag if tag.is_heap() => Self::HeapRef(value),
             _ => unreachable!("AnyValueRef tag set is exhaustive"),
@@ -630,7 +631,7 @@ impl AnyValue {
         Some(match kind {
             ValueKind::NULL => Self::Null,
             ValueKind::INT => Self::Int(raw as i64),
-            ValueKind::FLOAT => Self::Float(raw),
+            ValueKind::FLOAT => Self::float(f64::from_bits(raw)),
             ValueKind::ATOM => Self::Atom(raw as u32),
             ValueKind::LIST if raw == 0 => Self::EmptyList,
             kind if kind.is_heap() => Self::heap_ptr(raw as *mut u8, kind),
@@ -863,6 +864,8 @@ pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, Val
 ///
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
+/// The caller must exclusively own this unpublished closure. `(raw, kind)` must
+/// describe a published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set_raw_kind(addr: *const u8, idx: usize, raw: u64, kind: ValueKind) {
     let raw = if kind.is_heap() { raw & !TAG_MASK } else { raw };
@@ -886,6 +889,8 @@ pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> AnyValue {
 ///
 /// `addr` must point to an initialized strict Closure object and `idx` must
 /// be in bounds.
+/// The caller must exclusively own this unpublished closure. `value` must be a
+/// published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: AnyValue) {
     unsafe { closure_capture_set_raw_kind(addr, idx, value.raw(), value.kind()) };
@@ -916,6 +921,8 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
 ///
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
+/// The caller must exclusively own this unpublished closure. `value` must refer
+/// to a published immutable finite acyclic term with no path to `addr`.
 #[inline]
 pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
     let value = AnyValueRef::from_raw_word(value).expect("closure capture ref word");
@@ -927,6 +934,9 @@ pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u
 ///
 /// Both closure addresses must be initialized strict Closure objects, and both
 /// capture indexes must be in-bounds.
+/// The caller must exclusively own the unpublished destination closure. The
+/// source capture must be a published immutable finite acyclic term that cannot
+/// reach the destination closure.
 #[inline]
 pub unsafe fn closure_capture_copy(src_addr: *const u8, src_idx: usize, dst_addr: *const u8, dst_idx: usize) {
     let raw = unsafe { ptr::read(closure_capture_raw_slot(src_addr, src_idx)) };
@@ -1026,7 +1036,7 @@ unsafe fn size_of_procbin(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
-    48
+    crate::resource::RESOURCE_STUB_SIZE
 }
 
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
@@ -1164,6 +1174,8 @@ impl ListCons {
         self.link = link.raw();
     }
 
+    /// Mutates only an exclusively borrowed cons under construction or a
+    /// collector-owned graph. Published lists are immutable language terms.
     pub fn set_tail_bits(&mut self, tail_bits: u64) {
         self.link = self.link().with_tail(tail_bits).raw();
     }
@@ -1335,8 +1347,15 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 ///
 /// `addr` must point to the start of an initialized strict Map object.
 pub unsafe fn map_count(addr: *const u8) -> usize {
-    unsafe { ptr::read(addr as *const u64) as usize }
+    let header = unsafe { ptr::read(addr as *const u64) };
+    if header & MAP_DESTINATION_FLAG == 0 {
+        header as usize
+    } else {
+        header as u32 as usize
+    }
 }
+
+pub(crate) const MAP_DESTINATION_FLAG: u64 = 1 << 63;
 
 #[inline]
 /// # Safety
@@ -1436,7 +1455,7 @@ pub mod debug {
         map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
         struct_schema_id,
     };
-    use crate::heap::{FieldKind, Schema};
+    use crate::heap::FieldKind;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
     use std::slice;
@@ -1525,7 +1544,7 @@ pub mod debug {
         {
             let reg = heap.schemas_registry();
             let registry = reg.borrow();
-            if registry.get(schema_id).name.as_str() == Schema::RANGE_NAME {
+            if registry.get(schema_id).is_range() {
                 return render_range(proc, bits);
             }
         }
@@ -1559,7 +1578,7 @@ pub mod debug {
             let reg = heap.schemas_registry();
             let registry = reg.borrow();
             let schema = registry.get(schema_id);
-            if schema.name != Schema::tuple_of_arity(2).name {
+            if schema.identity != crate::heap::SchemaIdentity::Tuple(2) {
                 return None;
             }
             schema

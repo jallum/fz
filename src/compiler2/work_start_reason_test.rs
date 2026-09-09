@@ -143,7 +143,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let observed_source_work = std::rc::Rc::clone(&source_work);
     let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::new())));
     let observed_demand_work = std::rc::Rc::clone(&demand_work);
-    let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 4]));
+    let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 5]));
     let observed_demand_wake_causes = std::rc::Rc::clone(&demand_wake_causes);
     telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
@@ -182,6 +182,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                         super::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
                         super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 4,
                         cause => panic!("unexpected RuntimeDemand wake prerequisite: {cause:?}"),
                     };
                     observed_demand_wake_causes.borrow_mut()[cause] += 1;
@@ -228,13 +229,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        // fz-5xp.6 removes 30 more applies: `Range.count` reaches `div/2`
-        // directly where `/` now returns a float and had to be narrowed back.
-        // fz-5xp.87 adds six DeriveFunctionContract applies for the private
-        // helper domains this fixture reaches: take/drop/split_positive,
-        // non_negative twice, and Range.done?. Every other family is flat.
-        (4160, 11, 21, 401),
-        "fz-kdt.182 removed 80 work applies and 20 DeriveExecutableFacts runs for redundant list-union identities, fz-5xp.2 removes 49 more applies and 9 more runs by letting a list reach Enum.to_list/1 as itself, and fz-5xp.87 adds six exact private-helper contract applications; scope, module, and executable-fact work remain exact"
+        (4103, 11, 21, 401),
+        "separating retained closure values from member execution demand removes 57 applies; scope, module, and executable-fact work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
@@ -252,17 +248,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities, fz-5xp.2 removes four more with the unminted reduce-and-reverse activations, and fz-5xp.87 adds the five blocked-waiter starts used by its six private-helper contract derivations; macro products require no separate readiness producer",
     );
     assert_eq!(
-        *demand_completions, 1211,
-        "fz-kdt.182 removed 44 RuntimeDemand completions for absorbed list-union identities and fz-5xp.2 removes 30 more for the unminted reduce-and-reverse activations; the retained scheduler-completion multiset remains exact",
-    );
-    assert_eq!(
-        *demand_wake_starts, 983,
-        "fz-kdt.182 removed 37 changed-revision RuntimeDemand wakes with absorbed list-union identities and fz-5xp.2 removes 26 more; the retained wake multiset remains exact",
-    );
-    assert_eq!(
-        *demand_wake_causes.borrow(),
-        [58, 228, 145, 552],
-        "fz-kdt.182 and fz-5xp.2 both remove demand resumes from exact moved-input causes, never from readiness-only or unexplained work -- the readiness-only and unexplained columns stay zero",
+        (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
+        (1154, 926, [58, 228, 144, 496, 0]),
+        "every demand completion and wake retains its precise cause; removing retention feedback must reduce work without readiness-only or unexplained starts",
     );
     assert_eq!(
         demanded_formula_keys.len(),

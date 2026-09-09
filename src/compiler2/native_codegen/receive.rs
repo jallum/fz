@@ -132,7 +132,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     dispatch_id: FuncId,
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
-    named_schema_ids: &HashMap<String, u32>,
+    named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
     dispatch: &ReceiveDispatchPlan,
@@ -275,7 +275,7 @@ struct DispatchCtx<'a> {
     process: ir::Value,
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
-    named_schema_ids: &'a HashMap<String, u32>,
+    named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
     bound_indices_per_clause: &'a [HashMap<String, usize>],
     pinned_indices: &'a HashMap<String, usize>,
     pinned_ptr: ir::Value,
@@ -706,7 +706,7 @@ impl<'f> RuntimeTestEmitter<'f> for ReceiveTestEmitter<'_, 'f, '_> {
         self.ctx.tuple_schema_ids
     }
 
-    fn named_schema_ids(&self) -> &HashMap<String, u32> {
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32> {
         self.ctx.named_schema_ids
     }
 
