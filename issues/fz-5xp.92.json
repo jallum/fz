@@ -4,7 +4,7 @@
   "blocks": [],
   "closed_at": "2026-09-08T12:15:10Z",
   "created": "2026-09-07T22:05:18Z",
-  "description": "## What happens\n\nCompiling almost any program prints `type/no-matching-clause` warnings that name runtime-library sources rather than the user's program:\n\n```\nwarning[type/no-matching-clause]: `fn` clauses don't cover every input\n  --\u003e runtime:Range.fz:113:3\n113 |   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])\n```\n\nThe clauses in question are the standard list-accumulator pair:\n\n```\nfnp reverse([], acc), do: acc\nfnp reverse([head | tail], acc), do: reverse(tail, [head | acc])\n```\n\nThose two cover every list. They do not cover every `any`, and the parameter is unannotated, so the declared-domain check is right on its own terms -- `reverse(:atom, [])` really has no clause. But the function is private, its only callers pass lists, and nothing outside the module can reach it with anything else.\n\nThe same pattern recurs: `Map.reverse/2`, `Enum.reverse_list/2`, several in `Json`.\n\n## Why it matters\n\nWarnings are errors in this project when they are something we control, and these are ours. They are also load-bearing noise: 24 of the fixture `expected.diagnostics` goldens pin them, so the library's warnings are part of the contract the suite checks, and any comment edit that shifts a line number churns them.\n\n## Two ways out\n\n- Narrow a private function's parameter domain to what its callers actually pass, so an unannotated `fnp` reached only with lists is checked against lists. This is the \"correct by construction\" answer and removes the warnings rather than hiding them.\n- Annotate the parameters in the library. Cheaper, and honest, but it treats the symptom in sixteen files instead of the cause in one.\n\nThe first also shrinks the goldens, which is a good independent signal that the noise is gone.",
+  "description": "## Historical finding and disposition\n\nThis ticket identified that private runtime helpers were producing noisy `type/no-matching-clause` diagnostics even though every actual private caller supplied lists. It was closed as overlapping fz-5xp.87, which subsequently added truthful helper contracts and removed the then-current warning goldens in commit `ca10f62f9`.\n\n## Current ownership\n\nThe observation that demanded callers constrain the real coverage domain was the architectural signal. fz-kdt.36 now makes it the compiler rule: correlated `ActivationInputs` from demanded calls are the sole function-head coverage evidence, and contracts only refine/reject those rows.\n\nThe old alternative of treating annotations as the required warning fix is superseded. The delivered library contracts remain useful semantic declarations, while fz-kdt.36 removes the duplicate source/whole-contract checker that produced the noise.",
   "id": "fz-5xp.92",
   "labels": [],
   "parent": "fz-5xp",
@@ -18,5 +18,5 @@
   "status": "closed",
   "title": "The runtime library's own private helpers emit no-matching-clause warnings, pinned in 24 fixture goldens",
   "type": "task",
-  "updated_at": "2026-09-08T12:15:10Z"
+  "updated_at": "2026-09-09T00:00:07Z"
 }
