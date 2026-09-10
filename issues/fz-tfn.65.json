@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.64"
+  ],
   "blocks": [],
   "created": "2026-09-10T11:50:30Z",
   "description": "## Goal\n\nA variable named more than once in one pattern denotes one value. Bind its first occurrence once; every later occurrence is a typed equality constraint against that same plan-owned subject. `{x, x}` matches `{7, 7}` and rejects `{7, 8}` through every execution door.\n\n## Proven defect\n\n`PatternDispatchPlan` currently appends every named occurrence to outcome bindings. Inline and legacy bind consumers then overwrite the same environment name, so `{x, x}` accepts unequal positions and returns the last value. Elixir confirms the intended source semantics: `{7, 7}` selects `{x, x}`, while `{7, 8}` selects the fallback.\n\nThis was exposed while fz-tfn.64 moved inline arms onto plan-owned outcome bindings. That ticket must preserve established behavior and finish its projection-authority cutover; this ticket follows it and changes the producer semantics once, for all plan consumers.\n\n## Correct model\n\nPattern construction owns a row-local map from contextual variable identity to the first `PatternSubjectRef`. The first occurrence contributes the sole outcome binding. A later occurrence contributes an equality question between its current subject and the first subject; it contributes no second binding, arm parameter, projection authority, or environment write.\n\nUse typed/interned identity and the existing comparison/equality machinery. Do not compare rendered names, canonical type strings, runtime addresses, or incidental binding order. Do not add a post-plan repair, duplicate syntax walk, consumer-specific check, compatibility behavior, or second binding store. Aliases, nested tuple/list/map/struct/bitstring projections, clause rows, guards, receives, function heads, and inline case/with share the same producer law.\n\n## TDD signal\n\nRed-first fixtures prove equal and unequal repeated variables through interpreter, JIT, and AOT, including nested projected values and same-spelled variables from distinct contextual scopes. Assert the plan contains one binding and one equality constraint, and that later consumers receive one parameter. Preserve pin semantics and diagnostics. Compare with Elixir oracles. Prove deterministic artifacts and no additional work for patterns without repetition.\n\n## Completion\n\nRun focused plan/semantic/native tests, full library and serial fixture matrix, formatting, check, strict Clippy, and fresh ticket-scoped cold review. Update pattern documentation. Remove every temporary probe and any superseded duplicate-binding path.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Give repeated pattern variables one binding and one equality constraint",
   "type": "bug",
-  "updated_at": "2026-09-10T11:50:30Z"
+  "updated_at": "2026-09-10T11:50:31Z"
 }
