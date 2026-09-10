@@ -7,7 +7,8 @@
     "fz-tfn.15",
     "fz-tfn.52",
     "fz-tfn.56",
-    "fz-tfn.63"
+    "fz-tfn.63",
+    "fz-tfn.65"
   ],
   "blocks": [
     "fz-5xp.67"
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Prove exact reuse and remove all construction debris",
   "type": "task",
-  "updated_at": "2026-09-09T00:06:20Z"
+  "updated_at": "2026-09-10T11:50:32Z"
 }
