@@ -4,6 +4,7 @@
     "fz-kdt.27"
   ],
   "blocks": [
+    "fz-5xp.56",
     "fz-tfn.62",
     "fz-tfn.65"
   ],
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Make inline dispatch outcome bindings the sole pattern-projection authority",
   "type": "bug",
-  "updated_at": "2026-09-10T17:46:10Z"
+  "updated_at": "2026-09-10T17:46:12Z"
 }
