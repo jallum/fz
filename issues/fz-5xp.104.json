@@ -7,9 +7,15 @@
   "id": "fz-5xp.104",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Implemented in e460a0741. Json now treats UTF-16 surrogate syntax as one decision: valid high/low pairs join into one Unicode scalar, lone lows and complete non-low followers report Elixir-compatible unexpected_sequence spans, and incomplete highs report unexpected_end. The joined scalar and ordinary escapes go through new Utf8.from_codepoint/1, which checks the Unicode scalar domain and delegates byte encoding to the existing ::utf8 bitstring authority; Json private UTF-8 encoding was removed. Added an Elixir-oracled 16-case value/key fixture, direct scalar-width/range boundary coverage, Json and Utf8 public docs, and semantic-authority docs. Proven red in interp/run/build before implementation. Final green: JSON 36/36, UTF-8 24/24, full fixture matrix 709/709, compiler library 2018 passed/6 known ignored, runtime 260/260, CLI 30/30, doctests, AOT integration, clippy -D warnings, fmt, diff check, and pre-commit gates.",
+      "timestamp": "2026-09-11T20:44:36Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Json.decode emits invalid UTF-8 for Unicode surrogate escapes",
   "type": "bug",
-  "updated_at": "2026-09-11T20:28:08Z"
+  "updated_at": "2026-09-11T20:44:36Z"
 }
