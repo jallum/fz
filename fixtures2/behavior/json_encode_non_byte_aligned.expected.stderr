@@ -1,1 +1,1 @@
-fz panic: "JSON.encode!: binary is not byte-aligned"
+fz panic: {:json_encode, :invalid_utf8, <<1::4>>}
