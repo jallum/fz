@@ -12,8 +12,8 @@ defmodule Json do
     * an object becomes a map with binary keys
 
   Decoding can fail, so there is both `decode/1` and `decode!/1`. Encoding
-  cannot fail for the values it accepts, so `encode!/1` is the only
-  spelling.
+  halts for unsupported values or invalid string binaries, so `encode!/1`
+  is the only spelling.
 
   ## Examples
 
@@ -138,10 +138,12 @@ defmodule Json do
   Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
   a map. Map keys may be binaries, atoms, integers, or floats; every key is
   converted to a JSON string. Any other value or map key halts with a reason
-  containing the rejected term, so there is no plain `encode/1`. Binaries
-  must be byte-aligned; a non-byte-aligned bitstring halts instead of being
-  encoded as a JSON string. Quotes, backslashes, and every control byte are
-  escaped in both string values and object keys.
+  containing the rejected term, so there is no plain `encode/1`. Binary
+  string values and binary keys must be byte-aligned, valid UTF-8. A
+  non-byte-aligned bitstring or an invalid UTF-8 binary halts with
+  `{:json_encode, :invalid_utf8, value}` instead of being encoded as a JSON
+  string. Quotes, backslashes, and every control byte are escaped in both
+  string values and object keys.
 
   ## Examples
 
@@ -164,10 +166,14 @@ defmodule Json do
   def encode!(nil), do: "null"
   def encode!(v :: integer), do: Integer.to_string(v)
   def encode!(v :: float), do: Float.to_string(v)
-  def encode!(v :: binary), do: "\"" <> escape(v, "") <> "\""
+  def encode!(v :: binary), do: encode_binary!(v, Utf8.from_bytes(v))
   def encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
   def encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
   def encode!(v), do: Kernel.panic({:json_encode, :unsupported_value, v})
+
+  @spec encode_binary!(binary, {:ok, utf8} | {:error, :invalid_utf8}) :: binary
+  defp encode_binary!(_v, {:ok, string}), do: "\"" <> escape(string, "") <> "\""
+  defp encode_binary!(v, {:error, :invalid_utf8}), do: Kernel.panic({:json_encode, :invalid_utf8, v})
 
   @spec escape(binary, binary) :: binary
   defp escape("", acc), do: acc

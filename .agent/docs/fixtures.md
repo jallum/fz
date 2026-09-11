@@ -193,15 +193,19 @@ These `actual.*` files are gitignored.
 
 ### The Elixir oracle
 
-A fixture that declares `oracle: oracle.exs` makes "matches Elixir" a mechanical
-diff. The single static trial `oracle_goldens_match_elixir` runs every oracle
-script under the real `elixir` binary and asserts its stdout equals
-`expected.txt`. The per-path matrix trials independently assert each fz path
-reproduces that same `expected.txt`, so `fz == Elixir` holds transitively.
-Elixir owns the golden: under `BLESS=1` the oracle trial regenerates
-`expected.txt`, and per-path bless never rewrites it for an oracle fixture. The
-oracle is a hard prerequisite, not an optional skip — a missing or failing
-`elixir` is a loud failure. CI installs Elixir (1.19) through `erlef/setup-beam`.
+A fixture that declares `oracle: oracle.exs` makes "matches Elixir" mechanical.
+The single static trial `oracle_goldens_match_elixir` runs every oracle script
+under the real `elixir` binary and asserts its stdout equals `expected.txt`.
+For a successful fixture, the per-path matrix trials independently reproduce
+that same golden, so `fz == Elixir` holds transitively. For an `expect: abort`
+fixture, the oracle instead makes a silent assertion that Elixir rejects the
+input; each fz path independently proves rejection through `expected.stderr`.
+That pins the shared boundary without claiming byte-identical exception text
+between the two runtimes. Elixir owns the golden: under `BLESS=1` the oracle
+trial regenerates `expected.txt`, and per-path bless never rewrites it for an
+oracle fixture. The oracle is a hard prerequisite, not an optional skip — a
+missing or failing `elixir` is a loud failure. CI installs Elixir (1.19)
+through `erlef/setup-beam`.
 
 ## The media
 
