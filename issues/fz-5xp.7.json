@@ -11,11 +11,15 @@
     {
       "text": "Due-diligence correction before implementation: the proposed direct def -\u003e Tok::Fn mapping would also admit def (x) -\u003e ... end as an anonymous lambda because Tok::Fn is shared by named definitions and lambda expressions. That contradicts this ticket's note that lambdas are a separate, unaffected production. The implementation will use distinct Def/Defp tokens accepted only at named definition heads, then canonicalize them to the existing fn/fnp definition macros so downstream semantics remain single-owned.",
       "timestamp": "2026-09-11T14:56:24Z"
+    },
+    {
+      "text": "Implemented as ddb0813b2. Added distinct Def/Defp lexer and quoted-token variants, accepted them only in named definition contexts, and canonicalized them to the existing fn/fnp definition macros; fn remains the sole anonymous-function marker. Updated fixture discovery for def main, added Elixir-oracled interp/JIT/AOT coverage, proved defp stays outside module interfaces, and updated parser/module/macro/quoted-source docs plus the modules guide. Green: cargo test --workspace --lib (2018 + 257 passed; 6 ignored), cargo test --workspace --doc, cargo test --test fz2_cli (30), cargo test --test aot_variadic_open (1), cargo test --test fixture_matrix (685), cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, and pre-commit gates.",
+      "timestamp": "2026-09-11T15:10:17Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Accept def/defp as aliases for fn/fnp",
   "type": "task",
-  "updated_at": "2026-09-11T14:56:24Z"
+  "updated_at": "2026-09-11T15:10:17Z"
 }
