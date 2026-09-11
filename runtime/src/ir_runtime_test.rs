@@ -186,6 +186,70 @@ fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
 }
 
 #[test]
+fn utf8_prefix_names_the_first_impossible_byte() {
+    let cases: &[(&[u8], Result<usize, usize>)] = &[
+        (&[], Ok(0)),
+        (&[0x7f], Ok(1)),
+        (&[0xc2, 0x80], Ok(2)),
+        (&[0xe0, 0xa0, 0x80], Ok(3)),
+        (&[0xed, 0x9f, 0xbf], Ok(3)),
+        (&[0xf0, 0x90, 0x80, 0x80], Ok(4)),
+        (&[0xf4, 0x8f, 0xbf, 0xbf], Ok(4)),
+        (&[0x80], Err(0)),
+        (&[0xc0, 0x80], Err(0)),
+        (&[0xc2, b'A'], Err(1)),
+        (&[0xe0, 0x80, 0x80], Err(1)),
+        (&[0xed, 0xa0, 0x80], Err(1)),
+        (&[0xe1, 0x80, b'A'], Err(2)),
+        (&[0xf0, 0x80, 0x80, 0x80], Err(1)),
+        (&[0xf4, 0x90, 0x80, 0x80], Err(1)),
+        (&[0xf1, 0x80, 0x80, b'A'], Err(3)),
+        (&[0xc2], Err(1)),
+        (&[0xe1, 0x80], Err(2)),
+    ];
+
+    for &(bytes, expected) in cases {
+        assert_eq!(utf8_prefix(bytes), expected, "bytes={bytes:?}");
+    }
+}
+
+#[test]
+fn utf8_prefix_accepts_every_unicode_scalar() {
+    let mut buffer = [0; 4];
+    for scalar in 0..=char::MAX as u32 {
+        let Some(codepoint) = char::from_u32(scalar) else {
+            continue;
+        };
+        let encoded = codepoint.encode_utf8(&mut buffer);
+        assert_eq!(utf8_prefix(encoded.as_bytes()), Ok(encoded.len()), "U+{scalar:04X}");
+    }
+}
+
+#[test]
+fn fz_bitstring_utf8_prefix_exposes_width_or_encoded_error_offset() {
+    with_process(|process| {
+        let cases: &[(&[u8], i64)] = &[
+            (&[0xf0, 0x9f, 0x98, 0x80], 4),
+            (&[0xff], -1),
+            (&[0xc2, b'A'], -2),
+            (&[0xe1, 0x80, b'A'], -3),
+            (&[0xf1, 0x80, 0x80, b'A'], -4),
+            (&[0xe1, 0x80], -3),
+        ];
+
+        for &(bytes, expected) in cases {
+            let bits = fz_alloc_bitstring_const(
+                process,
+                bytes.as_ptr() as u64,
+                bytes.len() as u64,
+                (bytes.len() * 8) as u64,
+            );
+            assert_eq!(fz_bitstring_utf8_prefix(bits), expected, "bytes={bytes:?}");
+        }
+    });
+}
+
+#[test]
 fn yield_mid_flight_report_stashes_runnable_closure() {
     with_process(|process| {
         let bits = process
