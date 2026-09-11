@@ -5,8 +5,9 @@ defmodule Utf8 do
   `utf8` is a brand on `binary`: the same bytes, tagged at the type level
   so a position declared `utf8` accepts only validated input and rejects a
   plain `binary`. `from_bytes!/1` and `from_bytes/1` mint that brand after
-  checking `valid?/1`; `next/1` validates one codepoint while retaining the
-  remaining source; `to_bytes/1` drops back to the plain binary.
+  checking `valid?/1`; `from_codepoint/1` encodes one Unicode scalar;
+  `next/1` validates one codepoint while retaining the remaining source;
+  `to_bytes/1` drops back to the plain binary.
 
   ## Examples
 
@@ -36,6 +37,35 @@ defmodule Utf8 do
   """
   @spec valid?(binary) :: bool
   fn valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
+
+  @doc """
+  Encodes one Unicode scalar value as UTF-8.
+
+  Returns `{:ok, utf8}`, or `{:error, :invalid_codepoint}` when `codepoint`
+  is negative, is in the UTF-16 surrogate range U+D800 through U+DFFF, or
+  is greater than U+10FFFF.
+
+  ## Examples
+
+      Utf8.from_codepoint(233)
+      #=> {:ok, "é"}
+
+      Utf8.from_codepoint(0xd800)
+      #=> {:error, :invalid_codepoint}
+
+  """
+  @spec from_codepoint(integer) :: {:ok, utf8} | {:error, :invalid_codepoint}
+  fn from_codepoint(codepoint), do: encode_codepoint(codepoint, scalar?(codepoint))
+
+  @spec scalar?(integer) :: bool
+  fnp scalar?(codepoint) when codepoint < 0, do: false
+  fnp scalar?(codepoint) when codepoint >= 0xd800 and codepoint <= 0xdfff, do: false
+  fnp scalar?(codepoint) when codepoint > 0x10ffff, do: false
+  fnp scalar?(_codepoint), do: true
+
+  @spec encode_codepoint(integer, bool) :: {:ok, utf8} | {:error, :invalid_codepoint}
+  fnp encode_codepoint(codepoint, true), do: {:ok, fz_brand_bitstring_as_utf8(<<codepoint :: utf8>>)}
+  fnp encode_codepoint(_codepoint, false), do: {:error, :invalid_codepoint}
 
   @doc """
   Validates and removes the first UTF-8 codepoint from `bytes`.
