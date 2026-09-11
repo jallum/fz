@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T15:10:24Z",
   "created": "2026-09-06T23:43:22Z",
   "description": "DECIDED 2026-09-06.\n\nsrc/parser/lexer.rs:400 has fn, fnp, extern, defmacro, defmodule, defstruct,\ndefprotocol, defimpl. No def, no defp. The only def/defp anywhere in fixtures2 are\ninside *.oracle.exs files -- real Elixir, hand-translated.\n\nThe oracle workflow means every fixture has a hand-written Elixir twin, so function\nheads get retyped constantly and each retype is a chance to introduce a difference\nthe golden then blesses. Accepting def/defp makes the twin near-identical to the fz\nsource.\n\n  \"def\"  =\u003e Tok::Fn\n  \"defp\" =\u003e Tok::Fnp\n\nBoth spellings stay legal; existing code is untouched. Note  lambdas\nare a separate production and are unaffected.\n\nUpdate guides/modules.html:313, which currently documents fnp as the private form.",
   "id": "fz-5xp.7",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Accept def/defp as aliases for fn/fnp",
   "type": "task",
-  "updated_at": "2026-09-11T15:10:17Z"
+  "updated_at": "2026-09-11T15:10:24Z"
 }
