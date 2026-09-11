@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T16:36:20Z",
   "created": "2026-09-11T14:33:30Z",
   "description": "Json.escape/2 handles quote, backslash, newline, and tab, then copies every other byte literally. JSON forbids unescaped U+0000 through U+001F, so carriage return, backspace, form feed, NUL, and the remaining control bytes produce invalid output in both values and object keys. The fix belongs in the shared string escaper, not in key encoding: preserve the short escapes for backspace, tab, newline, form feed, and carriage return; render every other control byte as a four-hex-digit Unicode escape; keep ordinary bytes unchanged. Add an Elixir-oracled fixture spanning the control range on interp, run, and build, update Json encoding docs, and retain the one escape authority for values and keys.",
   "id": "fz-5xp.99",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Json.encode! copies most control bytes into invalid JSON strings",
   "type": "bug",
-  "updated_at": "2026-09-11T16:36:07Z"
+  "updated_at": "2026-09-11T16:36:20Z"
 }
