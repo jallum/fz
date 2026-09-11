@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.62"
+  ],
   "blocks": [
     "fz-5xp.88",
     "fz-tfn.13",
@@ -21,5 +23,5 @@
   "status": "open",
   "title": "Intern one Ty per denotation at the sole type boundary",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:51Z"
+  "updated_at": "2026-09-11T19:06:54Z"
 }

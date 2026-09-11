@@ -5,6 +5,7 @@
     "fz-tfn.64"
   ],
   "blocks": [
+    "fz-kdt.48",
     "fz-tfn.40",
     "fz-tfn.47",
     "fz-tfn.53",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "Keep callable identity through quoted source; delete canonical-name re-resolution",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:53Z"
+  "updated_at": "2026-09-11T19:06:54Z"
 }
