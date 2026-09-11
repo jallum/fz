@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T14:41:09Z",
   "created": "2026-09-07T22:08:38Z",
   "description": "## What happens\n\n```\nJson.encode!(%{1 =\u003e \"x\"})\n#=\u003e \"{1:\\\"x\\\"}\"\n```\n\nThat is not JSON. Every key in a JSON object is a string, and `encode!/1` recurses into keys with the same clause family it uses for values, so an integer key encodes as a bare integer.\n\n```\nJson.encode!(%{:a =\u003e \"x\"})\n```\n\nhalts with a raw `function_clause` error. There is no clause for an atom, and nothing catches the gap, so the failure names neither the module nor the offending value.\n\n## What Elixir does\n\nElixir's `JSON` encodes an atom key through `Atom.to_string`, so `%{a: 1}` encodes as `{\"a\":1}`, and raises a `Protocol.UndefinedError` naming the value for a type it cannot encode. The module already follows Elixir's surface deliberately -- `encode!/1` is the only spelling because encoding cannot fail for what it accepts and raises for what it does not. The second half of that sentence is what is missing: it does not raise, it falls off the end of a clause family.\n\n## Shape\n\nTwo separate decisions:\n\n- **Keys.** Either encode an atom key through `Atom.to_string` the way Elixir does, or refuse a non-binary key. Silently emitting `{1:\"x\"}` is the one answer that is wrong either way.\n- **Unencodable values.** A clause that panics with a message naming the value, rather than no clause at all. `Kernel.panic` already carries a string, and `decode!/1` next door uses it.\n\nfz-5xp.73 already tracks a JSON `Encoder` protocol; this is the narrower bug that exists whether or not that lands.\n\n## Found how\n\nWriting verified examples for `encode!/1`: probing what the function does with a map whose keys are not binaries, rather than documenting the happy path from Elixir's docs.",
   "id": "fz-5xp.94",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "[BUG] Json.encode! emits invalid JSON for a non-binary map key and halts without a message for an atom",
   "type": "task",
-  "updated_at": "2026-09-11T14:41:08Z"
+  "updated_at": "2026-09-11T14:41:09Z"
 }
