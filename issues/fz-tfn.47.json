@@ -5,7 +5,8 @@
   ],
   "blocks": [
     "fz-kdt.36.1",
-    "fz-tfn.56"
+    "fz-tfn.56",
+    "fz-tfn.57"
   ],
   "created": "2026-09-06T01:30:25Z",
   "description": "## Goal\n\nMake ProductMemo the sole authority for one demanded product address and its lifecycle. A retained product evaluates only because a new explicit demand arrived or one exact recorded dependency moved.\n\n## Boundary\n\nThis ticket is ProductMemo-local. A request retains its product and fact observations across Waiting and product-local Failed outcomes, supports cancellation, and isolates failure by requested root. Queue entries are transient delivery, never standing demand, retry or failure authority.\n\nDelete duplicate pending_requests, requested, observed_products and unconditional retry state. Preserve one retained ProductMemo entry and its actual observation ownership. Compiler-attempt failure and stale semantic-claim withdrawal belong to fz-tfn.46 and fz-kdt.64; do not reconstruct them here.\n\n## TDD\n\nUse direct and mutual waiting products, cancellation, displacement, shared roots, a product-local failure followed by a healthy root, unchanged re-request, relevant movement and a successful retry. Prove zero unexplained retries, zero work for unchanged and unrelated requests, exact dependency-caused reevaluation, stable allocations and generations on equal reproduction, deterministic artifacts and root-local diagnostics.\n\nThe production failed-macro scenario is a boundary control only: ProductMemo must retain the pending observation it actually owns without claiming that the enclosing source attempt completed.\n\n## Deletion and acceptance\n\nDelete retry scans, global first-failure authority, drain-triggered evaluation, duplicate standing-demand stores, causality exceptions and redundant telemetry. Any historical unexplained evaluation count must disappear or acquire one exact request or dependency cause. Full focused, three-door, deterministic, documentation, formatting, check and strict-Clippy gates pass; fresh ticket-scoped cold review precedes one commit and close.",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Give ProductMemo one exact request lifecycle and trigger",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:53Z"
+  "updated_at": "2026-09-11T19:06:59Z"
 }
