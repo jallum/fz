@@ -16,11 +16,15 @@
     {
       "text": "Implemented as ddb0813b2. Added distinct Def/Defp lexer and quoted-token variants, accepted them only in named definition contexts, and canonicalized them to the existing fn/fnp definition macros; fn remains the sole anonymous-function marker. Updated fixture discovery for def main, added Elixir-oracled interp/JIT/AOT coverage, proved defp stays outside module interfaces, and updated parser/module/macro/quoted-source docs plus the modules guide. Green: cargo test --workspace --lib (2018 + 257 passed; 6 ignored), cargo test --workspace --doc, cargo test --test fz2_cli (30), cargo test --test aot_variadic_open (1), cargo test --test fixture_matrix (685), cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, and pre-commit gates.",
       "timestamp": "2026-09-11T15:10:17Z"
+    },
+    {
+      "text": "Draft PR #129: https://github.com/jallum/fz/pull/129. Submitted with gh stack as the upper layer of stack #130, based on fz-5xp.94/json-encode-keys / PR #128.",
+      "timestamp": "2026-09-11T15:12:18Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Accept def/defp as aliases for fn/fnp",
   "type": "task",
-  "updated_at": "2026-09-11T15:10:24Z"
+  "updated_at": "2026-09-11T15:12:18Z"
 }
