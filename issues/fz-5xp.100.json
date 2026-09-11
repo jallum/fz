@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-11T16:09:11Z",
+  "description": "A byte-aligned binary is not necessarily UTF-8. Elixir rejects JSON.encode!(\u003c\u003c255\u003e\u003e) with {:invalid_byte, 255}; fz currently succeeds and emits \u003c\u003c34, 255, 34\u003e\u003e, which is not a valid JSON string. lib/json.fz documents that encode!/1 accepts a binary and only rejects non-byte-aligned bitstrings, so the public contract also misses this boundary. Decide the failure reason, validate binary string values at the one encode!/1 binary entry shared by binary object keys, prove values and keys against Elixir on interp/run/build, and update the encoding docs. Keep this separate from fz-5xp.99: that ticket escapes C0 bytes inside valid UTF-8 and explicitly leaves ordinary bytes unchanged.",
+  "id": "fz-5xp.100",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Json.encode! emits invalid JSON for a byte-aligned non-UTF-8 binary",
+  "type": "bug",
+  "updated_at": "2026-09-11T16:09:11Z"
+}
