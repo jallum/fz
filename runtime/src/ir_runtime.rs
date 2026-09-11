@@ -51,7 +51,6 @@ use std::cell::Cell;
 use std::mem::{size_of, transmute};
 use std::ptr::null_mut;
 use std::slice::from_raw_parts;
-use std::str::from_utf8;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NIL_ATOM_REF_SLOT: u64 = NIL_ATOM_ID as u64;
@@ -2368,6 +2367,53 @@ pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64)
 
 // fz-axu.14 (R1) — utf8 runtime support.
 
+/// Length of the first valid UTF-8 codepoint, or the byte offset at which its
+/// prefix becomes invalid. An error at `bytes.len()` means the prefix is
+/// incomplete rather than contradicted by a byte in hand.
+fn utf8_prefix(bytes: &[u8]) -> Result<usize, usize> {
+    let Some(&first) = bytes.first() else {
+        return Ok(0);
+    };
+    match first {
+        0x00..=0x7f => Ok(1),
+        0xc2..=0xdf => utf8_byte_in(bytes, 1, 0x80, 0xbf).map(|()| 2),
+        0xe0 => utf8_byte_in(bytes, 1, 0xa0, 0xbf)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .map(|()| 3),
+        0xe1..=0xec | 0xee..=0xef => utf8_continuation(bytes, 1)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .map(|()| 3),
+        0xed => utf8_byte_in(bytes, 1, 0x80, 0x9f)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .map(|()| 3),
+        0xf0 => utf8_byte_in(bytes, 1, 0x90, 0xbf)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .and_then(|()| utf8_continuation(bytes, 3))
+            .map(|()| 4),
+        0xf1..=0xf3 => utf8_continuation(bytes, 1)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .and_then(|()| utf8_continuation(bytes, 3))
+            .map(|()| 4),
+        0xf4 => utf8_byte_in(bytes, 1, 0x80, 0x8f)
+            .and_then(|()| utf8_continuation(bytes, 2))
+            .and_then(|()| utf8_continuation(bytes, 3))
+            .map(|()| 4),
+        _ => Err(0),
+    }
+}
+
+fn utf8_continuation(bytes: &[u8], index: usize) -> Result<(), usize> {
+    utf8_byte_in(bytes, index, 0x80, 0xbf)
+}
+
+fn utf8_byte_in(bytes: &[u8], index: usize, min: u8, max: u8) -> Result<(), usize> {
+    match bytes.get(index) {
+        Some(byte) if (min..=max).contains(byte) => Ok(()),
+        Some(_) => Err(index),
+        None => Err(bytes.len()),
+    }
+}
+
 /// Returns 1 if the bitstring's bytes are valid UTF-8 AND the
 /// bit-length is byte-aligned (multiple of 8). Returns 0 otherwise.
 ///
@@ -2398,9 +2444,41 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
     let byte_len = bit_len / 8;
     let ptr = unsafe { bitstring_byte_ptr(p) };
     let slice = unsafe { from_raw_parts(ptr, byte_len) };
-    match from_utf8(slice) {
-        Ok(_) => 1,
-        Err(_) => 0,
+    let mut offset = 0;
+    while offset < slice.len() {
+        let Ok(width) = utf8_prefix(&slice[offset..]) else {
+            return 0;
+        };
+        offset += width;
+    }
+    1
+}
+
+/// Describes the first UTF-8 codepoint in a byte-aligned binary.
+///
+/// A positive result is the valid codepoint's byte length. Zero means empty.
+/// A negative result encodes the first invalid byte offset as `-offset - 1`;
+/// an offset equal to the input length means an incomplete prefix. This scalar
+/// contract lets `Utf8.next/1` return the original suffix without allocating
+/// in the runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_utf8_prefix(bs_bits: u64) -> i64 {
+    let Some(p) = bitstring_like_ptr_from_ref(bs_bits) else {
+        return -1;
+    };
+    if !unsafe { is_bitstring_like(p) } {
+        return -1;
+    }
+    let bit_len = unsafe { bitstring_bit_len(p) } as usize;
+    if !bit_len.is_multiple_of(8) {
+        return -1;
+    }
+    let byte_len = bit_len / 8;
+    let ptr = unsafe { bitstring_byte_ptr(p) };
+    let slice = unsafe { from_raw_parts(ptr, byte_len) };
+    match utf8_prefix(slice) {
+        Ok(width) => width as i64,
+        Err(offset) => -(offset as i64) - 1,
     }
 }
 

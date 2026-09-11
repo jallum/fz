@@ -62,9 +62,10 @@ defmodule Json do
 
   `unexpected_end` means the input ran out before a complete value.
   `invalid_byte` names the offending byte at `offset`, including trailing
-  input left over after an otherwise complete value. `unexpected_sequence`
-  means a `\\uXXXX` escape's four digits were not all hex; `sequence` is
-  the six bytes read for it, starting at the backslash.
+  input left over after an otherwise complete value and malformed UTF-8
+  inside a string. `unexpected_sequence` means a `\\uXXXX` escape's four
+  digits were not all hex; `sequence` is the six bytes read for it, starting
+  at the backslash.
 
   ## Examples
 
@@ -79,6 +80,9 @@ defmodule Json do
 
       Json.decode("\\"a\\\\uZZZZb\\"")
       #=> {:error, {:unexpected_sequence, 2, "\\\\uZZZZ"}}
+
+      Json.decode(<<34, 255, 34>>)
+      #=> {:error, {:invalid_byte, 1, 255}}
 
   """
   @spec decode(binary) :: {:ok, any} | {:error, any}
@@ -308,8 +312,13 @@ defmodule Json do
   @spec string(binary, binary) :: any
   fnp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
   fnp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
-  fnp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
-  fnp string(b, _acc), do: {:error, b}
+  fnp string(<<c, r :: binary>>, acc) when c < 128, do: string(r, acc <> <<c>>)
+  fnp string(b, acc), do: string_utf8(Utf8.next(b), acc)
+
+  @spec string_utf8({:ok, utf8, binary} | {:error, binary} | nil, binary) :: any
+  fnp string_utf8({:ok, codepoint, rest}, acc), do: string(rest, acc <> Utf8.to_bytes(codepoint))
+  fnp string_utf8({:error, rest}, _acc), do: {:error, rest}
+  fnp string_utf8(nil, _acc), do: {:error, ""}
 
   @spec escaped(binary, binary, binary) :: any
   fnp escaped(<<"\"", r :: binary>>, acc, _at), do: string(r, acc <> "\"")

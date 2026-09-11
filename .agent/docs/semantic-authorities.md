@@ -205,6 +205,15 @@ fz-5xp.61.
 rather than by construction, because an address table has to exist somewhere:
 see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
 
+**UTF-8 validity and prefix errors** — owner `utf8_prefix`
+(`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid
+width or the first byte offset at which that prefix becomes impossible. The
+whole-binary `fz_bitstring_valid_utf8` folds that decision over the input;
+`fz_bitstring_utf8_prefix` exposes one decision to `Utf8.next/1`, which returns
+a branded codepoint or the original suffix beginning at the offending byte.
+Parsers consume that suffix to recover a source offset. They do not carry a
+second UTF-8 table or validate a whole document before its syntax is parsed.
+
 **Text** — `String` (`lib/string.fz`) is plain fz over
 binaries, and declares three primitives of its own: `to_atom/1`, which reaches
 the node's atom table, and `fz_binary_upcase`/`fz_binary_downcase`. It does not

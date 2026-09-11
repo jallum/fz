@@ -9,10 +9,11 @@ use fz_runtime::extern_variadic::{
 };
 use fz_runtime::ir_runtime::{
     fz_atom_to_binary, fz_binary_concat, fz_binary_downcase, fz_binary_to_atom, fz_binary_upcase,
-    fz_bitstring_byte_size, fz_bitstring_is_binary, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8, fz_dbg_value,
-    fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count, fz_map_delete, fz_map_entry_key,
-    fz_map_entry_value, fz_map_from_kv, fz_map_put_atom, fz_map_put_atom_ref, fz_map_put_float, fz_map_put_int,
-    fz_map_put_ref, fz_op_div_ii_to_float, fz_op_neg_f, fz_op_neg_i, fz_process_heap_alloc_stats, fz_value_cmp_ref,
+    fz_bitstring_byte_size, fz_bitstring_is_binary, fz_bitstring_utf8_prefix, fz_bitstring_valid_utf8,
+    fz_brand_bitstring_as_utf8, fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count,
+    fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom, fz_map_put_atom_ref,
+    fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_div_ii_to_float, fz_op_neg_f, fz_op_neg_i,
+    fz_process_heap_alloc_stats, fz_value_cmp_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -533,6 +534,7 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         "fz_bitstring_byte_size" => Some(fz_bitstring_byte_size as *const ()),
         "fz_bitstring_is_binary" => Some(fz_bitstring_is_binary as *const ()),
         "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
+        "fz_bitstring_utf8_prefix" => Some(fz_bitstring_utf8_prefix as *const ()),
         "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),
         "fz_binary_concat" => Some(fz_binary_concat as *const ()),
         "fz_atom_to_binary" => Some(fz_atom_to_binary as *const ()),
