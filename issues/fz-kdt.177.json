@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.48"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.64"
+  ],
   "created": "2026-09-03T03:08:36Z",
   "description": "## Goal\n\nMake recursive structural meaning finite without constructing an ever-deeper concrete Ty ladder. The tuple and list nesting reproducers must terminate with bounded semantic work while preserving every runtime answer and every type distinction promised by the supported denotational domain.\n\n## Proven root problem\n\nThe current immutable structural Ty language has no recursive-equation binder. Semantic construction eagerly embeds operand Ty children, so recursive families such as T = :start | {int, T} expand inline forever. Activation-key count and return-widening budgets do not bound the cost: one activation can repeatedly construct deeper inputs.\n\nFinite source syntax does not imply finitely many exact input classes. id(x) = x must remain parameterized rather than join unrelated callers. A recursive same_depth(a,b) can distinguish every nesting depth, so independent per-input finite partitions are unsound.\n\n## Model gate\n\nBefore production changes, examine existing LoweredBody, type interning, callable and pattern representations. Prove the smallest supported recursive or parameterized denotation algebra and its decidable operations. LoweredBody remains the sole source computation authority; owner-qualified references may borrow its operands, constructors, calls and outcomes but copy no body meaning.\n\nState exactly which answers are exact and where approximation is sound. A wrapper that recursively reinterprets arbitrary bodies, a second flow graph, a BDD copy, inline expansion, arbitrary depth or row caps, and widen-after-construction are rejected.\n\nProjection may avoid constructing children only when the consumer question does not observe them. Returned denotation requires a recursive equation, parameterized result or an explicit sound abstraction; it may not silently discard structure.\n\n## TDD and signal\n\nVary nesting depth while source shape stays fixed for tuple and list accumulators. Bound activation keys, recursive summary nodes, Ty constructions, comparisons, fact movements and formula evaluations on interp, JIT and AOT.\n\nProve identity, projection and construction wrappers across callers with distinct nested inputs do not cross-pollute returns. Exercise same_depth, repeated versus distinct operands, correlated rows and ordered nested matches. FIFO, LIFO and permuted admission produce identical semantic answers and artifacts. No hidden inline type ladder may precede a stable final key.\n\n## Deletion and acceptance\n\nDelete the return/input ascent ladder, arbitrary construction budgets and obsolete termination claims only when replaced by the proved model. Do not preserve a compatibility type authority. Full focused, corpus, three-door, deterministic, documentation, formatting, check and strict-Clippy gates pass; fresh ticket-scoped cold review precedes one commit and close.",
   "id": "fz-kdt.177",
@@ -23,5 +25,5 @@
   "status": "open",
   "title": "Represent recursive denotations without expanding infinite type ladders",
   "type": "task",
-  "updated_at": "2026-09-11T19:06:55Z"
+  "updated_at": "2026-09-11T19:06:57Z"
 }
