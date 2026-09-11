@@ -7,9 +7,15 @@
   "id": "fz-5xp.102",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Implemented as bcabe02d3. Added one utf8_prefix runtime authority that returns a valid first-codepoint width or the exact byte offset where the prefix becomes impossible; whole-binary fz_bitstring_valid_utf8 now folds the same decision. Utf8.next/1 exposes a branded codepoint plus rest or the original offending suffix. Json.string/2 retains its ASCII fast path and uses Utf8.next/1 only for high bytes, so malformed leading bytes and second/third/fourth continuations preserve exact source offsets for values and object keys. Added an Elixir-oracled nine-case fixture and direct Utf8.next/1 fixture across interp/JIT/AOT, exhaustive acceptance of every Unicode scalar, runtime symbol reachability coverage, Json docs, Utf8 docs, and semantic-authority docs. Proven red on all three doors before implementation. Final green: cargo test --test fixture_matrix (700), cargo test --workspace --lib (2018 compiler + 260 runtime passed; 6 ignored), cargo test --workspace --doc, cargo test --test fz2_cli (30), cargo test --test aot_variadic_open (1), cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, git diff --check, and pre-commit gates. Adjacent distinct findings were board-checked, reproduced against Elixir, and filed as fz-5xp.103 for raw control bytes and fz-5xp.104 for surrogate escapes.",
+      "timestamp": "2026-09-11T18:51:39Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Json.decode accepts invalid UTF-8 inside a JSON string",
   "type": "bug",
-  "updated_at": "2026-09-11T17:12:56Z"
+  "updated_at": "2026-09-11T18:51:39Z"
 }
