@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.57"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.36.1",
     "fz-tfn.13"
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "Separate diagnostic provenance from retained executable content identity",
   "type": "bug",
-  "updated_at": "2026-09-11T19:05:53Z"
+  "updated_at": "2026-09-11T19:06:49Z"
 }

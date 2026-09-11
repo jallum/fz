@@ -5,7 +5,6 @@
   ],
   "blocks": [
     "fz-kdt.200",
-    "fz-tfn.40",
     "fz-tfn.47"
   ],
   "created": "2026-09-06T14:28:07Z",
@@ -17,5 +16,5 @@
   "status": "open",
   "title": "Expose atomic live source replacement",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:37Z"
+  "updated_at": "2026-09-11T19:06:49Z"
 }
