@@ -49,6 +49,7 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     ("fz_bitstring_byte_size", ExternAbi::C),
     ("fz_bitstring_is_binary", ExternAbi::C),
     ("fz_bitstring_valid_utf8", ExternAbi::C),
+    ("fz_bitstring_utf8_prefix", ExternAbi::C),
     ("fz_brand_bitstring_as_utf8", ExternAbi::C),
     ("fz_map_delete", ExternAbi::Fz),
     ("fz_map_from_kv", ExternAbi::Fz),
