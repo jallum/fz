@@ -4,8 +4,7 @@
     "fz-kdt.64"
   ],
   "blocks": [
-    "fz-kdt.200",
-    "fz-tfn.47"
+    "fz-kdt.200"
   ],
   "created": "2026-09-06T14:28:07Z",
   "description": "## Goal\n\nExpose live source replacement after semantic identity, publication, attempt, product and support ownership are already correct by construction.\n\nsubmit_source creates a new logical SourceOwner. replace_source(owner, text) is the only replacement operation.\n\n## Contract\n\nIdentical text is a complete no-op. A rejected pre-acceptance parse, index, surface or conflict calculation leaves the previous accepted SourceVersion and all its publications current. Acceptance atomically switches the owner's immutable current version and applies the exact validated direct-contribution delta through fz-tfn.53; it does not lower cold functions or warm products.\n\nPost-acceptance macro or semantic failures complete through fz-tfn.46. fz-kdt.64 withdraws only unsupported transitive alternatives. fz-tfn.40 keeps diagnostic provenance separate from executable identity. fz-tfn.47 gives retained products one exact lifecycle.\n\nEqual semantic reproduction preserves values, allocations and generations and wakes nobody. An unrelated edit invalidates nothing for the requested root. A relevant edit recomputes only exact transitive dependents.\n\n## Coverage\n\nProve distinct-owner conflicts and same-owner identical, location-only and semantic replacements for functions, modules, types, structs, protocols and providers, specs, macros, generated declarations and lambdas, external interfaces, lazy runtime reservations and requester expectations.\n\nCover rejected replacement, accepted then Blocked or Failed, prior success then failure, shared publishers, relevant correction, recursive ground and edge withdrawal, retained old closures and diagnostics, and same-source macro prefix plus dependent expansion without candidate leakage or self-deadlock.\n\n## Deletion and acceptance\n\nDelete implicit fresh-submit replacement, submit_code compatibility identity, demand-time whole-source rediscovery, overwrite and last-writer paths, provisional refresh adapters, rollback or reconstruction concepts, source mirrors and stale docs. Do not add a whole-World rebuild, retained snapshot, global scan or product warming.\n\nFull public causal, semantic, product, deterministic, library, fixture, CLI, formatting, check and strict-Clippy gates pass; fresh ticket-scoped cold review precedes one commit and close.",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Expose atomic live source replacement",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:49Z"
+  "updated_at": "2026-09-11T19:06:50Z"
 }

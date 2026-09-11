@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-tfn.57"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-kdt.36.1",
     "fz-tfn.56"
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "Give ProductMemo one exact request lifecycle and trigger",
   "type": "bug",
-  "updated_at": "2026-09-11T19:05:54Z"
+  "updated_at": "2026-09-11T19:06:50Z"
 }
