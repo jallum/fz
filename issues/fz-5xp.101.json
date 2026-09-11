@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-11T16:16:27Z",
+  "description": "Minimal: def main(), do: dbg(\u003c\u003c\"x\", digit(1)\u003e\u003e); @spec digit(integer) :: integer; defp digit(n), do: 48 + n. Interp and JIT both abort in runtime/src/ir_runtime.rs fz_bs_write_field_ref with \"integer bit field expects Int\"; the .99 AOT fixture shows the same failure. Controls: \u003c\u003cdigit(1)\u003e\u003e and \u003c\u003cdigit(1), digit(2)\u003e\u003e both succeed, so a direct call is valid until a preceding binary-literal segment shifts the dynamic field carrier. Expected output is \"x1\". This is distinct from fz-5xp.66, whose closure call fails even as the first field and whose ticket explicitly records direct calls as working. Add a three-door behavioral fixture and repair the construction field/value alignment rather than accepting a runtime tag panic.",
+  "id": "fz-5xp.101",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A binary-literal bitstring segment shifts a following call result into the wrong carrier",
+  "type": "bug",
+  "updated_at": "2026-09-11T16:16:27Z"
+}
