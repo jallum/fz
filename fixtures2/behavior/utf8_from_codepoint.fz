@@ -1,0 +1,19 @@
+#---
+# purpose: "Utf8.from_codepoint/1 encodes every scalar-width boundary and rejects the surrogate hole and out-of-range integers"
+#---
+fn main() do
+  assert(Utf8.from_codepoint(-1) == {:error, :invalid_codepoint})
+  assert(Utf8.from_codepoint(0) == {:ok, Utf8.from_bytes!(<<0>>)})
+  assert(Utf8.from_codepoint(127) == {:ok, Utf8.from_bytes!(<<127>>)})
+  assert(Utf8.from_codepoint(128) == {:ok, Utf8.from_bytes!(<<194, 128>>)})
+  assert(Utf8.from_codepoint(2047) == {:ok, Utf8.from_bytes!(<<223, 191>>)})
+  assert(Utf8.from_codepoint(2048) == {:ok, Utf8.from_bytes!(<<224, 160, 128>>)})
+  assert(Utf8.from_codepoint(0xd7ff) == {:ok, Utf8.from_bytes!(<<237, 159, 191>>)})
+  assert(Utf8.from_codepoint(0xd800) == {:error, :invalid_codepoint})
+  assert(Utf8.from_codepoint(0xdbff) == {:error, :invalid_codepoint})
+  assert(Utf8.from_codepoint(0xdc00) == {:error, :invalid_codepoint})
+  assert(Utf8.from_codepoint(0xdfff) == {:error, :invalid_codepoint})
+  assert(Utf8.from_codepoint(0xe000) == {:ok, Utf8.from_bytes!(<<238, 128, 128>>)})
+  assert(Utf8.from_codepoint(0x10ffff) == {:ok, Utf8.from_bytes!(<<244, 143, 191, 191>>)})
+  assert(Utf8.from_codepoint(0x110000) == {:error, :invalid_codepoint})
+end
