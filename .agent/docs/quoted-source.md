@@ -96,7 +96,8 @@
 - Compiler2 function surfaces are then composed back into first-class grouped
   quoted roots on that same heap:
   a logical function surface is a quoted list carrying attached `@doc` /
-  `@spec` items plus every grouped `fn` / `fnp` / `defmacro` clause, or a
+  `@spec` items plus every grouped `fn` / `fnp` / `defmacro` clause (source
+  `def` / `defp` heads are canonicalized to `fn` / `fnp`), or a
   single `extern` item surface.
 - Grouping is by `{name, arity}` and flushes at the same non-function
   boundaries the legacy item surface exposes.

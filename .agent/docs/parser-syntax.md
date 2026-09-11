@@ -18,6 +18,11 @@ Keep this boundary crisp:
 - Do not revive `Parser::new`, `parse_program`, `parse_prelude`, or
   `parse_expr_eof`; old callers should move to compiler2 quoted source.
 
+Named public functions may start with `fn` or its Elixir-shaped alias `def`;
+private functions may start with `fnp` or `defp`. The lexer keeps `def` distinct
+from `fn` so only `fn` begins an anonymous function. The front door canonicalizes
+the named aliases to the existing `fn` / `fnp` definition macros.
+
 ## Newline continuation is grammar-owned, not a parser lookahead
 
 Physical newlines are first-class `Tok::Newline` tokens. Whether a newline

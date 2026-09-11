@@ -291,7 +291,7 @@ helpers. User code imports it as a module function:</p>
 <pre><span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
   <span class="kw">import</span> <span class="ty">Utf8</span>, <span class="kw">only:</span> [valid?: <span class="num">1</span>]
 
-  <span class="kw">fn</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
+  <span class="kw">def</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
 <span class="kw">end</span></pre>
 
 <p>The <code>import</code> asks for the built-in <code>Utf8</code> interface.
@@ -303,10 +303,12 @@ module graph.</p>
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
-<p>Private module helpers use <code>fnp</code>. They have the same body shape as
-<code>fn</code> and can be called by sibling functions in the same module, but
-they are omitted from public interfaces and do not require public
-<code>@spec</code> declarations.</p>
+<p>Public functions may use <code>def</code> or <code>fn</code>. Private module
+helpers may use <code>defp</code> or <code>fnp</code>. The two pairs have the same
+body shape; private helpers can be called by sibling functions in the same
+module, but they are omitted from public interfaces and do not require public
+<code>@spec</code> declarations. Anonymous functions still use
+<code>fn</code>.</p>
 
 <p>The runtime source directory has two jobs. <code>runtime.fz</code> is the
 tiny always-loaded prelude root: root runtime types and imports from core
@@ -319,7 +321,7 @@ individual files such as <code>lib/utf8.fz</code> and
 helpers, protocol facts, and the public enumeration wrapper API, including
 <code>Enum.sort</code>'s merge sort, are ordinary runtime-library source, not
 primitive externs. Implementation details such as sort helpers stay private
-with <code>fnp</code>.</p>
+with <code>fnp</code> or <code>defp</code>.</p>
 
 <p>Generated qualified calls from source production request runtime
 interfaces the same way imports do, so operator sugar can depend on modules

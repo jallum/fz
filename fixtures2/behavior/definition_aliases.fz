@@ -1,0 +1,12 @@
+#---
+# purpose: "def and defp preserve the public and private function boundary"
+# oracle: oracle.exs
+#---
+defmodule DefinitionAliases do
+  @spec public(integer) :: integer
+  def public(value), do: private(value)
+
+  defp private(value), do: value + 1
+end
+
+def main(), do: dbg(DefinitionAliases.public(41))
