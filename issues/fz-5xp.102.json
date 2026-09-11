@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-11T16:57:00Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Json.decode accepts invalid UTF-8 inside a JSON string",
   "type": "bug",
-  "updated_at": "2026-09-11T16:57:00Z"
+  "updated_at": "2026-09-11T17:12:56Z"
 }
