@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-11T21:53:24Z",
+  "description": "Elixir raises ArgumentError for String.replace_leading/3 and String.replace_trailing/3 when match is \"\", because replacing every repeated zero-width occurrence cannot make progress. fz deliberately guards the zero byte-size recursion but currently returns the subject unchanged, silently masking the invalid operation.\n\nProve both functions across interp, run, and build; choose the existing fz error authority for invalid runtime arguments; document the empty-match contract. This is separate from fz-5xp.91: prefix/suffix replacement has one finite empty match, and ordinary split/replace has finitely many grapheme boundaries, while leading/trailing repetition has no finite result.",
+  "id": "fz-5xp.106",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] String.replace_leading/3 and replace_trailing/3 silently accept an empty match",
+  "type": "bug",
+  "updated_at": "2026-09-11T21:53:24Z"
+}
