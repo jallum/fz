@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T18:51:40Z",
   "created": "2026-09-11T16:57:00Z",
   "description": "JSON strings are Unicode, but fz currently returns {:ok, \u003c\u003c255\u003e\u003e} for Json.decode(\u003c\u003c34, 255, 34\u003e\u003e), while Elixir JSON.decode/1 returns {:error, {:invalid_byte, 1, 255}}. Json.string/2 copies every ordinary byte and never asks the Utf8 authority. Decide whether validation belongs at the decode input boundary or string completion so byte offsets stay exact, escaped Unicode remains correct, and both string values and object keys share one decision. Add an Elixir-oracled fixture across interp, run, and build, and update Json decoding documentation.",
   "id": "fz-5xp.102",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Json.decode accepts invalid UTF-8 inside a JSON string",
   "type": "bug",
-  "updated_at": "2026-09-11T18:51:39Z"
+  "updated_at": "2026-09-11T18:51:40Z"
 }
