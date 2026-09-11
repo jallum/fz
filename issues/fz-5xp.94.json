@@ -16,11 +16,15 @@
     {
       "text": "Delivered in be9fbf3d3. Json.encode!/1 now routes map keys through a distinct encoder: binary, atom, integer, and float keys become escaped JSON strings; unsupported keys and values panic with structured reasons containing the rejected term. Added Elixir-oracled key coverage plus explicit interp/JIT/AOT abort fixtures, updated public docs and the round-trip rationale. Green: cargo fmt --check; cargo test --workspace --lib (2273 passed, 6 ignored); cargo test --workspace --doc; cargo test --test fz2_cli; cargo test --test aot_variadic_open; cargo test --test fixture_matrix (682 passed); cargo clippy --workspace --all-targets -- -D warnings. Pre-existing control-byte escaping gap is tracked separately as fz-5xp.99.",
       "timestamp": "2026-09-11T14:41:08Z"
+    },
+    {
+      "text": "Published draft PR #128: https://github.com/jallum/fz/pull/128. The ticket commit was rebased from be9fbf3d3 onto current main after the epic PR merged, so its review-only identity is now e422b1d9b. The tree change is unchanged: one commit, eight files. Focused JSON matrix is green on the exact PR head (18/18 across interp, JIT, and AOT).",
+      "timestamp": "2026-09-11T14:51:33Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] Json.encode! emits invalid JSON for a non-binary map key and halts without a message for an atom",
   "type": "task",
-  "updated_at": "2026-09-11T14:41:09Z"
+  "updated_at": "2026-09-11T14:51:33Z"
 }
