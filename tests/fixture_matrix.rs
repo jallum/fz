@@ -39,10 +39,12 @@
 //!
 //! When `oracle:` is set, the `oracle_goldens_match_elixir` static test runs the
 //! named Elixir program under the real `elixir` binary and asserts its stdout
-//! equals `expected.txt` (and owns it under `BLESS=1`). The per-path matrix
-//! trials independently assert each fz path reproduces that same golden, so
-//! `fz == Elixir` holds transitively. Elixir owns the golden — per-path bless
-//! never rewrites `expected.txt` for an oracle fixture.
+//! equals `expected.txt` (and owns it under `BLESS=1`). A successful fixture's
+//! fz paths reproduce that golden, so `fz == Elixir` holds transitively. An
+//! `expect: abort` oracle can instead make a silent assertion that Elixir
+//! rejects the input; the fz paths prove their rejection through
+//! `expected.stderr`. Elixir owns the golden — per-path bless never rewrites
+//! `expected.txt` for an oracle fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
 //! `expect: abort` flips the contract: the program must exit nonzero and its
@@ -1826,10 +1828,10 @@ fn run_path_logged_to(
 
 /// fz-g58.1 — Elixir oracle. For every fixture that declares `oracle: <file>.exs`,
 /// the canonical `expected.txt` golden must equal the stdout of running that
-/// Elixir twin under the real `elixir` binary. This makes "matches Elixir" a
-/// mechanical diff rather than a hand-authored claim: Elixir owns the golden,
-/// and the per-path matrix trials independently assert each compiler2 path
-/// reproduces the same `expected.txt` — so `fz == Elixir` holds transitively.
+/// Elixir twin under the real `elixir` binary. A successful fixture's compiler2
+/// paths reproduce that golden, so `fz == Elixir` holds transitively. An
+/// `expect: abort` oracle can instead assert silently that Elixir rejects the
+/// input while each fz path pins rejection through `expected.stderr`.
 ///
 /// `BLESS=1` regenerates `expected.txt` from the Elixir output. Requires the
 /// `elixir` binary on PATH (Elixir 1.19+); a spawn failure fails loudly by
