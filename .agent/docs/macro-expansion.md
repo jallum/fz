@@ -58,7 +58,8 @@ There is one important sub-case inside the eager bucket — and one origin
 exception:
 
 - `runtime.fz` defines the compiler-owned definition macros `fn`, `fnp`,
-  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`.
+  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`. Source `def` / `defp`
+  heads canonicalize to `fn` / `fnp`; anonymous functions still require `fn`.
 - In ordinary (user) source there is exactly one read: a def-head parses to a
   `MacroCall` (`build_form` in `quoted_surface.rs`), and its structure emerges
   from the expand -> `Fz.Compiler.define` -> define pipeline, never from a

@@ -29,6 +29,23 @@ fn tokens_carry_accurate_byte_spans() {
     }
 }
 
+#[test]
+fn definition_aliases_have_named_definition_tokens_distinct_from_lambdas() {
+    let src = "def public(x), do: x\ndefp private(x), do: x\nfn x -> x end\n";
+    let toks = test_lexer(src)
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let heads = toks
+        .iter()
+        .filter_map(|token| {
+            let text = &src[token.span.start as usize..token.span.end as usize];
+            matches!(text, "def" | "defp" | "fn").then_some(&token.tok)
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(heads.as_slice(), [Tok::Def, Tok::Defp, Tok::Fn]));
+}
+
 // DROP: SourceMap line-resolution, pure infrastructure
 #[test]
 fn locate_resolves_to_correct_line() {

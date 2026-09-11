@@ -23,7 +23,7 @@
 //!
 //!     #---
 //!     purpose: one-line statement of what this fixture proves
-//!     kind: run            # or `test`; defaults to run if `fn main` present
+//!     kind: run            # or `test`; defaults to run if `fn main` or `def main` is present
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
 //!     diagnostic.code: spec/violation  # for telemetry-backed diagnostic fixtures
 //!     defer: rationale     # optional whole-fixture deferral
@@ -531,7 +531,11 @@ fn take_ascii_digits(bytes: &[u8], mut index: usize) -> usize {
 }
 
 fn has_main(src: &str) -> bool {
-    src.lines().any(|l| l.contains("fn main(") || l.contains("fn main "))
+    src.lines().any(|line| {
+        ["fn main(", "fn main ", "def main(", "def main "]
+            .iter()
+            .any(|head| line.contains(head))
+    })
 }
 
 fn parse_header(fixture: &FixtureCase) -> Result<Header, String> {
@@ -1913,7 +1917,7 @@ fn oracle_goldens_match_elixir() {
 }
 
 // fz-fkv: the bulk `fixture_matrix()` test was replaced by per-pair
-// trials emitted from `fn main()`. Discovery, header parsing, and
+// trials emitted from `main()`. Discovery, header parsing, and
 // per-pair compare all live in the helpers above; the trial wiring
 // is at the top of this file.
 

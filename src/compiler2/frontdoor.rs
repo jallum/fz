@@ -151,7 +151,7 @@ impl FrontDoorParser {
             Tok::Defprotocol => self.parse_protocol_item(module_path),
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
             Tok::Extern => self.parse_extern_item(module_path),
-            Tok::Fn | Tok::Fnp | Tok::Defmacro => self.parse_function_item(module_path),
+            Tok::Fn | Tok::Fnp | Tok::Def | Tok::Defp | Tok::Defmacro => self.parse_function_item(module_path),
             Tok::Ident(_) => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door does not yet parse {:?} at item position",
@@ -211,6 +211,8 @@ impl FrontDoorParser {
         let head_name = match self.bump() {
             Tok::Fn => "fn",
             Tok::Fnp => "fnp",
+            Tok::Def => "fn",
+            Tok::Defp => "fnp",
             Tok::Defmacro => "defmacro",
             other => unreachable!("guarded by parse_item: {:?}", other),
         };
@@ -234,7 +236,7 @@ impl FrontDoorParser {
     fn parse_protocol_body_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         match self.peek() {
             Tok::At => self.parse_attribute_item(module_path),
-            Tok::Fn => self.parse_protocol_callback_item(module_path),
+            Tok::Fn | Tok::Def => self.parse_protocol_callback_item(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door expected protocol callback or attribute, got {:?}",
                 other
@@ -244,7 +246,10 @@ impl FrontDoorParser {
 
     fn parse_protocol_callback_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
-        self.expect(&Tok::Fn, "`fn`")?;
+        match self.bump() {
+            Tok::Fn | Tok::Def => {}
+            other => unreachable!("guarded by parse_protocol_body_item: {:?}", other),
+        }
         let (name, head) = self.parse_function_head(module_path)?;
         let scope = vec![name];
         let span = start.merge(self.prev_span());
@@ -419,7 +424,15 @@ impl FrontDoorParser {
                 .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
             other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
         };
-        self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
+        match self.bump() {
+            Tok::Fn | Tok::Def => {}
+            other => {
+                return Err(self.error(format!(
+                    "expected `fn` or `def` after extern ABI string, got {:?}",
+                    other
+                )));
+            }
+        }
         let name = self.parse_extern_name()?;
         self.expect(&Tok::LParen, "`(`")?;
         let mut params = Vec::new();

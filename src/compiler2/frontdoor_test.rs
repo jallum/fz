@@ -308,6 +308,46 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
 }
 
 #[test]
+fn compiler2_frontdoor_canonicalizes_definition_aliases_without_aliasing_lambdas() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "definition_aliases.fz",
+        "def public(x), do: x\ndefp private(x), do: x\nfn lambda(), do: fn x -> x end\n",
+        &tel,
+    )
+    .expect("quoted parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    let heads = items
+        .iter()
+        .map(|item| {
+            head_name(
+                &item
+                    .ast_node(&root.sources)
+                    .expect("definition cursor")
+                    .expect("definition node"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(heads, ["fn", "fnp", "fn"]);
+
+    let error = parse_quoted_program("not_a_lambda.fz", "fn main(), do: def x -> x end\n", &tel)
+        .expect_err("`def` is a named-definition marker, not a lambda marker");
+    assert!(
+        error.msg.contains("unsupported expression prefix") && error.msg.contains("Def"),
+        "unexpected error: {}",
+        error.msg
+    );
+
+    let definition_contexts = parse_quoted_program(
+        "definition_contexts.fz",
+        "defprotocol Identity do\n  def id(value)\nend\nextern \"C\" def getpid() :: integer\n",
+        &tel,
+    )
+    .expect("`def` should mark protocol callbacks and extern definitions too");
+    assert_quoted_mentions(&definition_contexts, &["defprotocol", "fn", "extern"]);
+}
+
+#[test]
 fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
