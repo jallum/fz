@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-11T17:19:05Z",
+  "description": "Json.unicode/4 encodes every \\\\uXXXX value independently as a three-byte sequence. fz therefore accepts lone high and low surrogates as invalid UTF-8 and renders a valid pair such as \\\\uD83D\\\\uDE00 as two invalid three-byte sequences. Elixir reports unexpected_end for an unpaired high surrogate, unexpected_sequence for an unpaired low surrogate, and joins the pair into the four-byte UTF-8 encoding. Add Elixir-oracled value/key fixtures across interp, run, and build; make one Unicode escape authority join and validate surrogate pairs; update decoder documentation.",
+  "id": "fz-5xp.104",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Json.decode emits invalid UTF-8 for Unicode surrogate escapes",
+  "type": "bug",
+  "updated_at": "2026-09-11T17:19:05Z"
+}
