@@ -12,11 +12,15 @@
     {
       "text": "Implemented in f314a1386. Json.string/2 now rejects raw bytes 0..31 before the general ASCII path and returns the untouched suffix, so decode/1 reports Elixir-compatible offsets for both values and object keys. Escaped controls remain accepted through the existing escape path. Added an exhaustive Elixir-oracled fixture across interp/run/build and updated Json.decode/1 docs. Proof: oracle diff exact; focused 3/3; JSON family 33/33; full fixture matrix 703/703; workspace libraries 2018 pass/6 known ignored plus runtime 260/260; CLI 30/30; doctests; AOT integration; clippy -D warnings; fmt. A concurrent-gate artifact hygiene finding is tracked separately as fz-5xp.105.",
       "timestamp": "2026-09-11T20:22:34Z"
+    },
+    {
+      "text": "Draft PR: https://github.com/jallum/fz/pull/134 (stacked on #133).",
+      "timestamp": "2026-09-11T20:23:42Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Json.decode accepts unescaped control bytes inside strings",
   "type": "bug",
-  "updated_at": "2026-09-11T20:22:38Z"
+  "updated_at": "2026-09-11T20:23:42Z"
 }
