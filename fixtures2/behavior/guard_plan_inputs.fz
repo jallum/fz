@@ -1,0 +1,116 @@
+#---
+# purpose: "Nested guard plans own their prepared keys independently of caller key and pin layouts"
+#---
+fn wanted(%{"key" => value}), do: value == 42
+fn wanted(_), do: false
+
+fn relayed(value), do: wanted(value)
+
+fn alternative(%{"alt" => value}), do: value == 42
+fn alternative(_), do: false
+fn either(value), do: wanted(value) or alternative(value)
+
+fn sized(size, <<value::integer-size(size)>>), do: value == 42
+fn sized(_, _), do: false
+
+fn receive_sized() do
+  receive do
+    value when sized(8, value) -> 42
+  after
+    1000 -> 0
+  end
+end
+
+fn receive_either() do
+  receive do
+    value when either(value) -> 42
+  after
+    1000 -> 0
+  end
+end
+
+fn case_plain(message) do
+  case message do
+    value when relayed(value) -> 42
+    _ -> 7
+  end
+end
+
+fn case_sparse(message, expected) do
+  case message do
+    %{:tag => ^expected, "outer" => value} when relayed(value) -> 42
+    _ -> 7
+  end
+end
+
+fn case_different(message) do
+  case message do
+    %{"other" => value} when wanted(value) -> 42
+    _ -> 7
+  end
+end
+
+fn receive_plain() do
+  receive do
+    value when relayed(value) -> 42
+    _ -> 7
+  after
+    1000 -> 0
+  end
+end
+
+fn receive_sparse(expected) do
+  receive do
+    %{:tag => ^expected, "outer" => value} when relayed(value) -> 42
+    _ -> 7
+  after
+    1000 -> 0
+  end
+end
+
+fn receive_different() do
+  receive do
+    %{"other" => value} when wanted(value) -> 42
+    _ -> 7
+  after
+    1000 -> 0
+  end
+end
+
+fn receive_only_wanted() do
+  receive do
+    value when relayed(value) -> 42
+  after
+    1000 -> 0
+  end
+end
+
+fn main() do
+  value = %{"key" => 42}
+  sparse = %{:tag => :ok, "outer" => value}
+  different = %{"other" => value}
+  dbg({case_plain(value), case_sparse(sparse, :ok), case_different(different)})
+  send(self(), value)
+  a = receive_plain()
+  send(self(), sparse)
+  b = receive_sparse(:ok)
+  send(self(), different)
+  c = receive_different()
+  dbg({a, b, c})
+  assert(case_plain(%{"key" => 7}) == 7)
+  send(self(), %{"key" => 7})
+  send(self(), %{"key" => 8})
+  send(self(), value)
+  before = Process.heap_alloc_stats().bitstring_allocs
+  assert(receive_only_wanted() == 42)
+  count_after = Process.heap_alloc_stats().bitstring_allocs
+  assert(count_after - before == 1)
+  send(self(), <<42>>)
+  assert(receive_sized() == 42)
+  send(self(), %{"alt" => 42})
+  assert(receive_either() == 42)
+  assert(case <<42>> do
+    value when sized(8, value) -> true
+    _ -> false
+  end)
+end

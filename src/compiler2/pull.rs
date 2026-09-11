@@ -4817,7 +4817,8 @@ mod tests {
                     origin: ControlEntryOrigin::Clause,
                     params: Vec::new(),
                     captures: Vec::new(),
-                    reusable_cons_captures: Vec::new(),
+                    physical_captures: Vec::new(),
+                    physical_params: Vec::new(),
                     steps: Vec::new(),
                     tail: LoweredTail::Halt {
                         atom: "done".to_string(),

@@ -7,11 +7,12 @@
 # 64-byte source map; normalization reuses that destination without allocating.
 # That allocation is classified as Map, not Other; total allocation stays fixed.
 #
-# - native: map `1/64`, list cons `34/544`, struct `3/96`, scalar box `7/112`;
-# - interpreter: map `3/144`, list cons `30/480`, struct `3/96`, scalar box
+# - native: map `1/64`, list cons `15/240`, struct `3/96`, scalar box `7/112`;
+# - interpreter: map `3/144`, list cons `15/240`, struct `3/96`, scalar box
 #   `10/160`.
 #
-# Both have Other `0/0`; native total is `45/816`, interpreter total `46/880`.
+# Both have Other `0/0`; native total is `26/512`, interpreter total `31/640`.
+# Dynamic list heads use the same source-retention guard as statically known heads.
 # Each pair is `allocs/bytes`. The fixed atom-list input to
 # `Enum.sort/1` is deliberate: feeding it `Map.keys/1` would change merge-sort's
 # work-list shape when the bug is fixed and would confound comparator cost with

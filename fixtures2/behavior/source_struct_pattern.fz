@@ -1,0 +1,18 @@
+#---
+# purpose: "Source struct patterns discriminate the named schema and project the named field"
+#---
+defmodule Box do
+  defstruct [:value]
+end
+
+fn classify(v) do
+  case v do
+    %Box{value: x} -> {:box, x}
+    _ -> :other
+  end
+end
+
+fn main() do
+  dbg(classify(%Box{value: 7}))
+  dbg(classify(%{1 => :one}))
+end

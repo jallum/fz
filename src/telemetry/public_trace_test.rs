@@ -2003,7 +2003,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 76 -> 70 identities, 79 -> 71 first appearances,
         // 5 -> 1 retractions. Six redundant list-union identities disappear,
         // along with four retract/remint cycles; normalized behavior is flat.
-        activations: lifecycle(70, 71, 1),
+        // fz-kdt.27: typed struct-pattern tests and named-field evidence remove
+        // the last retract/remint cycle. Restoring only the old struct producer
+        // restores 71/1; restoring only field-erasing envelopes does not.
+        // The settled activation/type inventory and canonical backend are
+        // byte-identical: these 70 claims now appear once and are never withdrawn.
+        activations: lifecycle(70, 70, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2037,7 +2042,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // reduce-and-reverse activation this fixture used to mint on the way
         // into its builder is never minted, and it takes its demand edge and
         // its rebased completion with it.
-        shifts: shifts(21, 120),
+        // fz-kdt.27: eliminating that cycle removes three shift wakes/rebases.
+        shifts: shifts(18, 117),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2055,8 +2061,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The reduce-and-reverse activation `Enum.to_list/1` no longer mints
         // for a list argument took its analysis -- and that analysis's
         // re-derivation of an answer it already had -- with it.
-        analyze_evaluations: 211,
-        analyze_zero_change: 12,
+        // fz-kdt.27: five analyses disappear, including three equal reproductions.
+        analyze_evaluations: 206,
+        analyze_zero_change: 9,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
         // the semantic total; every retained evaluation remains caused.
@@ -2065,7 +2072,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-5xp.87: 1109 -> 1111. The only moving family is
         // DeriveFunctionContract: newly declared Map.entry/2 and
         // Range.done?/3 each contribute their one exact contract derivation.
-        total_evaluations: 1111,
+        // fz-kdt.27: exactly those five analyses; all remaining wakes are caused.
+        total_evaluations: 1106,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",

@@ -534,7 +534,7 @@ impl JsonlBackend {
         );
         let native_backend = Rc::clone(&backend);
         telemetry.attach_raw_event2::<crate::compiler2::RootId, crate::compiler2::BackendProgram, _>(
-            &["fz", "compiler2", "native_program", "reusable_cons"],
+            &["fz", "compiler2", "native_program", "list_retention"],
             move |name, span_id, parent_span_id, root, program| {
                 native_backend.handle_raw_event(
                     name,
@@ -1210,7 +1210,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
             | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "work_graph", "dependencies_moved"]
-            | ["fz", "compiler2", "native_program", "reusable_cons"]
+            | ["fz", "compiler2", "native_program", "list_retention"]
             | ["fz", "compiler2", "native_backend", ..]
             | ["fz", "compiler2", "aot", ..]
             // Born in the sink (`CanonStream`), never emitted by the compiler.
@@ -1614,7 +1614,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             BackendRequestEvent::Failed => write_str_lit(out, "failure"),
         }
     } else if let Some(program) = opaque.downcast_ref::<crate::compiler2::BackendProgram>() {
-        let (birth_count, transport_count) = reusable_cons_counts(program);
+        let (construction_count, physical_capture_count) = list_retention_counts(program);
         out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
@@ -1624,13 +1624,13 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         push_u64(out, program.construction_wrappers().len() as u64);
         out.push(',');
-        write_str_lit(out, "birth_count");
+        write_str_lit(out, "construction_count");
         out.push(':');
-        push_u64(out, birth_count);
+        push_u64(out, construction_count);
         out.push(',');
-        write_str_lit(out, "transport_count");
+        write_str_lit(out, "physical_capture_count");
         out.push(':');
-        push_u64(out, transport_count);
+        push_u64(out, physical_capture_count);
     } else if let Some(session) = opaque.downcast_ref::<crate::compiler2::PullSession>() {
         let work_starts = session.work_starts();
         for (name, value) in [
@@ -1665,8 +1665,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         for (name, value) in [
             ("live_count", process.heap.live_count() as u64),
             ("bytes_used", process.heap.bytes_used() as u64),
-            ("reusable_cons_attempts", process.reusable_cons_attempts),
-            ("reusable_cons_reused", process.reusable_cons_reused),
+            ("list_retention_attempts", process.list_retention_attempts),
+            ("list_retention_hits", process.list_retention_hits),
         ] {
             out.push(',');
             write_str_lit(out, name);
@@ -1963,30 +1963,25 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
     out.push('}');
 }
 
-fn reusable_cons_counts(program: &crate::compiler2::BackendProgram) -> (u64, u64) {
-    let mut birth_count = 0;
-    let mut transport_count = 0;
+pub(crate) fn list_retention_counts(program: &crate::compiler2::BackendProgram) -> (u64, u64) {
+    let mut construction_count = 0;
+    let mut physical_capture_count = 0;
     for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };
-        for clause in clauses {
-            birth_count += clause
-                .projections
-                .iter()
-                .filter(|step| matches!(step, crate::compiler2::BackendStep::SplitList { .. }))
-                .count() as u64;
-        }
-        for entry in entries {
-            birth_count += entry
-                .steps
-                .iter()
-                .filter(|step| matches!(step, crate::compiler2::BackendStep::SplitList { .. }))
-                .count() as u64;
-            transport_count += entry.reusable_cons_captures.len() as u64;
-        }
+        construction_count += clauses
+            .iter()
+            .flat_map(|clause| &clause.projections)
+            .chain(entries.iter().flat_map(|entry| &entry.steps))
+            .filter(|step| matches!(step, crate::compiler2::BackendStep::List { retention: Some(_), .. }))
+            .count() as u64;
+        physical_capture_count += entries
+            .iter()
+            .map(|entry| entry.physical_captures.len() as u64)
+            .sum::<u64>();
     }
-    (birth_count, transport_count)
+    (construction_count, physical_capture_count)
 }
 
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {

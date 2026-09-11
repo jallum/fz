@@ -1001,7 +1001,7 @@ fn compiler2_run_root_jit_executes_resources() {
 ///
 /// This counts the one telemetry event
 /// `lower_native_program` unconditionally emits per successful lowering
-/// (`["fz","compiler2","native_program","reusable_cons"]`) instead of tapping
+/// (`["fz","compiler2","native_program","list_retention"]`) instead of tapping
 /// that span.
 #[test]
 fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
@@ -1106,7 +1106,7 @@ fn capture_native_lowerings(telemetry: &ConfiguredTelemetry) -> Rc<Cell<u64>> {
     let count = Rc::new(Cell::new(0));
     let sink = Rc::clone(&count);
     telemetry.attach_raw_event2::<super::RootId, super::BackendProgram, _>(
-        &["fz", "compiler2", "native_program", "reusable_cons"],
+        &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| sink.set(sink.get() + 1),
     );
     count

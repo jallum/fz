@@ -72,6 +72,9 @@ pub(crate) struct GuardId(pub(crate) u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct PinnedValueId(pub(crate) u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct PreparedKeyId(pub(crate) u32);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchMatrix<TypeHandle> {
     pub(crate) subjects: Vec<Subject>,
@@ -113,10 +116,11 @@ pub(crate) struct SubjectProjection {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectionKind {
     TupleField(u32),
+    StructField(String),
     ListHead,
     ListTail,
     MapValue { key: GroundValue },
-    BitstringField(u32),
+    BitstringField(BitstringExtraction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,11 +215,18 @@ pub(crate) enum ListRegion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BitstringShape {
-    pub(crate) fields: Vec<BitstringFieldShape>,
+    pub(crate) fields: Vec<SubjectId>,
     pub(crate) require_done: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BitstringExtraction {
+    pub(crate) previous: Option<SubjectId>,
+    pub(crate) spec: BitstringFieldShape,
+    pub(crate) is_last: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BitstringFieldShape {
     pub(crate) kind: BitstringFieldKind,
     pub(crate) size: Option<BitstringFieldSize>,
@@ -235,7 +246,7 @@ pub(crate) enum BitstringFieldKind {
     Utf32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum BitstringFieldSize {
     Literal(u32),
     /// A size bound by an EARLIER FIELD of the same bitstring, which the
@@ -270,7 +281,7 @@ pub(crate) enum OutcomeMultiplicity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EdgeEvidence<TypeHandle> {
     pub(crate) proofs: Vec<Proof<TypeHandle>>,
-    pub(crate) projections: Vec<EdgeProjection>,
+    pub(crate) projections: Vec<SubjectId>,
 }
 
 impl<TypeHandle> Default for EdgeEvidence<TypeHandle> {
@@ -294,7 +305,7 @@ impl<TypeHandle> EdgeEvidence<TypeHandle> {
         }
     }
 
-    pub(crate) fn with_projection(mut self, projection: EdgeProjection) -> Self {
+    pub(crate) fn with_projection(mut self, projection: SubjectId) -> Self {
         self.projections.push(projection);
         self
     }
@@ -332,13 +343,6 @@ impl<TypeHandle> Proof<TypeHandle> {
 pub(crate) enum ProofSense {
     Holds,
     DoesNotHold,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EdgeProjection {
-    pub(crate) source: SubjectId,
-    pub(crate) kind: ProjectionKind,
-    pub(crate) result: SubjectId,
 }
 
 /// One normalized branch question over one subject.
@@ -404,12 +408,8 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
             RegionPredicate::new(subject, Region::TupleArity(arity)),
             ProofSense::Holds,
         );
-        for (index, result) in fields.into_iter().enumerate() {
-            match_evidence = match_evidence.with_projection(EdgeProjection {
-                source: subject,
-                kind: ProjectionKind::TupleField(index as u32),
-                result,
-            });
+        for result in fields {
+            match_evidence = match_evidence.with_projection(result);
         }
         let miss_predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
         let predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
@@ -428,16 +428,8 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
                 RegionPredicate::new(subject, Region::List(ListRegion::Cons)),
                 ProofSense::Holds,
             )
-            .with_projection(EdgeProjection {
-                source: subject,
-                kind: ProjectionKind::ListHead,
-                result: head,
-            })
-            .with_projection(EdgeProjection {
-                source: subject,
-                kind: ProjectionKind::ListTail,
-                result: tail,
-            }),
+            .with_projection(head)
+            .with_projection(tail),
             miss_evidence: EdgeEvidence::from_proof(miss_predicate, ProofSense::DoesNotHold),
             predicate,
         }
@@ -446,17 +438,13 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
     pub(crate) fn map_key_present(subject: SubjectId, key: GroundValue, value: SubjectId) -> Self {
         let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
         let match_key = key.clone();
-        let miss_key = key.clone();
+        let miss_key = key;
         Self {
             match_evidence: EdgeEvidence::from_proof(
                 RegionPredicate::new(subject, Region::MapKeyPresent { key: match_key }),
                 ProofSense::Holds,
             )
-            .with_projection(EdgeProjection {
-                source: subject,
-                kind: ProjectionKind::MapValue { key },
-                result: value,
-            }),
+            .with_projection(value),
             miss_evidence: EdgeEvidence::from_proof(
                 RegionPredicate::new(subject, Region::MapKeyPresent { key: miss_key }),
                 ProofSense::DoesNotHold,
@@ -570,6 +558,7 @@ impl<TypeHandle> DispatchEdge<TypeHandle> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DispatchMatrixError {
     UnknownSubject(SubjectId),
+    ExpectedProjection(SubjectId),
     UnknownOutcome(OutcomeId),
     UniqueOutcomeReused(OutcomeId),
 }
@@ -818,8 +807,13 @@ impl<TypeHandle: Clone + Eq> DispatchMatrixBuilder<TypeHandle> {
             self.ensure_subject(proof.predicate.subject)?;
         }
         for projection in &evidence.projections {
-            self.ensure_subject(projection.source)?;
-            self.ensure_subject(projection.result)?;
+            self.ensure_subject(*projection)?;
+            if !matches!(
+                self.subjects[projection.0 as usize].source,
+                SubjectSource::Projection(_)
+            ) {
+                return Err(DispatchMatrixError::ExpectedProjection(*projection));
+            }
         }
         Ok(())
     }

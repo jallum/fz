@@ -91,13 +91,15 @@ Clause reachability is a pure compiler2 calculation over the entry
 `PatternDispatchPlan`, the shared `Types`, and one input row at a time —
 `AnalyzeActivation` dispatches and analyzes each row independently and merges
 only post-analysis results (reachable clauses by set union, failure by OR,
-return evidence by join, call emissions by coalescing). Branch
-states retain only root input `Ty` values and are memoized by graph node plus
-root row. Edge proofs refine those roots; projected subjects are always derived
-again through `PatternSubjectRef`, so no independently cached field/head type
-can lose correlation or leak one list position into another. The result names
-sorted reachable outcomes and whether graph failure remains reachable; it does
-not publish a fact or consult `World`.
+return evidence by join, call emissions by coalescing). Branch states retain
+root input `Ty` values and subject-indexed empty/cons list-shape evidence;
+the graph node and this full state form the visited key. Edge proofs refine
+the roots and list-shape evidence. Each plan-owned `SubjectId`'s type is projected
+fresh by following its `SubjectSource` recipe from the roots, not cached
+independently. List-shape evidence rejects contradictory paths without widening
+one list position's observation into another's type. The result names sorted
+reachable outcomes and whether graph failure remains reachable; it does not
+publish a fact or consult `World`.
 
 ## Executable demand is local semantic output
 

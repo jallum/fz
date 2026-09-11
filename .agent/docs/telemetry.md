@@ -632,13 +632,20 @@ function contracts, lowered bodies, guard and entry dispatch, modules, structs,
 types, protocol dispatch, activation analysis, callsite summaries, roots, and
 code submissions. Backend and native programs live only in the
 retained product memo: `pull.product.settled` carries successful typed product
-settlement, and `native_program.reusable_cons` carries the root plus its exact
+settlement, and `native_program.list_retention` carries the root plus its exact
 backend input when native lowering succeeds. A failed evaluation appears as a
 typed `pull.product.evaluated` failure with no native settlement. Code
 submission carries raw
 `World` plus either its `SourceOwner` or the existing runtime-module registration
 result. No event duplicates ids, arities, counts, names, source references, or
 stored artifacts.
+
+The JSON projection of `native_program.list_retention` reports
+`construction_count` (List instructions with a retained source) and
+`physical_capture_count` (actual physical source capture lanes). Destructuring
+alone counts as neither. Runtime process-exit fields are
+`list_retention_attempts` and `list_retention_hits`; a hit includes unchanged
+identity retention as well as guarded rewriting.
 
 `work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
 the job and applied step, including changed facts, movements, wakes, and waits.
@@ -657,7 +664,7 @@ candidate.
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `SourceOwner` or runtime registration. Protocol callback
 and implementation events carry raw `World` plus their already-existing
-function/protocol/target keys. The reusable-cons handler derives its counts
+function/protocol/target keys. The list-retention handler derives its counts
 from the raw `BackendProgram`.
 
 `--dump` output is synchronous requested output, not telemetry. One

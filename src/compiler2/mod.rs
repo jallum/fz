@@ -2,6 +2,7 @@ mod agenda;
 mod artifact;
 mod backend_program;
 mod body;
+pub(crate) use body::OutcomeEdge;
 pub(crate) mod callsite_dispatch;
 mod canon;
 mod cli;
@@ -65,7 +66,7 @@ pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};
 pub use body::{
     BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
+    LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ValueId,
 };
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;

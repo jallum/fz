@@ -28,21 +28,15 @@
 #   answer is the argument itself.
 # - `Enum.map/2` allocates **20** — one cons per produced element. `map`
 #   replaces the head of every cell, so a fresh cell is required.
-# - `Enum.filter/2` retaining every element allocates **20**, one per retained
-#   element.
-# - `Enum.map |> Enum.filter` allocates **40**: one cons per element for each
-#   of the two stages.
+# - `Enum.filter/2` retaining every element allocates **0**: unchanged cells
+#   retain their identity even when shared.
+# - `Enum.map |> Enum.filter` allocates **20**: map builds the transformed cells
+#   and filter retains them unchanged.
 #
 # ## A note on reuse
 #
-# These are the costs when a builder's input has already been read by something
-# else, which is the shape this fixture measures and the common one in real
-# code. When a list is still private — nothing else has read it and the result
-# does not outlive the expression — the reuse helper can relink its cells in
-# place, and `Enum.filter/2` over such a list allocates nothing at all. That
-# path is deliberately *not* pinned here: it depends on how both the input and
-# the result escape, and this fixture is the stable per-element ceiling, not a
-# claim about the best case.
+# Immutable retention is separate from destructive rewrite permission. Reading
+# or sharing the input does not prohibit returning an unchanged source cell.
 fn main() do
   xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
   base = allocs()

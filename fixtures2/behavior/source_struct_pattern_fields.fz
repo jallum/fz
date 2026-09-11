@@ -1,0 +1,67 @@
+#---
+# purpose: "Struct patterns keep schema identity and named projections through entry, case, guards, nesting, and receive"
+#---
+defmodule Parcel do
+  defstruct [:unused, :value]
+end
+
+defmodule OtherParcel do
+  defstruct [:unused, :value]
+end
+
+defmodule Nested.Envelope do
+  defstruct [:value]
+end
+
+fn literal(%Parcel{value: 7}), do: :seven
+fn literal(%Parcel{value: x}), do: {:parcel, x}
+fn literal(_), do: :other
+
+fn seven?(%Parcel{value: x}), do: x == 7
+fn seven?(_), do: false
+
+fn guarded(value) do
+  case value do
+    x when seven?(x) -> :seven
+    _ -> :other
+  end
+end
+
+fn nested(value) do
+  case value do
+    {%Nested.Envelope{value: %Parcel{value: x}}, :tag} -> {:nested, x}
+    _ -> :other
+  end
+end
+
+fn main() do
+  a = %Parcel{value: 7, unused: 99}
+  b = %Parcel{value: 8, unused: 99}
+  other = %OtherParcel{value: 7, unused: 99}
+  map = %{value: 7, unused: 99}
+  dbg({literal(a), literal(b), literal(other), literal(map)})
+  dbg({guarded(a), guarded(b), guarded(other), guarded(map)})
+  dbg(nested({%Nested.Envelope{value: b}, :tag}))
+  dbg(nested({%Nested.Envelope{value: other}, :tag}))
+  send(self(), other)
+  send(self(), map)
+  send(self(), b)
+  send(self(), a)
+  found = receive do
+    %Parcel{value: 7} -> :seven
+    %Parcel{value: x} -> {:parcel, x}
+  end
+  dbg(found)
+  found = receive do
+    %Parcel{value: 7} -> :seven
+  end
+  dbg(found)
+  found = receive do
+    %OtherParcel{value: x} -> {:other_parcel, x}
+  end
+  dbg(found)
+  found = receive do
+    %{value: x} -> {:map, x}
+  end
+  dbg(found)
+end

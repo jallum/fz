@@ -514,21 +514,21 @@ fn collect_protocol_callback_node(
 /// which is why the callee slot is the argument index.
 fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
     let body = world.lowered_body(function);
-    let LoweredBody::Clauses { clauses, entries, .. } = &body else {
+    let LoweredBody::Clauses { entries, .. } = &body else {
         return Vec::new();
     };
-    let mut slots_of: HashMap<ValueId, Vec<usize>> = HashMap::new();
-    for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate() {
-            if slot >= input_count {
-                continue;
-            }
-            let slots = slots_of.entry(value).or_default();
-            if !slots.contains(&slot) {
-                slots.push(slot);
-            }
-        }
-    }
+    let slots_of = input_positions(&body, input_count)
+        .into_iter()
+        .map(|(value, positions)| {
+            (
+                value,
+                positions
+                    .into_iter()
+                    .filter_map(|(slot, path)| path.is_empty().then_some(slot))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut edges = Vec::new();
     for entry in entries {
         let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
@@ -601,7 +601,7 @@ fn return_flow_mask(world: &World, function: FunctionId, input_count: usize) -> 
     let LoweredBody::Clauses { clauses, entries, .. } = &body else {
         return mask;
     };
-    let origins = input_positions(clauses, entries, input_count);
+    let origins = input_positions(&body, input_count);
     let rebuilt = recursion_supplied_positions(function, entries, &origins, input_count);
     for (slot, path) in returned_values(&body, clauses, entries)
         .iter()
@@ -674,7 +674,7 @@ fn recursion_supplied_positions(
     let mut constructions: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
     for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
         if let LoweredStep::Tuple { value, items } = step {
-            constructions.insert(*value, items.clone());
+            constructions.insert(*value, items.iter().map(|item| item.value).collect());
         }
     }
     for entry in entries {
@@ -759,17 +759,15 @@ fn collect_rebuild_obligations(
 /// names its source's position one step deeper. One value can name more than
 /// one position -- `f(x, x)` binds one `ValueId` to two slots -- exactly as
 /// `forwarded_inputs` records.
-fn input_positions(
-    clauses: &[super::super::body::LoweredClause],
-    entries: &[super::super::body::LoweredEntry],
-    input_count: usize,
-) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
-    let mut positions: HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> = HashMap::new();
+fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>> {
+    use super::super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return HashMap::new();
+    };
+    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+    let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
     for clause in clauses {
-        for (slot, value) in clause.params.iter().copied().enumerate() {
-            if slot >= input_count {
-                continue;
-            }
+        for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
             let known = positions.entry(value).or_default();
             let position = (slot, Vec::new());
             if !known.contains(&position) {
@@ -777,50 +775,78 @@ fn input_positions(
             }
         }
     }
-    // A projection can only deepen a position that is already known, and a
-    // step never names a value defined after it, so one pass in step order is
-    // a fixpoint.
-    let steps = clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()));
-    for step in steps {
-        let (source, value, deeper) = match step {
-            LoweredStep::TupleField { value, source, index } => {
-                (*source, *value, Some(DemandPathStep::TupleField(*index as u32)))
-            }
-            LoweredStep::RequireMapValue { value, source, .. } => (*source, *value, Some(DemandPathStep::MapValue)),
-            LoweredStep::AssertSame { source, value } => (*source, *value, None),
-            LoweredStep::SplitList { source, head, tail } => {
-                extend_positions(&mut positions, *source, *head, Some(DemandPathStep::ListHead));
-                extend_positions(&mut positions, *source, *tail, Some(DemandPathStep::ListTail));
-                continue;
-            }
-            _ => continue,
-        };
-        extend_positions(&mut positions, source, value, deeper);
+    for value in origins.keys() {
+        resolve_input_positions(body, *value, &origins, &mut positions, &mut HashSet::new());
     }
     positions
 }
 
-fn extend_positions(
-    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
-    source: ValueId,
+fn resolve_input_positions(
+    body: &LoweredBody,
     value: ValueId,
-    deeper: Option<DemandPathStep>,
-) {
-    let Some(source_positions) = positions.get(&source).cloned() else {
-        return;
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    visiting: &mut HashSet<ValueId>,
+) -> Vec<(usize, Vec<DemandPathStep>)> {
+    if let Some(known) = positions.get(&value) {
+        return known.clone();
+    }
+    if !visiting.insert(value) {
+        return Vec::new();
+    }
+    let found = origins
+        .get(&value)
+        .map(|origin| input_origin_positions(body, origin, origins, positions, visiting))
+        .unwrap_or_default();
+    visiting.remove(&value);
+    positions.insert(value, found.clone());
+    found
+}
+
+fn input_origin_positions(
+    body: &LoweredBody,
+    origin: &super::super::executable_facts::TransportOrigin,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    positions: &mut HashMap<ValueId, Vec<(usize, Vec<DemandPathStep>)>>,
+    visiting: &mut HashSet<ValueId>,
+) -> Vec<(usize, Vec<DemandPathStep>)> {
+    use super::super::executable_facts::TransportOrigin;
+    let (source, path) = match origin {
+        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
+        TransportOrigin::Projection { source, kind } => (*source, vec![kind]),
+        TransportOrigin::OutcomeSubject { owner, subject } => {
+            let (root, path) = body.dispatch_subject_origin(*owner, *subject);
+            let super::super::body::SubjectOriginRoot::Value(value) = root else {
+                return Vec::new();
+            };
+            (value, path)
+        }
+        TransportOrigin::Join(children) => {
+            let mut all = children
+                .iter()
+                .flat_map(|child| input_origin_positions(body, child, origins, positions, visiting))
+                .collect::<Vec<_>>();
+            all.sort_unstable();
+            all.dedup();
+            return all;
+        }
+        _ => return Vec::new(),
     };
-    let known = positions.entry(value).or_default();
-    for (slot, mut path) in source_positions {
-        if let Some(step) = deeper {
-            path.push(step);
-        }
-        let position = (slot, path);
-        if !known.contains(&position) {
-            known.push(position);
-        }
+    let mut found = resolve_input_positions(body, source, origins, positions, visiting);
+    for (_, steps) in &mut found {
+        steps.extend(path.iter().map(|kind| demand_path_step(kind)));
+    }
+    found
+}
+
+fn demand_path_step(kind: &ProjectionKind) -> DemandPathStep {
+    match kind {
+        ProjectionKind::TupleField(index) => DemandPathStep::TupleField(*index),
+        ProjectionKind::StructField(_) => DemandPathStep::StructField,
+        ProjectionKind::ListHead => DemandPathStep::ListHead,
+        ProjectionKind::ListTail => DemandPathStep::ListTail,
+        ProjectionKind::MapValue { .. } => DemandPathStep::MapValue,
+        ProjectionKind::BitstringField(_) => DemandPathStep::BitstringField,
     }
 }
 
@@ -857,9 +883,9 @@ fn returned_values(
     {
         match step {
             LoweredStep::Tuple { value, items } => {
-                built.insert(*value, items.clone());
+                built.insert(*value, items.iter().map(|item| item.value).collect());
             }
-            LoweredStep::List { value, items, tail } => {
+            LoweredStep::List { value, items, tail, .. } => {
                 built.insert(*value, items.iter().copied().chain(*tail).collect());
             }
             LoweredStep::Map { value, entries, .. } => {
@@ -1066,8 +1092,9 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum DemandPathStep {
+    StructField,
     TupleField(u32),
     ListHead,
     ListTail,
@@ -1127,6 +1154,7 @@ fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<De
             let (ordinal, mut path) = subject_path(subjects, projection.source)?;
             match &projection.kind {
                 ProjectionKind::TupleField(field) => path.push(DemandPathStep::TupleField(*field)),
+                ProjectionKind::StructField(_) => path.push(DemandPathStep::StructField),
                 ProjectionKind::ListHead => path.push(DemandPathStep::ListHead),
                 ProjectionKind::ListTail => path.push(DemandPathStep::ListTail),
                 ProjectionKind::MapValue { .. } => path.push(DemandPathStep::MapValue),
@@ -1148,13 +1176,23 @@ fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDe
             DispatchDemand::TupleFields(fields)
         }
         DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
-        DemandPathStep::ListTail | DemandPathStep::MapValue | DemandPathStep::BitstringField => DispatchDemand::Whole,
+        DemandPathStep::ListTail
+        | DemandPathStep::MapValue
+        | DemandPathStep::StructField
+        | DemandPathStep::BitstringField => DispatchDemand::Whole,
     }
 }
 
 fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [DispatchDemand]) {
     match guard {
-        PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_) => {}
+        PatternGuardExpr::Const(_) => {}
+        PatternGuardExpr::Pinned(id) => {
+            if let Some(input) = plan.pinned.get(id.0 as usize).and_then(|pin| pin.input)
+                && let Some(demand) = mask.get_mut(input as usize)
+            {
+                demand.join_assign(DispatchDemand::Whole);
+            }
+        }
         PatternGuardExpr::Subject(subject) => {
             mark_subject_demand(&plan.matrix.subjects, *subject, DispatchDemand::Whole, mask)
         }
@@ -1163,12 +1201,9 @@ fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty
             mark_guard_inputs(plan, lhs, mask);
             mark_guard_inputs(plan, rhs, mask);
         }
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, .. } => {
             for input in inputs {
                 mark_guard_inputs(plan, input, mask);
-            }
-            for guard in &dispatch.plan.guards {
-                mark_guard_inputs(&dispatch.plan, guard, mask);
             }
         }
     }

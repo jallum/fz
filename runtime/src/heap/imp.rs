@@ -230,6 +230,7 @@ impl Heap {
     }
 
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
+        self.mark_published_ref_aliased(head).expect("published list head");
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
             write(
@@ -249,11 +250,24 @@ impl Heap {
     }
 
     fn alloc_list_cons_raw_kind(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
+        self.publish_contained_parts(head_raw, head_kind);
+        self.alloc_list_cons_storage(head_raw, head_kind, tail_bits)
+    }
+
+    fn alloc_list_cons_storage(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
             write(p as *mut ListCons, ListCons::new(head_raw, head_kind, tail_bits));
         }
         heap_object_word(p, ValueKind::LIST)
+    }
+
+    pub(super) fn publish_contained_parts(&mut self, raw: u64, kind: ValueKind) {
+        if kind == ValueKind::LIST && raw != 0 {
+            let value = AnyValueRef::from_heap_object(kind, raw as *const u8).expect("contained list");
+            self.mark_published_ref_aliased(value)
+                .expect("published contained list");
+        }
     }
 
     pub fn alloc_list_cons_any(&mut self, head: AnyValue, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
@@ -394,7 +408,12 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    fn write_ordered_map_entries(&self, p: *mut u8, count: usize, entries: impl Iterator<Item = (AnyValue, AnyValue)>) {
+    fn write_ordered_map_entries(
+        &mut self,
+        p: *mut u8,
+        count: usize,
+        entries: impl Iterator<Item = (AnyValue, AnyValue)>,
+    ) {
         unsafe {
             write(p as *mut u64, count as u64);
             let tag_p = map_tag_ptr(p);
@@ -403,6 +422,8 @@ impl Heap {
             let values = map_values_ptr(p, count);
             for (i, (key, value)) in entries.enumerate() {
                 assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
+                self.publish_contained_parts(key.raw(), key.kind());
+                self.publish_contained_parts(value.raw(), value.kind());
                 write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                 write_any_value_to_storage(keys.add(i), None, key);
                 write_any_value_to_storage(values.add(i), None, value);
@@ -445,8 +466,8 @@ impl Heap {
     /// Append to an exclusively owned, unpublished map destination.
     ///
     /// # Safety
-    /// `key` and `value` must be already-published finite immutable terms.
-    /// Neither may reach this or any other unfinished destination.
+    /// `key` and `value` must be finite immutable terms. Neither may reach this
+    /// or any other unfinished destination. Freezing publishes the stored fields.
     pub unsafe fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
         let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
         let (count, filled) = map_destination_state(dest);
@@ -814,29 +835,25 @@ impl Heap {
         list_tail_ref(list)
     }
 
-    pub fn mark_list_cons_aliased(&mut self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = nonempty_list_addr(list)?;
-        let cons = unsafe { &mut *(addr as *mut ListCons) };
-        cons.mark_aliased();
-        Ok(list)
-    }
-
     pub fn mark_published_ref_aliased(&mut self, value: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        if value.tag() != ValueKind::LIST || value.is_empty_list() {
-            return Ok(value);
-        }
-
-        let mut addr = value.list_addr()?;
-        while !addr.is_null() {
-            let cons = unsafe { &mut *(addr as *mut ListCons) };
-            cons.mark_aliased();
-            addr = cons.tail_addr() as *mut u8;
-        }
+        self.share_list_spine(value)?;
         Ok(value)
     }
 
-    /// Rebuild a non-empty list cons by reusing the source cell in place when
-    /// it is still unaliased, otherwise allocate a fresh cell.
+    /// An aliased cell certifies an entirely shared tail. Publication marks a
+    /// closed spine atomically, and shared cells cannot subsequently relink.
+    /// The count measures newly protected cells without retaining heap state.
+    pub(super) fn share_list_spine(&mut self, value: AnyValueRef) -> Result<usize, AnyValueRefError> {
+        if value.tag() != ValueKind::LIST || value.is_empty_list() {
+            return Ok(0);
+        }
+
+        Ok(unsafe { ListCons::share_spine(value.list_addr()?) })
+    }
+
+    /// Retain identical immutable contents without allocation. Changed contents
+    /// require construction-owned rewrite permission and an unaliased source;
+    /// otherwise allocate a fresh cell.
     ///
     /// Return contract: in-place reuse returns the original `list` ref;
     /// fallback allocation returns a distinct freshly-allocated cons ref.
@@ -849,14 +866,20 @@ impl Heap {
         head_raw: u64,
         head_kind: ValueKind,
         tail: AnyValueRef,
+        may_rewrite: bool,
     ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = nonempty_list_addr(list)?;
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let cons = unsafe { &mut *(addr as *mut ListCons) };
-        if cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
+        if cons.head_raw_kind() == (head_raw, head_kind) && cons.tail_bits() == tail_bits {
             return Ok(list);
         }
-        let fresh = self.alloc_list_cons_raw_kind(head_raw, head_kind, tail_bits);
+        self.publish_contained_parts(head_raw, head_kind);
+        let cons = unsafe { &mut *(addr as *mut ListCons) };
+        if may_rewrite && cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
+            return Ok(list);
+        }
+        let fresh = self.alloc_list_cons_storage(head_raw, head_kind, tail_bits);
         let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }

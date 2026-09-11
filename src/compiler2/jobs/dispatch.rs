@@ -18,9 +18,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternGuardExpr, PatternRow, PatternSubjectRef,
-    SourcePatternError, SourcePatternRows, guard_dispatch_from_surface,
-    pattern_dispatch_from_source_with_guard_resolver,
+    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternRow, PatternSubjectRef, SourcePatternError,
+    SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -126,6 +125,20 @@ pub(super) fn plan_entry_dispatch(
             waits.insert(fact);
         }
     }
+    for clause in &surface.clauses {
+        for pattern in &clause.params {
+            super::body::collect_local_pattern_requirements(
+                world,
+                tel,
+                source.namespace,
+                source.owner_module,
+                source.owner,
+                pattern,
+                &mut reads,
+                &mut waits,
+            )?;
+        }
+    }
     // Same wait, `StructDefined` side: a `%Mod{...}` in a param annotation
     // needs `Mod`'s precise field order before `resolve_type_expr_body`
     // classifies it in `entry_source_patterns` (fz-rh2.17.5.6.10).
@@ -159,14 +172,16 @@ pub(super) fn plan_entry_dispatch(
     let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?;
     let namespace = source.namespace;
     let fn_span = surface.span;
-    let mut resolver = |name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
-        let callee = resolve_guard_callee_checked(world, namespace, name, arity);
-        Ok(Some(PatternGuardExpr::Dispatch {
-            inputs: args,
-            dispatch: Box::new(world.guard_dispatch(callee)),
-        }))
+    let mut resolver = super::super::dispatch::SourcePatternResolver {
+        world,
+        namespace,
+        owner: source.owner_module,
+        guard: |world: &mut World, name: &CallableName, arity: usize| {
+            let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+            Ok(Some(world.guard_dispatch(callee)))
+        },
     };
-    let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
+    let plan = pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver)
         .map_err(|error| emit_entry_dispatch_error(tel, world, function, fn_span, error))?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, plan);
     Ok(JobEffects {
@@ -202,6 +217,20 @@ fn collect_requirements(
     reads.push(FactKey::FunctionDefined(function));
     let (source, surface) = world.function_definition(function);
     stack.push(function);
+    for clause in &surface.clauses {
+        for pattern in &clause.params {
+            super::body::collect_local_pattern_requirements(
+                world,
+                tel,
+                source.namespace,
+                source.owner_module,
+                source.owner,
+                pattern,
+                reads,
+                waits,
+            )?;
+        }
+    }
     for call in collect_guard_calls_in_fn(&surface).map_err(|span| {
         emit_guard_dispatch_error(tel, world, function, span, SourcePatternError::UnsupportedGuardExpr)
     })? {
@@ -232,13 +261,15 @@ fn build_guard_dispatch(
     let (source, surface) = world.function_definition(function);
     let namespace = source.namespace;
     stack.push(function);
-    let mut resolver = |name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
-        let callee = resolve_guard_callee_checked(world, namespace, name, arity);
-        let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
-        Ok(Some(PatternGuardExpr::Dispatch {
-            inputs: args,
-            dispatch: Box::new(dispatch),
-        }))
+    let mut resolver = super::super::dispatch::SourcePatternResolver {
+        world,
+        namespace,
+        owner: source.owner_module,
+        guard: |world: &mut World, name: &CallableName, arity: usize| {
+            let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+            let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
+            Ok(Some(dispatch))
+        },
     };
     let dispatch = guard_dispatch_from_surface(&surface, &mut resolver)?;
     stack.pop();
@@ -509,6 +540,7 @@ fn emit_guard_dispatch_error(
             ),
         ),
         SourcePatternError::UnknownSubject(_)
+        | SourcePatternError::UnresolvedStruct(_)
         | SourcePatternError::RowPatternArity { .. }
         | SourcePatternError::NonMonotonicBodyId { .. } => {
             panic!("compiler2 built an invalid guard dispatch row set: {error:?}")
@@ -575,6 +607,7 @@ fn emit_entry_dispatch_error(
         ),
         PatternDispatchError::SourcePattern(
             SourcePatternError::UnknownSubject(_)
+            | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. }
             | SourcePatternError::GuardCallCycle(_, _)

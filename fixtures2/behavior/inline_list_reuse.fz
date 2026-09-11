@@ -1,0 +1,28 @@
+#---
+# purpose: "Inline outcome list reconstruction retains the exact source cell without extra allocation"
+#---
+fn rebuild(xs) do
+  case xs do
+    [head | tail] -> [head | tail]
+    _ -> []
+  end
+end
+
+fn nested(value) do
+  case value do
+    {%{items: [_, head | tail]}} -> [head | tail]
+    _ -> []
+  end
+end
+
+fn main() do
+  before = Process.heap_alloc_stats().list_cons_allocs
+  rebuilt = rebuild([1, 2, 3])
+  count_after = Process.heap_alloc_stats().list_cons_allocs
+  dbg({rebuilt, count_after - before})
+
+  before = Process.heap_alloc_stats().list_cons_allocs
+  rebuilt = nested({%{items: [4, 5, 6]}})
+  count_after = Process.heap_alloc_stats().list_cons_allocs
+  dbg({rebuilt, count_after - before})
+end

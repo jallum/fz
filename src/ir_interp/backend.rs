@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_closure};
-use super::dispatch_exec::{DispatchExecState, execute_dispatch_inputs};
+use super::dispatch_exec::{
+    DispatchExecState, DispatchMatch, DispatchValues, execute_dispatch_inputs, resolve_dispatch_subject,
+};
 use super::extern_call::call_lowered_extern;
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
@@ -63,8 +65,6 @@ enum BackendEvalTransition {
     Done(AnyValue),
     Blocked,
 }
-
-type DispatchMatch = (u32, Vec<(String, AnyValue)>);
 
 /// Runs one closed Compiler2 backend program through the shared interpreter
 /// runtime without reopening planner or type-resolution work.
@@ -255,36 +255,44 @@ impl IrInterpRuntime {
             let BackendTail::Receive(receive) = &entry.tail else {
                 return Err(format!("backend parked entry {} is not a receive", park.entry.as_u32()));
             };
-            if let Some((clause_index, bound_values)) = try_match_backend_receive(
+            if let Some((target, params)) = try_match_backend_receive(
                 self,
                 types,
                 transport,
                 program,
                 module,
-                &receive.clauses,
+                &receive.outcomes,
                 &receive.dispatch,
                 msg,
                 &receive.bindings,
                 &park.env,
             )? {
-                let clause = receive
-                    .clauses
-                    .get(clause_index)
-                    .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
-                let env = delivered_env(
-                    self,
-                    transport,
-                    program,
-                    entries,
-                    &park.env,
-                    clause.entry,
-                    None,
-                    &bound_values,
-                )?;
+                let mut forwarding = HashMap::new();
+                let sender = self.cur_proc();
+                let receiver = self
+                    .process_ptr(*receiver_pid)
+                    .ok_or_else(|| format!("unknown receiver {receiver_pid}"))?;
+                let params = params
+                    .into_iter()
+                    .map(|(parameter, value)| {
+                        let value = value.as_any_value_ref(sender)?;
+                        let copied = deep_copy_any_value_ref(
+                            value,
+                            unsafe { &*sender_heap },
+                            &mut unsafe { &mut *receiver }.heap,
+                            &mut forwarding,
+                        );
+                        Ok((parameter, AnyValue::from_any_value_ref(copied)?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.current_proc = receiver;
+                let env = delivered_env(self, transport, program, entries, &park.env, target, None, &params);
+                self.current_proc = sender;
+                let env = env?;
                 self.enqueue_backend_local_entry(
                     *receiver_pid,
                     park.executable.clone(),
-                    clause.entry,
+                    target,
                     env,
                     park.continuations,
                 )?;
@@ -545,7 +553,6 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     env.insert(param, value);
                 }
             }
-            let mut reusable_cons_sources = HashMap::new();
             eval_steps(
                 runtime,
                 types,
@@ -555,7 +562,6 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                 module,
                 &executable,
                 &clause.projections,
-                &mut reusable_cons_sources,
                 &mut env,
             )
             .map_err(|error| {
@@ -601,7 +607,7 @@ fn select_clause(
             .ok_or_else(|| format!("backend clause dispatch required omitted semantic input {}", ordinal))?;
         inputs[ordinal] = materialize_backend_value(transport, runtime.cur_proc(), value)?;
     }
-    let prepared = prepared_dispatch_keys(runtime, dispatch.plan())?;
+    let prepared = prepared_dispatch_keys(runtime, module, dispatch.plan(), &inputs)?;
     let selected = select_dispatch_body(
         runtime,
         types,
@@ -620,37 +626,50 @@ fn select_clause(
 /// A map pattern keyed by a binary — `%{"name" => n}` — is decided through a
 /// PREPARED key: `dispatch_const_key_value` finds the key's index in
 /// `plan.prepared_keys` and then reads the materialised value out of the
-/// pinned map. The receive path supplies those from its bindings, and native
-/// entry dispatch pushes them itself (`jobs/native.rs`, `prepared_key_name`),
-/// but interpreted entry dispatch used to pass an empty map here. The lookup
+/// prepared values. The receive path supplies those from its bindings, and native
+/// entry dispatch materializes them itself, but interpreted entry dispatch used
+/// to pass no prepared values here. The lookup
 /// then found nothing, the region reported "key absent", and the clause was
 /// skipped: `lookup(%{"name" => "ada"})` answered `:anonymous` on `interp`
 /// while `run` and Elixir both answered `{:named, "ada"}`.
 ///
 /// Only binary keys need this. Ints, floats, atoms, booleans and nil are
-/// decided from the constant directly and never consult the pinned map.
+/// decided from the constant directly and never consult prepared values.
 fn prepared_dispatch_keys(
     runtime: &mut IrInterpRuntime,
+    module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-) -> Result<HashMap<String, AnyValue>, String> {
+    inputs: &[AnyValue],
+) -> Result<DispatchValues, String> {
     use crate::ground_value::DispatchShape;
-    let mut prepared = HashMap::new();
-    for (index, key) in plan.prepared_keys.iter().enumerate() {
-        let Some(DispatchShape::Utf8Binary(bytes)) = key.as_dispatch_shape() else {
-            continue;
+    let mut prepared = Vec::new();
+    for key in &plan.prepared_keys {
+        let value = if let Some(DispatchShape::Utf8Binary(bytes)) = key.as_dispatch_shape() {
+            let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+                runtime.cur_proc(),
+                bytes.as_ptr() as u64,
+                bytes.len() as u64,
+                (bytes.len() * 8) as u64,
+            );
+            interp_value_from_ref_word(ref_word, "prepared dispatch key")?
+        } else {
+            super::dispatch_exec::dispatch_const_to_value(runtime.cur_proc(), module, key)
+                .ok_or_else(|| format!("cannot materialize prepared dispatch key {key:?}"))?
         };
-        let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-            runtime.cur_proc(),
-            bytes.as_ptr() as u64,
-            bytes.len() as u64,
-            (bytes.len() * 8) as u64,
-        );
-        prepared.insert(
-            crate::dispatch_matrix::pattern::prepared_key_name(index),
-            interp_value_from_ref_word(ref_word, "prepared dispatch key")?,
-        );
+        prepared.push(value);
     }
-    Ok(prepared)
+    Ok(DispatchValues {
+        pinned: plan
+            .pinned
+            .iter()
+            .map(|pin| {
+                pin.input
+                    .and_then(|input| inputs.get(input as usize).copied())
+                    .ok_or_else(|| "entry dispatch pin has no argument operand".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        prepared,
+    })
 }
 
 fn select_dispatch_body(
@@ -661,11 +680,11 @@ fn select_dispatch_body(
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     args: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
 ) -> Result<Option<u32>, String> {
     Ok(
         select_dispatch_match(runtime, types, transport, program, module, plan, args, pinned)?
-            .map(|(body_id, _)| body_id),
+            .map(|matched| plan.outcome(matched.outcome).expect("winning dispatch outcome").body_id),
     )
 }
 
@@ -720,7 +739,7 @@ fn select_dispatch_match(
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     args: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
 ) -> Result<Option<DispatchMatch>, String> {
     let mut state = DispatchExecState::default();
     let types = &*types;
@@ -794,11 +813,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
-    let mut reusable_cons_sources = entry
-        .reusable_cons_captures
-        .iter()
-        .map(|capture| (capture.head, capture.source))
-        .collect::<HashMap<_, _>>();
     eval_steps(
         runtime,
         types,
@@ -808,7 +822,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         module,
         executable,
         &entry.steps,
-        &mut reusable_cons_sources,
         &mut env,
     )
     .map_err(|error| {
@@ -819,6 +832,15 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             entry_id.as_u32()
         )
     })?;
+    if let BackendTail::DirectCall { args, .. } | BackendTail::ClosureCall { args, .. } = &entry.tail {
+        for arg in args {
+            if arg.ownership == crate::fz_ir::OwnershipMode::Share
+                && let Some(value) = env.get(&arg.value)
+            {
+                publish_backend_capture(runtime.cur_proc(), value)?;
+            }
+        }
+    }
     let transition = match &entry.tail {
         BackendTail::Value { value, dest } => {
             // Zero-lane return contracts need no environment read. This is ABI
@@ -879,7 +901,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         module,
                         &dispatch.plan,
                         &input_values,
-                        &HashMap::new(),
+                        &DispatchValues::default(),
                     )?
                     .ok_or_else(|| {
                         format!(
@@ -1075,11 +1097,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 ControlDestination::Return => continuations,
                 ControlDestination::Deliver(target) => {
                     let mut continuations = continuations;
-                    let proc = runtime.cur_proc();
                     continuations.push(BackendContinuation {
                         executable: executable.clone(),
                         entry: *target,
-                        env: capture_backend_continuation_env(transport, proc, entries, *target, &env)?,
+                        env: capture_backend_continuation_env(transport, entries, *target, &env)?,
                     });
                     continuations
                 }
@@ -1114,7 +1135,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         } => {
             let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?;
             let pinned_values = local_dispatch_pinned(transport, runtime.cur_proc(), &env, bindings, &dispatch.plan)?;
-            let target = match select_dispatch_body(
+            let (target, params) = match select_dispatch_match(
                 runtime,
                 types,
                 transport,
@@ -1124,23 +1145,40 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 &input_values,
                 &pinned_values,
             )? {
-                Some(body_id) => *dispatch
-                    .arm_entries
-                    .get(body_id as usize)
-                    .ok_or_else(|| format!("backend local dispatch arm {} is out of bounds", body_id))?,
-                None => dispatch.miss_entry,
+                Some(mut matched) => {
+                    let edge = dispatch.outcome(matched.outcome);
+                    let params = edge
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            let value = resolve_dispatch_subject(
+                                runtime.cur_proc(),
+                                module,
+                                &dispatch.plan,
+                                argument.subject,
+                                &input_values,
+                                &pinned_values,
+                                &mut matched.state,
+                            )
+                            .ok_or_else(|| format!("winning outcome lacks subject {:?}", argument.subject))?;
+                            Ok((argument.parameter, value))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    (edge.target, params)
+                }
+                None => (dispatch.miss_entry, Vec::new()),
             };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),
                 entry: target,
-                env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
+                env: delivered_env(runtime, transport, program, entries, &env, target, None, &params)?,
                 continuations,
             }))
         }
         BackendTail::Receive(receive) => {
             let bindings = &receive.bindings;
             let dispatch = &receive.dispatch;
-            let clauses = &receive.clauses;
+            let outcomes = &receive.outcomes;
             let after = receive.after.as_ref();
             let mailbox_len = unsafe { &mut *runtime.cur_proc() }.mailbox.len();
             let mut hit = None;
@@ -1149,31 +1187,19 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let proc = unsafe { &mut *runtime.cur_proc() };
                     AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
                 };
-                if let Some((clause_index, bound_values)) = try_match_backend_receive(
-                    runtime, types, transport, program, module, clauses, dispatch, msg, bindings, &env,
+                if let Some((target, params)) = try_match_backend_receive(
+                    runtime, types, transport, program, module, outcomes, dispatch, msg, bindings, &env,
                 )? {
-                    hit = Some((mb_idx, clause_index, bound_values));
+                    hit = Some((mb_idx, target, params));
                     break;
                 }
             }
-            if let Some((mb_idx, clause_index, bound_values)) = hit {
+            if let Some((mb_idx, target, params)) = hit {
                 unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
-                let clause = clauses
-                    .get(clause_index)
-                    .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
-                    entry: clause.entry,
-                    env: delivered_env(
-                        runtime,
-                        transport,
-                        program,
-                        entries,
-                        &env,
-                        clause.entry,
-                        None,
-                        &bound_values,
-                    )?,
+                    entry: target,
+                    env: delivered_env(runtime, transport, program, entries, &env, target, None, &params)?,
                     continuations,
                 }));
             }
@@ -1210,38 +1236,45 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     })
 }
 
+type OutcomeValues = (crate::compiler2::ControlEntryId, Vec<(ValueId, AnyValue)>);
+
 fn try_match_backend_receive(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
     program: &BackendProgram,
     module: &Module,
-    clauses: &[crate::compiler2::ReceiveClause],
+    outcomes: &[crate::compiler2::OutcomeEdge],
     dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     msg: AnyValue,
     bindings: &crate::compiler2::DispatchBindings,
     env: &HashMap<ValueId, BackendBoundValue>,
-) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
+) -> Result<Option<OutcomeValues>, String> {
     let pinned = local_dispatch_pinned(transport, runtime.cur_proc(), env, bindings, dispatch)?;
-    let Some((body_id, binds)) =
+    let Some(mut matched) =
         select_dispatch_match(runtime, types, transport, program, module, dispatch, &[msg], &pinned)?
     else {
         return Ok(None);
     };
-    let clause_index = body_id as usize;
-    let clause = clauses
-        .get(clause_index)
-        .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
-    let mut bound_values = Vec::with_capacity(clause.bound_names.len());
-    for name in &clause.bound_names {
-        let Some((_, value)) = binds.iter().rev().find(|(binding, _)| binding == name) else {
-            return Err(format!(
-                "backend receive binding `{name}` missing from dispatch outcome"
-            ));
-        };
-        bound_values.push(*value);
+    let edge = outcomes
+        .iter()
+        .find(|edge| edge.outcome == matched.outcome)
+        .expect("receive winning edge");
+    let mut params = Vec::with_capacity(edge.arguments.len());
+    for argument in &edge.arguments {
+        let value = resolve_dispatch_subject(
+            runtime.cur_proc(),
+            module,
+            dispatch,
+            argument.subject,
+            &[msg],
+            &pinned,
+            &mut matched.state,
+        )
+        .ok_or_else(|| format!("receive outcome lacks subject {:?}", argument.subject))?;
+        params.push((argument.parameter, value));
     }
-    Ok(Some((clause_index, bound_values)))
+    Ok(Some((edge.target, params)))
 }
 
 fn eval_steps<T: Telemetry + ?Sized>(
@@ -1253,7 +1286,6 @@ fn eval_steps<T: Telemetry + ?Sized>(
     module: &Module,
     executable: &BackendExecutable,
     steps: &[ProgramStep],
-    reusable_cons_sources: &mut HashMap<ValueId, ValueId>,
     env: &mut HashMap<ValueId, BackendBoundValue>,
 ) -> Result<(), String> {
     for step in steps {
@@ -1268,20 +1300,26 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let bound = tuple_step_value(transport, program, runtime.cur_proc(), executable, env, *value, items)?;
                 env.insert(*value, bound);
             }
-            ProgramStep::List { value, items, tail } => {
+            ProgramStep::List {
+                value,
+                items,
+                tail,
+                retention,
+            } => {
                 let tail_value = tail.map_or(Ok(interp_empty_list_value()), |tail| {
                     env_get(transport, runtime.cur_proc(), env, tail)
                 })?;
                 let acc = if items.len() == 1 {
                     let head = env_get(transport, runtime.cur_proc(), env, items[0])?;
-                    if let (Some(tail_id), Some(source_id)) = (*tail, reusable_cons_sources.get(&items[0]).copied()) {
+                    if let Some(retention) = retention {
                         rebuild_backend_list_from_source(
                             transport,
                             runtime.cur_proc(),
                             env,
-                            source_id,
+                            retention.source,
                             head,
-                            env_get(transport, runtime.cur_proc(), env, tail_id)?,
+                            tail_value,
+                            retention.permission,
                         )?
                     } else {
                         interp_list_cons(runtime.cur_proc(), head, tail_value, "backend list")?
@@ -1376,6 +1414,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let ptr = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
                 for (index, (_, item)) in fields.iter().enumerate() {
                     let item = env_get(transport, runtime.cur_proc(), env, *item)?;
+                    let item = publish_runtime_value(runtime.cur_proc(), item)?;
                     unsafe {
                         (&mut *runtime.cur_proc()).heap.write_field_slot(
                             ptr,
@@ -1449,6 +1488,11 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 captures,
                 construction,
             } => {
+                for capture in captures {
+                    if let Some(value) = env.get(capture) {
+                        publish_backend_capture(runtime.cur_proc(), value)?;
+                    }
+                }
                 if construction.is_none() {
                     unsafe { &*runtime.cur_proc() }
                         .node
@@ -1596,7 +1640,6 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 let tail_value = interp_list_tail(runtime.cur_proc(), source_value)?;
                 env.insert(*head, BackendBoundValue::Runtime(head_value));
                 env.insert(*tail, BackendBoundValue::Runtime(tail_value));
-                reusable_cons_sources.insert(*head, *source);
             }
             ProgramStep::BitstringInit { reader, source } => {
                 let source = env_get(transport, runtime.cur_proc(), env, *source)?;
@@ -1690,6 +1733,7 @@ fn rebuild_backend_list_from_source(
     source_id: ValueId,
     head: AnyValue,
     tail: AnyValue,
+    permission: crate::fz_ir::ListRewritePermission,
 ) -> Result<AnyValue, String> {
     let source = env_get(transport, proc, env, source_id)?;
     let source_ref = source
@@ -1708,6 +1752,7 @@ fn rebuild_backend_list_from_source(
             head.raw(),
             u64::from(head.kind().tag()),
             tail_ref.raw_word(),
+            u64::from(permission == crate::fz_ir::ListRewritePermission::Rewrite),
         ),
         "backend list",
     )
@@ -1721,7 +1766,7 @@ fn delivered_env(
     env: &HashMap<ValueId, BackendBoundValue>,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<BackendBoundValue>,
-    params: &[AnyValue],
+    params: &[(ValueId, AnyValue)],
 ) -> Result<HashMap<ValueId, BackendBoundValue>, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
@@ -1735,7 +1780,11 @@ fn delivered_env(
             params.len()
         ));
     }
-    for (param, value) in entry.params.iter().copied().zip(params.iter().copied()) {
+    for (param, value) in params.iter().copied() {
+        assert!(
+            entry.params.contains(&param),
+            "a delivered parameter belongs to its target"
+        );
         next.insert(param, BackendBoundValue::Runtime(value));
     }
     match &entry.origin {
@@ -1767,8 +1816,8 @@ fn delivered_env(
         }
         next.insert(capture.value, env_get_value(env, capture.value)?);
     }
-    for capture in &entry.reusable_cons_captures {
-        next.insert(capture.source, env_get_value(env, capture.source)?);
+    for capture in &entry.physical_captures {
+        next.insert(*capture, env_get_value(env, *capture)?);
     }
     Ok(next)
 }
@@ -1839,10 +1888,7 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
             continuations.push(BackendContinuation {
                 executable: caller.clone(),
                 entry: target,
-                env: {
-                    let proc = runtime.cur_proc();
-                    capture_backend_continuation_env(transport, proc, entries_for_executable(caller)?, target, &env)?
-                },
+                env: capture_backend_continuation_env(transport, entries_for_executable(caller)?, target, &env)?,
             });
             continuations
         }
@@ -1879,7 +1925,6 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
 #[allow(clippy::too_many_arguments)]
 fn capture_backend_continuation_env(
     transport: &TransportStore,
-    proc: *mut Process,
     entries: &[BackendEntry],
     target: crate::compiler2::ControlEntryId,
     env: &HashMap<ValueId, BackendBoundValue>,
@@ -1887,7 +1932,7 @@ fn capture_backend_continuation_env(
     let entry = entries
         .get(target.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
-    let mut captured = HashMap::with_capacity(entry.captures.len() + entry.reusable_cons_captures.len());
+    let mut captured = HashMap::with_capacity(entry.captures.len() + entry.physical_captures.len());
     for capture in &entry.captures {
         if transport
             .interners()
@@ -1903,13 +1948,10 @@ fn capture_backend_continuation_env(
                 capture.value.as_u32(),
             )
         })?;
-        captured.insert(capture.value, publish_backend_capture(proc, &value)?);
+        captured.insert(capture.value, value);
     }
-    for capture in &entry.reusable_cons_captures {
-        captured.insert(
-            capture.source,
-            publish_backend_capture(proc, &env_get_value(env, capture.source)?)?,
-        );
+    for capture in &entry.physical_captures {
+        captured.insert(*capture, env_get_value(env, *capture)?);
     }
     Ok(captured)
 }
@@ -1954,23 +1996,13 @@ fn local_dispatch_pinned(
     env: &HashMap<ValueId, BackendBoundValue>,
     bindings: &crate::compiler2::DispatchBindings,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-) -> Result<HashMap<String, AnyValue>, String> {
-    let mut pinned = HashMap::new();
-    for (index, value_id) in bindings.pinned.iter().copied().enumerate() {
-        let Some(pin) = plan.pinned.get(index) else {
-            return Err(format!("backend local dispatch pinned {} is out of bounds", index));
-        };
-        if pin.input.is_none() {
-            pinned.insert(pin.name.clone(), env_get(transport, proc, env, value_id)?);
-        }
-    }
-    for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
-        pinned.insert(
-            crate::dispatch_matrix::pattern::prepared_key_name(index),
-            env_get(transport, proc, env, value_id)?,
-        );
-    }
-    Ok(pinned)
+) -> Result<DispatchValues, String> {
+    assert_eq!(bindings.pinned.len(), plan.pinned.len());
+    assert_eq!(bindings.prepared.len(), plan.prepared_keys.len());
+    Ok(DispatchValues {
+        pinned: env_values(transport, proc, env, &bindings.pinned)?,
+        prepared: env_values(transport, proc, env, &bindings.prepared)?,
+    })
 }
 
 fn env_get(
@@ -2246,7 +2278,7 @@ fn select_construction_member<'a>(
             module,
             selection,
             args,
-            &HashMap::new(),
+            &DispatchValues::default(),
         )?
         .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?
             as usize,
@@ -2967,8 +2999,15 @@ fn tuple_step_value(
     executable: &BackendExecutable,
     env: &HashMap<ValueId, BackendBoundValue>,
     value: ValueId,
-    items: &[ValueId],
+    items: &[crate::fz_ir::OwnershipUse<ValueId>],
 ) -> Result<BackendBoundValue, String> {
+    for item in items {
+        if item.mode == crate::fz_ir::OwnershipMode::Share
+            && let Some(value) = env.get(&item.value)
+        {
+            publish_backend_capture(proc, value)?;
+        }
+    }
     if let Some(layout) = executable.abi.value_layouts.get(&value)
         && !matches!(layout.carrier, TransportCarrier::ValueRef(_))
         && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
@@ -2985,7 +3024,7 @@ fn tuple_step_value(
         let mut lanes = Vec::new();
         for (item, field_layout) in items.iter().copied().zip(fields.iter().copied()) {
             if transport.interners().layout_width(field_layout) != 0 {
-                let bound = env_get_value(env, item)?;
+                let bound = env_get_value(env, item.value)?;
                 encode_transport_layout(transport, program, proc, &bound, field_layout, &mut lanes)?;
             }
         }
@@ -2994,7 +3033,12 @@ fn tuple_step_value(
             lanes,
         });
     }
-    let items = env_values(transport, proc, env, items)?;
+    let items = env_values(
+        transport,
+        proc,
+        env,
+        &items.iter().map(|item| item.value).collect::<Vec<_>>(),
+    )?;
     Ok(BackendBoundValue::Runtime(make_tuple_on_proc(proc, items)?))
 }
 
@@ -3003,6 +3047,7 @@ fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyVal
     let schema_id = process.heap.register_schema(Schema::tuple_of_arity(items.len()));
     let p = process.heap.alloc_struct(schema_id);
     for (index, item) in items.iter().enumerate() {
+        let item = publish_runtime_value(proc, *item)?;
         unsafe { process.heap.write_field_slot(p, (index as u32) * 8, item.value(proc)?) };
     }
     Ok(AnyValue::Ref(
@@ -3022,6 +3067,7 @@ fn make_closure_on_proc(
     let p = closure_addr_from_tagged(bits).expect("new backend closure ptr");
     unsafe { std::ptr::write(p.add(8) as *mut u64, code as u64) };
     for (index, value) in captures.iter().enumerate() {
+        let value = publish_runtime_value(proc, *value)?;
         unsafe { heap.write_closure_capture_value(p, index, value.value(proc)?) };
     }
     let closure_addr = closure_addr_from_tagged(bits).expect("backend closure bits");
@@ -3254,6 +3300,111 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("parked_projection.fz".into()),
+            text: "fn main() do\n receive do\n [_, h | t] -> [h | t]\n end\nend\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.run_root_interp(root).expect("compile and park receive");
+        let program = compiler.retained_backend_program(root);
+        let executable = backend_executable_ref(&program, compiler.world().types(), program.entry()).unwrap();
+        let entries = entries_for_executable(&executable).unwrap();
+        let owner = entries
+            .iter()
+            .position(|entry| matches!(entry.tail, BackendTail::Receive(_)))
+            .unwrap();
+        let source = entries
+            .iter()
+            .flat_map(|entry| &entry.steps)
+            .find_map(|step| match step {
+                ProgramStep::List {
+                    retention: Some(retention),
+                    ..
+                } => Some(retention.source),
+                _ => None,
+            })
+            .expect("physical exact source operand");
+        let names = program
+            .atom_names
+            .iter()
+            .map(|name| name.as_ref().clone())
+            .collect::<Vec<_>>();
+        let module = Module {
+            atom_names: names.clone(),
+            ..Module::default()
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
+        let sender = runtime.process_ptr(1).unwrap();
+        runtime.current_proc = sender;
+        let receiver_pid = runtime.spawn_backend(Rc::clone(&executable), Vec::new()).unwrap();
+        runtime.backend_parked.insert(
+            receiver_pid,
+            BackendParkRecord {
+                executable,
+                entry: crate::compiler2::ControlEntryId::from_u32(owner as u32),
+                env: HashMap::new(),
+                continuations: Vec::new(),
+            },
+        );
+        let mut ignored = AnyValue::EmptyList;
+        for value in 0..20 {
+            ignored = interp_list_cons(sender, AnyValue::Int(value), ignored, "ignored").unwrap();
+        }
+        let tail = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "tail").unwrap();
+        let retained = interp_list_cons(sender, AnyValue::Int(1), tail, "source").unwrap();
+        let message = interp_list_cons(sender, ignored, retained, "message").unwrap();
+        runtime
+            .send_opaque(
+                compiler.world_mut().types_mut(),
+                &TransportStore::new(),
+                &crate::telemetry::ConfiguredTelemetry::new(),
+                &program,
+                &module,
+                &receiver_pid,
+                message,
+            )
+            .unwrap();
+        let BackendResumeEntry::Entry { env, .. } = runtime.take_backend_resume(receiver_pid).expect("winning wake")
+        else {
+            panic!("direct outcome entry")
+        };
+        let receiver = runtime.process_ptr(receiver_pid).unwrap();
+        let copied = env_get(&TransportStore::new(), receiver, &env, source)
+            .unwrap()
+            .as_any_value_ref(receiver)
+            .unwrap();
+        let address = copied.heap_addr(ValueKind::LIST).expect("retained cell");
+        assert!(unsafe { &*receiver }.heap.contains_heap_addr(address));
+        assert!(!unsafe { &*sender }.heap.contains_heap_addr(address));
+        assert_eq!(
+            unsafe { &*receiver }.heap.alloc_stats_snapshot().list_cons.allocs,
+            2,
+            "only the two-cell winning source crosses heaps; ignored list and outer cell do not"
+        );
+        let mut roots = [copied];
+        unsafe { &mut *receiver }
+            .heap
+            .gc_with_any_value_ref_roots(&mut std::ptr::null_mut(), &mut roots);
+        let source = roots[0].raw_word();
+        let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_ref(
+            receiver,
+            source,
+            fz_list_head_ref(source),
+            fz_list_tail_ref(source),
+            0,
+        );
+        assert_eq!(retained, source, "receiver GC preserves the exact retention operand");
+    }
+
+    #[test]
     fn generic_callable_input_retains_structure_without_demanding_a_box() {
         let mut transport = TransportStore::new();
         let callable = transport
@@ -3387,7 +3538,8 @@ mod tests {
                 origin: crate::compiler2::BackendEntryOrigin::Branch,
                 params: Vec::new(),
                 captures: Vec::new(),
-                reusable_cons_captures: Vec::new(),
+                physical_captures: Vec::new(),
+                physical_params: Vec::new(),
                 steps: Vec::new(),
                 tail: BackendTail::Value {
                     value: ValueId::from_u32(99),
@@ -3438,7 +3590,8 @@ mod tests {
             origin: crate::compiler2::BackendEntryOrigin::Branch,
             params: Vec::new(),
             captures: Vec::new(),
-            reusable_cons_captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
             steps: Vec::new(),
             tail: BackendTail::ClosureCall {
                 value: ValueId::from_u32(1),
@@ -3534,7 +3687,8 @@ mod tests {
                 origin: crate::compiler2::BackendEntryOrigin::Clause,
                 params: Vec::new(),
                 captures: Vec::new(),
-                reusable_cons_captures: Vec::new(),
+                physical_captures: Vec::new(),
+                physical_params: Vec::new(),
                 steps: vec![
                     ProgramStep::AssertTuple {
                         source: value,
@@ -3600,7 +3754,8 @@ mod tests {
                     origin: crate::compiler2::BackendEntryOrigin::Branch,
                     params: Vec::new(),
                     captures: Vec::new(),
-                    reusable_cons_captures: Vec::new(),
+                    physical_captures: Vec::new(),
+                    physical_params: Vec::new(),
                     steps: vec![ProgramStep::Const {
                         value,
                         literal: crate::ground_value::GroundValue::Int(42),

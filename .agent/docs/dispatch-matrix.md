@@ -1105,7 +1105,7 @@ projected outcome-closure payload for the winning clause body; a miss outcome is
 
 Compiler2 semantic reachability is another consumer, not another dispatch
 model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
-against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+against root input `Ty` rows and walks the plan's flat subject graph to
 derive every tested projection. It never stores types by `SubjectId` and never
 adds type/domain policy to this generic module. Before traversal, a runtime
 envelope replaces bare inference templates in positive, recursively inspectable
@@ -1114,7 +1114,7 @@ instead of widening them, and preserves callable arrows that the pattern graph
 cannot inspect. Negative finite variable branches are erased while preserving
 their concrete axes; negative cofinite branches with excluded variable IDs
 become empty. A cofinite variable axis with no excluded IDs remains ordinary
-top. Exact tuple projections lift to their roots;
+top. Exact tuple and named-struct projections lift to their roots;
 ambiguous positional list projections keep their root type on both edges. The
 traversal separately retains the graph's branch-local empty/cons fact for each
 subject. When the projected domain is already a proper list, `not empty`

@@ -271,10 +271,16 @@ pub(super) fn define_function(
             .attrs
             .iter()
             .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)));
+    let mut resolver = super::super::dispatch::SourcePatternResolver {
+        world,
+        namespace: raw_source.namespace,
+        owner: raw_source.owner_module,
+        guard: |_world: &mut World, _name: &crate::ast::CallableName, _arity: usize| Ok(None),
+    };
     let warnings = if declares_contract {
-        crate::compiler2::source_diagnostics::function_body_warnings(&surface)
+        crate::compiler2::source_diagnostics::function_body_warnings(&surface, &mut resolver)
     } else {
-        crate::compiler2::source_diagnostics::function_warnings(&surface)
+        crate::compiler2::source_diagnostics::function_warnings(&surface, &mut resolver)
     };
     for diagnostic in warnings {
         super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);

@@ -1,29 +1,37 @@
 use crate::ast::{Expr, MatchClause, Spanned, WithBinding};
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, is_inexhaustive};
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternResolver, PatternRow, SourcePatternRows};
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
 
 use super::types::Ty;
+use crate::dispatch_matrix::pattern::source::is_inexhaustive_with_resolver;
 
-pub(crate) fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
-    collect_function_warnings(surface, true)
+pub(crate) fn function_warnings(surface: &FunctionSurface, resolver: &mut impl PatternResolver<Ty>) -> Vec<Diagnostic> {
+    collect_function_warnings(surface, true, resolver)
 }
 
-pub(crate) fn function_body_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
-    collect_function_warnings(surface, false)
+pub(crate) fn function_body_warnings(
+    surface: &FunctionSurface,
+    resolver: &mut impl PatternResolver<Ty>,
+) -> Vec<Diagnostic> {
+    collect_function_warnings(surface, false, resolver)
 }
 
-fn collect_function_warnings(surface: &FunctionSurface, check_head: bool) -> Vec<Diagnostic> {
+fn collect_function_warnings(
+    surface: &FunctionSurface,
+    check_head: bool,
+    resolver: &mut impl PatternResolver<Ty>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     if check_head {
-        check_function_clauses(surface, &mut diagnostics);
+        check_function_clauses(surface, &mut diagnostics, resolver);
     }
     for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {
-            walk_expr(guard, &mut diagnostics);
+            walk_expr(guard, &mut diagnostics, resolver);
         }
-        walk_expr(&clause.body, &mut diagnostics);
+        walk_expr(&clause.body, &mut diagnostics, resolver);
     }
     diagnostics
 }
@@ -38,7 +46,11 @@ pub(crate) fn function_head_warning(surface: &FunctionSurface) -> Option<Diagnos
     ))
 }
 
-fn check_function_clauses(surface: &FunctionSurface, diagnostics: &mut Vec<Diagnostic>) {
+fn check_function_clauses(
+    surface: &FunctionSurface,
+    diagnostics: &mut Vec<Diagnostic>,
+    resolver: &mut impl PatternResolver<Ty>,
+) {
     if surface.clauses.len() < 2 {
         return;
     }
@@ -58,12 +70,12 @@ fn check_function_clauses(surface: &FunctionSurface, diagnostics: &mut Vec<Diagn
         })
         .collect();
     let source_patterns = SourcePatternRows { input_count, rows };
-    if is_inexhaustive(&source_patterns) {
+    if is_inexhaustive_with_resolver(&source_patterns, resolver) {
         diagnostics.push(function_head_warning(surface).expect("a checked function has a last clause"));
     }
 }
 
-fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
+fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>, resolver: &mut impl PatternResolver<Ty>) {
     match &expr.node {
         Expr::Int(_)
         | Expr::Float(_)
@@ -77,101 +89,116 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
         | Expr::CaptureArg(_)
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}
-        Expr::Capture(body) => walk_expr(body, diagnostics),
+        Expr::Capture(body) => walk_expr(body, diagnostics, resolver),
         Expr::List(elems, tail) => {
-            elems.iter().for_each(|elem| walk_expr(elem, diagnostics));
+            elems.iter().for_each(|elem| walk_expr(elem, diagnostics, resolver));
             if let Some(tail) = tail {
-                walk_expr(tail, diagnostics);
+                walk_expr(tail, diagnostics, resolver);
             }
         }
-        Expr::Tuple(elems) => elems.iter().for_each(|elem| walk_expr(elem, diagnostics)),
-        Expr::Bitstring(fields) => fields.iter().for_each(|field| walk_expr(&field.value, diagnostics)),
+        Expr::Tuple(elems) => elems.iter().for_each(|elem| walk_expr(elem, diagnostics, resolver)),
+        Expr::Bitstring(fields) => fields
+            .iter()
+            .for_each(|field| walk_expr(&field.value, diagnostics, resolver)),
         Expr::Map(entries) => {
             for (key, value) in entries {
-                walk_expr(key, diagnostics);
-                walk_expr(value, diagnostics);
+                walk_expr(key, diagnostics, resolver);
+                walk_expr(value, diagnostics, resolver);
             }
         }
         Expr::MapUpdate(base, entries) => {
-            walk_expr(base, diagnostics);
+            walk_expr(base, diagnostics, resolver);
             for (key, value) in entries {
-                walk_expr(key, diagnostics);
-                walk_expr(value, diagnostics);
+                walk_expr(key, diagnostics, resolver);
+                walk_expr(value, diagnostics, resolver);
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                walk_expr(value, diagnostics);
+                walk_expr(value, diagnostics, resolver);
             }
         }
         Expr::Index(base, key) => {
-            walk_expr(base, diagnostics);
-            walk_expr(key, diagnostics);
+            walk_expr(base, diagnostics, resolver);
+            walk_expr(key, diagnostics, resolver);
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            walk_expr(target, diagnostics);
-            args.iter().for_each(|arg| walk_expr(arg, diagnostics));
+            walk_expr(target, diagnostics, resolver);
+            args.iter().for_each(|arg| walk_expr(arg, diagnostics, resolver));
         }
-        Expr::Ascribe(value, _) | Expr::UnOp(_, value) | Expr::Match(_, value) => walk_expr(value, diagnostics),
+        Expr::Ascribe(value, _) | Expr::UnOp(_, value) | Expr::Match(_, value) => {
+            walk_expr(value, diagnostics, resolver)
+        }
         Expr::BinOp(_, left, right) => {
-            walk_expr(left, diagnostics);
-            walk_expr(right, diagnostics);
+            walk_expr(left, diagnostics, resolver);
+            walk_expr(right, diagnostics, resolver);
         }
         Expr::If(cond, then_expr, else_expr) => {
-            walk_expr(cond, diagnostics);
-            walk_expr(then_expr, diagnostics);
+            walk_expr(cond, diagnostics, resolver);
+            walk_expr(then_expr, diagnostics, resolver);
             if let Some(else_expr) = else_expr {
-                walk_expr(else_expr, diagnostics);
+                walk_expr(else_expr, diagnostics, resolver);
             }
         }
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                walk_expr(subject, diagnostics);
+                walk_expr(subject, diagnostics, resolver);
             }
-            check_match_clauses(expr.span, "case", "case_clause", clauses, diagnostics);
-            walk_match_clause_bodies(clauses, diagnostics);
+            check_match_clauses(expr.span, "case", "case_clause", clauses, diagnostics, resolver);
+            walk_match_clause_bodies(clauses, diagnostics, resolver);
         }
         Expr::Cond(arms) => {
             for (test, body) in arms {
-                walk_expr(test, diagnostics);
-                walk_expr(body, diagnostics);
+                walk_expr(test, diagnostics, resolver);
+                walk_expr(body, diagnostics, resolver);
             }
         }
         Expr::With(bindings, body, else_clauses) => {
             for binding in bindings {
                 match binding {
-                    WithBinding::Bare(value) | WithBinding::Match(_, value) => walk_expr(value, diagnostics),
+                    WithBinding::Bare(value) | WithBinding::Match(_, value) => walk_expr(value, diagnostics, resolver),
                 }
             }
-            walk_expr(body, diagnostics);
-            check_match_clauses(expr.span, "with else", "with_clause", else_clauses, diagnostics);
-            walk_match_clause_bodies(else_clauses, diagnostics);
+            walk_expr(body, diagnostics, resolver);
+            check_match_clauses(
+                expr.span,
+                "with else",
+                "with_clause",
+                else_clauses,
+                diagnostics,
+                resolver,
+            );
+            walk_match_clause_bodies(else_clauses, diagnostics, resolver);
         }
         Expr::Receive { clauses, after } => {
-            walk_match_clause_bodies(clauses, diagnostics);
+            walk_match_clause_bodies(clauses, diagnostics, resolver);
             if let Some(after) = after {
-                walk_expr(&after.timeout, diagnostics);
-                walk_expr(&after.body, diagnostics);
+                walk_expr(&after.timeout, diagnostics, resolver);
+                walk_expr(&after.body, diagnostics, resolver);
             }
         }
-        Expr::Block(items) => items.iter().for_each(|item| walk_expr(item, diagnostics)),
+        Expr::Block(items) => items.iter().for_each(|item| walk_expr(item, diagnostics, resolver)),
         Expr::Lambda { clauses, .. } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    walk_expr(guard, diagnostics);
+                    walk_expr(guard, diagnostics, resolver);
                 }
-                walk_expr(&clause.body, diagnostics);
+                walk_expr(&clause.body, diagnostics, resolver);
             }
         }
     }
 }
 
-fn walk_match_clause_bodies(clauses: &[MatchClause], diagnostics: &mut Vec<Diagnostic>) {
+fn walk_match_clause_bodies(
+    clauses: &[MatchClause],
+    diagnostics: &mut Vec<Diagnostic>,
+    resolver: &mut impl PatternResolver<Ty>,
+) {
     for clause in clauses {
         if let Some(guard) = &clause.guard {
-            walk_expr(guard, diagnostics);
+            walk_expr(guard, diagnostics, resolver);
         }
-        walk_expr(&clause.body, diagnostics);
+        walk_expr(&clause.body, diagnostics, resolver);
     }
 }
 
@@ -181,6 +208,7 @@ fn check_match_clauses(
     halt_atom: &str,
     clauses: &[MatchClause],
     diagnostics: &mut Vec<Diagnostic>,
+    resolver: &mut impl PatternResolver<Ty>,
 ) {
     if clauses.is_empty() || clauses.iter().any(|clause| clause.guard.is_some()) {
         return;
@@ -196,7 +224,7 @@ fn check_match_clauses(
         })
         .collect();
     let source_patterns = SourcePatternRows { input_count: 1, rows };
-    if is_inexhaustive(&source_patterns) {
+    if is_inexhaustive_with_resolver(&source_patterns, resolver) {
         diagnostics.push(inexhaustive_diag_at(
             span,
             construct,
@@ -224,6 +252,11 @@ fn inexhaustive_diag_at(primary: Span, construct: &str, halt_atom: &str, label: 
 mod tests {
     use super::*;
     use crate::ast::{FnClause, Pattern, TypeExprBody};
+
+    fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
+        let mut resolver = |_name: &crate::ast::CallableName, _arity: usize| Ok(None);
+        super::function_warnings(surface, &mut resolver)
+    }
 
     fn function_surface(clauses: Vec<FnClause>) -> FunctionSurface {
         FunctionSurface {

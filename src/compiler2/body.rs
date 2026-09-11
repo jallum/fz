@@ -70,6 +70,7 @@ impl ControlEntryId {
 pub struct CallArg {
     pub value: ValueId,
     pub ascription: Option<TypeExprBody>,
+    pub ownership: crate::fz_ir::OwnershipMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,15 +131,10 @@ pub struct LoweredEntry {
     pub origin: ControlEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
-    pub reusable_cons_captures: Vec<ReusableConsCapture>,
+    pub physical_captures: Vec<ValueId>,
+    pub physical_params: Vec<ValueId>,
     pub steps: Vec<LoweredStep>,
     pub tail: LoweredTail,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReusableConsCapture {
-    pub head: ValueId,
-    pub source: ValueId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -238,23 +234,120 @@ pub enum ControlDestination {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DispatchBindings {
-    pub pinned: Vec<ValueId>,
-    pub prepared: Vec<ValueId>,
+pub struct DispatchBindings<V = ValueId> {
+    pub pinned: Vec<V>,
+    pub prepared: Vec<V>,
+}
+
+impl<V> Default for DispatchBindings<V> {
+    fn default() -> Self {
+        Self {
+            pinned: Vec::new(),
+            prepared: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlDispatch {
     pub(crate) plan: PatternDispatchPlan<Ty>,
-    pub(crate) arm_entries: Vec<ControlEntryId>,
+    pub(crate) outcomes: Vec<OutcomeEdge>,
     pub(crate) miss_entry: ControlEntryId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReceiveClause {
-    pub span: Span,
-    pub entry: ControlEntryId,
-    pub bound_names: Vec<String>,
+pub(crate) struct OutcomeEdge {
+    pub(crate) outcome: crate::dispatch_matrix::OutcomeId,
+    pub(crate) target: ControlEntryId,
+    pub(crate) arguments: Box<[OutcomeArgument]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutcomeArgument {
+    pub(crate) subject: crate::dispatch_matrix::SubjectId,
+    pub(crate) parameter: ValueId,
+    pub(crate) role: ValueRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueRole {
+    Semantic,
+    Physical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SubjectOriginRoot {
+    Value(ValueId),
+    MailboxMessage(ControlEntryId),
+}
+
+impl ControlDispatch {
+    pub(crate) fn outcome(&self, outcome: crate::dispatch_matrix::OutcomeId) -> &OutcomeEdge {
+        self.outcomes
+            .iter()
+            .find(|edge| edge.outcome == outcome)
+            .expect("every winning outcome has one target edge")
+    }
+}
+
+impl LoweredTail {
+    pub(crate) fn outcome_edges(&self) -> &[OutcomeEdge] {
+        match self {
+            Self::Dispatch { dispatch, .. } => &dispatch.outcomes,
+            Self::Receive(receive) => &receive.outcomes,
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn outcome_edges_mut(&mut self) -> &mut [OutcomeEdge] {
+        match self {
+            Self::Dispatch { dispatch, .. } => &mut dispatch.outcomes,
+            Self::Receive(receive) => &mut receive.outcomes,
+            _ => &mut [],
+        }
+    }
+
+    pub(crate) fn dispatch_plan(&self) -> &PatternDispatchPlan<Ty> {
+        match self {
+            Self::Dispatch { dispatch, .. } => &dispatch.plan,
+            Self::Receive(receive) => &receive.dispatch,
+            _ => panic!("a subject borrows its owning dispatch"),
+        }
+    }
+}
+
+impl LoweredBody {
+    pub(crate) fn dispatch_subject_origin(
+        &self,
+        owner: ControlEntryId,
+        mut subject: crate::dispatch_matrix::SubjectId,
+    ) -> (SubjectOriginRoot, Vec<&crate::dispatch_matrix::ProjectionKind>) {
+        let Self::Clauses { entries, .. } = self else {
+            panic!("an outcome belongs to a clause body")
+        };
+        let tail = &entries[owner.as_u32() as usize].tail;
+        let mut path = Vec::new();
+        loop {
+            match tail.dispatch_plan().subject(subject) {
+                crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
+                    path.reverse();
+                    let root = match tail {
+                        LoweredTail::Dispatch { inputs, .. } => SubjectOriginRoot::Value(inputs[*ordinal as usize]),
+                        LoweredTail::Receive(_) => {
+                            assert_eq!(*ordinal, 0, "receive has one mailbox message input");
+                            SubjectOriginRoot::MailboxMessage(owner)
+                        }
+                        _ => unreachable!(),
+                    };
+                    return (root, path);
+                }
+                crate::dispatch_matrix::SubjectSource::Projection(projection) => {
+                    path.push(&projection.kind);
+                    subject = projection.source;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,7 +360,7 @@ pub struct ReceiveAfter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredReceive {
     pub bindings: DispatchBindings,
-    pub clauses: Vec<ReceiveClause>,
+    pub(crate) outcomes: Vec<OutcomeEdge>,
     pub after: Option<ReceiveAfter>,
     pub dest: ControlDestination,
     pub(crate) dispatch: PatternDispatchPlan<Ty>,
@@ -414,12 +507,13 @@ pub enum LoweredStep {
     },
     Tuple {
         value: ValueId,
-        items: Vec<ValueId>,
+        items: Vec<crate::fz_ir::OwnershipUse<ValueId>>,
     },
     List {
         value: ValueId,
         items: Vec<ValueId>,
         tail: Option<ValueId>,
+        retention: Option<crate::fz_ir::ListRetention<ValueId>>,
     },
     Map {
         value: ValueId,

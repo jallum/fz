@@ -43,6 +43,8 @@ fn main() do
   # A pinned match does not.
   dbg(pinned_against(one, one_float))
   dbg(pinned_against(one_float, one_float))
+  dbg(pinned_self(one))
+  dbg(pinned_origin_lists())
 
   # Neither does membership or subtraction.
   dbg({Enum.member?([1, 2, 3], 1.0), Enum.member?([1.0], 1), Enum.member?([1, 2, 3], 2)})
@@ -85,6 +87,24 @@ fnp pinned_against(subject, pin) do
     ^pin -> :same
     _other -> :different
   end
+end
+
+fnp pinned_self(value) do
+  ^value = value
+  value
+end
+
+fnp pinned_origin_lists() do
+  first = [1, 2]
+  second = [1, 2]
+  ^first = second
+
+  changed = case first do
+    [head | _tail] -> [head | [9]]
+    _other -> []
+  end
+
+  {changed, second}
 end
 
 fnp literal(1), do: :int_one

@@ -2039,20 +2039,20 @@ fn required_json_u64_field(line: &str, key: &str, context: &str) -> usize {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct ReusableConsTelemetryStats {
-    birth_count: usize,
-    transport_count: usize,
+struct ListRetentionTelemetryStats {
+    construction_count: usize,
+    physical_capture_count: usize,
     runtime_attempted_count: usize,
     runtime_reused_count: usize,
 }
 
-impl ReusableConsTelemetryStats {
+impl ListRetentionTelemetryStats {
     fn runtime_fallback_count(&self) -> usize {
         self.runtime_attempted_count.saturating_sub(self.runtime_reused_count)
     }
 }
 
-fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableConsTelemetryStats {
+fn list_retention_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ListRetentionTelemetryStats {
     let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
     let (out, log) = run_path_logged(fixture, &header, FixtureMatrixPath::Run)
         .unwrap_or_else(|e| panic!("run fz2 run --log-telemetry: {}", e));
@@ -2063,26 +2063,34 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    let mut stats = ReusableConsTelemetryStats::default();
+    let mut stats = ListRetentionTelemetryStats::default();
     let mut saw_native_event = false;
     for line in log.lines() {
-        if line.contains("\"name\":[\"fz\",\"compiler2\",\"native_program\",\"reusable_cons\"]") {
+        if line.contains("\"name\":[\"fz\",\"compiler2\",\"native_program\",\"list_retention\"]") {
             saw_native_event = true;
-            stats.birth_count = parse_json_u64_field(line, "birth_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing birth_count", fixture.display_path().display()));
-            stats.transport_count = parse_json_u64_field(line, "transport_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing transport_count", fixture.display_path().display()));
+            stats.construction_count = parse_json_u64_field(line, "construction_count").unwrap_or_else(|| {
+                panic!(
+                    "{} telemetry missing construction_count",
+                    fixture.display_path().display()
+                )
+            });
+            stats.physical_capture_count = parse_json_u64_field(line, "physical_capture_count").unwrap_or_else(|| {
+                panic!(
+                    "{} telemetry missing physical_capture_count",
+                    fixture.display_path().display()
+                )
+            });
             continue;
         }
         if line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]") {
             let fixture = fixture.display_path().display().to_string();
-            stats.runtime_attempted_count += required_json_u64_field(line, "reusable_cons_attempts", &fixture);
-            stats.runtime_reused_count += required_json_u64_field(line, "reusable_cons_reused", &fixture);
+            stats.runtime_attempted_count += required_json_u64_field(line, "list_retention_attempts", &fixture);
+            stats.runtime_reused_count += required_json_u64_field(line, "list_retention_hits", &fixture);
         }
     }
     assert!(
         saw_native_event,
-        "{} telemetry missing fz.compiler2.native_program.reusable_cons event",
+        "{} telemetry missing fz.compiler2.native_program.list_retention event",
         fixture.display_path().display()
     );
     stats
@@ -2361,32 +2369,14 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "expected.txt",
         &["5\ntrue\n15", "{5, 80, 0, 0, 0, 0, 3, 48, 0, 0}", "\n80\n"],
     );
-    // birth_count counts static `SplitList` ([h|t] destructure) sites across every
-    // executable the whole-program native lowering produces for this root, so it
-    // tracks activation-specialization width, not this fixture's own list-cons
-    // count (`list_cons_allocs = 5` above, pinned separately). It was originally
-    // pinned at 8, matching the then-current specialization width: `member?/2`
-    // compiled to two activations (2 splits each), and `count/2` and
-    // `reduce_cont/3` each ALSO compiled to two redundant activations of
-    // identical logic (1 split each) -- 2*2 + 1*2 + 1*2 = 8. A later
-    // activation-keying collapse unified `count/2` and `reduce_cont/3` down to
-    // one activation apiece (member?/2's two activations are unaffected),
-    // dropping the honest floor to 6 -- verified live: program output is
-    // byte-identical on every path (the `expected.txt` assertion above,
-    // unchanged), so the two fewer births are two fewer redundant specialized
-    // bodies, not a dropped cons allocation.
-    //
-    // fz-5xp.22 drops it again, 6 -> 3. `List.member?` used to ask its question
-    // in a `when head == value` guard and get identity semantics only because
-    // guards happen to be strict; it now says `===` in the body, which is one
-    // clause instead of two and so one birth site instead of two. Output is
-    // byte-identical on every path, and the cons pin above is unchanged.
-    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
+    // Destructuring alone carries no retention. These read-only consumers have
+    // no retaining construction, physical source capture, or runtime attempt.
+    let stats = list_retention_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
     assert_eq!(
         stats,
-        ReusableConsTelemetryStats {
-            birth_count: 3,
-            transport_count: 0,
+        ListRetentionTelemetryStats {
+            construction_count: 0,
+            physical_capture_count: 0,
             runtime_attempted_count: 0,
             runtime_reused_count: 0,
         },
@@ -2407,16 +2397,16 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         assert!(readme.contains(needle), "enum_sort README must pin `{}`", needle);
     }
 
-    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
+    let stats = list_retention_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
     assert_eq!(
         stats,
-        ReusableConsTelemetryStats {
-            birth_count: 14,
-            transport_count: 20,
+        ListRetentionTelemetryStats {
+            construction_count: 14,
+            physical_capture_count: 8,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,
         },
-        "enum_sort should make reusable-cons birth, transport, and runtime reuse visible in telemetry",
+        "enum_sort pins retaining constructions, actual physical captures, and runtime reuse",
     );
     assert_eq!(stats.runtime_fallback_count(), 0);
 }
