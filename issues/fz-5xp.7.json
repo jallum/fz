@@ -7,9 +7,15 @@
   "id": "fz-5xp.7",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Due-diligence correction before implementation: the proposed direct def -\u003e Tok::Fn mapping would also admit def (x) -\u003e ... end as an anonymous lambda because Tok::Fn is shared by named definitions and lambda expressions. That contradicts this ticket's note that lambdas are a separate, unaffected production. The implementation will use distinct Def/Defp tokens accepted only at named definition heads, then canonicalize them to the existing fn/fnp definition macros so downstream semantics remain single-owned.",
+      "timestamp": "2026-09-11T14:56:24Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Accept def/defp as aliases for fn/fnp",
   "type": "task",
-  "updated_at": "2026-09-11T14:56:23Z"
+  "updated_at": "2026-09-11T14:56:24Z"
 }
