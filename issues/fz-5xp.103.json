@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T20:22:38Z",
   "created": "2026-09-11T17:19:04Z",
   "description": "JSON forbids raw U+0000 through U+001F inside a string, but fz currently returns {:ok, \u003c\u003c0\u003e\u003e} for Json.decode(\u003c\u003c34, 0, 34\u003e\u003e); Elixir returns {:error, {:invalid_byte, 1, 0}}. The ASCII fast path in Json.string/2 must reject the control range while preserving escaped forms such as \\\\u0000. Add an Elixir-oracled control-range fixture for string values and object keys across interp, run, and build, and update decoder documentation.",
   "id": "fz-5xp.103",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Json.decode accepts unescaped control bytes inside strings",
   "type": "bug",
-  "updated_at": "2026-09-11T20:22:34Z"
+  "updated_at": "2026-09-11T20:22:38Z"
 }
