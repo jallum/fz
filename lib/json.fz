@@ -140,7 +140,8 @@ defmodule Json do
   converted to a JSON string. Any other value or map key halts with a reason
   containing the rejected term, so there is no plain `encode/1`. Binaries
   must be byte-aligned; a non-byte-aligned bitstring halts instead of being
-  encoded as a JSON string.
+  encoded as a JSON string. Quotes, backslashes, and every control byte are
+  escaped in both string values and object keys.
 
   ## Examples
 
@@ -152,6 +153,9 @@ defmodule Json do
 
       Json.encode!(1.5)
       #=> "1.5"
+
+      Json.encode!(<<0, 10, 31>>)
+      #=> "\\\"\\\\u0000\\\\n\\\\u001F\\\""
 
   """
   @spec encode!(any) :: binary
@@ -169,10 +173,21 @@ defmodule Json do
   fnp escape("", acc), do: acc
   fnp escape(<<"\"", r :: binary>>, acc), do: escape(r, acc <> "\\\"")
   fnp escape(<<"\\", r :: binary>>, acc), do: escape(r, acc <> "\\\\")
-  fnp escape(<<"\n", r :: binary>>, acc), do: escape(r, acc <> "\\n")
-  fnp escape(<<"\t", r :: binary>>, acc), do: escape(r, acc <> "\\t")
+  fnp escape(<<8, r :: binary>>, acc), do: escape(r, acc <> "\\b")
+  fnp escape(<<9, r :: binary>>, acc), do: escape(r, acc <> "\\t")
+  fnp escape(<<10, r :: binary>>, acc), do: escape(r, acc <> "\\n")
+  fnp escape(<<12, r :: binary>>, acc), do: escape(r, acc <> "\\f")
+  fnp escape(<<13, r :: binary>>, acc), do: escape(r, acc <> "\\r")
+  fnp escape(<<c, r :: binary>>, acc) when c < 32, do: escape(r, acc <> control_escape(c))
   fnp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
   fnp escape(_bits, _acc), do: Kernel.panic("JSON.encode!: binary is not byte-aligned")
+
+  @spec control_escape(integer) :: binary
+  fnp control_escape(c), do: "\\u00" <> <<hex_digit(div(c, 16)), hex_digit(rem(c, 16))>>
+
+  @spec hex_digit(integer) :: integer
+  fnp hex_digit(n) when n < 10, do: 48 + n
+  fnp hex_digit(n), do: 55 + n
 
   @spec elements([any], binary) :: binary
   fnp elements([], acc), do: acc
