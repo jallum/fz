@@ -6,6 +6,7 @@
   "blocks": [
     "fz-5xp.88",
     "fz-kdt.177",
+    "fz-kdt.64",
     "fz-tfn.13",
     "fz-tfn.14"
   ],
@@ -24,5 +25,5 @@
   "status": "open",
   "title": "Intern one Ty per denotation at the sole type boundary",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:55Z"
+  "updated_at": "2026-09-11T19:06:56Z"
 }

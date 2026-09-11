@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.48",
     "fz-kdt.82",
     "fz-tfn.46"
   ],
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "Retain exactly the supported semantic alternatives",
   "type": "bug",
-  "updated_at": "2026-09-11T19:05:57Z"
+  "updated_at": "2026-09-11T19:06:56Z"
 }
