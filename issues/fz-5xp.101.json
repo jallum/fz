@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-11T16:16:27Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A binary-literal bitstring segment shifts a following call result into the wrong carrier",
   "type": "bug",
-  "updated_at": "2026-09-11T16:16:27Z"
+  "updated_at": "2026-09-11T22:08:10Z"
 }
