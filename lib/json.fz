@@ -136,16 +136,19 @@ defmodule Json do
   Encodes an fz value as a JSON binary, or halts.
 
   Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
-  a map. Any other value halts the process, so there is no plain
-  `encode/1`. Binaries must be byte-aligned; a non-byte-aligned bitstring
-  halts instead of being encoded as a JSON string. A map's keys are encoded
-  with `encode!/1` too, so a binary key becomes a quoted JSON string; other
-  key types will not produce valid JSON.
+  a map. Map keys may be binaries, atoms, integers, or floats; every key is
+  converted to a JSON string. Any other value or map key halts with a reason
+  containing the rejected term, so there is no plain `encode/1`. Binaries
+  must be byte-aligned; a non-byte-aligned bitstring halts instead of being
+  encoded as a JSON string.
 
   ## Examples
 
       Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
       #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
+
+      Json.encode!(%{answer: 42})
+      #=> "{\\"answer\\":42}"
 
       Json.encode!(1.5)
       #=> "1.5"
@@ -160,7 +163,7 @@ defmodule Json do
   fn encode!(v :: binary), do: "\"" <> escape(v, "") <> "\""
   fn encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
   fn encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
-  fn encode!(_v), do: Kernel.panic("JSON.encode!: unsupported value")
+  fn encode!(v), do: Kernel.panic({:json_encode, :unsupported_value, v})
 
   @spec escape(binary, binary) :: binary
   fnp escape("", acc), do: acc
@@ -178,8 +181,15 @@ defmodule Json do
 
   @spec pairs([{any, any}], binary) :: binary
   fnp pairs([], acc), do: acc
-  fnp pairs([{k, v}], acc), do: acc <> encode!(k) <> ":" <> encode!(v)
-  fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode!(k) <> ":" <> encode!(v) <> ",")
+  fnp pairs([{k, v}], acc), do: acc <> encode_key!(k) <> ":" <> encode!(v)
+  fnp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode_key!(k) <> ":" <> encode!(v) <> ",")
+
+  @spec encode_key!(any) :: binary
+  fnp encode_key!(key :: binary), do: encode!(key)
+  fnp encode_key!(key :: atom), do: encode!(Atom.to_string(key))
+  fnp encode_key!(key :: integer), do: encode!(Integer.to_string(key))
+  fnp encode_key!(key :: float), do: encode!(Float.to_string(key))
+  fnp encode_key!(key), do: Kernel.panic({:json_encode, :unsupported_key, key})
 
   @spec skip_ws(binary) :: binary
   fnp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)

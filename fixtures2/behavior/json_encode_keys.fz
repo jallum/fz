@@ -1,0 +1,13 @@
+#---
+# purpose: "Json.encode!/1 renders every supported object key as a JSON string"
+# oracle: oracle.exs
+#---
+fn main() do
+  dbg(Json.encode!(%{a: 1}))
+  dbg(Json.encode!(%{nil => 1}))
+  dbg(Json.encode!(%{true => 1}))
+  dbg(Json.encode!(%{42 => 1}))
+  dbg(Json.encode!(%{-45 => 1}))
+  dbg(Json.encode!(%{2.5 => 1}))
+  dbg(Json.encode!(%{"a\"b" => 1}))
+end

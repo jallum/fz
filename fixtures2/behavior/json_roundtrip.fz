@@ -51,11 +51,12 @@
 #   * Map.put as a typed clause family, since a scalar value cannot reach the
 #     heap through the ref writer.
 #
-# ## Why binary keys are the whole game
+# ## Why decoded objects use binary keys
 #
-# JSON object keys are strings, so a decoded object is a BINARY-keyed map --
-# exactly the case where fz's iteration order matches Elixir's. An atom-keyed
-# map could not be oracled at all (fz-5xp.50).
+# JSON object names decode as binaries, so round-trip exercises binary-keyed
+# maps. Encoding other scalar key kinds is pinned separately with singleton
+# maps: multi-key atom ordering is not portable between fz's name order and
+# Elixir's internal atom order.
 fn main() do
   dbg(Json.decode("true"))
   dbg(Json.decode("false"))
