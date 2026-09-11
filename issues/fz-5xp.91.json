@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-11T21:53:54Z",
   "created": "2026-09-07T22:05:17Z",
   "description": "## The divergence\n\nChecked against Elixir itself, run from `../elixir`:\n\n| call | fz | Elixir |\n| --- | --- | --- |\n| `String.contains?(\"hello\", \"\")` | `false` | `true` |\n| `String.split(\"hello\", \"\")` | `[\"hello\"]` | `[\"\", \"h\", \"e\", \"l\", \"l\", \"o\", \"\"]` |\n| `String.starts_with?(\"hello\", \"\")` | `true` | `true` |\n\n`starts_with?/2` already agrees, which is what makes the other two look like oversights rather than a deliberate reading: an empty pattern matches at position 0 for one function and matches nowhere for the others.\n\n## Why\n\nBoth go through `index_of/2`, which returns `-1` for an empty needle by construction -- the scan never finds a zero-length match -- so `contains?/2` reports no match and `split/2` returns the subject unchanged.\n\nElixir treats the empty pattern as matching at every position: `contains?/2` is true for any subject, and `split/2` returns the empty string, then each grapheme, then the empty string again.\n\n## Scope\n\nfz's `split/2` splitting on graphemes would need the grapheme seam, which is a codepoint here rather than UAX #29, so an exact match to Elixir's output is only exact for strings with no combining marks. `contains?/2` has no such caveat and should simply be true.\n\nDecide both together, since they share `index_of/2`. If the empty pattern is deliberately out of scope, say so in the `@doc` -- it is currently documented as fz behaves, which is honest but silent about the parity gap.\n\n## Found how\n\nWhile writing Elixir-shaped documentation for `String`: the examples are verified by running them, and this pair came out of a probe rather than out of the Elixir docs being copied.",
   "id": "fz-5xp.91",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "[BUG] String.contains?/2 and split/2 disagree with Elixir on an empty pattern",
   "type": "task",
-  "updated_at": "2026-09-11T21:53:53Z"
+  "updated_at": "2026-09-11T21:53:54Z"
 }
