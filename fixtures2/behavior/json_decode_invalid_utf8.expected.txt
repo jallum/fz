@@ -1,0 +1,9 @@
+{:error, {:invalid_byte, 1, 255}}
+{:error, {:invalid_byte, 2, 255}}
+{:error, {:invalid_byte, 2, 65}}
+{:error, {:invalid_byte, 3, 65}}
+{:error, {:invalid_byte, 4, 65}}
+{:error, {:invalid_byte, 3, 255}}
+{:error, {:unexpected_end, 3}}
+{:ok, "é"}
+{:ok, "😀"}
