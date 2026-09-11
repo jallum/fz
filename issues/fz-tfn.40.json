@@ -5,7 +5,8 @@
   ],
   "blocks": [
     "fz-kdt.36.1",
-    "fz-tfn.13"
+    "fz-tfn.13",
+    "fz-tfn.57"
   ],
   "created": "2026-09-05T17:03:31Z",
   "description": "## Goal\n\nSeparate diagnostic provenance from executable semantic identity before live source replacement is exposed. A location-only edit updates current diagnostics while equal backend and native content retains its allocation and generation.\n\n## Authority\n\nExecutable products own semantic and runtime content. Immutable SourceVersion owners retain diagnostic locations. Program-visible quote metadata is ordinary semantic data and remains exact; incidental spans, rendered names and source offsets never identify executable content.\n\nDo not omit spans from equality while returning an old span-bearing object. Instead, make each consumer request the semantic or diagnostic projection it actually owns. Do not add an artifact mirror, provenance repair pass or display-string key.\n\n## TDD\n\nOn the existing SourceOwner and SourceVersion foundation, prove equal content at a different location preserves semantic facts, lowered bodies, products, native bodies and artifacts while current diagnostics and explicitly observed quote metadata name the correct version. A real content change moves only exact readers. Retained old closures, diagnostics and artifacts retain their old immutable provenance.\n\nMeasure allocations, generations, macro-result wakes, lowering and codegen. Location-only semantic work is zero.\n\n## Deletion and acceptance\n\nDelete span-coupled executable equality, duplicate provenance mirrors, location-derived callable identity, compatibility adapters and stale documentation. This is a prerequisite of live replacement, not work performed after replacement. Full focused, three-door, deterministic, documentation, formatting, check and strict-Clippy gates pass; fresh ticket-scoped cold review precedes one commit and close.",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Separate diagnostic provenance from retained executable content identity",
   "type": "bug",
-  "updated_at": "2026-09-11T19:06:52Z"
+  "updated_at": "2026-09-11T19:06:58Z"
 }
