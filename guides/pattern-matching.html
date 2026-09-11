@@ -65,6 +65,12 @@ pre-prepared constants:</p>
 Each test edge carries the facts and field projections established by that
 answer.</p>
 
+<p>For inline <code>case</code> and <code>with</code> matches, the winning
+edge explicitly maps each required plan subject to its arm-local value.
+The arm receives the values already established by that successful match;
+it does not run a second pattern-binding walk. Wildcards create no arm
+binding. Function-head binding remains a separate compiler boundary.</p>
+
 <p>And the things a dispatch plan can ask about are also a small list:</p>
 
 <pre>Test
@@ -81,13 +87,17 @@ answer.</p>
 <p>And the things it can <em>name</em> ("subjects") are paths into the
 original input:</p>
 
-<pre>SubjectRef
+<pre>Subject
   Input(i)                  <span class="com"># the whole i-th input</span>
   TupleField(base, i)       <span class="com"># the i-th slot of a tuple</span>
   StructField(base, name)   <span class="com"># a named field, after the struct type test passes</span>
   ListHead(base) / ListTail <span class="com"># head/tail of a cons</span>
   MapValue(base, key)       <span class="com"># the value under a key, only valid after MapHasKey</span>
-  BitstringField(base, i)   <span class="com"># the i-th parsed field of a bitstring</span></pre>
+  BitstringField(base, recipe) <span class="com"># exact kind, size, preceding extraction, and field modifiers</span></pre>
+
+<p>Subjects live in one plan-owned graph. A bitstring recipe includes its
+preceding field and any dependent-size subject, so two incompatible field
+recipes cannot accidentally name the same extracted value.</p>
 
 <p>That's the whole vocabulary. A dispatch plan is subjects, tests, branches,
 guards, and leaves that say "clause <em>k</em> wins, and here are the

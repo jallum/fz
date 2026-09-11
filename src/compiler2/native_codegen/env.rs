@@ -121,6 +121,4 @@ pub(crate) struct CodegenCache {
     /// tuple Var and field index, so ordinary TupleField lowering can read
     /// the already-delivered value.
     pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
-    /// Rebuilt head Var -> source cons Var facts for reusable-cons attempts.
-    pub(super) reusable_cons_sources: HashMap<u32, Var>,
 }

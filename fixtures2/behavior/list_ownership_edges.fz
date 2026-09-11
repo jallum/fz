@@ -1,0 +1,118 @@
+#---
+# purpose: "Ownership edges guard overlapping inputs, structural returns, and list-valued container fields"
+#---
+defmodule ListBox do
+  defstruct [:value]
+end
+
+fn change(xs) do
+  case xs do
+    [h | _] -> [h | [9]]
+    _ -> []
+  end
+end
+
+fn change_pair(xs, ys), do: {change(xs), ys}
+fn duplicate(xs), do: {xs, xs}
+fn unbox(%ListBox{value: xs}), do: xs
+fn map_value(%{value: xs}), do: xs
+
+fn struct_field_alias() do
+  box = %ListBox{value: [1, 2]}
+  xs = unbox(box)
+  {box, change(xs)}
+end
+
+fn map_field_alias() do
+  map = %{value: [1, 2]}
+  xs = map_value(map)
+  {map, change(xs)}
+end
+
+fn map_update_field_alias() do
+  original = %{value: []}
+  map = %{original | value: [1, 2]}
+  xs = map_value(map)
+  {map, change(xs)}
+end
+
+fn list_head_alias() do
+  xs = [1, 2]
+  holder = [xs]
+  changed = change(xs)
+  assert({holder, changed} == {[[1, 2]], [1, 9]})
+end
+
+fn tuple_return_alias() do
+  {left, right} = duplicate([1, 2])
+  assert(change_pair(left, right) == {[1, 9], [1, 2]})
+end
+
+fn overlapping_arguments() do
+  xs = [1, 2]
+  assert(change_pair(xs, xs) == {[1, 9], [1, 2]})
+end
+
+fn change_tail(xs) do
+  [h | t] = xs
+  [h | change(t)]
+end
+
+fn change_shared_tail(left, right), do: {change_tail(left), right}
+
+fn duplicate_descendant(tail), do: {[1 | tail], [4 | tail]}
+
+fn overlapping_tuple_descendants() do
+  {left, right} = duplicate_descendant([2, 3])
+  assert(change_shared_tail(left, right) == {[1, 2, 9], [4, 2, 3]})
+end
+
+fn overlapping_descendants() do
+  tail = [2, 3]
+  left = [1 | tail]
+  right = [4 | tail]
+  assert(change_shared_tail(left, right) == {[1, 2, 9], [4, 2, 3]})
+end
+
+fn forwarded_call_peers(flag) do
+  tail = [2, 3]
+  left = [1 | tail]
+  right = [4 | tail]
+  left2 = if flag, do: left, else: left
+  right2 = if flag, do: right, else: right
+  change_shared_tail(left2, right2)
+end
+
+fn forwarded_retained_peer(flag) do
+  tail = [2, 3]
+  left = [1 | tail]
+  right = [4 | tail]
+  left2 = if flag, do: left, else: left
+  right2 = if flag, do: right, else: right
+  {change_tail(left2), right2}
+end
+
+fn forwarded_tuple_peers(flag) do
+  tail = [2, 3]
+  left = [1 | tail]
+  right = [4 | tail]
+  left2 = if flag, do: left, else: left
+  right2 = if flag, do: right, else: right
+  {left2, right2}
+end
+
+fn main() do
+  assert(struct_field_alias() == {%ListBox{value: [1, 2]}, [1, 9]})
+  assert(map_field_alias() == {%{value: [1, 2]}, [1, 9]})
+  assert(map_update_field_alias() == {%{value: [1, 2]}, [1, 9]})
+  list_head_alias()
+  tuple_return_alias()
+  overlapping_arguments()
+  overlapping_descendants()
+  overlapping_tuple_descendants()
+  assert(forwarded_call_peers(true) == {[1, 2, 9], [4, 2, 3]})
+  assert(forwarded_retained_peer(true) == {[1, 2, 9], [4, 2, 3]})
+  {left, right} = forwarded_tuple_peers(true)
+  assert(change_shared_tail(left, right) == {[1, 2, 9], [4, 2, 3]})
+  42
+end

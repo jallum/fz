@@ -2,7 +2,7 @@ use self::source::{collect_pinned_names, direct_bitfield_bindings};
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
     DispatchCompileError, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence,
-    EdgeProjection, GroundValue, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, ProjectionKind, Region,
+    GroundValue, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, PreparedKeyId, ProjectionKind, Region,
     RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
@@ -21,12 +21,10 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
     pub(crate) matrix: DispatchMatrix<TypeHandle>,
     pub(crate) graph: DispatchGraph<TypeHandle>,
     pub(crate) input_count: usize,
-    pub(crate) subjects: Vec<Option<PatternSubjectRef>>,
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
     pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
     pub(crate) pinned: Vec<PatternPinnedInput>,
     pub(crate) prepared_keys: Vec<GroundValue>,
-    pub(crate) bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
 impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
@@ -34,8 +32,25 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
         self.outcomes.iter().find(|entry| entry.outcome == id)
     }
 
-    pub(crate) fn subject_ref(&self, id: SubjectId) -> Option<&PatternSubjectRef> {
-        self.subjects.get(id.0 as usize).and_then(|entry| entry.as_ref())
+    pub(crate) fn subject(&self, id: SubjectId) -> &super::SubjectSource {
+        &self.matrix.subjects[id.0 as usize].source
+    }
+
+    pub(crate) fn prepared_key_id(&self, key: &GroundValue) -> Option<PreparedKeyId> {
+        self.prepared_keys
+            .iter()
+            .position(|prepared| prepared == key)
+            .map(|index| PreparedKeyId(index as u32))
+    }
+
+    pub(crate) fn bitstring_extraction(&self, id: SubjectId) -> &super::BitstringExtraction {
+        let super::SubjectSource::Projection(projection) = self.subject(id) else {
+            panic!("a bitstring extraction must be a projected subject");
+        };
+        let ProjectionKind::BitstringField(extraction) = &projection.kind else {
+            panic!("a bitstring shape must name exact extraction subjects");
+        };
+        extraction
     }
 
     pub(crate) fn map_type_handle<MappedHandle>(
@@ -46,12 +61,10 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
             matrix: self.matrix.map_type_handle(map),
             graph: self.graph.map_type_handle(map),
             input_count: self.input_count,
-            subjects: self.subjects.clone(),
             outcomes: self.outcomes.clone(),
             guards: self.guards.iter().map(|guard| guard.map_type_handle(map)).collect(),
             pinned: self.pinned.clone(),
             prepared_keys: self.prepared_keys.clone(),
-            bitstring_direct_bindings: self.bitstring_direct_bindings.clone(),
         }
     }
 }
@@ -95,10 +108,7 @@ pub(crate) enum PatternSubjectRef {
         map: Box<PatternSubjectRef>,
         key: GroundValue,
     },
-    BitstringField {
-        bitstring: Box<PatternSubjectRef>,
-        index: u32,
-    },
+    Subject(SubjectId),
 }
 
 pub(crate) trait PatternResolver<TypeHandle> {
@@ -108,17 +118,12 @@ pub(crate) trait PatternResolver<TypeHandle> {
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-        args: Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>;
+    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>;
 }
 
 impl<TypeHandle, F> PatternResolver<TypeHandle> for F
 where
-    F: FnMut(
-        &crate::ast::CallableName,
-        usize,
-        Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
+    F: FnMut(&crate::ast::CallableName, usize) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>,
 {
     fn struct_type(
         &mut self,
@@ -132,9 +137,8 @@ where
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-        args: Vec<PatternGuardExpr<TypeHandle>>,
-    ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> {
-        self(name, arity, args)
+    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> {
+        self(name, arity)
     }
 }
 
@@ -154,9 +158,20 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
     },
     Dispatch {
         inputs: Vec<PatternGuardExpr<TypeHandle>>,
+        bindings: PatternGuardBindings,
         dispatch: Box<PatternGuardDispatch<TypeHandle>>,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PatternGuardBindings {
+    pub(crate) pinned: Vec<GuardArgumentId>,
+    pub(crate) prepared: Vec<PreparedKeyId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An evaluated argument of this helper call, not a caller subject ordinal.
+pub(crate) struct GuardArgumentId(pub(crate) u32);
 
 impl<TypeHandle> PatternGuardExpr<TypeHandle> {
     pub(crate) fn map_type_handle<MappedHandle>(
@@ -176,8 +191,13 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
                 lhs: Box::new(lhs.map_type_handle(map)),
                 rhs: Box::new(rhs.map_type_handle(map)),
             },
-            PatternGuardExpr::Dispatch { inputs, dispatch } => PatternGuardExpr::Dispatch {
+            PatternGuardExpr::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => PatternGuardExpr::Dispatch {
                 inputs: inputs.iter().map(|input| input.map_type_handle(map)).collect(),
+                bindings: bindings.clone(),
                 dispatch: Box::new(dispatch.map_type_handle(map)),
             },
         }
@@ -230,10 +250,6 @@ pub(crate) enum PatternDispatchError {
     SourcePattern(SourcePatternError),
     MatrixBuild(DispatchMatrixError),
     Compile(DispatchCompileError),
-}
-
-pub(crate) fn prepared_key_name(index: usize) -> String {
-    format!("__dispatch_key_{}", index)
 }
 
 pub(crate) fn guard_dispatch_from_surface<F, TypeHandle>(
@@ -324,6 +340,7 @@ where
             &clause.body.node,
             &bindings,
             &pinned_by_name,
+            &mut plan.prepared_keys,
             resolver,
         )?);
     }
@@ -338,6 +355,7 @@ pub(crate) fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<String, SubjectId>,
     pinned_by_name: &HashMap<String, PinnedValueId>,
+    prepared_keys: &mut Vec<GroundValue>,
     resolver: &mut F,
 ) -> Result<PatternGuardExpr<TypeHandle>, SourcePatternError>
 where
@@ -359,14 +377,26 @@ where
                 return Err(SourcePatternError::UnknownGuardVar(name.clone()));
             }
         }
-        Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, resolver)?,
+        Expr::Ascribe(inner, _) => guard_expr_from_ast(&inner.node, bindings, pinned_by_name, prepared_keys, resolver)?,
         Expr::UnOp(crate::ast::UnOp::Not, arg) => PatternGuardExpr::Unary {
             op: PatternGuardUnaryOp::Not,
-            expr: Box::new(guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver)?),
+            expr: Box::new(guard_expr_from_ast(
+                &arg.node,
+                bindings,
+                pinned_by_name,
+                prepared_keys,
+                resolver,
+            )?),
         },
         Expr::UnOp(crate::ast::UnOp::Neg, arg) => PatternGuardExpr::Unary {
             op: PatternGuardUnaryOp::Neg,
-            expr: Box::new(guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver)?),
+            expr: Box::new(guard_expr_from_ast(
+                &arg.node,
+                bindings,
+                pinned_by_name,
+                prepared_keys,
+                resolver,
+            )?),
         },
         Expr::BinOp(op, lhs, rhs) => PatternGuardExpr::Binary {
             op: match op {
@@ -393,8 +423,20 @@ where
                 | crate::ast::BinOp::In
                 | crate::ast::BinOp::NotIn => return Err(SourcePatternError::UnsupportedGuardExpr),
             },
-            lhs: Box::new(guard_expr_from_ast(&lhs.node, bindings, pinned_by_name, resolver)?),
-            rhs: Box::new(guard_expr_from_ast(&rhs.node, bindings, pinned_by_name, resolver)?),
+            lhs: Box::new(guard_expr_from_ast(
+                &lhs.node,
+                bindings,
+                pinned_by_name,
+                prepared_keys,
+                resolver,
+            )?),
+            rhs: Box::new(guard_expr_from_ast(
+                &rhs.node,
+                bindings,
+                pinned_by_name,
+                prepared_keys,
+                resolver,
+            )?),
         },
         Expr::Call(target, args) => {
             let arity = args.len();
@@ -403,11 +445,34 @@ where
             };
             let args = args
                 .iter()
-                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, resolver))
+                .map(|arg| guard_expr_from_ast(&arg.node, bindings, pinned_by_name, prepared_keys, resolver))
                 .collect::<Result<Vec<_>, _>>()?;
-            match resolver.guard_call(&name, arity, args)? {
-                Some(expr) => expr,
-                None => return Err(SourcePatternError::UnsupportedGuardExpr),
+            let dispatch = resolver
+                .guard_call(&name, arity)?
+                .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
+            let pinned = dispatch
+                .plan
+                .pinned
+                .iter()
+                .map(|pin| {
+                    let input = pin
+                        .input
+                        .ok_or_else(|| SourcePatternError::UnknownPinned(pin.name.clone()))?;
+                    args.get(input as usize)
+                        .map(|_| GuardArgumentId(input))
+                        .ok_or(SourcePatternError::UnsupportedGuardExpr)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let prepared = dispatch
+                .plan
+                .prepared_keys
+                .iter()
+                .map(|key| intern_prepared_key(prepared_keys, key))
+                .collect();
+            PatternGuardExpr::Dispatch {
+                inputs: args,
+                bindings: PatternGuardBindings { pinned, prepared },
+                dispatch: Box::new(dispatch),
             }
         }
         _ => return Err(SourcePatternError::UnsupportedGuardExpr),
@@ -418,9 +483,8 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
     let mut resolver = |_name: &crate::ast::CallableName,
-                        _arity: usize,
-                        _args: Vec<PatternGuardExpr<TypeHandle>>|
-     -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> { Ok(None) };
+                        _arity: usize|
+     -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
 }
 
@@ -449,7 +513,7 @@ struct PatternDispatchProducer<TypeHandle> {
     prepared_keys: Vec<GroundValue>,
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
-    bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
+    projections: HashMap<(SubjectId, ProjectionKind), SubjectId>,
 }
 
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
@@ -490,7 +554,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             prepared_keys: Vec::new(),
             outcomes: Vec::new(),
             guards: Vec::new(),
-            bitstring_direct_bindings: HashMap::new(),
+            projections: HashMap::new(),
         })
     }
 
@@ -530,7 +594,13 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             for binding in &bindings {
                 bound.insert(binding.name.clone(), binding.source);
             }
-            let guard_expr = guard_expr_from_ast(&guard.node, &bound, &self.pinned_by_name, resolver)?;
+            let guard_expr = guard_expr_from_ast(
+                &guard.node,
+                &bound,
+                &self.pinned_by_name,
+                &mut self.prepared_keys,
+                resolver,
+            )?;
             let guard_id = GuardId(self.guards.len() as u32);
             self.guards.push(guard_expr);
             questions.push(RegionQuestion::new(RegionPredicate::new(
@@ -557,7 +627,6 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     }
 
     fn finish(self) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
-        let subjects = self.subject_refs_by_id();
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
         let graph = compile_dispatch_matrix(&matrix)
             .map_err(PatternDispatchError::Compile)?
@@ -566,12 +635,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             matrix,
             graph,
             input_count: self.input_count,
-            subjects,
             outcomes: self.outcomes,
             guards: self.guards,
             pinned: self.pinned,
             prepared_keys: self.prepared_keys,
-            bitstring_direct_bindings: self.bitstring_direct_bindings,
         })
     }
 
@@ -663,11 +730,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                         field: field.clone(),
                     };
                     let result = self.subject_id(&projected)?;
-                    question.match_evidence.projections.push(EdgeProjection {
-                        source,
-                        kind: ProjectionKind::StructField(field.clone()),
-                        result,
-                    });
+                    question.match_evidence.projections.push(result);
                     projected_fields.push((projected, value));
                 }
                 questions.push(question);
@@ -677,16 +740,16 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             }
             Pattern::Bitstring(fields) => {
                 let question = self.bitstring_question(subject, fields)?;
+                let Region::Bitstring(shape) = &question.predicate.region else {
+                    unreachable!();
+                };
+                let field_subjects = shape.fields.clone();
                 questions.push(question);
-                for (index, field) in fields.iter().enumerate() {
-                    let field_subject = PatternSubjectRef::BitstringField {
-                        bitstring: Box::new(subject.clone()),
-                        index: index as u32,
-                    };
+                for (field_subject, field) in field_subjects.into_iter().zip(fields) {
                     self.append_pattern(
                         &field.value.node,
                         field.value.span,
-                        &field_subject,
+                        &PatternSubjectRef::Subject(field_subject),
                         questions,
                         bindings,
                         resolver,
@@ -762,28 +825,25 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
                 }),
             };
-            let field_subject = PatternSubjectRef::BitstringField {
-                bitstring: Box::new(subject.clone()),
-                index: index as u32,
+            let extraction = super::BitstringExtraction {
+                previous: shapes.last().copied(),
+                spec: BitstringFieldShape {
+                    kind: bitstring_field_kind(field.spec.ty),
+                    size,
+                    endian: bitstring_endian(field.spec.endian),
+                    signed: field.spec.signed,
+                    unit: field.spec.unit,
+                },
+                is_last: index + 1 == fields.len(),
             };
-            let field_id = self.subject_id(&field_subject)?;
-            projections.push(EdgeProjection {
-                source: subject_id,
-                kind: ProjectionKind::BitstringField(index as u32),
-                result: field_id,
-            });
+            let kind = ProjectionKind::BitstringField(extraction);
+            let field_id = self.project(subject_id, kind)?;
+            projections.push(field_id);
             let direct_bindings = direct_bitfield_bindings(&field.value.node);
             for name in &direct_bindings {
                 binding_subjects.insert(name.clone(), field_id);
             }
-            self.bitstring_direct_bindings.insert(field_id, direct_bindings);
-            shapes.push(BitstringFieldShape {
-                kind: bitstring_field_kind(field.spec.ty),
-                size,
-                endian: bitstring_endian(field.spec.endian),
-                signed: field.spec.signed,
-                unit: field.spec.unit,
-            });
+            shapes.push(field_id);
         }
         let predicate = RegionPredicate::new(
             subject_id,
@@ -883,14 +943,22 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     .add_projected_subject(source, ProjectionKind::MapValue { key: key.clone() })
                     .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
             }
-            PatternSubjectRef::BitstringField { bitstring, index } => {
-                let source = self.subject_id(bitstring)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::BitstringField(*index))
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
-            }
+            PatternSubjectRef::Subject(id) => *id,
         };
         self.subjects.insert(subject.clone(), id);
+        Ok(id)
+    }
+
+    fn project(&mut self, source: SubjectId, kind: ProjectionKind) -> Result<SubjectId, SourcePatternError> {
+        let key = (source, kind);
+        if let Some(id) = self.projections.get(&key) {
+            return Ok(*id);
+        }
+        let id = self
+            .builder
+            .add_projected_subject(source, key.1.clone())
+            .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
+        self.projections.insert(key, id);
         Ok(id)
     }
 
@@ -913,25 +981,16 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         ) {
             return;
         }
-        if !self.prepared_keys.contains(key) {
-            self.prepared_keys.push(key.clone());
-        }
+        intern_prepared_key(&mut self.prepared_keys, key);
     }
+}
 
-    fn subject_refs_by_id(&self) -> Vec<Option<PatternSubjectRef>> {
-        let max_subject = self
-            .subjects
-            .values()
-            .map(|id| id.0)
-            .chain(std::iter::once(self.guard_subject.0))
-            .max()
-            .unwrap_or(0);
-        let mut out = vec![None; max_subject as usize + 1];
-        for (subject, id) in &self.subjects {
-            out[id.0 as usize] = Some(subject.clone());
-        }
-        out
-    }
+fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> PreparedKeyId {
+    let index = keys.iter().position(|prepared| prepared == key).unwrap_or_else(|| {
+        keys.push(key.clone());
+        keys.len() - 1
+    });
+    PreparedKeyId(index as u32)
 }
 
 fn validate_source_rows<TypeHandle>(patterns: &SourcePatternRows<TypeHandle>) -> Result<(), SourcePatternError> {

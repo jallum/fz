@@ -62,10 +62,8 @@
 # - `map_bytes = 0`
 # - `heap_bytes = 176`
 #
-# Those numbers mean the native paths allocate only the 11 literal input cons
-# cells. JIT and AOT keep this target; the interpreter and REPL remain direct IR
-# baselines because they do not execute native ReturnDemand or reusable-cons
-# lowering.
+# Those numbers mean interpreter, JIT, and AOT allocate only the 11 literal
+# input cons cells. All doors consume the same construction-owned retention.
 fn append([], ys), do: ys
 fn append([h | t], ys), do: [h | append(t, ys)]
 

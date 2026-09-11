@@ -63,47 +63,34 @@ fn fresh_vars_are_unique() {
 #[test]
 fn physical_entry_params_are_not_semantic_key_inputs() {
     let mut b = FnBuilder::new(FnId(0), "with_physical");
-    let head = b.fresh_var();
     let source = b.fresh_var();
     let value = b.fresh_var();
     let entry = b.block(vec![source, value]);
-    b.record_reusable_cons_cell(head, source);
+    b.record_physical_entry_param(source);
     b.set_terminator(entry, Term::Return(value));
     let fn_ir = b.build();
 
     assert_eq!(fn_ir.physical_entry_params, vec![source]);
-    assert_eq!(
-        fn_ir.physical_capabilities,
-        vec![PhysicalCapabilityFact {
-            source,
-            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
-        }]
-    );
+
     assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
 }
 
 #[test]
-fn local_reusable_cons_sources_do_not_become_physical_entry_params() {
-    let mut b = FnBuilder::new(FnId(0), "local_reusable_cons");
-    let entry = b.block(vec![]);
-    let source = b.let_(entry, Prim::Const(Const::Int(1)));
-    let head = b.let_(entry, Prim::Const(Const::Int(2)));
-    b.record_reusable_cons_cell(head, source);
-    b.set_terminator(entry, Term::Return(head));
-    let fn_ir = b.build();
-
-    assert!(
-        fn_ir.physical_entry_params.is_empty(),
-        "local reusable-cons sources should stay local metadata, not hidden entry params",
-    );
-    assert_eq!(
-        fn_ir.physical_capabilities,
-        vec![PhysicalCapabilityFact {
+fn list_retention_source_is_a_traced_construction_operand() {
+    let source = Var(0);
+    let head = Var(1);
+    let tail = Var(2);
+    let prim = Prim::MakeList(
+        vec![head],
+        Some(tail),
+        Some(ListRetention {
             source,
-            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
-        }],
-        "the reusable-cons capability should still be recorded for local codegen consumption",
+            permission: ListRewritePermission::RetainOnly,
+        }),
     );
+    let mut used = std::collections::HashSet::new();
+    prim.collect_used_vars(&mut used);
+    assert_eq!(used, [source, head, tail].into_iter().collect());
 }
 
 #[test]
@@ -261,7 +248,7 @@ fn list_prims_pretty_print() {
     let mut b = FnBuilder::new(FnId(6), "lst");
     let entry = b.block(vec![]);
     let one = b.let_(entry, Prim::Const(Const::Int(1)));
-    let l = b.let_(entry, Prim::MakeList(vec![one], None));
+    let l = b.let_(entry, Prim::MakeList(vec![one], None, None));
     let h = b.let_(entry, Prim::ListHead(l));
     let _t = b.let_(entry, Prim::ListTail(l));
     let _z = b.let_(entry, Prim::IsEmptyList(l));

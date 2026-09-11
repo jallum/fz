@@ -164,7 +164,7 @@ wakes, and blocked dependencies use the same renderer as job completions and
 quiescence. Equal product reproduction retains its allocation and generation,
 so consumers see no value movement. Macro expansion reads
 `RootBackendProduct(macro_root)` directly. Successful native production is measured by
-`NativeProgram(root)` settlement and `native_program.reusable_cons`.
+`NativeProgram(root)` settlement and `native_program.list_retention`.
 
 A failed direct product request returns `DriveOutcome::DependencyFailed`.
 The drive stop identifies that exact dependency; it attributes no scheduler

@@ -7,9 +7,7 @@
 //! identity and the caller's guard-helper resolution.
 
 use crate::ast::{CallableName, ModuleTarget};
-use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternResolver, SourcePatternError,
-};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
 use crate::source::Span;
 
 use super::identity::{FunctionId, ModuleId};
@@ -88,12 +86,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(
-        &mut World,
-        &CallableName,
-        usize,
-        Vec<PatternGuardExpr<Ty>>,
-    ) -> Result<Option<PatternGuardExpr<Ty>>, SourcePatternError>,
+    F: FnMut(&mut World, &CallableName, usize) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self
@@ -107,8 +100,7 @@ where
         &mut self,
         name: &CallableName,
         arity: usize,
-        args: Vec<PatternGuardExpr<Ty>>,
-    ) -> Result<Option<PatternGuardExpr<Ty>>, SourcePatternError> {
-        (self.guard)(self.world, name, arity, args)
+    ) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError> {
+        (self.guard)(self.world, name, arity)
     }
 }

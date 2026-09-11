@@ -31,16 +31,16 @@ signature:    (&PidId, &Process)
 ```
 
 `ExitRecord` is a handler-side projection: `{ pid, halt_value: i64, live_count:
-usize, bytes_used: usize, reusable_cons_attempts: u64,
-reusable_cons_reused: u64 }`. `ProcessExitCapture` builds it during dispatch by
+usize, bytes_used: usize, list_retention_attempts: u64,
+list_retention_hits: u64 }`. `ProcessExitCapture` builds it during dispatch by
 reading the live process. `JsonlBackend` performs the same projection only when
 it handles the event. The emitter does not traverse the process for telemetry.
 
-Reusable-cons fallbacks are derived, not emitted separately:
-`fallback_count = reusable_cons_attempts - reusable_cons_reused`. The runtime
+List-retention fallbacks are derived, not emitted separately:
+`fallback_count = list_retention_attempts - list_retention_hits`. The runtime
 FFI helper increments `attempts` for every `fz_list_reuse_or_cons_parts` call,
-and increments `reused` only when the heap reports in-place reuse by returning
-the original source cons ref. That keeps the runtime telemetry seam at one
+and increments `hits` when the heap returns the original source cell, either
+unchanged or after guarded rewrite. That keeps the runtime telemetry seam at one
 boundary event instead of a per-attempt side channel.
 
 The raw `&Process` is valid only during dispatch. A handler that needs data
@@ -66,7 +66,7 @@ There is one run path — the production scheduler — and tests watch its exit 
 instead of poking task internals:
 
 - `ProcessExitCapture` reconstructs a typed `ExitRecord` (result + heap stats +
-  cumulative reusable-cons counters) from each `process_exited` event's
+  cumulative list-retention counters) from each `process_exited` event's
   live process during dispatch, queryable by `last()` or `by_pid(pid)`.
 - `DbgCapture` is a retaining `OutputSink` that copies each callback-scoped line,
   read back with `lines()`.

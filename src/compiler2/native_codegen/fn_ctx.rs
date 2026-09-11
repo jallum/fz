@@ -254,9 +254,20 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         head_raw: ir::Value,
         head_kind: ir::Value,
         tail_ref: ir::Value,
+        rewrite: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.list_reuse_or_cons_parts_id;
-        self.call1_p(id, &[source_ref, head_raw, head_kind, tail_ref])
+        self.call1_p(id, &[source_ref, head_raw, head_kind, tail_ref, rewrite])
+    }
+
+    pub(crate) fn list_reuse_or_cons_ref(
+        &mut self,
+        source: ir::Value,
+        head: ir::Value,
+        tail: ir::Value,
+        rewrite: ir::Value,
+    ) -> ir::Value {
+        self.call1_p(self.runtime.list_reuse_or_cons_ref_id, &[source, head, tail, rewrite])
     }
 
     pub(crate) fn closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
@@ -742,10 +753,6 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
             ListTailBits::Empty => self.empty_list_ref(),
             ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
         }
-    }
-
-    pub(crate) fn reusable_cons_source(&self, rebuilt_head: Var) -> Option<Var> {
-        self.cache.reusable_cons_sources.get(&rebuilt_head.0).copied()
     }
 
     pub(crate) fn store_frame_value_dynamic(&mut self, frame: ir::Value, field_offset: u32, value: CodegenValue) {

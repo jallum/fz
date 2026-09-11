@@ -229,7 +229,7 @@ predictable. A plain recursive append:</p>
 <p>still compiles as source code. In the <code>append</code> fixture,
 <code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
 and no prefix-copy cons cells, with no tuple/struct or map allocation in the
-value path. The recursive append clauses get ordinary reusable-cons capabilities;
+value path. Each recursive append construction retains its exact source cell;
 there is no append BIF.</p>
 
 <p><strong>Map construction:</strong></p>
@@ -260,7 +260,7 @@ selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
 as independent continuation values; a tail-call edge can instead forward the
 caller's own demand. Recursive list code needs no list-tail delivery shape: it
 builds the list forward with an O(1) continuation (tail recursion modulo cons)
-plus reusable-cons transport. Codegen implements the planner-selected
+plus list-retention transport. Codegen implements the planner-selected
 capability; it does not guess from source names.</p>
 
 <p>For recursive list code this is tail recursion modulo cons: the compiler
@@ -871,14 +871,17 @@ closure call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is no
 source-visible, but allocation timing becomes visible when a program reads the
 current process allocation counters.</p>
 
-<p>Owned list-cell reuse has one more boundary: publication. The compiler records
-the source cons as a physical capability, not as a source-level argument. If a
-cons cell is stored into another heap object, captured by an escaping closure or
-lazy continuation, carried across a scheduler-visible same-heap handoff, or
-passed to a non-tail call while the caller's continuation retains the same value,
-the cell is no longer privately owned by the rewrite that destructured it. The
-compiler either refuses to create a reuse capability for that cell or marks the cell
-aliased before a later reuse attempt.</p>
+<p>Each list construction may retain an exact, traced source cell. Unchanged
+contents return that source even when shared. Changing the cell requires both
+construction-owned rewrite permission and a clear alias bit. Calls and structural
+tuple fields classify actual ownership as <code>Transfer</code> or <code>Share</code>;
+overlapping inputs and caller-retained values are shared before entering the callee.
+One-shot continuation roots do not independently expose the old language value.</p>
+
+<p>A marked cell certifies a closed shared spine: its tail is marked too. Sharing
+stops at the first marked cell. Materialized list heads, tuple/struct fields,
+closure captures, and map keys/values publish their contained lists during their
+existing construction loops; there is no extra structural runtime scan.</p>
 
 <p>Extern calls do not publish their arguments for alias tracking. If an extern
 wants to retain a value after returning, the extern must copy it.</p>
@@ -886,8 +889,8 @@ wants to retain a value after returning, the extern must copy it.</p>
 <p>Send is a copy boundary, not an alias boundary. Cross-process send and
 self-send deep-copy the message graph before enqueueing it, so the sender's
 current-process list cells need not be marked aliased just because they were
-sent. The copied list cells in the destination heap are fresh and start with
-clear alias bits. Inside a single heap the alias bit is one-way, so a reuse miss
+sent. A singly copied list can remain unshared; repeated references and copied
+container fields protect sharing in the receiver. Inside a single heap the alias bit is one-way, so a rewrite miss
 falls back to allocation rather than rewiring a value another observer may still
 hold.</p>
 

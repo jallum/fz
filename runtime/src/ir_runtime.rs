@@ -99,13 +99,6 @@ fn heap_ref_word(tag: ValueKind, addr: *const u8) -> u64 {
         .raw_word()
 }
 
-fn list_rebuild_reused_source(source: AnyValueRef, rebuilt: AnyValueRef) -> bool {
-    // `Heap::reuse_or_alloc_list_cons_raw_kind` reports in-place reuse by
-    // returning the original source cons ref; fallback allocation returns a
-    // distinct fresh cons ref.
-    rebuilt == source
-}
-
 fn closure_ref_word_from_bits(bits: u64) -> u64 {
     let addr = closure_addr_from_tagged(bits).expect("closure heap bits");
     heap_ref_word(ValueKind::CLOSURE, addr)
@@ -1858,24 +1851,44 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_list_reuse_or_cons_ref(
+    process: *mut Process,
+    list_ref_word: u64,
+    head_ref_word: u64,
+    tail_ref_word: u64,
+    may_rewrite: u64,
+) -> u64 {
+    let head = any_value_ref_from_word(head_ref_word, "fz_list_reuse_or_cons_ref head");
+    fz_list_reuse_or_cons_parts(
+        process,
+        list_ref_word,
+        head.storage_raw().expect("list head storage"),
+        u64::from(head.tag().tag()),
+        tail_ref_word,
+        may_rewrite,
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_reuse_or_cons_parts(
     process: *mut Process,
     list_ref_word: u64,
     head_raw: u64,
     head_kind_tag: u64,
     tail_ref_word: u64,
+    may_rewrite: u64,
 ) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
     let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
     let process = unsafe { &mut *process };
-    process.reusable_cons_attempts = process.reusable_cons_attempts.saturating_add(1);
+    process.list_retention_attempts = process.list_retention_attempts.saturating_add(1);
     let result = process
         .heap
-        .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
+        .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail, may_rewrite != 0)
         .expect("fz_list_reuse_or_cons_parts");
-    if list_rebuild_reused_source(list, result) {
-        process.reusable_cons_reused = process.reusable_cons_reused.saturating_add(1);
+    if result == list {
+        process.list_retention_hits = process.list_retention_hits.saturating_add(1);
     }
     result.raw_word()
 }

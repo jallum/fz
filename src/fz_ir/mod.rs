@@ -183,6 +183,35 @@ impl CallsiteId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OwnershipMode {
+    Transfer,
+    Share,
+}
+
+/// The actual operand of an edge that may split a usable reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OwnershipUse<T> {
+    pub value: T,
+    pub mode: OwnershipMode,
+}
+
+impl<T> OwnershipUse<T> {
+    pub fn transfer(value: T) -> Self {
+        Self {
+            value,
+            mode: OwnershipMode::Transfer,
+        }
+    }
+
+    pub fn share(value: T) -> Self {
+        Self {
+            value,
+            mode: OwnershipMode::Share,
+        }
+    }
+}
+
 /// Linear construction token for destination-passing IR.
 ///
 /// A token names permission to initialize one unpublished destination state.
@@ -369,6 +398,8 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
+    /// Publish an ownership-splitting edge; scalar lanes are unchanged.
+    Share(Var),
     Extern(CallsiteIdent, ExternId, Vec<ExternArg>),
     ListHead(Var),
     ListTail(Var),
@@ -386,7 +417,7 @@ pub enum Prim {
     /// Project a named field from a schema-backed struct.
     StructField(Var, String),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
-    MakeList(Vec<Var>, Option<Var>),
+    MakeList(Vec<Var>, Option<Var>, Option<ListRetention<Var>>),
     /// Build a thin function reference: callable code identity with no
     /// environment payload.
     MakeFnRef(CallsiteIdent, FnId),
@@ -475,7 +506,12 @@ impl Prim {
                 used.insert(*a);
                 used.insert(*b);
             }
-            Prim::UnOp(_, a) | Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) | Prim::IsListCons(a) => {
+            Prim::Share(a)
+            | Prim::UnOp(_, a)
+            | Prim::ListHead(a)
+            | Prim::ListTail(a)
+            | Prim::IsEmptyList(a)
+            | Prim::IsListCons(a) => {
                 used.insert(*a);
             }
             Prim::Extern(_, _, args) => {
@@ -496,12 +532,15 @@ impl Prim {
             Prim::TupleField(a, _) | Prim::StructField(a, _) => {
                 used.insert(*a);
             }
-            Prim::MakeList(els, tail) => {
+            Prim::MakeList(els, tail, retention) => {
                 for v in els {
                     used.insert(*v);
                 }
                 if let Some(t) = tail {
                     used.insert(*t);
+                }
+                if let Some(retention) = retention {
+                    used.insert(retention.source);
                 }
             }
             Prim::MakeClosure(_, _, caps) => {
@@ -656,11 +695,11 @@ pub enum Term {
     ReturnLanes(Vec<Var>),
     Halt(Var),
     /// fz-yxs — selective `receive do … after … end`. The cached dispatch
-    /// plan is the executable route. Clause bodies receive bound pattern vars
-    /// (source order) followed by `captures`.
+    /// plan is the executable route. Winning edges supply semantic and physical
+    /// parameters by identity, followed by shared `captures`.
     ///
     /// `pinned` carries the outer-scope vars referenced via `^name`
-    /// inside any clause's pattern (snapshotted at the receive site);
+    /// inside any clause's pattern;
     /// `captures` carries the outer-scope vars threaded into every
     /// body/guard/after fn so they can keep evaluating in scope.
     ReceiveMatched {
@@ -669,11 +708,9 @@ pub enum Term {
         /// Cached AST-free dispatch plan for interpreter and native receive probes.
         dispatch: Arc<PatternDispatchPlan<RuntimeTypePredicate>>,
         after: Option<ReceiveAfter>,
-        /// Outer-scope vars referenced by `^name` patterns across all
-        /// clauses, paired with their source names so backends can
-        /// resolve `^name` lookups when materialising the matcher.
-        /// Deduplicated by name at lowering time.
-        pinned: Vec<(String, Var)>,
+        /// Pinned inputs followed by prepared keys, indexed by the owning
+        /// plan's PinnedValueId and prepared-key ordinal respectively.
+        pinned: Vec<Var>,
         captures: Vec<Var>,
     },
 }
@@ -685,14 +722,13 @@ pub struct ReceiveClause {
     /// reachability, and codegen use this instead of reconstructing a fresh
     /// ident from `span`.
     pub ident: CallsiteIdent,
-    /// Names of the pattern's bound vars in source order. The body
-    /// and guard fns take these as their first `bound_names.len()`
-    /// parameters; the rest of their params are the captures.
-    pub bound_names: Vec<String>,
-    /// Optional guard fn. Params = bound vars ++ captures. Returns
+    /// Winning plan outcome and its exact subject-to-body-parameter edge.
+    pub outcome: crate::dispatch_matrix::OutcomeId,
+    pub arguments: Vec<(crate::dispatch_matrix::SubjectId, Var)>,
+    /// Optional guard fn. Params = outcome arguments ++ captures. Returns
     /// bool. Pure-codegen restricted (verified by ir_planner via F3).
     pub guard: Option<FnId>,
-    /// Clause body fn. Params = bound vars ++ captures. The body reaches the
+    /// Clause body fn. Params = outcome arguments ++ captures. The body reaches the
     /// enclosing receive join via explicit continuation handoff.
     pub body: FnId,
     /// Span of the whole `pattern when guard -> body` clause.
@@ -785,8 +821,6 @@ pub struct FnIr {
     /// Entry parameters that transport physical capabilities, not source
     /// values. They are ignored by semantic specialization by construction.
     pub physical_entry_params: Vec<Var>,
-    /// Object-local capabilities available inside this function body.
-    pub physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
 
 impl FnIr {
@@ -806,11 +840,9 @@ impl FnIr {
         self.physical_entry_params.contains(&param)
     }
 
-    pub fn dedup_physical_facts(&mut self) {
+    pub fn dedup_physical_entry_params(&mut self) {
         let mut entry_seen = HashSet::new();
         self.physical_entry_params.retain(|param| entry_seen.insert(*param));
-        let mut capability_seen = HashSet::new();
-        self.physical_capabilities.retain(|fact| capability_seen.insert(*fact));
     }
 
     pub fn block(&self, id: BlockId) -> &Block {
@@ -819,14 +851,15 @@ impl FnIr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PhysicalCapabilityFact {
-    pub source: Var,
-    pub capability: PhysicalCapability,
+pub struct ListRetention<V> {
+    pub source: V,
+    pub permission: ListRewritePermission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PhysicalCapability {
-    ReusableConsCell { rebuilt_head: Var },
+pub enum ListRewritePermission {
+    RetainOnly,
+    Rewrite,
 }
 
 /// Side-tables that map IR positions back to source spans. Populated by
@@ -935,7 +968,6 @@ pub struct FnBuilder {
     owner_module: String,
     ignored_params: HashSet<Var>,
     physical_entry_params: Vec<Var>,
-    physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
 
 impl FnBuilder {
@@ -951,7 +983,6 @@ impl FnBuilder {
             owner_module: String::new(),
             ignored_params: HashSet::new(),
             physical_entry_params: Vec::new(),
-            physical_capabilities: Vec::new(),
         }
     }
 
@@ -971,35 +1002,10 @@ impl FnBuilder {
         self.ignored_params.insert(v);
     }
 
-    fn is_entry_param(&self, param: Var) -> bool {
-        self.entry
-            .and_then(|entry| self.blocks.iter().find(|block| block.id == entry))
-            .is_some_and(|entry| entry.params.contains(&param))
-    }
-
     pub fn record_physical_entry_param(&mut self, param: Var) {
         if !self.physical_entry_params.contains(&param) {
             self.physical_entry_params.push(param);
         }
-    }
-
-    pub fn record_reusable_cons_cell(&mut self, rebuilt_head: Var, source_cons: Var) {
-        if self.is_entry_param(source_cons) {
-            self.record_physical_entry_param(source_cons);
-        }
-        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
-            matches!(
-                fact.capability,
-                PhysicalCapability::ReusableConsCell { rebuilt_head: head } if head == rebuilt_head
-            )
-        }) {
-            fact.source = source_cons;
-            return;
-        }
-        self.physical_capabilities.push(PhysicalCapabilityFact {
-            source: source_cons,
-            capability: PhysicalCapability::ReusableConsCell { rebuilt_head },
-        });
     }
 
     /// Create a new block with the given parameters; first call's block becomes
@@ -1052,9 +1058,8 @@ impl FnBuilder {
             owner_module: self.owner_module,
             ignored_entry_params,
             physical_entry_params: self.physical_entry_params,
-            physical_capabilities: self.physical_capabilities,
         };
-        f.dedup_physical_facts();
+        f.dedup_physical_entry_params();
         f
     }
 }
@@ -1212,6 +1217,7 @@ impl fmt::Display for Prim {
             Prim::Const(c) => write!(f, "const({})", c),
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
+            Prim::Share(value) => write!(f, "share({value})"),
             Prim::Extern(_, e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
@@ -1230,10 +1236,16 @@ impl fmt::Display for Prim {
             }
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::StructField(v, name) => write!(f, "struct_field({}, {})", v, name),
-            Prim::MakeList(els, tail) => match tail {
-                Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
-                None => write!(f, "list([{}])", fmt_var_list(els)),
-            },
+            Prim::MakeList(els, tail, retention) => {
+                match tail {
+                    Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t)?,
+                    None => write!(f, "list([{}])", fmt_var_list(els))?,
+                }
+                if let Some(retention) = retention {
+                    write!(f, " retain {} {:?}", retention.source, retention.permission)?;
+                }
+                Ok(())
+            }
             Prim::MakeFnRef(_ident, fid) => write!(f, "fn_ref({})", fid),
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
@@ -1330,7 +1342,11 @@ impl fmt::Display for Term {
                 captures,
                 ..
             } => {
-                let pin_strs: Vec<String> = pinned.iter().map(|(n, v)| format!("^{}={}", n, v)).collect();
+                let pin_strs: Vec<String> = pinned
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| format!("p{}={}", i, v))
+                    .collect();
                 write!(
                     f,
                     "receive_matched [{} clauses] pinned=[{}] caps=[{}]",
@@ -1374,33 +1390,10 @@ impl fmt::Display for FnIr {
                 writeln!(f, "  physical_param {}", param)?;
             }
         }
-        if !self.physical_capabilities.is_empty() {
-            let mut facts = self.physical_capabilities.clone();
-            facts.sort_by_key(|fact| fact.source.0);
-            for fact in facts {
-                writeln!(f, "  physical {}", fact)?;
-            }
-        }
         for b in &self.blocks {
             write!(f, "{}", b)?;
         }
         writeln!(f, "}}")
-    }
-}
-
-impl fmt::Display for PhysicalCapabilityFact {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.source, self.capability)
-    }
-}
-
-impl fmt::Display for PhysicalCapability {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PhysicalCapability::ReusableConsCell { rebuilt_head } => {
-                write!(f, "reusable_cons_cell(rebuilt_head={})", rebuilt_head)
-            }
-        }
     }
 }
 

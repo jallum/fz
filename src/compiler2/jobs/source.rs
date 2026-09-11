@@ -275,12 +275,7 @@ pub(super) fn define_function(
         world,
         namespace: raw_source.namespace,
         owner: raw_source.owner_module,
-        guard: |_world: &mut World,
-                _name: &crate::ast::CallableName,
-                _arity: usize,
-                _args: Vec<crate::dispatch_matrix::pattern::PatternGuardExpr<super::super::types::Ty>>| {
-            Ok(None)
-        },
+        guard: |_world: &mut World, _name: &crate::ast::CallableName, _arity: usize| Ok(None),
     };
     let warnings = if declares_contract {
         crate::compiler2::source_diagnostics::function_body_warnings(&surface, &mut resolver)

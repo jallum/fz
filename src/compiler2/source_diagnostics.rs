@@ -254,10 +254,7 @@ mod tests {
     use crate::ast::{FnClause, Pattern, TypeExprBody};
 
     fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
-        let mut resolver =
-            |_name: &crate::ast::CallableName,
-             _arity: usize,
-             _args: Vec<crate::dispatch_matrix::pattern::PatternGuardExpr<Ty>>| Ok(None);
+        let mut resolver = |_name: &crate::ast::CallableName, _arity: usize| Ok(None);
         super::function_warnings(surface, &mut resolver)
     }
 

@@ -298,9 +298,10 @@ Use bulk operations when touching several keys. Iteration follows strict fz
 term order, including atom names and binary content; Elixir's atom-key
 iteration may differ because it uses VM identity.
 
-Published language values are finite immutable DAGs. Low-level struct, closure,
-and map-destination writes are unsafe construction operations whose caller must own the
-unpublished object exclusively and supply published values with no path back.
+Published language values are finite immutable DAGs. Low-level struct and closure
+writes are unsafe construction operations whose caller must own the unpublished
+object exclusively and supply published values with no path back. Map destinations
+accept finite terms without back-edges and publish their fields when frozen.
 Proper lists admit only a list tail or `[]`; collector tests may deliberately
 construct cycles, but never publish them to term comparison. The comparator
 allocates no visited set, temporary Process, schema copies, or scalar boxes.
@@ -309,27 +310,33 @@ nonfinite payloads before publication. Unfinished maps, internal absence
 (`NULL`), forged nonfinite float payloads, and unregistered atoms also have no
 language comparison semantics and are rejected at comparator entry.
 
-The list link's **alias bit** is a conservative cell-local reuse guard. A cons
-is the single owner of its tail link until it is *published*; publication turns
-later destructive rewrites of that cell into a fresh allocation fallback. The
-bit is set (or a reuse capability simply not recorded) when a cell escapes the
-single owned rewrite path: stored in another heap object, captured in a closure
-or scheduler-visible continuation, or carried across a barrier where allocation
-timing becomes observable. Native call lowering
-(`mark_retained_call_args_as_published`) marks an argument the caller both passes
-to a callee and keeps in the continuation, which is what stops `xs |> reverse();
-xs |> map()` from letting the first call rewrite the list the continuation still
-reads.
+## List Ownership
 
-Reuse helpers stay total for valid inputs: an unaliased source cons may be
-relinked in place; an aliased one takes the fallback path and allocates a fresh cons
-with the same head and the requested tail (`reuse_or_alloc_list_cons_tail`).
-Passing a value to an extern
-does not publish it (an extern that retains a value past the call must copy it).
-Cross-process send and self-send are copy boundaries, not alias boundaries: the
-sender's current cells need not be marked, because the receiver gets a fresh
-unaliased graph. The bit is one-way within a heap — later local code may still
-read a published cell, but destructive reuse falls back to allocation.
+The list link's **alias bit** protects a closed shared spine: a marked cell has
+a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeated
+publication visits only newly protected cells plus one check per Share edge.
+The bit setter and link are private; shared cells cannot relink, and GC relocates
+the same logical tail without changing this invariant.
+
+`ListRetention { source, permission }` belongs to the exact list construction.
+Identical raw head, kind, and tail retain the source even when shared or when
+permission is `RetainOnly`. Changed contents require both `Rewrite` permission
+and a clear alias bit; otherwise construction allocates. Physical source pointers
+are traced roots, not independent semantic owners. Calls and structural tuple
+fields mark actual `Share` operands before splitting ownership; `Transfer`
+operands and one-shot continuation captures do not blanket-publish cells.
+
+Materialized language containers publish their list fields at construction:
+list-valued heads, tuple/named-struct fields, closure captures, and map keys/values.
+Map allocation, put, and freeze share `write_ordered_map_entries`; deep-copy maps
+use that same boundary. Raw `write_field_slot` remains an unpublished storage
+operation used by internal runtime structs too; the language constructor, not
+every internal field write, owns publication. No structural runtime scan is added.
+
+Cross-process send and self-send copy into receiver-owned storage. A singly
+copied list can remain clear; repeated forwarding hits and copied container
+fields protect receiver-side sharing. The sender's cells are not marked merely
+because a copy was sent. The alias bit remains one-way within a heap.
 
 ## GC: Roots, Edges, And Lifetime
 
@@ -382,8 +389,8 @@ Anything that outlives a scheduler or GC boundary is held as `AnyValueRef`,
 because the ref is self-describing — a scalar ref has no children, a heap ref is
 scanned by object layout, and sentinels have no children. The process mailbox is
 `VecDeque<AnyValueRef>` (`runtime/src/process.rs`); a parked receive
-(`runtime/src/park.rs`) keeps its pinned snapshot, per-clause matcher outputs,
-and bound values as `Vec<AnyValueRef>`. Map construction carries its unpublished
+(`runtime/src/park.rs`) keeps its pinned inputs, per-outcome matcher outputs,
+and semantic/physical arguments as `Vec<AnyValueRef>`. Map construction carries its unpublished
 heap destination through the same value representation.
 
 ## Policy: one value model, copy on cross-process send
@@ -402,7 +409,7 @@ rather than sharing heap pointers across processes:
 ```text
 self-send:                deep-copy the message into the same heap, push to own mailbox
 cross-process, parked:    run the receiver's matcher on the sender's ref;
-                          on a hit, deep-copy the matched bound values into the
+                          on a hit, deep-copy the exact outcome arguments into the
                           receiver heap and wake it; on a miss, deep-copy the
                           whole message into the receiver mailbox
 cross-process, not waiting: deep-copy the whole message into the receiver mailbox

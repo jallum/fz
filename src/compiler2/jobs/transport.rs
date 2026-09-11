@@ -796,9 +796,9 @@ enum TransportRecipe {
     CutEdge,
     Alternatives(Vec<Self>),
     Tuple(Vec<Self>),
-    TupleField {
-        tuple: Box<Self>,
-        index: usize,
+    Projection {
+        source: Box<Self>,
+        kind: crate::dispatch_matrix::ProjectionKind,
     },
 }
 
@@ -893,11 +893,14 @@ fn evaluate_transport_recipe(
             }
             RecipeLayout::Exact(tuple_layout(world, &layouts))
         }
-        TransportRecipe::TupleField { tuple, index } => {
-            match evaluate_transport_recipe(world, tel, context, tuple, ty, demand, position) {
+        TransportRecipe::Projection { source, kind } => {
+            let crate::dispatch_matrix::ProjectionKind::TupleField(index) = kind else {
+                return RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]));
+            };
+            match evaluate_transport_recipe(world, tel, context, source, ty, demand, position) {
                 RecipeLayout::Exact(layout) => match world.shape(layout.structural) {
                     ShapeDescr::Tuple(fields) => {
-                        if let Some(field) = fields.get(*index).copied() {
+                        if let Some(field) = fields.get(*index as usize).copied() {
                             RecipeLayout::Exact(TransportLayout {
                                 structural: field.structural,
                                 carrier: if layout.carrier.is_value_ref() {
@@ -1229,13 +1232,29 @@ fn origin_transport_recipe(
                 })
                 .collect(),
         ),
-        TransportSource::TupleField { source, index } => TransportRecipe::TupleField {
-            tuple: Box::new(TransportRecipe::Alias(TransportPosition::Value {
+        TransportSource::Projection { source, kind } => TransportRecipe::Projection {
+            source: Box::new(TransportRecipe::Alias(TransportPosition::Value {
                 executable: symbol.clone(),
                 value: *source,
             })),
-            index: *index,
+            kind: kind.clone(),
         },
+        TransportSource::OutcomeSubject { owner, subject } => {
+            let (source, path) = facts.body().dispatch_subject_origin(*owner, *subject);
+            let super::super::body::SubjectOriginRoot::Value(source) = source else {
+                return TransportRecipe::Terminal;
+            };
+            path.into_iter().fold(
+                TransportRecipe::Alias(TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value: source,
+                }),
+                |source, kind| TransportRecipe::Projection {
+                    source: Box::new(source),
+                    kind: kind.clone(),
+                },
+            )
+        }
         TransportSource::CallableValue(_) => TransportRecipe::Terminal,
     }
 }
@@ -2005,7 +2024,7 @@ fn cut_in_component_returns(
                 on_cycle |= cut_in_component_returns(world, context, component, owner, child)?;
             }
         }
-        TransportRecipe::TupleField { tuple, .. } => {
+        TransportRecipe::Projection { source: tuple, .. } => {
             on_cycle = cut_in_component_returns(world, context, component, owner, tuple)?;
         }
         TransportRecipe::ClosureCallReturn { grounded, .. } => {
@@ -2161,10 +2180,20 @@ fn append_origin_children(
             executable: symbol.clone(),
             value: *value,
         })),
-        TransportSource::TupleField { source, .. } => children.push(TransportPosition::Value {
+        TransportSource::Projection { source, .. } => children.push(TransportPosition::Value {
             executable: symbol.clone(),
             value: *source,
         }),
+        TransportSource::OutcomeSubject { owner, subject } => {
+            let (source, _) = facts.body().dispatch_subject_origin(*owner, *subject);
+            let super::super::body::SubjectOriginRoot::Value(source) = source else {
+                return false;
+            };
+            children.push(TransportPosition::Value {
+                executable: symbol.clone(),
+                value: source,
+            });
+        }
         TransportSource::CallableValue(_) => return false,
     }
     let _ = executable;

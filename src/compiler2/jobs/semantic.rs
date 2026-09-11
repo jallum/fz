@@ -386,7 +386,7 @@ fn apply_step(
         LoweredStep::Tuple { value, items } => {
             let Some(items) = items
                 .iter()
-                .map(|item| value_ty(values, *item))
+                .map(|item| value_ty(values, item.value))
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(());
@@ -394,7 +394,7 @@ fn apply_step(
             let tuple = world.types_mut().tuple(&items);
             values.insert(*value, tuple);
         }
-        LoweredStep::List { value, items, tail } => {
+        LoweredStep::List { value, items, tail, .. } => {
             if let Some(list) = list_ty(world, values, items, *tail) {
                 values.insert(*value, list);
             }
@@ -798,17 +798,23 @@ fn analyze_tail(
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
             let mut merged = None;
             for (outcome, refined_inputs) in reachability.outcome_inputs {
-                let body_id = dispatch
-                    .plan
-                    .outcomes
+                let edge = dispatch.outcome(outcome);
+                let arm_entry = edge.target;
+                let params = edge
+                    .arguments
                     .iter()
-                    .find(|candidate| candidate.outcome == outcome)
-                    .expect("reachable dispatch outcome should have an arm")
-                    .body_id;
-                let arm_entry = *dispatch
-                    .arm_entries
-                    .get(body_id as usize)
-                    .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
+                    .map(|argument| {
+                        (
+                            argument.parameter,
+                            super::super::dispatch_reachability::project_subject(
+                                world.types_mut(),
+                                &dispatch.plan,
+                                &refined_inputs,
+                                argument.subject,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 let mut refined_values = values.clone();
                 for (input, ty) in inputs.iter().copied().zip(refined_inputs) {
                     refined_values.insert(input, ty);
@@ -819,7 +825,7 @@ fn analyze_tail(
                     entries,
                     arm_entry,
                     &refined_values,
-                    &[],
+                    &params,
                     reachable_entries,
                     value_types,
                     calls,
@@ -849,18 +855,33 @@ fn analyze_tail(
             // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
             let mut merged = None;
-            for clause in &receive.clauses {
-                let clause_entry = &entries[clause.entry.as_u32() as usize];
-                let clause_params = clause_entry
-                    .params
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
+            for (outcome, refined_inputs) in reachability.outcome_inputs {
+                let edge = receive
+                    .outcomes
                     .iter()
-                    .map(|param| (*param, any))
+                    .find(|edge| edge.outcome == outcome)
+                    .expect("winning receive edge");
+                let clause_params = edge
+                    .arguments
+                    .iter()
+                    .map(|argument| {
+                        (
+                            argument.parameter,
+                            super::super::dispatch_reachability::project_subject(
+                                world.types_mut(),
+                                &receive.dispatch,
+                                &refined_inputs,
+                                argument.subject,
+                            ),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let clause_ty = analyze_branch(
                     world,
                     tel,
                     entries,
-                    clause.entry,
+                    edge.target,
                     values,
                     &clause_params,
                     reachable_entries,

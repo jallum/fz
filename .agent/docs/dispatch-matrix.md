@@ -1105,7 +1105,7 @@ projected outcome-closure payload for the winning clause body; a miss outcome is
 
 Compiler2 semantic reachability is another consumer, not another dispatch
 model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
-against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+against root input `Ty` rows and walks the plan's flat subject graph to
 derive every tested projection. It never stores types by `SubjectId` and never
 adds type/domain policy to this generic module. Before traversal, a runtime
 envelope replaces bare inference templates in positive, recursively inspectable

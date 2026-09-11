@@ -18,8 +18,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternGuardExpr, PatternRow, PatternSubjectRef,
-    SourcePatternError, SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
+    PatternBodyId, PatternDispatchError, PatternGuardDispatch, PatternRow, PatternSubjectRef, SourcePatternError,
+    SourcePatternRows, guard_dispatch_from_surface, pattern_dispatch_from_source_with_resolver,
 };
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -176,12 +176,9 @@ pub(super) fn plan_entry_dispatch(
         world,
         namespace,
         owner: source.owner_module,
-        guard: |world: &mut World, name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
+        guard: |world: &mut World, name: &CallableName, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, name, arity);
-            Ok(Some(PatternGuardExpr::Dispatch {
-                inputs: args,
-                dispatch: Box::new(world.guard_dispatch(callee)),
-            }))
+            Ok(Some(world.guard_dispatch(callee)))
         },
     };
     let plan = pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver)
@@ -268,13 +265,10 @@ fn build_guard_dispatch(
         world,
         namespace,
         owner: source.owner_module,
-        guard: |world: &mut World, name: &CallableName, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
+        guard: |world: &mut World, name: &CallableName, arity: usize| {
             let callee = resolve_guard_callee_checked(world, namespace, name, arity);
             let dispatch = build_guard_dispatch(world, callee, cache, stack)?;
-            Ok(Some(PatternGuardExpr::Dispatch {
-                inputs: args,
-                dispatch: Box::new(dispatch),
-            }))
+            Ok(Some(dispatch))
         },
     };
     let dispatch = guard_dispatch_from_surface(&surface, &mut resolver)?;

@@ -104,6 +104,10 @@ pub fn deep_copy_any_value(
         }
         ValueKind::LIST => {
             if let Some(&dp) = forwarding.get(&sp) {
+                let shared = AnyValueRef::from_heap_object(ValueKind::LIST, dp).expect("copied list ref");
+                dst_heap
+                    .mark_published_ref_aliased(shared)
+                    .expect("receiver-owned list sharing");
                 return AnyValue::heap_ptr(dp, ValueKind::LIST);
             }
             let bits = dst_heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
@@ -125,6 +129,7 @@ pub fn deep_copy_any_value(
                     forwarding,
                 )
             };
+            dst_heap.publish_contained_parts(new_head.raw(), new_head.kind());
             unsafe {
                 write(
                     dp as *mut ListCons,
@@ -214,6 +219,7 @@ fn deep_copy_strict_closure(
         } else {
             cv
         };
+        dst_heap.publish_contained_parts(copied.raw(), copied.kind());
         unsafe { closure_capture_set(dp as *const u8, i, copied) };
     }
     AnyValue::heap_ptr(dp, ValueKind::CLOSURE)
@@ -240,6 +246,7 @@ fn deep_copy_strict_struct(
         } else {
             child
         };
+        dst_heap.publish_contained_parts(copied.raw(), copied.kind());
         unsafe { dst_heap.write_field_slot(dp, f.offset, copied) };
     }
     for f in &schema.fields {

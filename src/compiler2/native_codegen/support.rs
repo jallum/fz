@@ -12,23 +12,6 @@ use std::collections::HashMap;
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-pub(crate) fn mark_retained_call_args_as_published<M: Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    captured: &[Var],
-) {
-    for arg in args {
-        if !captured.contains(arg) {
-            continue;
-        }
-        let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
-            continue;
-        };
-        let _ = body.mark_published_ref_aliased(value_ref);
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum ListTailBits {
     Empty,
@@ -50,19 +33,27 @@ pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     }
 }
 
-pub(crate) fn emit_reusable_cons_or_alloc<M: Module>(
+pub(crate) fn emit_list_retention_or_alloc<M: Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     tail: ListTailBits,
+    retention: crate::fz_ir::ListRetention<Var>,
 ) -> Option<ir::Value> {
-    let source_cons = body.reusable_cons_source(head)?;
+    let source_cons = retention.source;
     let source_ref = body.any_ref_for_var(var_env, source_cons.0);
     let head_value = binding_for_var(var_env, head.0);
+    let tail_ref = body.list_tail_ref_word(tail);
+    let rewrite = body.b.ins().iconst(
+        types::I64,
+        i64::from(retention.permission == crate::fz_ir::ListRewritePermission::Rewrite),
+    );
+    if let CodegenValue::AnyRef(head_ref) = head_value {
+        return Some(body.list_reuse_or_cons_ref(source_ref, head_ref, tail_ref, rewrite));
+    }
     let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;
     let head_kind = body.b.ins().iconst(types::I64, head_kind.tag() as i64);
-    let tail_ref = body.list_tail_ref_word(tail);
-    Some(body.list_reuse_or_cons_parts(source_ref, head_raw, head_kind, tail_ref))
+    Some(body.list_reuse_or_cons_parts(source_ref, head_raw, head_kind, tail_ref, rewrite))
 }
 
 pub(crate) fn value_raw_kind_parts<M: Module>(

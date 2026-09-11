@@ -1467,8 +1467,8 @@ fn collect_reachable_entries(
             collect_reachable_entries(entries, *else_entry, reachable_entries, order, out);
         }
         LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                collect_reachable_entries(entries, *arm_entry, reachable_entries, order, out);
+            for edge in &dispatch.outcomes {
+                collect_reachable_entries(entries, edge.target, reachable_entries, order, out);
             }
             collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
         }
@@ -1476,8 +1476,8 @@ fn collect_reachable_entries(
             if let super::super::body::ControlDestination::Deliver(target) = &receive.dest {
                 collect_reachable_entries(entries, *target, reachable_entries, order, out);
             }
-            for clause in &receive.clauses {
-                collect_reachable_entries(entries, clause.entry, reachable_entries, order, out);
+            for clause in &receive.outcomes {
+                collect_reachable_entries(entries, clause.target, reachable_entries, order, out);
             }
             if let Some(after) = &receive.after {
                 collect_reachable_entries(entries, after.entry, reachable_entries, order, out);
@@ -1522,8 +1522,8 @@ fn reindex_entries(
                 *else_entry = ids[else_entry];
             }
             LoweredTail::Dispatch { dispatch, .. } => {
-                for arm_entry in &mut dispatch.arm_entries {
-                    *arm_entry = ids[arm_entry];
+                for edge in &mut dispatch.outcomes {
+                    edge.target = ids[&edge.target];
                 }
                 dispatch.miss_entry = ids[&dispatch.miss_entry];
             }
@@ -1531,8 +1531,8 @@ fn reindex_entries(
                 if let super::super::body::ControlDestination::Deliver(target) = &mut receive.dest {
                     *target = ids[target];
                 }
-                for clause in &mut receive.clauses {
-                    clause.entry = ids[&clause.entry];
+                for clause in &mut receive.outcomes {
+                    clause.target = ids[&clause.target];
                 }
                 if let Some(after) = &mut receive.after {
                     after.entry = ids[&after.entry];

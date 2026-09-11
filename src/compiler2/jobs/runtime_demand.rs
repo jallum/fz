@@ -1257,14 +1257,14 @@ fn collect_entry_live_demands(
             for value in bindings.pinned.iter().chain(bindings.prepared.iter()) {
                 note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
             }
-            for arm_entry in &dispatch.arm_entries {
+            for edge in &dispatch.outcomes {
                 merge_live_demands(
                     &mut live,
                     collect_entry_external_demands(
                         types,
                         executable,
                         entries,
-                        *arm_entry,
+                        edge.target,
                         outgoing_demand.clone(),
                         facts,
                         demands,
@@ -1294,14 +1294,14 @@ fn collect_entry_live_demands(
             for value in receive.bindings.pinned.iter().chain(receive.bindings.prepared.iter()) {
                 note_live_demand(out, &mut live, *value, RuntimeDemand::whole());
             }
-            for clause in &receive.clauses {
+            for clause in &receive.outcomes {
                 merge_live_demands(
                     &mut live,
                     collect_entry_external_demands(
                         types,
                         executable,
                         entries,
-                        clause.entry,
+                        clause.target,
                         outgoing_demand.clone(),
                         facts,
                         demands,
@@ -1328,6 +1328,19 @@ fn collect_entry_live_demands(
                         callable_flows,
                     ),
                 );
+            }
+            for target in receive
+                .outcomes
+                .iter()
+                .map(|edge| edge.target)
+                .chain(receive.after.iter().map(|after| after.entry))
+            {
+                let shared = entries[target.as_u32() as usize]
+                    .captures
+                    .iter()
+                    .map(|capture| live.get(capture).cloned().unwrap_or_else(RuntimeDemand::ignore))
+                    .collect::<Vec<_>>();
+                record_entry_capture_demands(out, target, &shared);
             }
         }
         LoweredTail::Halt { .. } => {}
@@ -1478,11 +1491,14 @@ fn step_value_depends_on_callsite_return(
 ) -> bool {
     let mut depends = |source| value_depends_on_callsite_return_inner(facts, source, seen);
     match step {
-        LoweredStep::Tuple { value: defined, items } if *defined == value => items.iter().copied().any(depends),
+        LoweredStep::Tuple { value: defined, items } if *defined == value => {
+            items.iter().map(|item| item.value).any(depends)
+        }
         LoweredStep::List {
             value: defined,
             items,
             tail,
+            ..
         } if *defined == value => items.iter().copied().any(&mut depends) || tail.is_some_and(depends),
         LoweredStep::Map {
             value: defined,
@@ -1640,26 +1656,31 @@ fn propagate_steps_reverse(
                         ShapeDemand::Ignore => {}
                         ShapeDemand::TupleFields(fields) if fields.len() <= items.len() => {
                             for (item, demand) in items.iter().zip(fields) {
-                                let demand = boundary_value_flow_demand(facts, callable_flows, *item, demand);
-                                note_live_demand(out, live, *item, demand);
+                                let demand = boundary_value_flow_demand(facts, callable_flows, item.value, demand);
+                                note_live_demand(out, live, item.value, demand);
                             }
                         }
                         _ => {
                             for item in items {
-                                let demand =
-                                    boundary_value_flow_demand(facts, callable_flows, *item, RuntimeDemand::whole());
-                                note_live_demand(out, live, *item, demand);
+                                let demand = boundary_value_flow_demand(
+                                    facts,
+                                    callable_flows,
+                                    item.value,
+                                    RuntimeDemand::whole(),
+                                );
+                                note_live_demand(out, live, item.value, demand);
                             }
                         }
                     }
                 } else {
                     for item in items {
-                        let demand = boundary_value_flow_demand(facts, callable_flows, *item, RuntimeDemand::whole());
-                        note_live_demand(out, live, *item, demand);
+                        let demand =
+                            boundary_value_flow_demand(facts, callable_flows, item.value, RuntimeDemand::whole());
+                        note_live_demand(out, live, item.value, demand);
                     }
                 }
             }
-            LoweredStep::List { value, items, tail } => {
+            LoweredStep::List { value, items, tail, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for item in items {
                         let demand = boundary_value_flow_demand(facts, callable_flows, *item, RuntimeDemand::whole());
@@ -2673,7 +2694,8 @@ mod tests {
             origin: ControlEntryOrigin::Clause,
             params: Vec::new(),
             captures: Vec::new(),
-            reusable_cons_captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
             steps: Vec::new(),
             tail,
         };

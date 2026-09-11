@@ -56,7 +56,7 @@ pub fn cheney_trace_list(
             copied_objects,
             stats,
         );
-        cons.set_tail_bits(tail.heap_object_word().expect("forwarded list tail"));
+        cons.relocate_tail_for_gc(tail.heap_object_word().expect("forwarded list tail"));
     }
 }
 

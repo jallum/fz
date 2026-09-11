@@ -1,0 +1,12 @@
+#---
+# purpose: an impossible map clause contributes no runtime value requirement
+#---
+fn metadata(), do: %{__fz_local__: 42}
+
+fn main() do
+  result = case metadata() do
+    %{__fz_span__: _} -> 0
+    _ -> 42
+  end
+  dbg(result)
+end

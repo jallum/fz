@@ -1,7 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::fz_ir::{Block, FnIr, PhysicalCapability, SourceInfo, Stmt, Term, Var};
+use crate::fz_ir::{Block, FnIr, SourceInfo, Stmt, Term};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
 use crate::types::{ClosureTypes, Types};
@@ -121,7 +121,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
-        body.cache.reusable_cons_sources = reusable_cons_sources(f);
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
@@ -248,13 +247,4 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     drop(body);
     b.finalize();
     Ok(())
-}
-
-fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
-    f.physical_capabilities
-        .iter()
-        .map(|fact| match fact.capability {
-            PhysicalCapability::ReusableConsCell { rebuilt_head } => (rebuilt_head.0, fact.source),
-        })
-        .collect()
 }
