@@ -12,11 +12,15 @@
     {
       "text": "Implemented in 08657be34. Empty patterns now have one boundary contract across the String surface: index_of/2 reports the first zero-width match at byte offset 0, contains?/2 therefore succeeds, count/2 returns String.length/1 + 1, split/2 emits the leading/trailing empty binaries around fz graphemes, and replace/3 inherits exactly that split boundary. Removed the old split zero-size no-match clause and updated module/function docs, including the existing codepoint-vs-UAX-29 grapheme seam. Added an Elixir-oracled fixture for empty, ASCII, multibyte, and non-Latin subjects plus direct fz-only index assertions; proven red on interp/run/build before implementation. Final green: oracle registry, adjacent String surface, full fixture matrix 712/712, compiler library 2018 passed/6 known ignored, runtime 260/260, CLI 30/30, doctests, AOT integration, clippy -D warnings, fmt, diff check, and commit hook. Adjacent non-progressing replace_leading/3 and replace_trailing/3 empty-match behavior was board-checked and recorded separately as fz-5xp.106.",
       "timestamp": "2026-09-11T21:53:53Z"
+    },
+    {
+      "text": "Draft PR: https://github.com/jallum/fz/pull/136 (stacked on #135).",
+      "timestamp": "2026-09-11T21:54:56Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] String.contains?/2 and split/2 disagree with Elixir on an empty pattern",
   "type": "task",
-  "updated_at": "2026-09-11T21:53:54Z"
+  "updated_at": "2026-09-11T21:54:56Z"
 }
