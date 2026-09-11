@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-11T14:33:30Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Json.encode! copies most control bytes into invalid JSON strings",
   "type": "bug",
-  "updated_at": "2026-09-11T14:33:30Z"
+  "updated_at": "2026-09-11T15:24:15Z"
 }
