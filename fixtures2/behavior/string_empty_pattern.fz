@@ -1,0 +1,39 @@
+#---
+# purpose: "an empty String pattern matches at every grapheme boundary, checked against Elixir"
+# oracle: oracle.exs
+#---
+#
+# # string_empty_pattern
+#
+# A zero-width string pattern still matches. It occurs before the first
+# grapheme, between adjacent graphemes, and after the last one. That single
+# rule owns the related String behavior:
+#
+#   * `contains?/2` sees a match even in an empty subject;
+#   * `index_of/2`, fz's byte-offset search helper, reports its first match at 0;
+#   * `count/2` sees one more boundary than there are graphemes;
+#   * `split/2` keeps the text between every pair of boundaries; and
+#   * `replace/3`, built from `split/2`, inserts at each boundary.
+#
+# fz's documented grapheme seam is one codepoint, not UAX #29. These examples
+# therefore include ASCII, empty, multibyte, and non-Latin subjects without a
+# combining sequence: they are exactly in the part of the contract fz and
+# Elixir share today.
+def main() do
+  assert(String.index_of("hello", "") == 0, "the first zero-width match is at byte offset 0")
+  assert(String.index_of("", "") == 0, "the empty subject has one zero-width match")
+
+  dbg(String.contains?("hello", ""))
+  dbg(String.contains?("", ""))
+  dbg(String.count("hello", ""))
+  dbg(String.count("", ""))
+  dbg(String.count("é", ""))
+  dbg(String.split("hello", ""))
+  dbg(String.split("", ""))
+  dbg(String.split("é", ""))
+  dbg(String.split("日本", ""))
+  dbg(String.replace("hello", "", "-"))
+  dbg(String.replace("", "", "-"))
+  dbg(String.replace("é", "", "-"))
+  dbg(String.replace("hello", "", ""))
+end
