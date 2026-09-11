@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-11T20:22:19Z",
+  "description": "A clean worktree gained an untracked 947856-byte Mach-O AOT executable named `foo` at the repository root while `cargo test --test fixture_matrix` and `cargo test --workspace --lib` ran concurrently. The same overlap caused six 20-second fixture subprocess timeouts. Moving the exact artifact aside and rerunning `aot_variadic_open`, all 30 `fz2_cli` tests, and the full workspace library suite individually did not recreate it; the full fixture matrix also passes when run alone. Reproduce the overlapping-gate case, identify the child-process/output ownership path, and make concurrent or timed-out gates leave the worktree clean. Add a regression that observes artifact ownership/cleanup rather than relying on a post-run manual check.",
+  "id": "fz-5xp.105",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "Concurrent full gates can leak a repo-root foo executable",
+  "type": "bug",
+  "updated_at": "2026-09-11T20:22:19Z"
+}
