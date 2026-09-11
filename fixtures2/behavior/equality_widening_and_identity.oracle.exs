@@ -11,6 +11,8 @@ defmodule M do
 
     IO.inspect(pinned_against(one, one_float))
     IO.inspect(pinned_against(one_float, one_float))
+    IO.inspect(pinned_self(one))
+    IO.inspect(pinned_origin_lists())
 
     IO.inspect({Enum.member?([1, 2, 3], 1.0), Enum.member?([1.0], 1), Enum.member?([1, 2, 3], 2)})
     IO.inspect({[1, 2, 3] -- [1.0], [1, 2, 3] -- [2]})
@@ -42,6 +44,25 @@ defmodule M do
       ^pin -> :same
       _other -> :different
     end
+  end
+
+  defp pinned_self(value) do
+    ^value = value
+    value
+  end
+
+  defp pinned_origin_lists do
+    first = [1, 2]
+    second = [1, 2]
+    ^first = second
+
+    changed =
+      case first do
+        [head | _tail] -> [head | [9]]
+        _other -> []
+      end
+
+    {changed, second}
   end
 
   defp literal(1), do: :int_one

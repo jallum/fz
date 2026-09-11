@@ -28,6 +28,48 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 
+#[test]
+fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
+    use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = compiler.submit_code(CodeSubmission {
+        name: Some("equality_widening_and_identity.fz".into()),
+        text: include_str!("../../fixtures2/behavior/equality_widening_and_identity.fz").into(),
+    });
+    assert_resolved(compiler.drive(), "source indexing");
+    compiler.demand(Job::ScopeCode(source));
+    assert_resolved(compiler.drive(), "function identities");
+    let function = function_id(&functions, "pinned_origin_lists", 0);
+    compiler.demand(Job::LowerFunction(function));
+    assert_resolved(compiler.drive(), "pinned constraint body");
+
+    let body = lowered_body(&bodies, function);
+    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
+    let LoweredBody::Clauses { entries, .. } = &body else {
+        panic!("clause body")
+    };
+    let (source, value) = entries
+        .iter()
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| match step {
+            LoweredStep::AssertSame { source, value } => Some((*source, *value)),
+            _ => None,
+        })
+        .expect("pinned equality constraint");
+
+    assert_ne!(source, value, "the equal lists are distinct construction values");
+    assert!(
+        !origins.contains_key(&source) && !origins.contains_key(&value),
+        "equality neither defines a value nor aliases independently allocated operands"
+    );
+}
+
 fn module_name(text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).unwrap()
 }

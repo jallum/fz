@@ -2,6 +2,8 @@
 {true, false, true, true, false}
 :different
 :same
+1
+{[1, 9], [1, 2]}
 {false, false, true}
 {[1, 2, 3], [1, 3]}
 {true, true, true}
