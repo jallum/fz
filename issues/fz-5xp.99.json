@@ -12,11 +12,15 @@
     {
       "text": "Implemented as 2459760d4. Json.escape/2 now emits JSON short escapes for backspace, tab, newline, form feed, and carriage return; every other C0 byte uses one uppercase \\\\u00XX renderer, while the existing final clause remains the ordinary-byte path. Values and object keys retain one authority through encode!/1. Added an Elixir-oracled fixture covering all 32 control bytes plus space, quote, backslash, and an ordinary byte in both value and key positions across interp/JIT/AOT; updated encode!/1 docs. Proven red before implementation on all three doors. Final green: cargo test --test fixture_matrix (688), cargo test --workspace --lib (2018 + 257 passed; 6 ignored), cargo test --workspace --doc, cargo test --test fz2_cli (30), cargo test --test aot_variadic_open (1), cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, git diff --check, and pre-commit gates. Follow-ups found and filed after checking the board: fz-5xp.100 for non-UTF-8 byte-aligned binaries and fz-5xp.101 for a binary-literal bitstring segment shifting a following call result carrier.",
       "timestamp": "2026-09-11T16:36:07Z"
+    },
+    {
+      "text": "Draft PR #131: https://github.com/jallum/fz/pull/131. Submitted with gh stack as the top of stack #130, based on fz-5xp.7 PR #129.",
+      "timestamp": "2026-09-11T16:39:01Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Json.encode! copies most control bytes into invalid JSON strings",
   "type": "bug",
-  "updated_at": "2026-09-11T16:36:20Z"
+  "updated_at": "2026-09-11T16:39:01Z"
 }
