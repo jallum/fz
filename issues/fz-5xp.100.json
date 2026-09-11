@@ -7,9 +7,15 @@
   "id": "fz-5xp.100",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Implemented as 7446a4fb9. Json.encode!/1 now sends every binary value through Utf8.from_bytes/1 and encodes only the branded success value; binary object keys retain the same path through encode!/1. Invalid byte-aligned binaries and partial bitstrings now halt uniformly with {:json_encode, :invalid_utf8, value}. Added Elixir-asserted abort fixtures for invalid values and keys across interp/JIT/AOT, updated the prior non-byte-aligned pin, the Json contract, and negative-oracle documentation. Proven red before implementation on all six value/key doors. Final green: cargo test --test fixture_matrix (694), cargo test --workspace --lib (2018 + 257 passed; 6 ignored), cargo test --workspace --doc, cargo test --test fz2_cli (30), cargo test --test aot_variadic_open (1), cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --check, git diff --check, and pre-commit gates. Dogfooding exposed the symmetric decoder bug; after a board search it was reproduced against Elixir and filed as fz-5xp.102.",
+      "timestamp": "2026-09-11T17:00:18Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Json.encode! emits invalid JSON for a byte-aligned non-UTF-8 binary",
   "type": "bug",
-  "updated_at": "2026-09-11T16:45:13Z"
+  "updated_at": "2026-09-11T17:00:18Z"
 }
