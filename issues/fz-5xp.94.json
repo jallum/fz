@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-07T22:08:38Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "[BUG] Json.encode! emits invalid JSON for a non-binary map key and halts without a message for an atom",
   "type": "task",
-  "updated_at": "2026-09-08T20:21:09Z"
+  "updated_at": "2026-09-11T14:28:28Z"
 }
