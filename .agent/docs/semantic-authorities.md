@@ -222,6 +222,14 @@ a branded codepoint or the original suffix beginning at the offending byte.
 Parsers consume that suffix to recover a source offset. They do not carry a
 second UTF-8 table or validate a whole document before its syntax is parsed.
 
+**UTF-8 scalar encoding** — owner `encode_utf8` (`runtime/src/bitstr.rs`),
+reached by an fz `<<codepoint :: utf8>>` segment. `Utf8.from_codepoint/1` is
+the checked public constructor: it excludes negatives, the UTF-16 surrogate
+hole, and values above U+10FFFF before invoking that segment, then brands the
+result. A format parser such as `Json` owns its format-specific scalar syntax
+(including joining a UTF-16 surrogate pair) and hands the resulting integer to
+this constructor; it does not carry another UTF-8 encoder.
+
 **Text** — `String` (`lib/string.fz`) is plain fz over
 binaries, and declares three primitives of its own: `to_atom/1`, which reaches
 the node's atom table, and `fz_binary_upcase`/`fz_binary_downcase`. It does not

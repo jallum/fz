@@ -1,0 +1,16 @@
+{:ok, "😀"}
+{:ok, "𐀀"}
+{:ok, "􏿿"}
+{:ok, %{"😀" => 1}}
+{:ok, "퟿"}
+{:ok, ""}
+{:error, {:unexpected_end, 8}}
+{:error, {:unexpected_sequence, 1, "\\uD83D\\u0041"}}
+{:error, {:unexpected_sequence, 1, "\\uD83D\\uD83D"}}
+{:error, {:unexpected_sequence, 1, "\\uD83D\\uZZZZ"}}
+{:error, {:unexpected_end, 9}}
+{:error, {:unexpected_sequence, 1, "\\uDE00"}}
+{:error, {:unexpected_sequence, 2, "\\uDE00"}}
+{:error, {:unexpected_end, 12}}
+{:error, {:unexpected_sequence, 2, "\\uDE00"}}
+{:error, {:unexpected_sequence, 2, "\\uD83D\\u0041"}}
