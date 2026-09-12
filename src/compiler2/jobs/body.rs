@@ -1119,7 +1119,11 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
                     .iter()
                     .map(|item| self.lower(item))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.lower_atom_node("{}", values, expr.span)
+                if values.len() == 2 {
+                    Ok(self.push_tuple(values))
+                } else {
+                    self.lower_atom_node("{}", values, expr.span)
+                }
             }
             Expr::Map(entries) => {
                 let values = entries
