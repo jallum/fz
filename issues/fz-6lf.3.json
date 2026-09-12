@@ -15,11 +15,15 @@
     {
       "text": "Blocked by fz-6lf.7: the non-blessed fixture-matrix run exposed a real regression in the general `call(args), do:` grammar. The migration will resume after that parser authority is repaired and reviewed.",
       "timestamp": "2026-09-12T18:21:55Z"
+    },
+    {
+      "text": "The temporary fz-6lf.7 split was collapsed into fz-6lf.2 because the whitespace-sensitive call grammar and its canonical test-probe syntax were one atomic green step. fz-6lf.3 is unblocked and resumed on the corrected .2 base.",
+      "timestamp": "2026-09-12T18:50:36Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Migrate the complete FZ corpus and public language contract to def/defp",
   "type": "task",
-  "updated_at": "2026-09-12T18:28:55Z"
+  "updated_at": "2026-09-12T18:50:36Z"
 }
