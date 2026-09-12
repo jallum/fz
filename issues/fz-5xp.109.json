@@ -11,9 +11,15 @@
   "id": "fz-5xp.109",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "The full matrix found enum_reduce_suspend pinning allocator-order function ID 125; the only change under this branch is renumbering to 127, with behavior and allocation counters unchanged. fz-5xp.110 owns the fixture repair and now blocks this ticket so its CI must be green first.",
+      "timestamp": "2026-09-12T15:01:53Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Enum.zip/1 needs runtime-sized tuple construction",
   "type": "task",
-  "updated_at": "2026-09-12T15:01:52Z"
+  "updated_at": "2026-09-12T15:01:53Z"
 }
