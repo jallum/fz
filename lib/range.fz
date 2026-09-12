@@ -141,8 +141,8 @@ defmodule Range do
   and returns this function to be called with `start`, `amount`, and
   `stride`.
 
-  This is protocol plumbing, not a function to call directly, and
-  fz's `Enum` module does not yet have a function that reaches it.
+  This is protocol plumbing, not a function to call directly. It is
+  reached through `Enum.slice/2` and `Enum.slice/3`.
 
   ## Examples
 
