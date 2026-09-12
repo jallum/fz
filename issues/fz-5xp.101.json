@@ -12,11 +12,15 @@
     {
       "text": "Implemented in e820bbee1. The ticket's carrier-shift hypothesis was disproved by the canonical backend signal: digit/1 still returned and bound an integer, but the preceding unsuffixed \"x\" field was emitted as Integer while its settled value/carrier was binary. Constant-only bitstrings had hidden the bug by folding before runtime construction. The final quoted-source decoder now reifies a raw binary literal field as BitType::Binary and shares the binary-literal spec authority already used by patterns; construction consumes the whole source binary, while patterns retain their byte-length boundary. Backend and all runtime doors remain consumers, with no compensating special case. Added a decoded-surface unit pin, a three-door behavioral fixture with controls and one/multiple preceding literals, and semantic-authority documentation. Proven red on interp/run/build and in the decoded-surface test before implementation. Final green: canonical backend fields Binary/Integer, full fixture matrix 715/715, compiler library 2019 passed/6 known ignored, runtime 260/260, CLI 30/30, doctests, AOT integration, clippy -D warnings, fmt, diff check, and commit hook. Supporting PR #136 was green before this commit/push boundary. Adjacent literal-string size-modifier validation was board-checked and recorded separately as fz-5xp.107.",
       "timestamp": "2026-09-12T13:06:28Z"
+    },
+    {
+      "text": "Draft PR: https://github.com/jallum/fz/pull/137 (stacked on #136).",
+      "timestamp": "2026-09-12T13:08:10Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "A binary-literal bitstring segment shifts a following call result into the wrong carrier",
   "type": "bug",
-  "updated_at": "2026-09-12T13:06:29Z"
+  "updated_at": "2026-09-12T13:08:10Z"
 }
