@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-5xp.80"
+    "fz-5xp.80",
+    "fz-5xp.93"
   ],
   "blocks": [
     "fz-5xp.83"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Enum: complete the API up to what fz's capabilities allow",
   "type": "task",
-  "updated_at": "2026-09-07T20:05:01Z"
+  "updated_at": "2026-09-12T13:57:47Z"
 }
