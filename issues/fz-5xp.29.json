@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-5xp.30"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-5xp.32"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Absorbed into fz-5xp.30",
   "type": "task",
-  "updated_at": "2026-09-12T15:38:17Z"
+  "updated_at": "2026-09-12T15:38:18Z"
 }
