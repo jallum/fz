@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-6lf.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-6lf",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Preserve comma-do attachment after parenthesized macro calls",
   "type": "bug",
-  "updated_at": "2026-09-12T18:21:54Z"
+  "updated_at": "2026-09-12T18:22:42Z"
 }
