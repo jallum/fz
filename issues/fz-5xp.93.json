@@ -19,11 +19,15 @@
     {
       "text": "Completed in 008a1e1f0. Added public Enum.slice/2 and slice/3 with direct list traversal, the existing unary Map slicing callback, the existing ternary Range slicing callback, and a generic Enumerable.to_list fallback. Negative indexes are normalized after counting; zero amounts and empty or out-of-bounds windows return an empty list; negative amounts and nonpositive range steps abort. The oracle fixture covers lists, maps, ranges, positive and negative bounds, empty input, out-of-bounds starts, zero amounts, and overshooting strides on all three execution doors. Evidence: 724/724 fixture legs; 2020 compiler library tests passed with 6 ignored; 260/260 runtime; 30/30 CLI; workspace doctests; AOT variadic-open; clippy with warnings denied; fmt; diff check. Review also produced fz-5xp.108 for incorrect runtime clause selection when a guard reads a destructured struct field. The known direct-only callable transport limitation remains owned by fz-kdt.117; these protocol callbacks are consumed in the receiver-specific clause rather than transported through a helper.",
       "timestamp": "2026-09-12T14:40:50Z"
+    },
+    {
+      "text": "Draft PR: https://github.com/jallum/fz/pull/139 (stacked on #138).",
+      "timestamp": "2026-09-12T14:41:51Z"
     }
   ],
   "priority": 3,
   "status": "closed",
   "title": "Enumerable.slice/1 is surface nothing reaches",
   "type": "task",
-  "updated_at": "2026-09-12T14:40:51Z"
+  "updated_at": "2026-09-12T14:41:51Z"
 }
