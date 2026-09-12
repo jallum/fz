@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.69"
+  ],
   "blocks": [
     "fz-5xp.32",
     "fz-tfn.62"
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Give runtime intrinsics one typed declaration and semantic authority",
   "type": "task",
-  "updated_at": "2026-09-12T23:01:39Z"
+  "updated_at": "2026-09-12T23:01:48Z"
 }
