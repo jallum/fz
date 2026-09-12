@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-tfn.67"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "required_resume_transport_positions drops all but one callsite when several deliver into one resume entry",
   "type": "bug",
-  "updated_at": "2026-09-12T18:23:01Z"
+  "updated_at": "2026-09-12T18:24:49Z"
 }
