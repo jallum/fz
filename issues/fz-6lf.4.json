@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-6lf.3"
+  ],
   "blocks": [],
   "created": "2026-09-12T14:11:47Z",
   "description": "## Goal\nFinish the cutover by making the obsolete representation impossible. fn opens only anonymous functions; fnp has no token, macro, definition kind, contextual use, or maintained source spelling.\n\n## Deletions\n- Delete Tok::Fnp, its lexer keyword mapping, token payload encode/decode arms, tests, callable-name cases, and any frontdoor item dispatch.\n- Remove named Tok::Fn handling from top-level functions, protocol callbacks, and extern declarations while retaining Tok::Fn in expression prefix solely for `fn ... -\u003e ... end`.\n- Delete runtime macros fn/1 and fnp/1.\n- Remove fn/fnp from quoted definition-head recognition, clause grouping, reserved discovery, typed FunctionForm extraction/privacy, macro lookup identities, compiler-test helpers, fixture discovery, CLI wording, and docs.\n- Delete the definition-only operator-head/type-token machinery once corpus migration proves the generic expression grammar owns those heads.\n- Retire/supersede the unmerged fz-5xp.7 lexer-alias branch and PR #129; do not merge or preserve its Def/Defp token compatibility layer.\n\n## Diagnostics\nA named `fn foo(...)` must fail at the source boundary with a focused message that fn is anonymous-only and names def. A legacy `fnp foo(...)` must fail as an unknown/retired item macro with guidance to defp. These are rejection diagnostics, not compatibility parsing; they must not construct or publish a function. Pin diagnostic telemetry codes and spans on run, interp, and build.\n\n## Static proof\nThe removal census fails on any Def/Defp/Fnp token variant, `def`/`defp` lexer keyword mapping, fn/fnp definition macro, named-definition recognizer, `extern ... fn`, protocol callback fn, or non-negative named fn/fnp source. It separately proves anonymous fn still lexes and executes.\n\n## Verification\nRun cargo fmt --check; cargo check --all; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --lib; cargo test --workspace --doc; CLI and AOT integration tests; the full fixture matrix; compiler2 contract tests; Elixir oracle verification; and repository pre-commit gates. Warnings and unexpected golden changes are failures.\n\n## Documentation\nMake all agent and user guides describe the final design only: def/defp are ordinary macro-call identifiers, fn is anonymous syntax, privacy emerges at FunctionForm/interface publication, and when is general expression grammar. Remove migration scaffolding and temporary notes.\n\n## Acceptance\nThe epic output contract and static census pass, quicksort runs through every applicable path, private functions remain unexported, no legacy alias or lexer grammar survives, and every temporary affordance introduced by fz-6lf.2/.3 is gone.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete named fn/fnp grammar and the temporary dual surface",
   "type": "task",
-  "updated_at": "2026-09-12T14:11:47Z"
+  "updated_at": "2026-09-12T14:11:54Z"
 }
