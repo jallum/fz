@@ -23,7 +23,7 @@
 # program with the two statements swapped: at HEAD the published return
 # depended on which user was analysed first, so the pair is what says the
 # answer is the program's and not the schedule's.
-fn main() do
+def main() do
   dbg(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
   dbg(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
 end

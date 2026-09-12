@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   a = self()
   b = self()
   a == b

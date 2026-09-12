@@ -1,4 +1,4 @@
 defmodule M do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 end
-fn main(), do: dbg(M.double(7))
+def main(), do: dbg(M.double(7))

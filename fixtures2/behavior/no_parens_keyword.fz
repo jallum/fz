@@ -12,7 +12,7 @@
 # list to show the runtime shape (a list of `{key, value}` tuples). `oracle.exs`
 # is the Elixir twin; both print the same atoms and integers, so `expected.txt`
 # is owned by the oracle.
-fn run(a, opts) do
+def run(a, opts) do
   dbg(a)
   [{k1, v1}, {k2, v2}] = opts
   dbg(k1)
@@ -21,13 +21,13 @@ fn run(a, opts) do
   dbg(v2)
 end
 
-fn only_opts(opts) do
+def only_opts(opts) do
   [{k, v}] = opts
   dbg(k)
   dbg(v)
 end
 
-fn main() do
+def main() do
   run 1, b: 2, c: 3
   only_opts x: 9
 end

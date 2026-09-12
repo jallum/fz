@@ -39,7 +39,7 @@
 #   * How `dbg` QUOTES an atom: fz prints `:atom_3` and `:foo bar` where Elixir
 #     prints `:""` and `:"foo bar"` (fz-5xp.44). That is the renderer, not
 #     to_string, and this fixture avoids depending on it.
-fn main() do
+def main() do
   dbg(to_string(:hello))
   dbg(to_string(nil))
   dbg(to_string(:nil_is_not_nil))

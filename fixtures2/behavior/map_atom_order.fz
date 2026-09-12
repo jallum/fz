@@ -17,7 +17,7 @@
 # `Enum.sort/1` is deliberate: feeding it `Map.keys/1` would change merge-sort's
 # work-list shape when the bug is fixed and would confound comparator cost with
 # a different input order.
-fn main() do
+def main() do
   map = %{z: 1, a: 2, m: 3}
 
   dbg(Kernel.compare(:z, :a))

@@ -2,6 +2,6 @@
 # purpose: "Json.encode!/1 rejects values outside JSON's domain with an explicit panic on every path"
 # expect: abort
 #---
-fn main() do
+def main() do
   Json.encode!(:not_json)
 end

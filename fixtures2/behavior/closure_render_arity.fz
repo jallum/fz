@@ -8,7 +8,7 @@
 # the environment size cannot tell them apart. Their arities differ (0 and 2),
 # which is what Elixir's `#Function<.../arity>` reports and what `#fn<id/n>`
 # reports here.
-fn main() do
+def main() do
   xs = [1, 2, 3]
   total = Enum.reduce(xs, 0, fn (x, acc) -> x + acc end)
 

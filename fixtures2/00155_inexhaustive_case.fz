@@ -1,7 +1,7 @@
-fn f(v) do
+def f(v) do
   case v do
     0 -> :zero
     1 -> :one
   end
 end
-fn main(), do: f(7)
+def main(), do: f(7)

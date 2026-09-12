@@ -1,44 +1,44 @@
 #---
 # purpose: "List construction retention preserves duplicate, joined, input, and self-tail aliases"
 #---
-fn duplicate(xs) do
+def duplicate(xs) do
   [h | t] = xs
   first = [h | [9]]
   second = [h | t]
   {first, second, xs}
 end
 
-fn joined(flag, xs) do
+def joined(flag, xs) do
   ys = if flag, do: xs, else: []
   [h | _] = xs
   changed = [h | [9]]
   {ys, changed}
 end
 
-fn aliased_inputs(xs, ys) do
+def aliased_inputs(xs, ys) do
   [h | _] = xs
   changed = [h | [9]]
   {changed, ys}
 end
 
-fn prepend(xs) do
+def prepend(xs) do
   [h | _] = xs
   [h | xs]
 end
 
-fn rewrite(xs) do
+def rewrite(xs) do
   [h | _] = xs
   [h | [9]]
 end
 
-fn retained_call_alias(xs) do
+def retained_call_alias(xs) do
   case xs do
     [h | t] -> {rewrite(xs), [h | t]}
     _ -> {[], []}
   end
 end
 
-fn constructed_tail_alias() do
+def constructed_tail_alias() do
   tail = [2, 3]
   outer = [1 | tail]
   [_ | projected] = outer
@@ -47,7 +47,7 @@ fn constructed_tail_alias() do
   {tail, changed}
 end
 
-fn chained_retention_alias(xs) do
+def chained_retention_alias(xs) do
   [h | t] = xs
   retained = [h | t]
   [head | _] = retained
@@ -55,7 +55,7 @@ fn chained_retention_alias(xs) do
   {xs, changed}
 end
 
-fn main() do
+def main() do
   assert(duplicate([1, 2]) == {[1, 9], [1, 2], [1, 2]})
   assert(joined(true, [1, 2]) == {[1, 2], [1, 9]})
   xs = [1, 2]

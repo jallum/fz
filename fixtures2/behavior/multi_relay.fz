@@ -1,9 +1,9 @@
 #---
 # purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
 #---
-fn worker(), do: send(1, receive do x -> x * 2 end)
+def worker(), do: send(1, receive do x -> x * 2 end)
 
-fn main() do
+def main() do
   spawn(worker)
   spawn(worker)
   send(2, 10)

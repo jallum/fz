@@ -1,1 +1,1 @@
-fn main(), do: "hi"
+def main(), do: "hi"

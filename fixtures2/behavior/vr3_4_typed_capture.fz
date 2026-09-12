@@ -33,8 +33,8 @@
 # `tail` calling convention, taking captured_x as a typed block param.
 # Captures no longer live in a heap frame at all, so `fz_alloc_frame`
 # for k_3's frame is gone entirely.
-fn double(x) do x * 2 end
-fn use_x(x) do dbg(double(x) + x) end
-fn main() do
+def double(x) do x * 2 end
+def use_x(x) do dbg(double(x) + x) end
+def main() do
   use_x(7)
 end

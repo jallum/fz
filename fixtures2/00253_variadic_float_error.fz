@@ -1,2 +1,2 @@
-extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
-fn main() do libc::printf("%f", 1.5) end
+extern "C" def libc::printf(fmt :: cstring, ...) :: integer
+def main() do libc::printf("%f", 1.5) end

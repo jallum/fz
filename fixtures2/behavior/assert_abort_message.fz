@@ -9,6 +9,6 @@
 # aborts. The program exits nonzero on every path; the `expected.stderr` golden
 # pins that the message reaches stderr. This is the canonical example of the
 # expect-failure medium.
-fn main() do
+def main() do
   assert(1 == 2, "custom assertion message")
 end

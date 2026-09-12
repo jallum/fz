@@ -21,15 +21,15 @@ fn submissions_return_stable_owners_backed_by_exact_immutable_versions() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     let unnamed = compiler.submit_code(CodeSubmission {
         name: None,
-        text: "fn unnamed(), do: 1\n".into(),
+        text: "def unnamed(), do: 1\n".into(),
     });
     let named = compiler.submit_code(CodeSubmission {
         name: Some("named.fz".into()),
-        text: "fn named(), do: 2\n".into(),
+        text: "def named(), do: 2\n".into(),
     });
     let scoped_prelude = compiler.submit_scoped_prelude(CodeSubmission {
         name: Some("prelude:test.fz".into()),
-        text: "fn helper(), do: 3\n".into(),
+        text: "def helper(), do: 3\n".into(),
     });
 
     assert_ne!(unnamed, named);
@@ -46,16 +46,16 @@ fn submissions_return_stable_owners_backed_by_exact_immutable_versions() {
     let source_map = compiler.source_map();
     let source_map = source_map.borrow();
     assert_eq!(source_map.name(versions[0]), None);
-    assert_eq!(source_map.code(versions[0]).bytes.as_ref(), "fn unnamed(), do: 1\n");
+    assert_eq!(source_map.code(versions[0]).bytes.as_ref(), "def unnamed(), do: 1\n");
     assert_eq!(source_map.name(versions[1]), Some("named.fz"));
-    assert_eq!(source_map.code(versions[1]).bytes.as_ref(), "fn named(), do: 2\n");
+    assert_eq!(source_map.code(versions[1]).bytes.as_ref(), "def named(), do: 2\n");
     assert_eq!(source_map.name(versions[2]), Some("prelude:test.fz"));
-    assert_eq!(source_map.code(versions[2]).bytes.as_ref(), "fn helper(), do: 3\n");
+    assert_eq!(source_map.code(versions[2]).bytes.as_ref(), "def helper(), do: 3\n");
 }
 
 #[test]
 fn ordinary_quote_metadata_is_identical_in_interpreter_and_native_execution() {
-    let source = r#"fn main() do
+    let source = r#"def main() do
   {_, meta, _} = quote do: 40 + 2
   span = meta.__fz_span__
   span.source_version * 1000000 + span.start * 1000 + span.length
@@ -110,11 +110,11 @@ fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("rooted_recursive_membership.fz".into()),
-        text: "defmodule Cycle do\nfn first(n) do\n if n == 0, do: 42, else: second(n - 1)\nend\nfn second(n), do: first(n)\nend\n".into(),
+        text: "defmodule Cycle do\ndef first(n) do\n if n == 0, do: 42, else: second(n - 1)\nend\ndef second(n), do: first(n)\nend\n".into(),
     });
     compiler.submit_code(CodeSubmission {
         name: Some("rooted_recursive_main.fz".into()),
-        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+        text: "require Cycle\ndef main(), do: Cycle.first(2)\n".into(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -139,7 +139,7 @@ fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained
     assert!(recursive.iter().any(|body| body.key.activation.function == second));
     compiler.submit_code(CodeSubmission {
         name: Some("rooted_recursive_cut.fz".into()),
-        text: "fn main(), do: 7\n".into(),
+        text: "def main(), do: 7\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(7));
     let detached = compiler.retained_backend_program(root);
@@ -151,7 +151,7 @@ fn severing_the_only_recursive_entry_withdraws_the_cycle_and_reattaches_retained
     );
     compiler.submit_code(CodeSubmission {
         name: Some("rooted_recursive_reattach.fz".into()),
-        text: "require Cycle\nfn main(), do: Cycle.first(2)\n".into(),
+        text: "require Cycle\ndef main(), do: Cycle.first(2)\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
     let reattached = compiler.retained_backend_program(root);
@@ -174,7 +174,7 @@ fn reached_leaf_edit_preserves_unchanged_root_atom_allocations() {
     compiler.set_output(DbgCapture::new().sink());
     compiler.submit_code(CodeSubmission {
         name: Some("root_atom_sharing.fz".into()),
-        text: "fn left(), do: 1\nfn right(), do: :retained_atom\nfn main() do\n dbg(right())\n left()\nend\n".into(),
+        text: "def left(), do: 1\ndef right(), do: :retained_atom\ndef main() do\n dbg(right())\n left()\nend\n".into(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -191,7 +191,7 @@ fn reached_leaf_edit_preserves_unchanged_root_atom_allocations() {
         .unwrap();
     compiler.submit_code(CodeSubmission {
         name: Some("root_atom_leaf_edit.fz".into()),
-        text: "fn left(), do: 2\n".into(),
+        text: "def left(), do: 2\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(2));
     let changed = compiler.retained_backend_program(root);
@@ -237,7 +237,7 @@ fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
         .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
     compiler.submit_code(CodeSubmission {
         name: Some("backend_member_identity.fz".into()),
-        text: "fn aleaf(), do: 1\nfn left(), do: 1\nfn right(), do: zleaf()\nfn zleaf(), do: 41\nfn main(), do: left() + right()\n".into(),
+        text: "def aleaf(), do: 1\ndef left(), do: 1\ndef right(), do: zleaf()\ndef zleaf(), do: 41\ndef main(), do: left() + right()\n".into(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -279,8 +279,8 @@ fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
             .unwrap(),
     );
     for (text, leaf_present) in [
-        ("fn aleaf(), do: 1\nfn left(), do: aleaf()\n", true),
-        ("fn left(), do: 1\n", false),
+        ("def aleaf(), do: 1\ndef left(), do: aleaf()\n", true),
+        ("def left(), do: 1\n", false),
     ] {
         compiler.submit_code(CodeSubmission {
             name: Some("backend_member_sibling_edit.fz".into()),
@@ -333,7 +333,7 @@ fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
         .unwrap();
     compiler.submit_code(CodeSubmission {
         name: Some("backend_leaf_edit.fz".into()),
-        text: "fn zleaf(), do: 42\n".into(),
+        text: "def zleaf(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(43));
     let leaf_changed = compiler.retained_backend_program(root);
@@ -358,7 +358,7 @@ fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
     );
     compiler.submit_code(CodeSubmission {
         name: Some("backend_right_edit.fz".into()),
-        text: "fn right(), do: 43\n".into(),
+        text: "def right(), do: 43\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(44));
     let right_changed = compiler.retained_backend_program(root);
@@ -408,7 +408,7 @@ fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdraw
         .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
     compiler.submit_code(CodeSubmission {
         name: Some("backend_construction_identity.fz".into()),
-        text: "fn left(), do: 1\nfn right(), do: fn x -> x + 41 end\nfn main() do\n f = right()\n dbg(f)\n left() + f.(0)\nend\n".into(),
+        text: "def left(), do: 1\ndef right(), do: fn x -> x + 41 end\ndef main() do\n f = right()\n dbg(f)\n left() + f.(0)\nend\n".into(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -439,10 +439,10 @@ fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdraw
         .unwrap();
     for (text, added) in [
         (
-            "fn aleaf(), do: fn x -> x + 1 end\nfn left() do\n f = aleaf()\n dbg(f)\n f.(0)\nend\n",
+            "def aleaf(), do: fn x -> x + 1 end\ndef left() do\n f = aleaf()\n dbg(f)\n f.(0)\nend\n",
             true,
         ),
-        ("fn left(), do: 1\n", false),
+        ("def left(), do: 1\n", false),
     ] {
         compiler.submit_code(CodeSubmission {
             name: Some("backend_construction_sibling_edit.fz".into()),
@@ -515,7 +515,7 @@ fn compiler2_root_drive_timeout_reports_the_configured_limit() {
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_main.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -540,7 +540,7 @@ fn compiler2_drive_honors_the_configured_timeout() {
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_drive.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
 
     let outcome = compiler.drive();
@@ -1199,7 +1199,7 @@ fn env_in_function_body_resolves_via_namespace_splice() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("env_body.fz".to_string()),
-        text: "fn main(), do: __ENV__\n".to_string(),
+        text: "def main(), do: __ENV__\n".to_string(),
     });
     let _root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -1686,7 +1686,7 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_caller_elision.fz".to_string()),
-        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\nfn main(), do: inc(41)\n".to_string(),
+        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndef main(), do: inc(41)\n".to_string(),
     });
     let root = compiler.submit_root(super::RootSubmission {
         module_name: None,
@@ -1744,26 +1744,15 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
 }
 
 #[test]
-fn quicksort_compiles_when_only_named_definition_heads_change_to_def() {
-    let legacy = include_str!("../../fixtures2/behavior/quicksort.fz");
-    let source = legacy.replace("\nfn ", "\ndef ");
-    assert!(
-        !source.contains("\nfn "),
-        "the test must migrate every named definition"
-    );
-    let legacy_counts = drive_and_count_function_source_production("quicksort_fn_surface.fz", legacy);
-    let def_counts = drive_and_count_function_source_production("quicksort_def_surface.fz", &source);
+fn quicksort_compiles_through_definition_macros() {
+    let source = include_str!("../../fixtures2/behavior/quicksort.fz");
+    let (minted, stashed) = drive_and_count_function_source_production("quicksort_def_surface.fz", source);
 
-    assert_eq!(
-        def_counts.1, legacy_counts.1,
-        "the same FunctionSource population must be stashed"
+    assert!(minted > 0, "the def surface must mint reached quicksort functions");
+    assert!(
+        minted < stashed,
+        "the def surface must leave cold runtime definitions lazy: minted={minted}, stashed={stashed}"
     );
-    assert_eq!(
-        def_counts.0,
-        legacy_counts.0 + 1,
-        "the def surface should demand the same program plus its def/1 definition macro"
-    );
-    assert!(def_counts.0 > 0, "the comparison must exercise demanded functions");
 }
 
 #[test]

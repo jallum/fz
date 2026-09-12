@@ -9,16 +9,16 @@
 # semantic inputs, so the callee's ordinals must never leak into it: a 3-input
 # helper called from a 1-input clause used to make `interp` demand a semantic
 # input the caller does not have, while `run` and `build` answered correctly.
-fn ordered?(a, b, c), do: a <= b and b <= c
-fn between?(lo, hi, v), do: v >= lo and v <= hi
+def ordered?(a, b, c), do: a <= b and b <= c
+def between?(lo, hi, v), do: v >= lo and v <= hi
 
-fn kind(x, y) when ordered?(0, x, y), do: :rising
-fn kind(_x, _y), do: :other
+def kind(x, y) when ordered?(0, x, y), do: :rising
+def kind(_x, _y), do: :other
 
-fn band(v) when between?(1, 10, v), do: :low
-fn band(_v), do: :high
+def band(v) when between?(1, 10, v), do: :low
+def band(_v), do: :high
 
-fn main() do
+def main() do
   assert(kind(2, 5) == :rising, "a 3-input helper decides a 2-input clause")
   assert(kind(5, 2) == :other, "the wider helper can also miss")
   assert(band(4) == :low, "a 3-input helper decides a 1-input clause")

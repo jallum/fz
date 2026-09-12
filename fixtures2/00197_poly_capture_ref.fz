@@ -6,11 +6,11 @@
 #
 # Expected: main() : {{:ok, int}, {:ok, :right}}
 
-fn tagger(tag) do
+def tagger(tag) do
   fn (x) -> {tag, x} end
 end
 
-fn main() do
+def main() do
   f = tagger(:ok)
   {f.(1), f.(:right)}
 end

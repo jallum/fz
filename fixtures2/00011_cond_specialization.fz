@@ -1,5 +1,5 @@
 
-fn main() do
+def main() do
   cond do
     false -> dbg(:bad)
     2 + 2 == 4 -> dbg(:ok)

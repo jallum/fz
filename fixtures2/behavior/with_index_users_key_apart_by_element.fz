@@ -23,10 +23,10 @@
 # as retaining their independent element types.
 defmodule M do
   @spec strings([binary]) :: integer
-  fn strings(_xs), do: 1
+  def strings(_xs), do: 1
 end
 
-fn main() do
+def main() do
   dbg(Enum.with_index([["a"], ["b"]], fn (x, _index) -> M.strings(x) end))
   dbg(Enum.with_index([[1], [2]], fn (_x, index) -> index end))
 end

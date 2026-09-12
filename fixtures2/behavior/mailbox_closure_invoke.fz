@@ -13,7 +13,7 @@
 # The first invoke is the witness shape, inside the receive arm; the rest prove
 # control came back past the receive and that a mailbox-delivered callable can
 # be invoked more than once.
-fn main() do
+def main() do
   send(self(), fn (n) -> n + 1 end)
   send(self(), fn (n) -> n + 1 end)
   receive do

@@ -12,6 +12,6 @@
 # on every path. Nothing at runtime could tell the two values apart — this is a
 # TYPING verdict, which is exactly why the brand axis has to be brand-aware
 # while equality stays brand-blind.
-fn main() do
+def main() do
   dbg(Utf8.to_bytes(<<104, 105>>))
 end

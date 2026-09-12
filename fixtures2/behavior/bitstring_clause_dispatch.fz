@@ -12,7 +12,7 @@
 #
 #     native entry-dispatch lowering does not support bitstring tests yet
 #
-# So `fn parse(<<n, rest :: binary>>)` and `case s do <<b, _ :: binary>> -> ...`
+# So `def parse(<<n, rest :: binary>>)` and `case s do <<b, _ :: binary>> -> ...`
 # compiled on `interp` and failed on `run` and `build`, while an irrefutable
 # `<<a, b, rest :: binary>> = s` — which reads the same fields — worked
 # everywhere. This fixture pins the missing half on all three doors.
@@ -27,7 +27,7 @@
 #   * the same shapes in `case`, which reaches the same dispatch;
 #   * recursion over a binary, consuming it a byte at a time, which is the
 #     shape every text-processing function in the runtime library will take.
-fn main() do
+def main() do
   dbg(head_byte("hello"))
   dbg(head_byte(""))
   dbg(head_byte(:not_a_binary))
@@ -42,14 +42,14 @@ fn main() do
   dbg(byte_count("hello", 0))
 end
 
-fnp head_byte(<<b, rest :: binary>>), do: {b, rest}
-fnp head_byte(<<>>), do: :empty
-fnp head_byte(_other), do: :not_a_binary
+defp head_byte(<<b, rest :: binary>>), do: {b, rest}
+defp head_byte(<<>>), do: :empty
+defp head_byte(_other), do: :not_a_binary
 
-fnp framed(<<len, payload :: binary-size(len), rest :: binary>>), do: {len, payload, rest}
-fnp framed(_other), do: :unframed
+defp framed(<<len, payload :: binary-size(len), rest :: binary>>), do: {len, payload, rest}
+defp framed(_other), do: :unframed
 
-fnp first_two(bytes) do
+defp first_two(bytes) do
   case bytes do
     <<a, b, rest :: binary>> -> {a, b, rest}
     <<a>> -> {:one, a}
@@ -57,12 +57,12 @@ fnp first_two(bytes) do
   end
 end
 
-fnp words(<<>>, current, acc), do: reverse([current | acc], [])
-fnp words(<<32, rest :: binary>>, current, acc), do: words(rest, "", [current | acc])
-fnp words(<<c, rest :: binary>>, current, acc), do: words(rest, current <> <<c>>, acc)
+defp words(<<>>, current, acc), do: reverse([current | acc], [])
+defp words(<<32, rest :: binary>>, current, acc), do: words(rest, "", [current | acc])
+defp words(<<c, rest :: binary>>, current, acc), do: words(rest, current <> <<c>>, acc)
 
-fnp byte_count(<<>>, n), do: n
-fnp byte_count(<<_c, rest :: binary>>, n), do: byte_count(rest, n + 1)
+defp byte_count(<<>>, n), do: n
+defp byte_count(<<_c, rest :: binary>>, n), do: byte_count(rest, n + 1)
 
-fnp reverse([], acc), do: acc
-fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+defp reverse([], acc), do: acc
+defp reverse([head | tail], acc), do: reverse(tail, [head | acc])

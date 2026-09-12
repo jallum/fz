@@ -1,1 +1,1 @@
-fn main(), do: dbg(<<1::size(1.5)>>)
+def main(), do: dbg(<<1::size(1.5)>>)

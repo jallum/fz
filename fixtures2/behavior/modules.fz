@@ -2,15 +2,15 @@
 # purpose: "cross-module qualified calls — `M.double`, `M.quad`, `N.helper`"
 #---
 defmodule M do
-  fn double(x), do: x * 2
-  fn quad(x), do: double(double(x))
+  def double(x), do: x * 2
+  def quad(x), do: double(double(x))
 end
 
 defmodule N do
-  fn helper(x), do: x + 100
+  def helper(x), do: x + 100
 end
 
-fn main() do
+def main() do
   assert(M.double(21) == 42, "qualified call M.double")
   assert(M.quad(5) == 20, "M.quad calls sibling M.double")
   assert(N.helper(7) == 107, "qualified call N.helper")

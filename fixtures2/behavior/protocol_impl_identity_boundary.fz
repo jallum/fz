@@ -22,8 +22,8 @@ end
 defmodule Original do
   defstruct [:x]
   alias Decoy, as: Original
-  fn make(x), do: self_struct(x)
-  fn matches(value) do
+  def make(x), do: self_struct(x)
+  def matches(value) do
     case value do
       self_struct(_) -> true
       _ -> false
@@ -47,30 +47,30 @@ alias C, as: TargetTwo
 
 defprotocol A do
   @spec val(t) :: integer
-  fn val(x)
+  def val(x)
   @spec key(t) :: any
-  fn key(x)
+  def key(x)
   @spec relay(t) :: integer
-  fn relay(x)
+  def relay(x)
 end
 
 defprotocol A.B do
   @spec val(t) :: integer
-  fn val(x)
+  def val(x)
   @spec key(t) :: any
-  fn key(x)
+  def key(x)
   @spec relay(t) :: integer
-  fn relay(x)
+  def relay(x)
 end
 
 defmodule A.B.C do
-  fn val(x), do: 3
+  def val(x), do: 3
 end
 
 defimpl A, for: TargetOne do
-  fn val(x), do: 1
-  fn key(x), do: &val/1
-  fn relay(x) do
+  def val(x), do: 1
+  def key(x), do: &val/1
+  def relay(x) do
     case x do
       value when self_val(value) > 0 -> self_val_after_display_edit(value)
     end
@@ -78,24 +78,24 @@ defimpl A, for: TargetOne do
 end
 
 defimpl A.B, for: TargetTwo do
-  fn val(x), do: 2
-  fn key(x), do: &val/1
-  fn relay(x), do: self_val(x)
+  def val(x), do: 2
+  def key(x), do: &val/1
+  def relay(x), do: self_val(x)
 end
 
 defprotocol Solo do
   @spec val(t) :: integer
-  fn val(x)
+  def val(x)
   @spec relay(t) :: integer
-  fn relay(x)
+  def relay(x)
 end
 
 defimpl Solo, for: List do
-  fn val(x), do: 4
-  fn relay(x), do: self_val(x)
+  def val(x), do: 4
+  def relay(x), do: self_val(x)
 end
 
-fn main() do
+def main() do
   left = %TargetOne{x: 0}
   right = %TargetTwo{x: 0}
   dbg({A.val(left), A.B.val(right), A.B.C.val(0)})

@@ -19,9 +19,9 @@ execution modes (AOT executable, JIT, interpreter, REPL), and a fixture
 matrix forces them to agree.
 
 ```elixir
-fn add(a, b), do: a + b
+def add(a, b), do: a + b
 
-fn main() do
+def main() do
   dbg(add(2, 3))
 end
 ```
@@ -53,7 +53,7 @@ Three deliberate choices.
 
 If you've written Elixir, fz will read like a slightly stripped-down
 dialect in some ways, more fleshed out in others. Same 
-`fn name(args), do: body`, same `case` / `with` /
+`def name(args), do: body`, same `case` / `with` /
 `receive`, same atoms, tuples, lists, maps, binaries, same
 `defmodule`, same `@type` / `@spec`, same `defmacro` + `quote` /
 `unquote`, same `|>`. We borrowed the surface syntax wholesale because
@@ -120,12 +120,12 @@ A function can have several clauses. fz picks the first one whose
 shape matches:
 
 ```elixir
-fn length([]), do: 0
-fn length([_ | rest]), do: 1 + length(rest)
+def length([]), do: 0
+def length([_ | rest]), do: 1 + length(rest)
 
-fn describe(0), do: :zero
-fn describe(1), do: :one
-fn describe(_), do: :many
+def describe(0), do: :zero
+def describe(1), do: :one
+def describe(_), do: :many
 ```
 
 Under the hood, every match in the language — function clauses,
@@ -143,9 +143,9 @@ Lists, tuples, maps, binaries, atoms, integers, floats, UTF-8 strings —
 all values. You don't mutate them; you make new ones:
 
 ```elixir
-fn swap({a, b}), do: {b, a}
+def swap({a, b}), do: {b, a}
 
-fn main() do
+def main() do
   dbg(swap({:left, :right}))   # {:right, :left}
 end
 ```
@@ -160,16 +160,16 @@ environment in a closure. Macros run at compile time, rewriting code
 before it is lowered.
 
 ```elixir
-fn double(x), do: x * 2
-fn compose(f, g, x), do: f.(g.(x))
+def double(x), do: x * 2
+def compose(f, g, x), do: f.(g.(x))
 
 defmacro inc(x) do
   quote do: unquote(x) + 1
 end
 
-fn add1(x), do: inc(x)
+def add1(x), do: inc(x)
 
-fn main() do
+def main() do
   dbg(compose(double, add1, 20))   # 42
 end
 ```
@@ -193,9 +193,9 @@ Three primitives carry the entire story:
 Smallest possible ping:
 
 ```elixir
-fn child(), do: send(1, 42)
+def child(), do: send(1, 42)
 
-fn main() do
+def main() do
   spawn(child)
   dbg(receive do x -> x end)   # 42
 end
@@ -204,18 +204,18 @@ end
 A ring of processes, each adding 1 and passing the value on:
 
 ```elixir
-fn relay(0, home) do
+def relay(0, home) do
   value = receive do x -> x end
   send(home, value + 1)
 end
 
-fn relay(n, home) do
+def relay(n, home) do
   next = spawn(fn() -> relay(n - 1, home) end)
   value = receive do x -> x end
   send(next, value + 1)
 end
 
-fn main() do
+def main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
@@ -234,19 +234,19 @@ This one is _pretty_. Here's an ordinary-looking program — a tiny
 server that echoes back a key, and a client that asks it two questions:
 
 ```elixir
-fn handle_get(ref, from, key) do
+def handle_get(ref, from, key) do
   send(from, {:reply, ref, key})
   server()
 end
 
-fn server() do
+def server() do
   receive do
     {:get, ref, from, key} -> handle_get(ref, from, key)
     {:stop}                -> nil
   end
 end
 
-fn main() do
+def main() do
   s     = spawn(server)
   ref_a = make_ref()
   ref_b = make_ref()
@@ -315,20 +315,20 @@ The receiver gets concierge treatment.
 ### All of it together: quicksort
 
 ```elixir
-fn append([], ys), do: ys
-fn append([h | t], ys), do: [h | append(t, ys)]
+def append([], ys), do: ys
+def append([h | t], ys), do: [h | append(t, ys)]
 
-fn partition(_, [], lo, hi), do: {lo, hi}
-fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
-fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+def partition(_, [], lo, hi), do: {lo, hi}
+def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
 
-fn qsort([]), do: []
-fn qsort([p | rest]) do
+def qsort([]), do: []
+def qsort([p | rest]) do
   {lo, hi} = partition(p, rest, [], [])
   append(qsort(lo), [p | qsort(hi)])
 end
 
-fn main() do
+def main() do
   dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))
 end
 ```
@@ -401,11 +401,11 @@ the abstraction boundary is no longer where optimization stops.
 The OS lives in C. fz doesn't try to hide that — it declares it:
 
 ```elixir
-extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
-extern "C" fn libc::write(integer, binary, integer) :: integer
-extern "C" fn libc::close(integer) :: integer
+extern "C" def libc::creat(path :: cstring, mode :: integer) :: integer
+extern "C" def libc::write(integer, binary, integer) :: integer
+extern "C" def libc::close(integer) :: integer
 
-fn main() do
+def main() do
   fd = libc::creat("/tmp/hello", 420)   # 0o644
   libc::write(fd, <<104, 105, 10>>, 3)  # "hi\n"
   libc::close(fd)
@@ -437,18 +437,18 @@ more fz can prove about a value, the more direct the code it can emit.
 You get both from the same investment.
 
 ```elixir
-fn main() do
+def main() do
   x = 41 + 1
   dbg(x)          # compiler knows x is an integer; uses the int debug path
 end
 ```
 
 ```elixir
-fn kind(0), do: :zero
-fn kind(n) when n > 0, do: :positive
-fn kind(_), do: :other
+def kind(0), do: :zero
+def kind(n) when n > 0, do: :positive
+def kind(_), do: :other
 
-fn main() do
+def main() do
   dbg(kind(5))   # compiler proves which clause wins, drops the rest
 end
 ```

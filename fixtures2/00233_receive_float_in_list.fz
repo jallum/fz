@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   send(self(), [2.5])
   receive do
     [2.5] -> 7

@@ -1,1 +1,1 @@
-fn f(), do: quote do: 1
+def f(), do: quote do: 1

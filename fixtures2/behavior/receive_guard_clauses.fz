@@ -25,7 +25,7 @@
 #     region have to agree before the clause is chosen;
 #   * selective receive: a message that matches no clause stays in the mailbox
 #     and is delivered to a later `receive`, rather than being consumed.
-fn main() do
+def main() do
   send(self(), 5)
   send(self(), 50)
   send(self(), 500)
@@ -46,7 +46,7 @@ fn main() do
   dbg(anything())
 end
 
-fnp classify() do
+defp classify() do
   receive do
     n when n < 10 -> {:small, n}
     n when n < 100 -> {:medium, n}
@@ -54,20 +54,20 @@ fnp classify() do
   end
 end
 
-fnp counted() do
+defp counted() do
   receive do
     {:count, n} when n > 0 -> {:positive, n}
     {:count, n} -> {:zero_or_less, n}
   end
 end
 
-fnp only_tuples() do
+defp only_tuples() do
   receive do
     {:take, n} -> {:took, n}
   end
 end
 
-fnp anything() do
+defp anything() do
   receive do
     other -> {:leftover, other}
   end

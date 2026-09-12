@@ -31,7 +31,7 @@
 #
 # fz-kdt.131 still owns the population one rung wider: a pair whose heads
 # OVERLAP while neither surface contains the other, which no seat can reach.
-fn main() do
+def main() do
   dbg(Enum.all?([:ok, :ok]))
   dbg(Enum.empty?([:ok, :ok]))
   dbg(Enum.all?([1, 2]))

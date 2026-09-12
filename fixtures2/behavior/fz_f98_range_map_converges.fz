@@ -6,7 +6,7 @@
 # (fz-f98.3 fixed the closure capture-layout fragmentation); native lowering still
 # materializes more than one native callable boundary for the single published
 # bridge-reducer boundary (fz-f98.6).
-fn main() do
+def main() do
   dbg(Enum.to_list(1..7//2))
   dbg(Enum.to_list(%{1 => :a}))
 end

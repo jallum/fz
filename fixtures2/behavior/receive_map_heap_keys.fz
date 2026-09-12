@@ -18,7 +18,7 @@
 # the selective receive matcher runs. The matcher receives stable key
 # values through synthetic key slots and only performs probes, tests, and
 # branches while scanning the mailbox.
-fn main() do
+def main() do
   send(self(), %{1.5 => 11})
   send(self(), %{"id" => 22})
   send(self(), %{1 => 33})

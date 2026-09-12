@@ -269,7 +269,7 @@ fn enum_reduce_named_ref_ok_settles_to_int() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "Enum.reduce named-fn ref should settle to int");
+    assert_resolved(compiler.drive(), "Enum.reduce named-function ref should settle to int");
 
     let int_ty = compiler.types_mut_for_test().int();
     assert_settles_to_in_module(
@@ -763,7 +763,7 @@ fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
     );
 }
 
-// Ported from src/type_infer/type_infer_test.rs: named fn refs instantiate separate activations per call argument type
+// Ported from src/type_infer/type_infer_test.rs: named function refs instantiate separate activations per call argument type.
 #[test]
 fn named_refs_instantiate_polymorphic_identity_per_callsite() {
     let tel = ConfiguredTelemetry::new();
@@ -897,7 +897,7 @@ fn captured_lambda_infers_as_closure_with_capture_payload() {
     );
 }
 
-// Ported from src/type_infer/type_infer_test.rs: named fn ref dispatches distinct pattern clauses per activation argument
+// Ported from src/type_infer/type_infer_test.rs: a named function ref dispatches distinct pattern clauses per activation argument.
 #[test]
 fn named_refs_drive_pattern_dispatch_per_activation() {
     let tel = ConfiguredTelemetry::new();

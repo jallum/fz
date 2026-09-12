@@ -1,6 +1,6 @@
-fn pick([]), do: :empty
-fn pick([h | _t]), do: h
+def pick([]), do: :empty
+def pick([h | _t]), do: h
 
-fn main() do
+def main() do
   {pick([]), pick([1])}
 end

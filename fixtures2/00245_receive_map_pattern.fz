@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   me = self()
   send(me, :skip)
   send(me, %{name: 42, age: 30})

@@ -43,18 +43,18 @@ defprotocol StringChars do
 
   """
   @spec to_string(t) :: binary
-  fn to_string(term)
+  def to_string(term)
 end
 
 defimpl StringChars, for: Atom do
   # `nil` is the one special case: `to_string(nil)` gives `""`, while
   # `Atom.to_string(nil)` gives `"nil"`.
-  fn to_string(nil), do: ""
-  fn to_string(a), do: Atom.to_string(a)
+  def to_string(nil), do: ""
+  def to_string(a), do: Atom.to_string(a)
 end
 
 defimpl StringChars, for: Binary do
-  extern "C" fn fz_bitstring_is_binary(any) :: integer
+  extern "C" def fz_bitstring_is_binary(any) :: integer
 
   # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
   # a `s :: binary` clause head -- so whether a given bitstring is actually a
@@ -63,7 +63,7 @@ defimpl StringChars, for: Binary do
   # The protocol's result is declared `binary`: letting a partial bitstring
   # through would mean the next `<>` aborts the process with a byte-alignment
   # assertion far from here.
-  fn to_string(s) do
+  def to_string(s) do
     if fz_bitstring_is_binary(s) == 1 do
       s
     else
@@ -73,9 +73,9 @@ defimpl StringChars, for: Binary do
 end
 
 defimpl StringChars, for: Integer do
-  fn to_string(i), do: Integer.to_string(i)
+  def to_string(i), do: Integer.to_string(i)
 end
 
 defimpl StringChars, for: Float do
-  fn to_string(f), do: Float.to_string(f)
+  def to_string(f), do: Float.to_string(f)
 end

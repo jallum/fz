@@ -31,9 +31,9 @@
 # future migration regression can't slip through silently.
 #
 # Worked through in `.agent/docs/dispatch-as-planner-output.md` (Worry 2).
-fn id(x), do: x
-fn route(f, n), do: f.(n)
-fn main() do
+def id(x), do: x
+def route(f, n), do: f.(n)
+def main() do
   assert(route(id, 5) == 5, "route keeps the identity closure's dispatch outcome")
   assert(
     route(fn(x) -> x * 2 end, 5) == 10,

@@ -25,7 +25,7 @@
 # → lower_prim's descr_is_float branch fires → native fadd/fsub/fmul +
 # fcmp. Post-.27.15.2, Const::Float emits raw f64 directly when the
 # consumer is float-monomorphic; the previous heap allocation path is gone.
-fn main() do
+def main() do
   dbg(1.5 + 2.5)
   dbg(10.0 - 3.0)
   dbg(2.5 * 4.0)

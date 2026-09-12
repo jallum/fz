@@ -1,23 +1,23 @@
 #---
 # purpose: "list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns"
 #---
-fn length([]), do: 0
-fn length([_ | t]), do: 1 + length(t)
+def length([]), do: 0
+def length([_ | t]), do: 1 + length(t)
 
-fn reverse(xs), do: reverse_acc(xs, [])
-fn reverse_acc([], acc), do: acc
-fn reverse_acc([h | t], acc), do: reverse_acc(t, [h | acc])
+def reverse(xs), do: reverse_acc(xs, [])
+def reverse_acc([], acc), do: acc
+def reverse_acc([h | t], acc), do: reverse_acc(t, [h | acc])
 
-fn map(_, []), do: []
-fn map(f, [h | t]), do: [f.(h) | map(f, t)]
+def map(_, []), do: []
+def map(f, [h | t]), do: [f.(h) | map(f, t)]
 
-fn foldl(_, acc, []), do: acc
-fn foldl(f, acc, [h | t]), do: foldl(f, f.(acc, h), t)
+def foldl(_, acc, []), do: acc
+def foldl(f, acc, [h | t]), do: foldl(f, f.(acc, h), t)
 
-fn double(x), do: x * 2
-fn add(a, b), do: a + b
+def double(x), do: x * 2
+def add(a, b), do: a + b
 
-fn main() do
+def main() do
   xs = [1, 2, 3, 4, 5]
   assert(length(xs) == 5, "length counts cons cells")
   assert(reverse(xs) == [5, 4, 3, 2, 1], "reverse via accumulator")

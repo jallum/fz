@@ -7,11 +7,11 @@
 # That seam has one return convention -- the construction wrapper hands a value
 # back whatever the caller does with it -- so both halves of the call carry one
 # boxed lane and `Enum.each` simply drops it (fz-kdt.155).
-fn each_a(x), do: dbg(x)
-fn each_b(x), do: dbg(x)
-fn run(mapper), do: Enum.each([1, 2, 3], mapper)
+def each_a(x), do: dbg(x)
+def each_b(x), do: dbg(x)
+def run(mapper), do: Enum.each([1, 2, 3], mapper)
 
-fn main() do
+def main() do
   mapper = case Process.heap_alloc_stats()[:allocs] == 0 do
     true -> each_a
     _ -> each_b

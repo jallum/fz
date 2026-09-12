@@ -11,11 +11,11 @@
 # budget.planner.stmts: 23
 # budget.planner.dispatches: 12
 #---
-fn fib(0, a, _), do: a
-fn fib(1, _, b), do: b
-fn fib(n, a, b), do: fib(n - 1, b, a + b)
+def fib(0, a, _), do: a
+def fib(1, _, b), do: b
+def fib(n, a, b), do: fib(n - 1, b, a + b)
 
-fn main() do
+def main() do
   dbg(fib(0, 0, 1))
   dbg(fib(1, 0, 1))
   dbg(fib(10, 0, 1))

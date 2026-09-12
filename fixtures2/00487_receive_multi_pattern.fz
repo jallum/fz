@@ -1,4 +1,4 @@
-fn rx() do
+def rx() do
   receive do
     {:ping, _} -> 1
     {:pong, _} -> 2

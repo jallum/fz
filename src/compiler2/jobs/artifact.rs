@@ -2031,7 +2031,7 @@ mod tests {
         // arrival order and of any interned-type identity.
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        world.submit_code(None, "fn main(x), do: x".to_string());
+        world.submit_code(None, "def main(x), do: x".to_string());
         let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
         let function = world.root_entry(root).function;
         let int = world.types_mut().int();

@@ -20,7 +20,7 @@
 # before fz-bsx, native `run`/`build` pruned the arm and returned `:no_match`.
 import Utf8
 
-fn main() do
+def main() do
   good = <<104, 105>>
   result = case Utf8.from_bytes(good) do
     {:ok, "hi"} -> :matched

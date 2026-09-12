@@ -26,17 +26,17 @@
 # Before this, every step copied the whole remainder: scanning n bytes copied
 # n + (n-1) + ... bytes, and the two lines below differed by about 4x. Decoding
 # a 919-byte JSON document copied 1.4 MB.
-fn main() do
+def main() do
   dbg(scan_cost("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
   dbg(scan_cost("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
 end
 
-fnp scan_cost(input) do
+defp scan_cost(input) do
   before = Process.heap_alloc_stats()
   n = walk(input, 0)
   after_ = Process.heap_alloc_stats()
   {n, after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:bitstring_bytes] - before[:bitstring_bytes]}
 end
 
-fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-fnp walk(_b, n), do: n
+defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+defp walk(_b, n), do: n

@@ -10,12 +10,12 @@
 # Expected: Enum.reduce([1, 2, 3], 0, &Main.reducer/2) : int ; settles (no none).
 
 defmodule Main do
-  fn reducer(entry, acc) do
+  def reducer(entry, acc) do
     acc + entry
   end
 end
 
-fn main() do
+def main() do
   Enum.reduce([1, 2, 3], 0, &Main.reducer/2)
   |> dbg()
 end

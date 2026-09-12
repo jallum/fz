@@ -6,19 +6,19 @@
 # assert.metric.semantic.callsites: 11
 # assert.metric.call_edges.count: 11
 # assert.metric.return_type.widened: 0
-# assert.edge: fact/1[int] | @136-147 | direct | fact/1
-# assert.edge: main/0[] | @168-179 | direct | classify/1
-# assert.edge: main/0[] | @226-233 | direct | fact/1
+# assert.edge: fact/1[int] | @141-152 | direct | fact/1
+# assert.edge: main/0[] | @174-185 | direct | classify/1
+# assert.edge: main/0[] | @232-239 | direct | fact/1
 # snapshot.call_edges: call_edges
 #---
-fn classify(0), do: :zero
-fn classify(n) when n > 0, do: :positive
-fn classify(_), do: :negative
+def classify(0), do: :zero
+def classify(n) when n > 0, do: :positive
+def classify(_), do: :negative
 
-fn fact(0), do: 1
-fn fact(n), do: n * fact(n - 1)
+def fact(0), do: 1
+def fact(n), do: n * fact(n - 1)
 
-fn main() do
+def main() do
   dbg(classify(0))
   dbg(classify(7))
   dbg(classify(-3))

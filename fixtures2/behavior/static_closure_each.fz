@@ -11,7 +11,7 @@
 # lambda's own return demand, both halves settle on zero delivered lanes, and
 # nothing crosses the boxed seam. Widening the boxed convention must leave this
 # path exactly as it is.
-fn main() do
+def main() do
   double = fn (x) -> dbg(x * 2) end
   Enum.each([1, 2, 3], double)
   dbg(:done)

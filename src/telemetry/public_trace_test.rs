@@ -9,7 +9,7 @@ use crate::telemetry::handler::EventKind;
 /// The ticket's acceptance scenario: two functions, one calling the other.
 /// `main/0` is required — `PublicTrace::compile` closes it as the root, the
 /// same way `fz2 run`/`interp`/`build` do.
-const TWO_FORMULA_SOURCE: &str = "fn helper(x), do: x + 1\nfn main(), do: helper(41)\n";
+const TWO_FORMULA_SOURCE: &str = "def helper(x), do: x + 1\ndef main(), do: helper(41)\n";
 
 fn causal_event(name: &[&str], metadata: serde_json::Value) -> PublicEvent {
     PublicEvent {
@@ -250,7 +250,7 @@ fn failed_backend_request_is_a_balanced_public_lifecycle() {
         let mut compiler = Compiler2::new(telemetry);
         compiler.submit_code(CodeSubmission {
             name: Some("failed_backend_request.fz".to_string()),
-            text: "fn main(), do: 0\n".to_string(),
+            text: "def main(), do: 0\n".to_string(),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -1031,7 +1031,7 @@ fn compile_flushes_the_complete_stream_past_the_pre_drop_auto_flush() {
 /// (see `analyze_activation_job_spans_distinguish_two_activations_of_one_function`)
 /// before this const was finalized.
 const SAME_FUNCTION_TWO_TYPES_SOURCE: &str =
-    "fn identity(x), do: x\nfn main() do\n  identity(1)\n  identity(:atom)\nend\n";
+    "def identity(x), do: x\ndef main() do\n  identity(1)\n  identity(:atom)\nend\n";
 
 /// Before fz-kdt.34.2, `write_opaque` rendered a `Job` as a bare variant
 /// name — every `AnalyzeActivation` job span carried only
@@ -1202,7 +1202,7 @@ fn product_sessions_publish_balanced_identity_lifecycles() {
 
 #[test]
 fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_snapshot() {
-    let trace = PublicTrace::compile_requests("fn main(), do: 1\n", &[None]);
+    let trace = PublicTrace::compile_requests("def main(), do: 1\n", &[None]);
     let requests = CausalReport::derive_requests(trace.events());
     assert_eq!(requests.len(), 2);
 
@@ -1330,18 +1330,18 @@ const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (172, 32), (228, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
-    let source = fixture.replacen("fn main() do", "fn main() do\n  kdt_reached()", 1);
+    let source = fixture.replacen("def main() do", "def main() do\n  kdt_reached()", 1);
     (
         format!(
-            "fn kdt_unreachable(), do: 0\n\
-             fn kdt_old_leaf(), do: 1\n\
-             fn kdt_new_leaf(), do: 2\n\
-             fn kdt_reached(), do: kdt_old_leaf()\n{source}"
+            "def kdt_unreachable(), do: 0\n\
+             def kdt_old_leaf(), do: 1\n\
+             def kdt_new_leaf(), do: 2\n\
+             def kdt_reached(), do: kdt_old_leaf()\n{source}"
         ),
         [
-            "fn kdt_unreachable(), do: 99\n",
-            "fn kdt_old_leaf(), do: 3\n",
-            "fn kdt_new_leaf(), do: 2\nfn kdt_reached(), do: kdt_new_leaf()\n",
+            "def kdt_unreachable(), do: 99\n",
+            "def kdt_old_leaf(), do: 3\n",
+            "def kdt_new_leaf(), do: 2\ndef kdt_reached(), do: kdt_new_leaf()\n",
         ],
     )
 }
@@ -2428,8 +2428,7 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
 /// A callee whose `@spec` makes it a contract-declaring function. Analyzing
 /// `main` reaches the call while `M.helper/1` has neither its contract nor
 /// the facts that key its activation.
-const CONTRACT_CALLEE_SOURCE: &str =
-    "defmodule M do\n  @spec helper(integer) :: integer\n  fn helper(x), do: x + 1\nend\nfn main(), do: M.helper(41)\n";
+const CONTRACT_CALLEE_SOURCE: &str = "defmodule M do\n  @spec helper(integer) :: integer\n  def helper(x), do: x + 1\nend\ndef main(), do: M.helper(41)\n";
 
 /// The function-keyed facts a completion reports itself blocked on, as
 /// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the

@@ -5,8 +5,8 @@
 #
 # # bitstring_literal_pattern
 #
-#     fnp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
-#     fnp lit(bin), do: {:no, bin}
+#     defp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
+#     defp lit(bin), do: {:no, bin}
 #
 #     lit("true,x")   elixir {:true_lit, ",x"}   fz {:no, "true,x"}
 #
@@ -33,24 +33,24 @@
 #   * a byte VALUE beside them, which always worked and must keep working;
 #   * an explicitly sized segment, whose size is the author's and is not
 #     overridden.
-fnp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
-fnp lit(<<"null", rest :: binary>>), do: {:null_lit, rest}
-fnp lit(bin), do: {:no, bin}
+defp lit(<<"true", rest :: binary>>), do: {:true_lit, rest}
+defp lit(<<"null", rest :: binary>>), do: {:null_lit, rest}
+defp lit(bin), do: {:no, bin}
 
-fnp ws(<<" ", rest :: binary>>), do: {:space, rest}
-fnp ws(<<"\n", rest :: binary>>), do: {:newline, rest}
-fnp ws(bin), do: {:no, bin}
+defp ws(<<" ", rest :: binary>>), do: {:space, rest}
+defp ws(<<"\n", rest :: binary>>), do: {:newline, rest}
+defp ws(bin), do: {:no, bin}
 
-fnp annotated(<<"ab" :: binary, rest :: binary>>), do: {:annotated, rest}
-fnp annotated(bin), do: {:no, bin}
+defp annotated(<<"ab" :: binary, rest :: binary>>), do: {:annotated, rest}
+defp annotated(bin), do: {:no, bin}
 
-fnp byte_form(<<34, rest :: binary>>), do: {:quote, rest}
-fnp byte_form(bin), do: {:no, bin}
+defp byte_form(<<34, rest :: binary>>), do: {:quote, rest}
+defp byte_form(bin), do: {:no, bin}
 
-fnp sized(<<x :: binary-size(2), rest :: binary>>), do: {:sized, x, rest}
-fnp sized(bin), do: {:no, bin}
+defp sized(<<x :: binary-size(2), rest :: binary>>), do: {:sized, x, rest}
+defp sized(bin), do: {:no, bin}
 
-fn main() do
+def main() do
   dbg(lit("true,x"))
   dbg(lit("null"))
   dbg(lit("false"))

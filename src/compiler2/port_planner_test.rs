@@ -632,7 +632,7 @@ fn named_fn_ref_propagates_callable_identity() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "named fn ref callable identity should resolve");
+    assert_resolved(compiler.drive(), "named function ref callable identity should resolve");
     // TODO: MakeFnRef(double) in main should populate KnownFn(double) capability on the bound var
 }
 

@@ -11,14 +11,14 @@
 # budget.planner.stmts: 22
 # budget.planner.dispatches: 15
 #---
-fn classify(0), do: :zero
-fn classify(n) when n > 0, do: :positive
-fn classify(_), do: :negative
+def classify(0), do: :zero
+def classify(n) when n > 0, do: :positive
+def classify(_), do: :negative
 
-fn fact(0), do: 1
-fn fact(n), do: n * fact(n - 1)
+def fact(0), do: 1
+def fact(n), do: n * fact(n - 1)
 
-fn main() do
+def main() do
   dbg(classify(0))
   dbg(classify(7))
   dbg(classify(-3))

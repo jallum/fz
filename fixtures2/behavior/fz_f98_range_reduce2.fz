@@ -4,6 +4,6 @@
 #
 # Regression target for fz-bfh.2. A multi-surface callable value must be
 # resolved by producer identity/publication, not by native pick-first behavior.
-fn main() do
+def main() do
   dbg(Enum.reduce(1..7//2, fn (x, acc) -> x * acc end))
 end

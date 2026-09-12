@@ -1,5 +1,5 @@
 
-fn main() do
+def main() do
   {:ok, n} = {:ok, 42}
   n
 end

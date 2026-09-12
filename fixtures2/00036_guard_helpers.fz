@@ -1,3 +1,3 @@
 
-fn positive(n), do: n > 0
-fn wanted(n), do: positive(n)
+def positive(n), do: n > 0
+def wanted(n), do: positive(n)

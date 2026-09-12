@@ -16,14 +16,14 @@
 #
 # Recursive higher-order call through a captured closure-lit must pass the
 # list element to the lambda body in the lambda's narrow representation.
-fn each(_, []), do: nil
+def each(_, []), do: nil
 
-fn each(f, [h | t]) do
+def each(f, [h | t]) do
   f.(h)
   each(f, t)
 end
 
-fn main() do
+def main() do
   k = 10
   each(fn(x) -> dbg(x + k) end, [1, 2, 3])
 end

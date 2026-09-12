@@ -20,15 +20,15 @@ defmodule Map do
   iteration can differ between the two runtimes.
   """
 
-  extern "C" fn fz_map_count(any) :: integer
-  extern "C" fn fz_map_entry_key(any, integer) :: any
-  extern "C" fn fz_map_entry_value(any, integer) :: any
-  extern "fz" fn fz_map_delete(any, any) :: any
-  extern "fz" fn fz_map_from_kv(any, any) :: any
-  extern "fz" fn fz_map_put_ref(any, any, any) :: any
-  extern "fz" fn fz_map_put_int(any, any, integer) :: any
-  extern "fz" fn fz_map_put_float(any, any, float) :: any
-  extern "fz" fn fz_map_put_atom_ref(any, any, atom) :: any
+  extern "C" def fz_map_count(any) :: integer
+  extern "C" def fz_map_entry_key(any, integer) :: any
+  extern "C" def fz_map_entry_value(any, integer) :: any
+  extern "fz" def fz_map_delete(any, any) :: any
+  extern "fz" def fz_map_from_kv(any, any) :: any
+  extern "fz" def fz_map_put_ref(any, any, any) :: any
+  extern "fz" def fz_map_put_int(any, any, integer) :: any
+  extern "fz" def fz_map_put_float(any, any, float) :: any
+  extern "fz" def fz_map_put_atom_ref(any, any, atom) :: any
 
   # One pass, one allocation each. Reach for these when working with several keys.
 
@@ -46,7 +46,7 @@ defmodule Map do
 
   """
   @spec new([{any, any}]) :: any
-  fn new(pairs), do: build(pairs, [], [])
+  def new(pairs), do: build(pairs, [], [])
 
   @doc """
   Merges `a` and `b` into one map. Where both have a key, `b`'s value wins.
@@ -60,7 +60,7 @@ defmodule Map do
 
   """
   @spec merge(any, any) :: any
-  fn merge(a, b), do: build(to_list(a) ++ to_list(b), [], [])
+  def merge(a, b), do: build(to_list(a) ++ to_list(b), [], [])
 
   @doc """
   Returns a new map with only the given `keys`.
@@ -77,7 +77,7 @@ defmodule Map do
 
   """
   @spec take(any, [any]) :: any
-  fn take(map, keys), do: build(taken(map, keys, []), [], [])
+  def take(map, keys), do: build(taken(map, keys, []), [], [])
 
   @doc """
   Returns a new map without the given `keys`.
@@ -91,7 +91,7 @@ defmodule Map do
 
   """
   @spec drop(any, [any]) :: any
-  fn drop(map, keys), do: build(dropped(to_list(map), keys, []), [], [])
+  def drop(map, keys), do: build(dropped(to_list(map), keys, []), [], [])
 
   @doc """
   Returns a new map keeping only the `{key, value}` pairs for which `fun`
@@ -106,7 +106,7 @@ defmodule Map do
 
   """
   @spec filter(any, ({any, any}) -> bool) :: any
-  fn filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
+  def filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
 
   @doc """
   Returns `{taken, dropped}`: the given `keys` and everything else, as two
@@ -121,41 +121,41 @@ defmodule Map do
 
   """
   @spec split(any, [any]) :: {any, any}
-  fn split(map, keys), do: {take(map, keys), drop(map, keys)}
+  def split(map, keys), do: {take(map, keys), drop(map, keys)}
 
   # Splits the pair list into parallel key and value lists, which is what the
   # one-allocation builder takes.
   @spec build([{a, b}], [a], [b]) :: any
-  fnp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
-  fnp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
+  defp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
+  defp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
 
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
-  fnp taken(_map, [], acc), do: reverse(acc, [])
-  fnp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
+  defp taken(_map, [], acc), do: reverse(acc, [])
+  defp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
   @spec take_one(any, any, [{any, any}], bool) :: [{any, any}]
-  fnp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
-  fnp take_one(_map, _k, acc, false), do: acc
+  defp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
+  defp take_one(_map, _k, acc, false), do: acc
 
   @spec dropped([{a, b}], [any], [{a, b}]) :: [{a, b}]
-  fnp dropped([], _keys, acc), do: reverse(acc, [])
-  fnp dropped([{k, v} | t], keys, acc), do: dropped(t, keys, drop_one({k, v}, keys, acc, key_listed?(keys, k)))
+  defp dropped([], _keys, acc), do: reverse(acc, [])
+  defp dropped([{k, v} | t], keys, acc), do: dropped(t, keys, drop_one({k, v}, keys, acc, key_listed?(keys, k)))
   @spec drop_one({a, b}, [any], [{a, b}], bool) :: [{a, b}]
-  fnp drop_one(_pair, _keys, acc, true), do: acc
-  fnp drop_one(pair, _keys, acc, false), do: [pair | acc]
+  defp drop_one(_pair, _keys, acc, true), do: acc
+  defp drop_one(pair, _keys, acc, false), do: [pair | acc]
 
   @spec kept([{a, b}], ({a, b}) -> bool, [{a, b}]) :: [{a, b}]
-  fnp kept([], _fun, acc), do: reverse(acc, [])
-  fnp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
+  defp kept([], _fun, acc), do: reverse(acc, [])
+  defp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
   @spec keep_one({a, b}, [{a, b}], bool) :: [{a, b}]
-  fnp keep_one(pair, acc, true), do: [pair | acc]
-  fnp keep_one(_pair, acc, false), do: acc
+  defp keep_one(pair, acc, true), do: [pair | acc]
+  defp keep_one(_pair, acc, false), do: acc
 
   @spec key_listed?([any], any) :: bool
-  fnp key_listed?([], _v), do: false
-  fnp key_listed?([h | t], v), do: key_listed_or?(h === v, t, v)
+  defp key_listed?([], _v), do: false
+  defp key_listed?([h | t], v), do: key_listed_or?(h === v, t, v)
   @spec key_listed_or?(bool, [any], any) :: bool
-  fnp key_listed_or?(true, _t, _v), do: true
-  fnp key_listed_or?(false, t, v), do: key_listed?(t, v)
+  defp key_listed_or?(true, _t, _v), do: true
+  defp key_listed_or?(false, t, v), do: key_listed?(t, v)
 
   # Each of these copies the whole array. Use them for a single key, not in a loop.
 
@@ -181,10 +181,10 @@ defmodule Map do
   # integer to the ref writer aborts with "requires a heap/sentinel ref" -- and
   # letting the clause heads pick means the caller never has to know that.
   @spec put(any, any, any) :: any
-  fn put(map, key, value :: integer), do: fz_map_put_int(map, key, value)
-  fn put(map, key, value :: float), do: fz_map_put_float(map, key, value)
-  fn put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
-  fn put(map, key, value), do: fz_map_put_ref(map, key, value)
+  def put(map, key, value :: integer), do: fz_map_put_int(map, key, value)
+  def put(map, key, value :: float), do: fz_map_put_float(map, key, value)
+  def put(map, key, value :: atom), do: fz_map_put_atom_ref(map, key, value)
+  def put(map, key, value), do: fz_map_put_ref(map, key, value)
 
   @doc """
   Returns the value for `key`, or `nil` when the key is absent.
@@ -199,7 +199,7 @@ defmodule Map do
 
   """
   @spec get(any, any) :: any
-  fn get(map, key), do: map[key]
+  def get(map, key), do: map[key]
 
   @doc """
   Returns the value for `key`, or `default` when the key is absent.
@@ -214,11 +214,11 @@ defmodule Map do
 
   """
   @spec get(any, any, any) :: any
-  fn get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
+  def get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
 
   @spec get_or(any, any, any, bool) :: any
-  fnp get_or(map, key, _default, true), do: map[key]
-  fnp get_or(_map, _key, default, false), do: default
+  defp get_or(map, key, _default, true), do: map[key]
+  defp get_or(_map, _key, default, false), do: default
 
   @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.
@@ -235,7 +235,7 @@ defmodule Map do
 
   """
   @spec delete(any, any) :: any
-  fn delete(map, key), do: fz_map_delete(map, key)
+  def delete(map, key), do: fz_map_delete(map, key)
 
   @doc """
   Returns the number of entries in `map`.
@@ -250,7 +250,7 @@ defmodule Map do
 
   """
   @spec size(any) :: integer
-  fn size(map), do: fz_map_count(map)
+  def size(map), do: fz_map_count(map)
 
   @doc """
   Returns the entries as a `{key, value}` list, in key order.
@@ -262,7 +262,7 @@ defmodule Map do
 
   """
   @spec to_list(any) :: [{any, any}]
-  fn to_list(map), do: to_list(map, fz_map_count(map), 0, [])
+  def to_list(map), do: to_list(map, fz_map_count(map), 0, [])
 
   @doc """
   Returns just the keys, in key order.
@@ -274,7 +274,7 @@ defmodule Map do
 
   """
   @spec keys(any) :: [any]
-  fn keys(map), do: keys(map, fz_map_count(map), 0, [])
+  def keys(map), do: keys(map, fz_map_count(map), 0, [])
 
   @doc """
   Returns just the values, in key order.
@@ -286,7 +286,7 @@ defmodule Map do
 
   """
   @spec values(any) :: [any]
-  fn values(map), do: values(map, fz_map_count(map), 0, [])
+  def values(map), do: values(map, fz_map_count(map), 0, [])
 
   @doc """
   Returns true when `key` is present in `map`.
@@ -303,10 +303,10 @@ defmodule Map do
 
   """
   @spec has_key?(any, any) :: bool
-  fn has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
+  def has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
 
   @spec has_key?(any, integer, integer, any) :: bool
-  fnp has_key?(map, count, index, key) do
+  defp has_key?(map, count, index, key) do
     if index >= count do
       false
     else
@@ -319,7 +319,7 @@ defmodule Map do
   end
 
   @spec keys(any, integer, integer, [any]) :: [any]
-  fnp keys(map, count, index, acc) do
+  defp keys(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
     else
@@ -328,7 +328,7 @@ defmodule Map do
   end
 
   @spec values(any, integer, integer, [any]) :: [any]
-  fnp values(map, count, index, acc) do
+  defp values(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
     else
@@ -349,7 +349,7 @@ defmodule Map do
 
   """
   @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fn reduce(map, acc, reducer), do: reduce(map, fz_map_count(map), acc, reducer)
+  def reduce(map, acc, reducer), do: reduce(map, fz_map_count(map), acc, reducer)
 
   @doc """
   The `Enumerable.reduce_while/3` callback body for maps.
@@ -370,7 +370,7 @@ defmodule Map do
 
   """
   @spec reduce_while(any, b, (any, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fn reduce_while(map, acc, reducer), do: reduce_while_cont(map, fz_map_count(map), 0, acc, reducer)
+  def reduce_while(map, acc, reducer), do: reduce_while_cont(map, fz_map_count(map), 0, acc, reducer)
 
   @doc """
   Returns the number of entries in `map`, the `Enumerable.count/1`
@@ -383,7 +383,7 @@ defmodule Map do
 
   """
   @spec count(any) :: integer
-  fn count(map), do: fz_map_count(map)
+  def count(map), do: fz_map_count(map)
 
   @doc """
   Returns true when the `{key, value}` pair appears in `map`, the
@@ -404,8 +404,8 @@ defmodule Map do
 
   """
   @spec member?(any, any) :: bool
-  fn member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
-  fn member?(_map, _value), do: false
+  def member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
+  def member?(_map, _value), do: false
 
   @doc """
   Returns the `Enumerable.slice/1` contract for `map`: `{:ok, size,
@@ -423,19 +423,19 @@ defmodule Map do
 
   """
   @spec slice(any) :: {:ok, integer, any}
-  fn slice(map) do
+  def slice(map) do
     {:ok, fz_map_count(map), (fn (_map) -> to_list(map) end)}
   end
 
   @spec reduce(any, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce(map, count, {:cont, acc}, reducer), do: reduce_cont(map, count, 0, acc, reducer)
-  fnp reduce(_map, _count, {:halt, acc}, _reducer), do: {:halted, acc}
-  fnp reduce(map, count, {:suspend, acc}, reducer) do
+  defp reduce(map, count, {:cont, acc}, reducer), do: reduce_cont(map, count, 0, acc, reducer)
+  defp reduce(_map, _count, {:halt, acc}, _reducer), do: {:halted, acc}
+  defp reduce(map, count, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(map, count, 0, acc, reducer) end)}
   end
 
   @spec reduce_cont(any, integer, integer, b | c, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce_cont(map, count, index, acc, reducer) do
+  defp reduce_cont(map, count, index, acc, reducer) do
     if index >= count do
       {:done, acc}
     else
@@ -444,14 +444,14 @@ defmodule Map do
   end
 
   @spec reduce_step(any, integer, integer, {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (any, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce_step(map, count, index, {:cont, acc}, reducer), do: reduce_cont(map, count, index + 1, acc, reducer)
-  fnp reduce_step(_map, _count, _index, {:halt, acc}, _reducer), do: {:halted, acc}
-  fnp reduce_step(map, count, index, {:suspend, acc}, reducer) do
+  defp reduce_step(map, count, index, {:cont, acc}, reducer), do: reduce_cont(map, count, index + 1, acc, reducer)
+  defp reduce_step(_map, _count, _index, {:halt, acc}, _reducer), do: {:halted, acc}
+  defp reduce_step(map, count, index, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(map, count, index + 1, acc, reducer) end)}
   end
 
   @spec reduce_while_cont(any, integer, integer, b, (any, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fnp reduce_while_cont(map, count, index, acc, reducer) do
+  defp reduce_while_cont(map, count, index, acc, reducer) do
     if index >= count do
       acc
     else
@@ -460,11 +460,11 @@ defmodule Map do
   end
 
   @spec reduce_while_step(any, integer, integer, {:cont, b} | {:halt, c}, (any, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fnp reduce_while_step(map, count, index, {:cont, acc}, reducer), do: reduce_while_cont(map, count, index + 1, acc, reducer)
-  fnp reduce_while_step(_map, _count, _index, {:halt, acc}, _reducer), do: acc
+  defp reduce_while_step(map, count, index, {:cont, acc}, reducer), do: reduce_while_cont(map, count, index + 1, acc, reducer)
+  defp reduce_while_step(_map, _count, _index, {:halt, acc}, _reducer), do: acc
 
   @spec member_pair?(any, integer, integer, any, any) :: bool
-  fnp member_pair?(map, count, index, key, value) do
+  defp member_pair?(map, count, index, key, value) do
     if index >= count do
       false
     else
@@ -477,12 +477,12 @@ defmodule Map do
   end
 
   @spec entry(any, integer) :: {any, any}
-  fnp entry(map, index) do
+  defp entry(map, index) do
     {fz_map_entry_key(map, index), fz_map_entry_value(map, index)}
   end
 
   @spec to_list(any, integer, integer, [{any, any}]) :: [{any, any}]
-  fnp to_list(map, count, index, acc) do
+  defp to_list(map, count, index, acc) do
     if index >= count do
       reverse(acc, [])
     else
@@ -491,6 +491,6 @@ defmodule Map do
   end
 
   @spec reverse([a], [b]) :: [a | b]
-  fnp reverse([], acc), do: acc
-  fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+  defp reverse([], acc), do: acc
+  defp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 end

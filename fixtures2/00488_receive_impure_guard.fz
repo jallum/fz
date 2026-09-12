@@ -1,5 +1,5 @@
-fn helper(), do: make_ref()
-fn rx() do
+def helper(), do: make_ref()
+def rx() do
   receive do
     {:foo, _} when helper() -> 0
   end

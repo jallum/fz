@@ -11,5 +11,5 @@
 # budget.planner.stmts: 4
 # budget.planner.dispatches: 2
 #---
-fn inc(n) do n + 1 end
-fn main(), do: dbg(inc(41))
+def inc(n) do n + 1 end
+def main(), do: dbg(inc(41))

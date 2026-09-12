@@ -27,12 +27,12 @@
 #   * `-0.0`, which must stay `-0.0`. This is why `-x` is NOT lowered as
 #     `0 - x`: that answers `0.0`, and the sign of zero is observable;
 #   * negative literals beside them, which fold to literals rather than calls.
-fnp pick(0), do: 4.5
-fnp pick(_), do: 9
+defp pick(0), do: 4.5
+defp pick(_), do: 9
 
-fnp negate_any(x), do: -x
+defp negate_any(x), do: -x
 
-fn main() do
+def main() do
   dbg(-pick(0))
   dbg(-pick(1))
   dbg(negate_any(2.5))

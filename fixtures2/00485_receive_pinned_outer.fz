@@ -1,4 +1,4 @@
-fn rx_pinned(want) do
+def rx_pinned(want) do
   receive do
     {^want, payload} -> payload
   end

@@ -1,11 +1,11 @@
 #---
 # purpose: independently allocated equal composite map keys collapse and fresh lookups find the last value
 #---
-fn tuple(x), do: {:x, x}
-fn list(x), do: [x, 2]
-fn nested(x), do: %{tuple(x) => list(x)}
+def tuple(x), do: {:x, x}
+def list(x), do: [x, 2]
+def nested(x), do: %{tuple(x) => list(x)}
 
-fn main() do
+def main() do
   tuples = %{tuple(1) => :first, tuple(1) => :last}
   lists = %{list(1) => :first, list(1) => :last}
   maps = %{nested(1) => :first, nested(1) => :last}

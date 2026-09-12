@@ -11,7 +11,7 @@
 # The expected output pins the full map shape and proves snapshot-first
 # semantics: `:map_allocs` is `0` because the stats map is allocated only after
 # the snapshot is taken.
-fn main() do
+def main() do
   xs = [1, 2]
   dbg(xs)
 

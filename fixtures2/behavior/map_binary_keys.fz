@@ -37,7 +37,7 @@
 #   * ITERATION ORDER, which is now by content. It matches Elixir, whose small
 #     maps are term-ordered -- including the prefix case where the shorter key
 #     sorts first.
-fn main() do
+def main() do
   built = "a" <> "b"
 
   dbg(%{"ab" => 1, built => 2})

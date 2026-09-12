@@ -37,7 +37,7 @@
 #
 # Immutable retention is separate from destructive rewrite permission. Reading
 # or sharing the input does not prohibit returning an unchanged source cell.
-fn main() do
+def main() do
   xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
   base = allocs()
 
@@ -63,7 +63,7 @@ fn main() do
   })
 end
 
-fnp allocs() do
+defp allocs() do
   stats = Process.heap_alloc_stats()
   stats[:list_cons_allocs]
 end

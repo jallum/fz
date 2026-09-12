@@ -328,11 +328,11 @@ to run the macro.
 
 ```text
 defmacro make_answer() do
-  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
 end
 
 make_answer()
-fn main(), do: answer()
+def main(), do: answer()
 ```
 
 `ScopeCode`:
@@ -341,7 +341,7 @@ fn main(), do: answer()
 2. publishes its raw `FunctionSource`
 3. hits `make_answer()`
 4. waits for the hidden macro root's `RootBackendProduct` if needed
-5. runs the macro and gets quoted `fn answer(), do: 42`
+5. runs the macro and gets quoted `def answer(), do: 42`
 6. applies that fragment as source
 7. publishes `answer/0`, then `main/0`
 
@@ -351,7 +351,7 @@ The macro changes what exists in the module, so it runs eagerly.
 
 ```text
 defmacro inc(x), do: quote do: unquote(x) + 1
-fn main(), do: inc(41)
+def main(), do: inc(41)
 ```
 
 `ScopeCode` publishes raw `FunctionSource(main)` that still contains `inc(41)`.

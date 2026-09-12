@@ -50,7 +50,7 @@ defmodule Keyword do
 
   """
   @spec new() :: keyword()
-  fn new(), do: []
+  def new(), do: []
 
   @doc """
   Builds a keyword list from an enumerable of `{atom, value}` two-tuples.
@@ -62,7 +62,7 @@ defmodule Keyword do
 
   """
   @spec new(any) :: keyword()
-  fn new(pairs), do: Enum.to_list(pairs)
+  def new(pairs), do: Enum.to_list(pairs)
 
   @doc """
   Returns the value for `key`, or `nil` when the key is absent.
@@ -77,7 +77,7 @@ defmodule Keyword do
 
   """
   @spec get(keyword(), atom) :: any
-  fn get(keywords, key), do: get(keywords, key, nil)
+  def get(keywords, key), do: get(keywords, key, nil)
 
   @doc """
   Returns the value for `key`, or `default` when the key is absent.
@@ -97,8 +97,8 @@ defmodule Keyword do
 
   """
   @spec get(keyword(), atom, any) :: any
-  fn get([], _key, default), do: default
-  fn get([{entry_key, value} | tail], key, default) do
+  def get([], _key, default), do: default
+  def get([{entry_key, value} | tail], key, default) do
     if entry_key === key, do: value, else: get(tail, key, default)
   end
 
@@ -115,8 +115,8 @@ defmodule Keyword do
 
   """
   @spec fetch(keyword(), atom) :: {:ok, any} | :error
-  fn fetch([], _key), do: :error
-  fn fetch([{entry_key, value} | tail], key) do
+  def fetch([], _key), do: :error
+  def fetch([{entry_key, value} | tail], key) do
     if entry_key === key, do: {:ok, value}, else: fetch(tail, key)
   end
 
@@ -132,11 +132,11 @@ defmodule Keyword do
 
   """
   @spec fetch!(keyword(), atom) :: any
-  fn fetch!(keywords, key), do: fetch_result(fetch(keywords, key), key)
+  def fetch!(keywords, key), do: fetch_result(fetch(keywords, key), key)
 
   @spec fetch_result({:ok, any} | :error, atom) :: any
-  fnp fetch_result({:ok, value}, _key), do: value
-  fnp fetch_result(:error, key), do: Kernel.panic("key not found in keyword list: #{key}")
+  defp fetch_result({:ok, value}, _key), do: value
+  defp fetch_result(:error, key), do: Kernel.panic("key not found in keyword list: #{key}")
 
   @doc """
   Returns every value stored under `key`, in list order.
@@ -153,8 +153,8 @@ defmodule Keyword do
 
   """
   @spec get_values(keyword(), atom) :: [any]
-  fn get_values([], _key), do: []
-  fn get_values([{entry_key, value} | tail], key) do
+  def get_values([], _key), do: []
+  def get_values([{entry_key, value} | tail], key) do
     if entry_key === key do
       [value | get_values(tail, key)]
     else
@@ -178,7 +178,7 @@ defmodule Keyword do
 
   """
   @spec put(keyword(), atom, any) :: keyword()
-  fn put(keywords, key, value), do: [{key, value} | delete(keywords, key)]
+  def put(keywords, key, value), do: [{key, value} | delete(keywords, key)]
 
   @doc """
   Stores `value` under `key`, unless the key already has an entry.
@@ -195,7 +195,7 @@ defmodule Keyword do
 
   """
   @spec put_new(keyword(), atom, any) :: keyword()
-  fn put_new(keywords, key, value) do
+  def put_new(keywords, key, value) do
     if has_key?(keywords, key), do: keywords, else: [{key, value} | keywords]
   end
 
@@ -212,8 +212,8 @@ defmodule Keyword do
 
   """
   @spec delete(keyword(), atom) :: keyword()
-  fn delete([], _key), do: []
-  fn delete([{entry_key, value} | tail], key) do
+  def delete([], _key), do: []
+  def delete([{entry_key, value} | tail], key) do
     if entry_key === key, do: delete(tail, key), else: [{entry_key, value} | delete(tail, key)]
   end
 
@@ -229,8 +229,8 @@ defmodule Keyword do
 
   """
   @spec delete_first(keyword(), atom) :: keyword()
-  fn delete_first([], _key), do: []
-  fn delete_first([{entry_key, value} | tail], key) do
+  def delete_first([], _key), do: []
+  def delete_first([{entry_key, value} | tail], key) do
     if entry_key === key, do: tail, else: [{entry_key, value} | delete_first(tail, key)]
   end
 
@@ -247,8 +247,8 @@ defmodule Keyword do
 
   """
   @spec has_key?(keyword(), atom) :: bool
-  fn has_key?([], _key), do: false
-  fn has_key?([{entry_key, _value} | tail], key) do
+  def has_key?([], _key), do: false
+  def has_key?([{entry_key, _value} | tail], key) do
     if entry_key === key, do: true, else: has_key?(tail, key)
   end
 
@@ -262,8 +262,8 @@ defmodule Keyword do
 
   """
   @spec keys(keyword()) :: [atom]
-  fn keys([]), do: []
-  fn keys([{key, _value} | tail]), do: [key | keys(tail)]
+  def keys([]), do: []
+  def keys([{key, _value} | tail]), do: [key | keys(tail)]
 
   @doc """
   Returns every value, in list order, with duplicates kept.
@@ -275,8 +275,8 @@ defmodule Keyword do
 
   """
   @spec values(keyword()) :: [any]
-  fn values([]), do: []
-  fn values([{_key, value} | tail]), do: [value | values(tail)]
+  def values([]), do: []
+  def values([{_key, value} | tail]), do: [value | values(tail)]
 
   @doc """
   Keeps only the entries whose keys appear in `wanted`.
@@ -293,8 +293,8 @@ defmodule Keyword do
 
   """
   @spec take(keyword(), [atom]) :: keyword()
-  fn take([], _wanted), do: []
-  fn take([{key, value} | tail], wanted) do
+  def take([], _wanted), do: []
+  def take([{key, value} | tail], wanted) do
     if List.member?(wanted, key) do
       [{key, value} | take(tail, wanted)]
     else
@@ -314,8 +314,8 @@ defmodule Keyword do
 
   """
   @spec drop(keyword(), [atom]) :: keyword()
-  fn drop([], _unwanted), do: []
-  fn drop([{key, value} | tail], unwanted) do
+  def drop([], _unwanted), do: []
+  def drop([{key, value} | tail], unwanted) do
     if List.member?(unwanted, key) do
       drop(tail, unwanted)
     else
@@ -345,8 +345,8 @@ defmodule Keyword do
 
   """
   @spec merge(keyword(), keyword()) :: keyword()
-  fn merge(left, []), do: left
-  fn merge(left, [{key, value} | tail]), do: merge(put(left, key, value), tail)
+  def merge(left, []), do: left
+  def merge(left, [{key, value} | tail]), do: merge(put(left, key, value), tail)
 
   @doc """
   Applies `fun` to the value for `key`, or stores `default` when the key is absent.
@@ -365,11 +365,11 @@ defmodule Keyword do
 
   """
   @spec update(keyword(), atom, any, (any) -> any) :: keyword()
-  fn update(keywords, key, default, fun), do: update_result(fetch(keywords, key), keywords, key, default, fun)
+  def update(keywords, key, default, fun), do: update_result(fetch(keywords, key), keywords, key, default, fun)
 
   @spec update_result({:ok, any} | :error, keyword(), atom, any, (any) -> any) :: keyword()
-  fnp update_result({:ok, value}, keywords, key, _default, fun), do: put(keywords, key, fun.(value))
-  fnp update_result(:error, keywords, key, default, _fun), do: put(keywords, key, default)
+  defp update_result({:ok, value}, keywords, key, _default, fun), do: put(keywords, key, fun.(value))
+  defp update_result(:error, keywords, key, default, _fun), do: put(keywords, key, default)
 
   @doc """
   Applies `fun` to the value for `key`, or halts when the key is absent.
@@ -381,7 +381,7 @@ defmodule Keyword do
 
   """
   @spec update!(keyword(), atom, (any) -> any) :: keyword()
-  fn update!(keywords, key, fun), do: put(keywords, key, fun.(fetch!(keywords, key)))
+  def update!(keywords, key, fun), do: put(keywords, key, fun.(fetch!(keywords, key)))
 
   @doc """
   Removes every entry for `key`, returning `{value, rest}` for the first match.
@@ -399,7 +399,7 @@ defmodule Keyword do
 
   """
   @spec pop(keyword(), atom) :: {any, keyword()}
-  fn pop(keywords, key), do: pop(keywords, key, nil)
+  def pop(keywords, key), do: pop(keywords, key, nil)
 
   @doc """
   Removes every entry for `key`, returning `{value, rest}` for the first
@@ -412,11 +412,11 @@ defmodule Keyword do
 
   """
   @spec pop(keyword(), atom, any) :: {any, keyword()}
-  fn pop(keywords, key, default), do: pop_result(fetch(keywords, key), keywords, key, default)
+  def pop(keywords, key, default), do: pop_result(fetch(keywords, key), keywords, key, default)
 
   @spec pop_result({:ok, any} | :error, keyword(), atom, any) :: {any, keyword()}
-  fnp pop_result({:ok, value}, keywords, key, _default), do: {value, delete(keywords, key)}
-  fnp pop_result(:error, keywords, _key, default), do: {default, keywords}
+  defp pop_result({:ok, value}, keywords, key, _default), do: {value, delete(keywords, key)}
+  defp pop_result(:error, keywords, _key, default), do: {default, keywords}
 
   @doc """
   Returns `true` when every element is an `{atom, value}` two-tuple.
@@ -431,11 +431,11 @@ defmodule Keyword do
 
   """
   @spec keyword?(any) :: bool
-  fn keyword?([]), do: true
-  fn keyword?([{key, _value} | tail]), do: atom_key?(key) and keyword?(tail)
-  fn keyword?(_other), do: false
+  def keyword?([]), do: true
+  def keyword?([{key, _value} | tail]), do: atom_key?(key) and keyword?(tail)
+  def keyword?(_other), do: false
 
   @spec atom_key?(any) :: bool
-  fnp atom_key?(_key :: atom), do: true
-  fnp atom_key?(_other), do: false
+  defp atom_key?(_key :: atom), do: true
+  defp atom_key?(_other), do: false
 end

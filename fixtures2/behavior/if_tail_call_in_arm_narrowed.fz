@@ -38,13 +38,13 @@
 # 7
 # 99
 # ```
-fn helper(), do: 7
+def helper(), do: 7
 
-fn pick(n) do
+def pick(n) do
   if n == 0 do helper() else 99 end
 end
 
-fn main() do
+def main() do
   dbg(pick(0))
   dbg(pick(1))
 end

@@ -85,9 +85,9 @@ defmodule String do
   # Case mapping is full Unicode, not ASCII -- see `upcase/1` and `downcase/1`
   # below for what "full" means and why the table lives in the runtime.
 
-  extern "fz" fn fz_binary_to_atom(any) :: any
-  extern "fz" fn fz_binary_upcase(any) :: binary
-  extern "fz" fn fz_binary_downcase(any) :: binary
+  extern "fz" def fz_binary_to_atom(any) :: any
+  extern "fz" def fz_binary_upcase(any) :: binary
+  extern "fz" def fz_binary_downcase(any) :: binary
 
   @doc """
   Returns the number of codepoints in `s`.
@@ -108,15 +108,15 @@ defmodule String do
 
   """
   @spec length(binary) :: integer
-  fn length(s), do: codepoint_count(s, 0)
+  def length(s), do: codepoint_count(s, 0)
 
   @spec codepoint_count(binary, integer) :: integer
-  fnp codepoint_count(<<>>, acc), do: acc
-  fnp codepoint_count(s, acc), do: codepoint_count_step(next_codepoint(s), acc)
+  defp codepoint_count(<<>>, acc), do: acc
+  defp codepoint_count(s, acc), do: codepoint_count_step(next_codepoint(s), acc)
 
   @spec codepoint_count_step({binary, binary} | nil, integer) :: integer
-  fnp codepoint_count_step(nil, acc), do: acc
-  fnp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
+  defp codepoint_count_step(nil, acc), do: acc
+  defp codepoint_count_step({_cp, rest}, acc), do: codepoint_count(rest, acc + 1)
 
   @doc """
   Returns whether `s` starts with `prefix`.
@@ -133,10 +133,10 @@ defmodule String do
 
   """
   @spec starts_with?(binary, binary) :: bool
-  fn starts_with?(s, prefix), do: starts_with_size?(s, prefix, byte_size(prefix))
+  def starts_with?(s, prefix), do: starts_with_size?(s, prefix, byte_size(prefix))
 
   @spec starts_with_size?(binary, binary, integer) :: bool
-  fnp starts_with_size?(s, prefix, n) do
+  defp starts_with_size?(s, prefix, n) do
     if byte_size(s) < n do
       false
     else
@@ -159,10 +159,10 @@ defmodule String do
 
   """
   @spec ends_with?(binary, binary) :: bool
-  fn ends_with?(s, suffix), do: ends_with_size?(s, suffix, byte_size(s), byte_size(suffix))
+  def ends_with?(s, suffix), do: ends_with_size?(s, suffix, byte_size(s), byte_size(suffix))
 
   @spec ends_with_size?(binary, binary, integer, integer) :: bool
-  fnp ends_with_size?(s, suffix, total, n) do
+  defp ends_with_size?(s, suffix, total, n) do
     if total < n do
       false
     else
@@ -187,10 +187,10 @@ defmodule String do
 
   """
   @spec take_bytes(binary, integer) :: binary
-  fn take_bytes(s, n), do: take_bytes_result(s, n)
+  def take_bytes(s, n), do: take_bytes_result(s, n)
 
   @spec take_bytes_result(binary, integer) :: binary
-  fnp take_bytes_result(s, n) do
+  defp take_bytes_result(s, n) do
     case s do
       <<head :: binary-size(n), _rest :: binary>> -> head
       _other -> s
@@ -212,10 +212,10 @@ defmodule String do
 
   """
   @spec drop_bytes(binary, integer) :: binary
-  fn drop_bytes(s, n), do: drop_bytes_result(s, n)
+  def drop_bytes(s, n), do: drop_bytes_result(s, n)
 
   @spec drop_bytes_result(binary, integer) :: binary
-  fnp drop_bytes_result(s, n) do
+  defp drop_bytes_result(s, n) do
     case s do
       <<_head :: binary-size(n), rest :: binary>> -> rest
       _other -> ""
@@ -232,7 +232,7 @@ defmodule String do
 
   """
   @spec byte_slice(binary, integer, integer) :: binary
-  fn byte_slice(s, start, len), do: take_bytes(drop_bytes(s, start), len)
+  def byte_slice(s, start, len), do: take_bytes(drop_bytes(s, start), len)
 
   @doc """
   Replaces `prefix` with `replacement` when `s` starts with it.
@@ -249,7 +249,7 @@ defmodule String do
 
   """
   @spec replace_prefix(binary, binary, binary) :: binary
-  fn replace_prefix(s, prefix, replacement) do
+  def replace_prefix(s, prefix, replacement) do
     if starts_with?(s, prefix) do
       replacement <> drop_bytes(s, byte_size(prefix))
     else
@@ -272,7 +272,7 @@ defmodule String do
 
   """
   @spec replace_suffix(binary, binary, binary) :: binary
-  fn replace_suffix(s, suffix, replacement) do
+  def replace_suffix(s, suffix, replacement) do
     if ends_with?(s, suffix) do
       take_bytes(s, byte_size(s) - byte_size(suffix)) <> replacement
     else
@@ -292,11 +292,11 @@ defmodule String do
 
   """
   @spec replace_leading(binary, binary, binary) :: binary
-  fn replace_leading(s, match, replacement), do: replace_leading_guard(s, match, replacement, byte_size(match))
+  def replace_leading(s, match, replacement), do: replace_leading_guard(s, match, replacement, byte_size(match))
 
   @spec replace_leading_guard(binary, binary, binary, integer) :: binary
-  fnp replace_leading_guard(s, _match, _replacement, 0), do: s
-  fnp replace_leading_guard(s, match, replacement, n) do
+  defp replace_leading_guard(s, _match, _replacement, 0), do: s
+  defp replace_leading_guard(s, match, replacement, n) do
     if starts_with?(s, match) do
       replacement <> replace_leading_guard(drop_bytes(s, n), match, replacement, n)
     else
@@ -317,11 +317,11 @@ defmodule String do
 
   """
   @spec replace_trailing(binary, binary, binary) :: binary
-  fn replace_trailing(s, match, replacement), do: replace_trailing_guard(s, match, replacement, byte_size(match))
+  def replace_trailing(s, match, replacement), do: replace_trailing_guard(s, match, replacement, byte_size(match))
 
   @spec replace_trailing_guard(binary, binary, binary, integer) :: binary
-  fnp replace_trailing_guard(s, _match, _replacement, 0), do: s
-  fnp replace_trailing_guard(s, match, replacement, n) do
+  defp replace_trailing_guard(s, _match, _replacement, 0), do: s
+  defp replace_trailing_guard(s, match, replacement, n) do
     if ends_with?(s, match) do
       replace_trailing_guard(take_bytes(s, byte_size(s) - n), match, replacement, n) <> replacement
     else
@@ -345,7 +345,7 @@ defmodule String do
 
   """
   @spec trim(binary) :: binary
-  fn trim(s), do: trim_trailing(trim_leading(s))
+  def trim(s), do: trim_trailing(trim_leading(s))
 
   @doc """
   Removes leading whitespace from `s`.
@@ -357,11 +357,11 @@ defmodule String do
 
   """
   @spec trim_leading(binary) :: binary
-  fn trim_leading(s), do: trim_leading_step(s, next_codepoint(s))
+  def trim_leading(s), do: trim_leading_step(s, next_codepoint(s))
 
   @spec trim_leading_step(binary, {binary, binary} | nil) :: binary
-  fnp trim_leading_step(s, nil), do: s
-  fnp trim_leading_step(s, {cp, rest}) do
+  defp trim_leading_step(s, nil), do: s
+  defp trim_leading_step(s, {cp, rest}) do
     if whitespace?(cp), do: trim_leading(rest), else: s
   end
 
@@ -375,42 +375,42 @@ defmodule String do
 
   """
   @spec trim_trailing(binary) :: binary
-  fn trim_trailing(s), do: reverse(trim_leading(reverse(s)))
+  def trim_trailing(s), do: reverse(trim_leading(reverse(s)))
 
   @spec first_byte(binary) :: integer
-  fnp first_byte(<<c, _rest :: binary>>), do: c
-  fnp first_byte(_s), do: 0
+  defp first_byte(<<c, _rest :: binary>>), do: c
+  defp first_byte(_s), do: 0
 
   # This trims the Unicode whitespace set, not just ASCII, hence the table
   # below -- 25 codepoints. The other table this module relies on is case
   # mapping; see `upcase/1`.
   @spec whitespace?(binary) :: bool
-  fnp whitespace?(" "), do: true
-  fnp whitespace?("\t"), do: true
-  fnp whitespace?("\n"), do: true
-  fnp whitespace?("\r"), do: true
-  fnp whitespace?(<<11>>), do: true
-  fnp whitespace?(<<12>>), do: true
-  fnp whitespace?(<<194, 133>>), do: true
-  fnp whitespace?(<<194, 160>>), do: true
-  fnp whitespace?(<<225, 154, 128>>), do: true
-  fnp whitespace?(<<226, 128, 128>>), do: true
-  fnp whitespace?(<<226, 128, 129>>), do: true
-  fnp whitespace?(<<226, 128, 130>>), do: true
-  fnp whitespace?(<<226, 128, 131>>), do: true
-  fnp whitespace?(<<226, 128, 132>>), do: true
-  fnp whitespace?(<<226, 128, 133>>), do: true
-  fnp whitespace?(<<226, 128, 134>>), do: true
-  fnp whitespace?(<<226, 128, 135>>), do: true
-  fnp whitespace?(<<226, 128, 136>>), do: true
-  fnp whitespace?(<<226, 128, 137>>), do: true
-  fnp whitespace?(<<226, 128, 138>>), do: true
-  fnp whitespace?(<<226, 128, 168>>), do: true
-  fnp whitespace?(<<226, 128, 169>>), do: true
-  fnp whitespace?(<<226, 128, 175>>), do: true
-  fnp whitespace?(<<226, 129, 159>>), do: true
-  fnp whitespace?(<<227, 128, 128>>), do: true
-  fnp whitespace?(_cp), do: false
+  defp whitespace?(" "), do: true
+  defp whitespace?("\t"), do: true
+  defp whitespace?("\n"), do: true
+  defp whitespace?("\r"), do: true
+  defp whitespace?(<<11>>), do: true
+  defp whitespace?(<<12>>), do: true
+  defp whitespace?(<<194, 133>>), do: true
+  defp whitespace?(<<194, 160>>), do: true
+  defp whitespace?(<<225, 154, 128>>), do: true
+  defp whitespace?(<<226, 128, 128>>), do: true
+  defp whitespace?(<<226, 128, 129>>), do: true
+  defp whitespace?(<<226, 128, 130>>), do: true
+  defp whitespace?(<<226, 128, 131>>), do: true
+  defp whitespace?(<<226, 128, 132>>), do: true
+  defp whitespace?(<<226, 128, 133>>), do: true
+  defp whitespace?(<<226, 128, 134>>), do: true
+  defp whitespace?(<<226, 128, 135>>), do: true
+  defp whitespace?(<<226, 128, 136>>), do: true
+  defp whitespace?(<<226, 128, 137>>), do: true
+  defp whitespace?(<<226, 128, 138>>), do: true
+  defp whitespace?(<<226, 128, 168>>), do: true
+  defp whitespace?(<<226, 128, 169>>), do: true
+  defp whitespace?(<<226, 128, 175>>), do: true
+  defp whitespace?(<<226, 129, 159>>), do: true
+  defp whitespace?(<<227, 128, 128>>), do: true
+  defp whitespace?(_cp), do: false
 
   # Unicode case mapping, not ASCII. The table is 2,723 codepoint pairs; as fz
   # clauses it would go through the dispatch matrix and make compile work
@@ -436,7 +436,7 @@ defmodule String do
 
   """
   @spec upcase(binary) :: binary
-  fn upcase(s), do: fz_binary_upcase(s)
+  def upcase(s), do: fz_binary_upcase(s)
 
   @doc """
   Converts every codepoint in `s` to lowercase.
@@ -454,7 +454,7 @@ defmodule String do
 
   """
   @spec downcase(binary) :: binary
-  fn downcase(s), do: fz_binary_downcase(s)
+  def downcase(s), do: fz_binary_downcase(s)
 
   @doc """
   Returns `s` repeated `n` times.
@@ -469,8 +469,8 @@ defmodule String do
 
   """
   @spec duplicate(binary, integer) :: binary
-  fn duplicate(_s, 0), do: ""
-  fn duplicate(s, n), do: s <> duplicate(s, n - 1)
+  def duplicate(_s, 0), do: ""
+  def duplicate(s, n), do: s <> duplicate(s, n - 1)
 
   @doc """
   Returns whether `s` contains `pattern`.
@@ -491,7 +491,7 @@ defmodule String do
 
   """
   @spec contains?(binary, binary) :: bool
-  fn contains?(s, pattern), do: index_of(s, pattern) >= 0
+  def contains?(s, pattern), do: index_of(s, pattern) >= 0
 
   @doc """
   Returns the byte offset of the first occurrence of `pattern` in `s`.
@@ -509,11 +509,11 @@ defmodule String do
 
   """
   @spec index_of(binary, binary) :: integer
-  fn index_of(s, pattern), do: index_from(s, pattern, 0, byte_size(pattern))
+  def index_of(s, pattern), do: index_from(s, pattern, 0, byte_size(pattern))
 
   @spec index_from(binary, binary, integer, integer) :: integer
-  fnp index_from(_s, _pattern, _at, 0), do: -1
-  fnp index_from(s, pattern, at, n) do
+  defp index_from(_s, _pattern, _at, 0), do: -1
+  defp index_from(s, pattern, at, n) do
     if byte_size(s) < n do
       -1
     else
@@ -540,11 +540,11 @@ defmodule String do
 
   """
   @spec count(binary, binary) :: integer
-  fn count(s, pattern), do: count_from(s, pattern, 0, byte_size(pattern))
+  def count(s, pattern), do: count_from(s, pattern, 0, byte_size(pattern))
 
   @spec count_from(binary, binary, integer, integer) :: integer
-  fnp count_from(_s, _pattern, acc, 0), do: acc
-  fnp count_from(s, pattern, acc, n) do
+  defp count_from(_s, _pattern, acc, 0), do: acc
+  defp count_from(s, pattern, acc, n) do
     index = index_of(s, pattern)
     if index < 0 do
       acc
@@ -570,11 +570,11 @@ defmodule String do
 
   """
   @spec split(binary, binary) :: [binary]
-  fn split(s, pattern), do: split_from(s, pattern, byte_size(pattern))
+  def split(s, pattern), do: split_from(s, pattern, byte_size(pattern))
 
   @spec split_from(binary, binary, integer) :: [binary]
-  fnp split_from(s, _pattern, 0), do: [s]
-  fnp split_from(s, pattern, n) do
+  defp split_from(s, _pattern, 0), do: [s]
+  defp split_from(s, pattern, n) do
     index = index_of(s, pattern)
     if index < 0 do
       [s]
@@ -597,7 +597,7 @@ defmodule String do
 
   """
   @spec replace(binary, binary, binary) :: binary
-  fn replace(s, pattern, replacement), do: join(split(s, pattern), replacement)
+  def replace(s, pattern, replacement), do: join(split(s, pattern), replacement)
 
   @doc """
   Joins the binaries in `parts`, with `separator` between each pair.
@@ -615,9 +615,9 @@ defmodule String do
 
   """
   @spec join([binary], binary) :: binary
-  fn join([], _separator), do: ""
-  fn join([only], _separator), do: only
-  fn join([head | tail], separator), do: head <> separator <> join(tail, separator)
+  def join([], _separator), do: ""
+  def join([only], _separator), do: only
+  def join([head | tail], separator), do: head <> separator <> join(tail, separator)
 
   @doc """
   Returns the first codepoint of `s` and the rest, or `nil` when `s` is empty.
@@ -632,19 +632,19 @@ defmodule String do
 
   """
   @spec next_codepoint(binary) :: {binary, binary} | nil
-  fn next_codepoint(<<>>), do: nil
-  fn next_codepoint(s), do: split_codepoint(s, codepoint_size(first_byte(s)))
+  def next_codepoint(<<>>), do: nil
+  def next_codepoint(s), do: split_codepoint(s, codepoint_size(first_byte(s)))
 
   @spec split_codepoint(binary, integer) :: {binary, binary} | nil
-  fnp split_codepoint(s, size), do: {take_bytes(s, size), drop_bytes(s, size)}
+  defp split_codepoint(s, size), do: {take_bytes(s, size), drop_bytes(s, size)}
 
   # UTF-8 says how long a codepoint is in its first byte, so a decoder never
   # has to look ahead to know how far to advance.
   @spec codepoint_size(integer) :: integer
-  fnp codepoint_size(c) when c < 128, do: 1
-  fnp codepoint_size(c) when c < 224, do: 2
-  fnp codepoint_size(c) when c < 240, do: 3
-  fnp codepoint_size(_c), do: 4
+  defp codepoint_size(c) when c < 128, do: 1
+  defp codepoint_size(c) when c < 224, do: 2
+  defp codepoint_size(c) when c < 240, do: 3
+  defp codepoint_size(_c), do: 4
 
   # UAX #29 grapheme breaking is what Elixir delegates to OTP's :unicode_util
   # -- about 1 MB compiled, growing roughly 15% per OTP major release. fz does
@@ -670,7 +670,7 @@ defmodule String do
 
   """
   @spec next_grapheme_size(binary) :: integer
-  fn next_grapheme_size(s), do: codepoint_size(first_byte(s))
+  def next_grapheme_size(s), do: codepoint_size(first_byte(s))
 
   @doc """
   Returns the first grapheme of `s` and the rest, or `nil` when `s` is empty.
@@ -685,8 +685,8 @@ defmodule String do
 
   """
   @spec next_grapheme(binary) :: {binary, binary} | nil
-  fn next_grapheme(""), do: nil
-  fn next_grapheme(s), do: split_codepoint(s, next_grapheme_size(s))
+  def next_grapheme(""), do: nil
+  def next_grapheme(s), do: split_codepoint(s, next_grapheme_size(s))
 
   @doc """
   Returns every grapheme of `s` as its own binary.
@@ -702,11 +702,11 @@ defmodule String do
 
   """
   @spec graphemes(binary) :: [binary]
-  fn graphemes(s), do: graphemes_step(next_grapheme(s))
+  def graphemes(s), do: graphemes_step(next_grapheme(s))
 
   @spec graphemes_step({binary, binary} | nil) :: [binary]
-  fnp graphemes_step(nil), do: []
-  fnp graphemes_step({g, rest}), do: [g | graphemes(rest)]
+  defp graphemes_step(nil), do: []
+  defp graphemes_step({g, rest}), do: [g | graphemes(rest)]
 
   @doc """
   Returns every codepoint of `s` as its own binary.
@@ -718,11 +718,11 @@ defmodule String do
 
   """
   @spec codepoints(binary) :: [binary]
-  fn codepoints(s), do: codepoints_step(next_codepoint(s))
+  def codepoints(s), do: codepoints_step(next_codepoint(s))
 
   @spec codepoints_step({binary, binary} | nil) :: [binary]
-  fnp codepoints_step(nil), do: []
-  fnp codepoints_step({cp, rest}), do: [cp | codepoints(rest)]
+  defp codepoints_step(nil), do: []
+  defp codepoints_step({cp, rest}), do: [cp | codepoints(rest)]
 
   @doc """
   Returns whether `s` is valid UTF-8.
@@ -737,7 +737,7 @@ defmodule String do
 
   """
   @spec valid?(binary) :: bool
-  fn valid?(s), do: Utf8.valid?(s)
+  def valid?(s), do: Utf8.valid?(s)
 
   # Not `to_charlist/1`: Elixir's returns a charlist, a list of integers that
   # `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so fz
@@ -758,8 +758,8 @@ defmodule String do
 
   """
   @spec to_byte_list(binary) :: [integer]
-  fn to_byte_list(<<c, rest :: binary>>), do: [c | to_byte_list(rest)]
-  fn to_byte_list(_s), do: []
+  def to_byte_list(<<c, rest :: binary>>), do: [c | to_byte_list(rest)]
+  def to_byte_list(_s), do: []
 
   @doc """
   Returns the atom named `s`, interning it if it does not already exist.
@@ -771,7 +771,7 @@ defmodule String do
 
   """
   @spec to_atom(binary) :: atom
-  fn to_atom(s), do: fz_binary_to_atom(s)
+  def to_atom(s), do: fz_binary_to_atom(s)
 
   @doc """
   Reverses the codepoints of `s`.
@@ -783,14 +783,14 @@ defmodule String do
 
   """
   @spec reverse(binary) :: binary
-  fn reverse(s), do: reverse_onto(s, "")
+  def reverse(s), do: reverse_onto(s, "")
 
   @spec reverse_onto(binary, binary) :: binary
-  fnp reverse_onto(s, acc), do: reverse_step(next_codepoint(s), acc)
+  defp reverse_onto(s, acc), do: reverse_step(next_codepoint(s), acc)
 
   @spec reverse_step({binary, binary} | nil, binary) :: binary
-  fnp reverse_step(nil, acc), do: acc
-  fnp reverse_step({cp, rest}, acc), do: reverse_onto(rest, cp <> acc)
+  defp reverse_step(nil, acc), do: acc
+  defp reverse_step({cp, rest}, acc), do: reverse_onto(rest, cp <> acc)
 
   @doc """
   Returns the first codepoint of `s`, or `nil` when `s` is empty.
@@ -805,11 +805,11 @@ defmodule String do
 
   """
   @spec first(binary) :: binary | nil
-  fn first(s), do: first_step(next_codepoint(s))
+  def first(s), do: first_step(next_codepoint(s))
 
   @spec first_step({binary, binary} | nil) :: binary | nil
-  fnp first_step(nil), do: nil
-  fnp first_step({cp, _rest}), do: cp
+  defp first_step(nil), do: nil
+  defp first_step({cp, _rest}), do: cp
 
   @doc """
   Returns whether every codepoint in `s` is printable.
@@ -824,30 +824,30 @@ defmodule String do
 
   """
   @spec printable?(binary) :: bool
-  fn printable?(s), do: valid?(s) and printable_bytes?(s)
+  def printable?(s), do: valid?(s) and printable_bytes?(s)
 
   @spec printable_bytes?(binary) :: bool
-  fnp printable_bytes?(<<c, rest :: binary>>) do
+  defp printable_bytes?(<<c, rest :: binary>>) do
     if printable_byte?(c), do: printable_bytes?(rest), else: false
   end
-  fnp printable_bytes?(_s), do: true
+  defp printable_bytes?(_s), do: true
 
   # The printable set is the ASCII graphic range plus the usual escapes, and
   # everything at or above 128 -- a multi-byte codepoint's bytes are all >=
   # 128, so a valid string's non-ASCII content passes by construction and
   # only the C0 controls are rejected.
   @spec printable_byte?(integer) :: bool
-  fnp printable_byte?(c) when c >= 32 and c < 127, do: true
-  fnp printable_byte?(c) when c >= 128, do: true
-  fnp printable_byte?(7), do: true
-  fnp printable_byte?(8), do: true
-  fnp printable_byte?(9), do: true
-  fnp printable_byte?(10), do: true
-  fnp printable_byte?(11), do: true
-  fnp printable_byte?(12), do: true
-  fnp printable_byte?(13), do: true
-  fnp printable_byte?(27), do: true
-  fnp printable_byte?(_c), do: false
+  defp printable_byte?(c) when c >= 32 and c < 127, do: true
+  defp printable_byte?(c) when c >= 128, do: true
+  defp printable_byte?(7), do: true
+  defp printable_byte?(8), do: true
+  defp printable_byte?(9), do: true
+  defp printable_byte?(10), do: true
+  defp printable_byte?(11), do: true
+  defp printable_byte?(12), do: true
+  defp printable_byte?(13), do: true
+  defp printable_byte?(27), do: true
+  defp printable_byte?(_c), do: false
 
   @doc """
   Returns the integer that `s` names, in base 10.
@@ -866,19 +866,19 @@ defmodule String do
 
   """
   @spec to_integer(binary) :: integer
-  fn to_integer(<<45, rest :: binary>>), do: 0 - digits_value(rest, 0, byte_size(rest))
-  fn to_integer(s), do: digits_value(s, 0, byte_size(s))
+  def to_integer(<<45, rest :: binary>>), do: 0 - digits_value(rest, 0, byte_size(rest))
+  def to_integer(s), do: digits_value(s, 0, byte_size(s))
 
   @spec digits_value(binary, integer, integer) :: integer
-  fnp digits_value(_s, _acc, 0), do: Kernel.panic("String.to_integer: not an integer")
-  fnp digits_value(s, acc, _n), do: digits_fold(s, acc)
+  defp digits_value(_s, _acc, 0), do: Kernel.panic("String.to_integer: not an integer")
+  defp digits_value(s, acc, _n), do: digits_fold(s, acc)
 
   @spec digits_fold(binary, integer) :: integer
-  fnp digits_fold(<<>>, acc), do: acc
-  fnp digits_fold(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
+  defp digits_fold(<<>>, acc), do: acc
+  defp digits_fold(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
     digits_fold(rest, acc * 10 + (c - 48))
   end
-  fnp digits_fold(_s, _acc), do: Kernel.panic("String.to_integer: not an integer")
+  defp digits_fold(_s, _acc), do: Kernel.panic("String.to_integer: not an integer")
 
   @doc """
   Returns the float that `s` names, or halts.
@@ -896,21 +896,21 @@ defmodule String do
 
   """
   @spec to_float(binary) :: float
-  fn to_float(s), do: float_parts(split(s, "."))
+  def to_float(s), do: float_parts(split(s, "."))
 
   # `to_float/1` requires a decimal point -- `to_float("1")` panics where
   # `to_float("1.0")` is `1.0` -- so the split has to find exactly two parts
   # and both have to be digits.
   @spec float_parts([binary]) :: float
-  fnp float_parts([whole, fraction]), do: float_of(whole, fraction)
-  fnp float_parts(_parts), do: Kernel.panic("String.to_float: not a float")
+  defp float_parts([whole, fraction]), do: float_of(whole, fraction)
+  defp float_parts(_parts), do: Kernel.panic("String.to_float: not a float")
 
   @spec float_of(binary, binary) :: float
-  fnp float_of(<<45, whole :: binary>>, fraction), do: 0.0 - float_magnitude(whole, fraction)
-  fnp float_of(whole, fraction), do: float_magnitude(whole, fraction)
+  defp float_of(<<45, whole :: binary>>, fraction), do: 0.0 - float_magnitude(whole, fraction)
+  defp float_of(whole, fraction), do: float_magnitude(whole, fraction)
 
   @spec float_magnitude(binary, binary) :: float
-  fnp float_magnitude(whole, fraction) do
+  defp float_magnitude(whole, fraction) do
     scale = pow10(byte_size(fraction))
     whole_value = digits_value(whole, 0, byte_size(whole))
     fraction_value = digits_value(fraction, 0, byte_size(fraction))
@@ -918,8 +918,8 @@ defmodule String do
   end
 
   @spec pow10(integer) :: float
-  fnp pow10(0), do: 1.0
-  fnp pow10(n), do: 10.0 * pow10(n - 1)
+  defp pow10(0), do: 1.0
+  defp pow10(n), do: 10.0 * pow10(n - 1)
 
   @doc """
   Replaces every invalid UTF-8 byte sequence in `s` with `replacement`.
@@ -931,15 +931,15 @@ defmodule String do
 
   """
   @spec replace_invalid(binary, binary) :: binary
-  fn replace_invalid(s, replacement), do: replace_invalid_step(s, replacement)
+  def replace_invalid(s, replacement), do: replace_invalid_step(s, replacement)
 
   # A codepoint's length is in its first byte, so the candidate slice is known
   # before it is validated. If the slice is valid UTF-8 it is kept whole;
   # otherwise one byte is dropped and replaced, resynchronising a truncated
   # sequence without swallowing the bytes after it.
   @spec replace_invalid_step(binary, binary) :: binary
-  fnp replace_invalid_step(<<>>, _replacement), do: ""
-  fnp replace_invalid_step(s, replacement) do
+  defp replace_invalid_step(<<>>, _replacement), do: ""
+  defp replace_invalid_step(s, replacement) do
     size = codepoint_size(first_byte(s))
     candidate = take_bytes(s, size)
     if byte_size(candidate) == size and valid?(candidate) do
@@ -962,22 +962,22 @@ defmodule String do
 
   """
   @spec chunk(binary) :: [binary]
-  fn chunk(""), do: []
-  fn chunk(s), do: chunk_run(s, valid_here?(s))
+  def chunk(""), do: []
+  def chunk(s), do: chunk_run(s, valid_here?(s))
 
   @spec valid_here?(binary) :: bool
-  fnp valid_here?(s) do
+  defp valid_here?(s) do
     size = codepoint_size(first_byte(s))
     candidate = take_bytes(s, size)
     byte_size(candidate) == size and valid?(candidate)
   end
 
   @spec chunk_run(binary, bool) :: [binary]
-  fnp chunk_run(s, wanted), do: chunk_split(s, wanted, "")
+  defp chunk_run(s, wanted), do: chunk_split(s, wanted, "")
 
   @spec chunk_split(binary, bool, binary) :: [binary]
-  fnp chunk_split(<<>>, _wanted, acc), do: [acc]
-  fnp chunk_split(s, wanted, acc) do
+  defp chunk_split(<<>>, _wanted, acc), do: [acc]
+  defp chunk_split(s, wanted, acc) do
     if valid_here?(s) == wanted do
       size = chunk_step(s, wanted)
       chunk_split(drop_bytes(s, size), wanted, acc <> take_bytes(s, size))
@@ -987,8 +987,8 @@ defmodule String do
   end
 
   @spec chunk_step(binary, bool) :: integer
-  fnp chunk_step(_s, false), do: 1
-  fnp chunk_step(s, true), do: codepoint_size(first_byte(s))
+  defp chunk_step(_s, false), do: 1
+  defp chunk_step(s, true), do: codepoint_size(first_byte(s))
 
   @doc """
   Returns the last codepoint of `s`, or `nil` when `s` is empty.
@@ -1003,5 +1003,5 @@ defmodule String do
 
   """
   @spec last(binary) :: binary | nil
-  fn last(s), do: first(reverse(s))
+  def last(s), do: first(reverse(s))
 end

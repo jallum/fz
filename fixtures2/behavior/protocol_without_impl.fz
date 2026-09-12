@@ -27,6 +27,6 @@
 # Elixir raises `Protocol.UndefinedError` at RUNTIME. fz answers at compile
 # time, because the receiver's type is already known -- which is the better
 # error, and is only available to a language that types the receiver.
-fn main() do
+def main() do
   dbg(to_string(%{a: 1}))
 end

@@ -30,12 +30,12 @@
 #
 # The decoded value is printed too, so a change in cost cannot be accepted
 # without also showing the answer is still right.
-fn main() do
+def main() do
   dbg(decode_cost("{\"users\": [{\"name\": \"ada\", \"age\": 36}], \"ok\": true}"))
   dbg(decode_cost("{\"users\": [{\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}, {\"name\": \"ada\", \"age\": 36}], \"ok\": true}"))
 end
 
-fnp decode_cost(doc) do
+defp decode_cost(doc) do
   before = Process.heap_alloc_stats()
   {:ok, v} = Json.decode(doc)
   after_ = Process.heap_alloc_stats()

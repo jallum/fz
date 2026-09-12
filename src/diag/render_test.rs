@@ -20,10 +20,10 @@ fn render(diag: &Diagnostic, sm: &SourceMap) -> String {
 // DROP: diagnostic header/location rendering layout; pure infrastructure
 #[test]
 fn header_and_location_layout() {
-    let src = "fn main() do\n  if x == 1, do: :ok\nend\n";
+    let src = "def main() do\n  if x == 1, do: :ok\nend\n";
     let (sm, f) = rebuild(src);
     // Underline the `x == 1` part.
-    let span = Span::new(f, 18, 24);
+    let span = Span::new(f, 19, 25);
     let d = Diagnostic::warning(TEST_WARNING, "the then branch is never reachable", span).with_label("in fn `main`");
     let out = render(&d, &sm);
     let expected = "\
@@ -50,7 +50,7 @@ fn dummy_span_emits_generated_marker() {
 // DROP: diagnostic notes and help lines rendering; pure infrastructure
 #[test]
 fn notes_and_helps_render() {
-    let src = "fn main() do 1 end\n";
+    let src = "def main() do 1 end\n";
     let (sm, f) = rebuild(src);
     let d = Diagnostic::error(TEST_ERROR, "synthetic", Span::new(f, 0, 2))
         .with_note("first note")
@@ -65,10 +65,10 @@ fn notes_and_helps_render() {
 // DROP: secondary span rendered as own block; pure infrastructure
 #[test]
 fn secondary_span_gets_its_own_block() {
-    let src = "fn main() do\n  x = 1\n  y = 2\nend\n";
+    let src = "def main() do\n  x = 1\n  y = 2\nend\n";
     let (sm, f) = rebuild(src);
-    let primary = Span::new(f, 15, 16); // `x` on line 2
-    let secondary = Span::new(f, 23, 24); // `y` on line 3
+    let primary = Span::new(f, 16, 17); // `x` on line 2
+    let secondary = Span::new(f, 24, 25); // `y` on line 3
     let d = Diagnostic::warning(TEST_WARNING, "x is shadowed by y", primary)
         .with_label("first binding")
         .with_secondary(secondary, "second binding shadows");
@@ -105,7 +105,7 @@ fn tab_expansion_aligns_caret() {
 // DROP: color-disabled mode emits no ANSI escapes; pure infrastructure
 #[test]
 fn color_off_produces_no_escapes() {
-    let src = "fn main(), do: 1\n";
+    let src = "def main(), do: 1\n";
     let (sm, f) = rebuild(src);
     let d = Diagnostic::error(TEST_ERROR, "x", Span::new(f, 0, 1));
     let out = render(&d, &sm);

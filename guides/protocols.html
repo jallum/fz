@@ -46,7 +46,7 @@ to have an implementation.
 
 <pre><span class="kw">defprotocol</span> <span class="ty">Sized</span> <span class="kw">do</span>
   <span class="kw">@spec</span> <span class="fn">count</span>(<span class="fn">t</span>(a)) :: {:ok, integer} | {:error, any}
-  <span class="kw">fn</span> <span class="fn">count</span>(value)
+  <span class="kw">def</span> <span class="fn">count</span>(value)
 <span class="kw">end</span></pre>
 
 <p>The callback name and arity are required. Specs are part of the public
@@ -57,7 +57,7 @@ contract and are checked through module interfaces.</p>
 <p>Use <code>defimpl</code> for a target:</p>
 
 <pre><span class="kw">defimpl</span> <span class="ty">Sized</span>, <span class="kw">for:</span> <span class="ty">List</span> <span class="kw">do</span>
-  <span class="kw">fn</span> <span class="fn">count</span>(list), <span class="kw">do:</span> {:ok, <span class="fn">count_list</span>(list, <span class="num">0</span>)}
+  <span class="kw">def</span> <span class="fn">count</span>(list), <span class="kw">do:</span> {:ok, <span class="fn">count_list</span>(list, <span class="num">0</span>)}
 <span class="kw">end</span></pre>
 
 <p>Every callback declared by the protocol must be present in the
@@ -72,7 +72,7 @@ so they do not replace ordinary functions on <code>List</code>.</p>
 <code>any</code>. It is a protocol-domain constraint.</p>
 
 <pre><span class="kw">@spec</span> <span class="fn">total</span>(<span class="ty">Enumerable</span>.<span class="fn">t</span>(integer)) :: integer
-<span class="kw">fn</span> <span class="fn">total</span>(values), <span class="kw">do:</span>
+<span class="kw">def</span> <span class="fn">total</span>(values), <span class="kw">do:</span>
   <span class="ty">Enum</span>.<span class="fn">reduce</span>(values, <span class="num">0</span>, <span class="kw">fn</span> (x, acc) -> acc + x <span class="kw">end</span>)</pre>
 
 <p>The compiler checks that the value can belong to the protocol's implemented
@@ -89,7 +89,7 @@ convenience functions live on <code>Enum</code>, matching Elixir's split.
 
 <p>The runtime library includes the basic list implementation:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   <span class="fn">dbg</span>({
     <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]),
     <span class="ty">Enum</span>.<span class="fn">member?</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">2</span>),

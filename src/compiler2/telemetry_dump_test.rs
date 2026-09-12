@@ -45,7 +45,7 @@ fn clif_output_observes_populated_functions() {
     compiler.set_requested_output(Box::new(ClifCapture(Rc::clone(&observed))));
     compiler.submit_code(CodeSubmission {
         name: Some("clif_output.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -226,7 +226,7 @@ fn jsonl_backend_records_compiler2_drive_timeouts() {
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_main.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

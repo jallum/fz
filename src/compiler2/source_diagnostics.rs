@@ -40,7 +40,7 @@ pub(crate) fn function_head_warning(surface: &FunctionSurface) -> Option<Diagnos
     let last_clause = surface.clauses.last()?;
     Some(inexhaustive_diag_at(
         last_clause.span,
-        "fn",
+        "function",
         "function_clause",
         "the last clause is here",
     ))
@@ -144,7 +144,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>, resolver: 
             if let Some(subject) = subject {
                 walk_expr(subject, diagnostics, resolver);
             }
-            check_match_clauses(expr.span, "case", "case_clause", clauses, diagnostics, resolver);
+            check_match_clauses(expr.span, "`case`", "case_clause", clauses, diagnostics, resolver);
             walk_match_clause_bodies(clauses, diagnostics, resolver);
         }
         Expr::Cond(arms) => {
@@ -162,7 +162,7 @@ fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>, resolver: 
             walk_expr(body, diagnostics, resolver);
             check_match_clauses(
                 expr.span,
-                "with else",
+                "`with else`",
                 "with_clause",
                 else_clauses,
                 diagnostics,
@@ -237,7 +237,7 @@ fn check_match_clauses(
 fn inexhaustive_diag_at(primary: Span, construct: &str, halt_atom: &str, label: &str) -> Diagnostic {
     Diagnostic::warning(
         codes::TYPE_NO_MATCHING_CLAUSE,
-        format!("`{}` clauses don't cover every input", construct),
+        format!("{} clauses don't cover every input", construct),
         primary,
     )
     .with_label(label)
@@ -334,7 +334,7 @@ mod tests {
         let warnings = function_warnings(&surface);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, codes::TYPE_NO_MATCHING_CLAUSE);
-        assert_eq!(warnings[0].message, "`fn` clauses don't cover every input");
+        assert_eq!(warnings[0].message, "function clauses don't cover every input");
         assert_eq!(warnings[0].primary.label, "the last clause is here");
         assert_eq!(
             warnings[0].notes,

@@ -38,9 +38,9 @@
 #   * ATOMS order by NAME, not by the id they were interned with. That is why
 #     the comparator takes the process: ids are handed out in first-seen order,
 #     so ordering by id would depend on which atom the program mentioned first.
-fnp lt?(left, right), do: Kernel.compare(left, right) < 0
+defp lt?(left, right), do: Kernel.compare(left, right) < 0
 
-fn main() do
+def main() do
   # across kinds
   dbg(lt?(1, :atom))
   dbg(lt?(:atom, "bin"))

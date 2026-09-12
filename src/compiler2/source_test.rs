@@ -611,8 +611,8 @@ fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
 // every horizon.
 #[test]
 fn semantically_eq_ignores_span_and_position() {
-    let a = parse_src("a.fz", "fn foo(x), do: x + 1\n");
-    let b = parse_src("b.fz", "\n\nfn foo(x), do: x + 1\n");
+    let a = parse_src("a.fz", "def foo(x), do: x + 1\n");
+    let b = parse_src("b.fz", "\n\ndef foo(x), do: x + 1\n");
     assert!(
         a.semantically_eq(&b, Horizon::Full),
         "position is not semantic content (full)"
@@ -655,8 +655,8 @@ fn semantic_map_keys_ignore_metadata_that_changes_runtime_order() {
 // surface (Surface): a body-only edit is a function change, not a module change.
 #[test]
 fn semantically_eq_full_sees_body_changes_but_surface_does_not() {
-    let a = parse_src("f.fz", "fn foo(x), do: x + 1\n");
-    let b = parse_src("f.fz", "fn foo(x), do: x + 2\n");
+    let a = parse_src("f.fz", "def foo(x), do: x + 1\n");
+    let b = parse_src("f.fz", "def foo(x), do: x + 2\n");
     assert!(
         !a.semantically_eq(&b, Horizon::Full),
         "the body is part of the function definition"
@@ -671,10 +671,10 @@ fn semantically_eq_full_sees_body_changes_but_surface_does_not() {
 // so the surface horizon sees them change.
 #[test]
 fn semantically_eq_surface_sees_signature_changes() {
-    let base = parse_src("f.fz", "fn foo(x), do: x + 1\n");
-    let renamed = parse_src("f.fz", "fn bar(x), do: x + 1\n");
-    let widened = parse_src("f.fz", "fn foo(x, y), do: x + 1\n");
-    let guarded = parse_src("f.fz", "fn foo(x) when x > 0, do: x + 1\n");
+    let base = parse_src("f.fz", "def foo(x), do: x + 1\n");
+    let renamed = parse_src("f.fz", "def bar(x), do: x + 1\n");
+    let widened = parse_src("f.fz", "def foo(x, y), do: x + 1\n");
+    let guarded = parse_src("f.fz", "def foo(x) when x > 0, do: x + 1\n");
     assert!(
         !base.semantically_eq(&renamed, Horizon::Surface),
         "the function name is surface"
@@ -687,7 +687,7 @@ fn semantically_eq_surface_sees_signature_changes() {
 // walk handles guards, multiple clauses, and patterns without false negatives.
 #[test]
 fn semantically_eq_is_stable_across_reparse_of_multi_clause_source() {
-    let src = "fn foo(x) when x > 0, do: x + 1\nfn foo(_), do: 0\n";
+    let src = "def foo(x) when x > 0, do: x + 1\ndef foo(_), do: 0\n";
     let a = parse_src("a.fz", src);
     let b = parse_src("b.fz", src);
     assert!(a.semantically_eq(&b, Horizon::Full));

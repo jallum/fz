@@ -188,7 +188,7 @@ fn a_real_same_body_edit_retains_its_equal_atom_and_callable_wrapper() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     let source = |result| {
-        format!("fn leaf(x), do: x + 1\nfn main() do\n  dbg(:retained)\n  f = &leaf/1\n  dbg(f)\n  {result}\nend\n")
+        format!("def leaf(x), do: x + 1\ndef main() do\n  dbg(:retained)\n  f = &leaf/1\n  dbg(f)\n  {result}\nend\n")
     };
     compiler.submit_code(CodeSubmission {
         name: Some("same_body_contributions.fz".to_string()),
@@ -269,8 +269,8 @@ fn a_real_leaf_edit_retains_schema_allocations_without_schema_work() {
         text: concat!(
             "defmodule Item do\n  defstruct [:value]\nend\n",
             "defmodule Other do\n  defstruct [:flag]\nend\n",
-            "fn leaf(), do: 1\n",
-            "fn main() do\n  dbg(%Other{flag: 0})\n  item = %Item{value: leaf()}\n  item.value\nend\n",
+            "def leaf(), do: 1\n",
+            "def main() do\n  dbg(%Other{flag: 0})\n  item = %Item{value: leaf()}\n  item.value\nend\n",
         )
         .to_string(),
     });
@@ -302,7 +302,7 @@ fn a_real_leaf_edit_retains_schema_allocations_without_schema_work() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("schema_contributions.fz".to_string()),
-        text: "fn leaf(), do: 2\n".to_string(),
+        text: "def leaf(), do: 2\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(2));
     let leaf_edited = compiler.retained_backend_program(root);
@@ -351,7 +351,7 @@ fn a_published_schema_edit_moves_only_its_exact_retained_contribution() {
         concat!(
             "defmodule Item do\n  defstruct [:value]\nend\n",
             "defmodule Other do\n  defstruct [:flag]\nend\n",
-            "fn main() do\n  dbg(%Other{flag: 0})\n  %Item{value: 1}.value\nend\n",
+            "def main() do\n  dbg(%Other{flag: 0})\n  %Item{value: 1}.value\nend\n",
         )
         .to_string(),
     );

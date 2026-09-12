@@ -23,15 +23,15 @@
 # spec then drives return ABI selection, so typed callers unbox the
 # boxed `any` result naturally at the wrapper return boundary. Float
 # debug rendering is shared by the boxed path so `4.0` remains `4.0`.
-fn int_main() do
+def int_main() do
   dbg(42)
 end
 
-fn float_main() do
+def float_main() do
   dbg(1.5 + 2.5)
 end
 
-fn main() do
+def main() do
   int_main()
   float_main()
 end

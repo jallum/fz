@@ -1,7 +1,7 @@
 defmodule Math do
-  fn visible(), do: 1
+  def visible(), do: 1
 end
 defmodule User do
   import Math, only: [hidden: 0]
-  fn run(), do: hidden()
+  def run(), do: hidden()
 end

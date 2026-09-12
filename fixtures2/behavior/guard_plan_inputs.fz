@@ -1,19 +1,19 @@
 #---
 # purpose: "Nested guard plans own their prepared keys independently of caller key and pin layouts"
 #---
-fn wanted(%{"key" => value}), do: value == 42
-fn wanted(_), do: false
+def wanted(%{"key" => value}), do: value == 42
+def wanted(_), do: false
 
-fn relayed(value), do: wanted(value)
+def relayed(value), do: wanted(value)
 
-fn alternative(%{"alt" => value}), do: value == 42
-fn alternative(_), do: false
-fn either(value), do: wanted(value) or alternative(value)
+def alternative(%{"alt" => value}), do: value == 42
+def alternative(_), do: false
+def either(value), do: wanted(value) or alternative(value)
 
-fn sized(size, <<value::integer-size(size)>>), do: value == 42
-fn sized(_, _), do: false
+def sized(size, <<value::integer-size(size)>>), do: value == 42
+def sized(_, _), do: false
 
-fn receive_sized() do
+def receive_sized() do
   receive do
     value when sized(8, value) -> 42
   after
@@ -21,7 +21,7 @@ fn receive_sized() do
   end
 end
 
-fn receive_either() do
+def receive_either() do
   receive do
     value when either(value) -> 42
   after
@@ -29,28 +29,28 @@ fn receive_either() do
   end
 end
 
-fn case_plain(message) do
+def case_plain(message) do
   case message do
     value when relayed(value) -> 42
     _ -> 7
   end
 end
 
-fn case_sparse(message, expected) do
+def case_sparse(message, expected) do
   case message do
     %{:tag => ^expected, "outer" => value} when relayed(value) -> 42
     _ -> 7
   end
 end
 
-fn case_different(message) do
+def case_different(message) do
   case message do
     %{"other" => value} when wanted(value) -> 42
     _ -> 7
   end
 end
 
-fn receive_plain() do
+def receive_plain() do
   receive do
     value when relayed(value) -> 42
     _ -> 7
@@ -59,7 +59,7 @@ fn receive_plain() do
   end
 end
 
-fn receive_sparse(expected) do
+def receive_sparse(expected) do
   receive do
     %{:tag => ^expected, "outer" => value} when relayed(value) -> 42
     _ -> 7
@@ -68,7 +68,7 @@ fn receive_sparse(expected) do
   end
 end
 
-fn receive_different() do
+def receive_different() do
   receive do
     %{"other" => value} when wanted(value) -> 42
     _ -> 7
@@ -77,7 +77,7 @@ fn receive_different() do
   end
 end
 
-fn receive_only_wanted() do
+def receive_only_wanted() do
   receive do
     value when relayed(value) -> 42
   after
@@ -85,7 +85,7 @@ fn receive_only_wanted() do
   end
 end
 
-fn main() do
+def main() do
   value = %{"key" => 42}
   sparse = %{:tag => :ok, "outer" => value}
   different = %{"other" => value}

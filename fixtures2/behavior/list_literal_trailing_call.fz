@@ -1,7 +1,7 @@
 #---
 # purpose: "list literal decodes the same regardless of which element is a call: trailing call, trailing literal, call in the middle, and every element a call"
 #---
-fn main() do
+def main() do
   assert(
     [Enum.reverse([1, 2, 3])] == [[3, 2, 1]],
     "single-element list whose only element is a call"

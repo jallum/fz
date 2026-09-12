@@ -60,7 +60,7 @@
 # Float and Binary map-key patterns surface a clean CodegenError pointing
 # at a follow-up — encoding them would require a per-receive startup
 # allocation pass (heap-typed RHS).
-fn main() do
+def main() do
   send(self(), %{name: :alice, age: 30})
   send(self(), %{name: :bob, age: 42})
   send(self(), :stop)

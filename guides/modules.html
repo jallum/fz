@@ -55,11 +55,11 @@ implementation body just to know which calls are legal.</p>
 <p>Use <code>defmodule</code>:</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
-  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
-  <span class="kw">fn</span> <span class="fn">double</span>(x), <span class="kw">do:</span> <span class="fn">add</span>(x, x)
+  <span class="kw">def</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+  <span class="kw">def</span> <span class="fn">double</span>(x), <span class="kw">do:</span> <span class="fn">add</span>(x, x)
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">double</span>(<span class="num">21</span>)</pre>
+<span class="kw">def</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">double</span>(<span class="num">21</span>)</pre>
 
 <p>Inside <code>Math</code>, <code>double</code> can call
 <code>add</code> directly. Outside <code>Math</code>, the call is
@@ -69,11 +69,11 @@ qualified as <code>Math.double(21)</code>.</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">App</span> <span class="kw">do</span>
   <span class="kw">defmodule</span> <span class="ty">Clock</span> <span class="kw">do</span>
-    <span class="kw">fn</span> <span class="fn">tick</span>(), <span class="kw">do:</span> <span class="atm">:tick</span>
+    <span class="kw">def</span> <span class="fn">tick</span>(), <span class="kw">do:</span> <span class="atm">:tick</span>
   <span class="kw">end</span>
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">App</span>.<span class="ty">Clock</span>.<span class="fn">tick</span>()</pre>
+<span class="kw">def</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">App</span>.<span class="ty">Clock</span>.<span class="fn">tick</span>()</pre>
 
 <p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
 
@@ -105,14 +105,14 @@ That is what lets interfaces and link-time checks stay precise.
 <p>If a module uses another module a lot, import the names you want:</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
-  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
-  <span class="kw">fn</span> <span class="fn">mul</span>(x, y), <span class="kw">do:</span> x * y
+  <span class="kw">def</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+  <span class="kw">def</span> <span class="fn">mul</span>(x, y), <span class="kw">do:</span> x * y
 <span class="kw">end</span>
 
 <span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
   <span class="kw">import</span> <span class="ty">Math</span>, <span class="kw">only:</span> [add: <span class="num">2</span>]
 
-  <span class="kw">fn</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="fn">add</span>(<span class="num">20</span>, <span class="num">22</span>)
+  <span class="kw">def</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="fn">add</span>(<span class="num">20</span>, <span class="num">22</span>)
 <span class="kw">end</span></pre>
 
 <p>Inside <code>User</code>, <code>add(20, 22)</code> resolves to
@@ -138,7 +138,7 @@ macro call needs <code>require</code> for that module before expansion:</p>
 <pre><span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
   <span class="kw">require</span> <span class="ty">Math</span>
 
-  <span class="kw">fn</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">some_macro</span>(<span class="num">21</span>)
+  <span class="kw">def</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">some_macro</span>(<span class="num">21</span>)
 <span class="kw">end</span></pre>
 
 <p><code>require</code> makes the module path visible for qualified macro
@@ -175,7 +175,7 @@ and module loading.</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
   <span class="kw">@spec</span> add(integer, integer) :: integer
-  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+  <span class="kw">def</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
 <span class="kw">end</span></pre>
 
 <p>The interface dump records the public shape:</p>
@@ -212,13 +212,13 @@ library sources.</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Public</span> <span class="kw">do</span>
   <span class="kw">@spec</span> id(integer) :: integer
-  <span class="kw">fn</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
+  <span class="kw">def</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
 <span class="kw">end</span></pre>
 
 <p>This is rejected in strict mode:</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Public</span> <span class="kw">do</span>
-  <span class="kw">fn</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
+  <span class="kw">def</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
 <span class="kw">end</span></pre>
 
 <p>Top-level helpers are different. They are not module interface exports,
@@ -291,7 +291,7 @@ helpers. User code imports it as a module function:</p>
 <pre><span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
   <span class="kw">import</span> <span class="ty">Utf8</span>, <span class="kw">only:</span> [valid?: <span class="num">1</span>]
 
-  <span class="kw">fn</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
+  <span class="kw">def</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
 <span class="kw">end</span></pre>
 
 <p>The <code>import</code> asks for the built-in <code>Utf8</code> interface.
@@ -303,8 +303,8 @@ module graph.</p>
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
-<p>Private module helpers use <code>fnp</code>. They have the same body shape as
-<code>fn</code> and can be called by sibling functions in the same module, but
+<p>Private module helpers use <code>defp</code>. They have the same body shape as
+<code>def</code> and can be called by sibling functions in the same module, but
 they are omitted from public interfaces and do not require public
 <code>@spec</code> declarations.</p>
 
@@ -319,7 +319,7 @@ individual files such as <code>lib/utf8.fz</code> and
 helpers, protocol facts, and the public enumeration wrapper API, including
 <code>Enum.sort</code>'s merge sort, are ordinary runtime-library source, not
 primitive externs. Implementation details such as sort helpers stay private
-with <code>fnp</code>.</p>
+with <code>defp</code>.</p>
 
 <p>Generated qualified calls from source production request runtime
 interfaces the same way imports do, so operator sugar can depend on modules

@@ -8,12 +8,12 @@
 # accumulator-style list traversal. Reversing a five-element list should allocate
 # only the five input literal cons cells, relinking them for the output. No tuple/struct or
 # map objects are needed for the value path.
-fn reverse(xs), do: reverse_into(xs, [])
+def reverse(xs), do: reverse_into(xs, [])
 
-fn reverse_into([], acc), do: acc
-fn reverse_into([h | t], acc), do: reverse_into(t, [h | acc])
+def reverse_into([], acc), do: acc
+def reverse_into([h | t], acc), do: reverse_into(t, [h | acc])
 
-fn main() do
+def main() do
   out = reverse([1, 2, 3, 4, 5])
   dbg(out)
 

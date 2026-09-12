@@ -1,5 +1,5 @@
 
-fn bad(n) do
+def bad(n) do
   if n > 0 do
     true
   else

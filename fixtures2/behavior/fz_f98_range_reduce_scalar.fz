@@ -4,7 +4,7 @@
 #
 # Regression target for fz-bfh.1. The public Enum.reduce/3 bridge captures the
 # user reducer and threads it through the Range Enumerable implementation.
-fn main() do
+def main() do
   dbg(Enum.reduce(1..3, 0, fn (x, acc) -> acc + x end))
   dbg(Enum.reduce(1..3, {0, 0}, fn (x, {sum, count}) -> {sum + x, count + 1} end))
 end

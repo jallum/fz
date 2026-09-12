@@ -1,1 +1,1 @@
-fn add(left, right), do: left + right
+def add(left, right), do: left + right

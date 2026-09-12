@@ -1,2 +1,2 @@
-fn foo(), do: 42
-fn main(), do: foo()
+def foo(), do: 42
+def main(), do: foo()

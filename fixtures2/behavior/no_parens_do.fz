@@ -8,20 +8,20 @@
 # calls `run/2` with `1` and `[do: 2]`; `only_block do 42 end` has no positional
 # arguments and calls `only_block/1` with `[do: 42]`. Destructuring `opts` proves
 # the `:do` keyword and its value reach the callee end to end.
-fn run(a, opts) do
+def run(a, opts) do
   dbg a
   [{k, v}] = opts
   dbg k
   dbg v
 end
 
-fn only_block(opts) do
+def only_block(opts) do
   [{k, v}] = opts
   dbg k
   dbg v
 end
 
-fn main() do
+def main() do
   run 1 do
     2
   end

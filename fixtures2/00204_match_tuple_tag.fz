@@ -3,9 +3,9 @@
 #
 # Expected: main() : {int, :bad}
 
-fn pick({:ok, x}), do: x
-fn pick({:error, reason}), do: reason
+def pick({:ok, x}), do: x
+def pick({:error, reason}), do: reason
 
-fn main() do
+def main() do
   {pick({:ok, 1}), pick({:error, :bad})}
 end

@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   parent = self()
   spawn(fn () -> send(parent, [1, 2.5, :a]) end)
   receive do

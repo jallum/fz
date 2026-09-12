@@ -1,6 +1,6 @@
 defmodule A do
-  fn ping(), do: 1
+  def ping(), do: 1
 end
 defmodule B do
-  fn caller(), do: A.ping()
+  def caller(), do: A.ping()
 end

@@ -17,7 +17,7 @@
 # Three shapes drive the seam from different directions: a bare mailbox lambda,
 # one carrying a capture of its own, and the empty list as the control that
 # never reaches a step at all. `:done` proves control came back past every one.
-fn main() do
+def main() do
   send(self(), fn (x) -> dbg(x * 2) end)
   double = receive do f -> f end
   Enum.each([1, 2, 3], double)

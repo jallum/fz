@@ -32,7 +32,7 @@
 # Not covered: infinity and NaN. Erlang has no such floats -- `1.0 / 0.0`
 # raises there and yields `inf` here -- so there is nothing to be in parity
 # with. That divergence belongs to the division-semantics ticket.
-fn main() do
+def main() do
   dbg(1.0)
   dbg(0.1)
   dbg(2.5)

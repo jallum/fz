@@ -21,7 +21,7 @@
 # side-tag `0xE`; no runtime helper is needed since both sides are
 # bit-comparable. Interp carries floats as typed interpreter values and observes
 # the same outcomes.
-fn main() do
+def main() do
   send(self(), 1.5)
   send(self(), 2.5)
   send(self(), :stop)

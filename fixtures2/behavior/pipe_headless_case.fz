@@ -16,9 +16,9 @@
 #
 # Exercises `lhs |> f(args)` and `lhs |> case do ... end` after pipe handling
 # moved into macro expansion.
-fn add2(x), do: x + 2
+def add2(x), do: x + 2
 
-fn main() do
+def main() do
   value = 1 |> add2()
   result = value |> case do
     3 -> :ok

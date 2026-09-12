@@ -1,5 +1,5 @@
-fn tuple_second({_, x}), do: x
-fn list_head([h | _]), do: h
-fn main() do
+def tuple_second({_, x}), do: x
+def list_head([h | _]), do: h
+def main() do
   dbg({list_head([7]), %{answer: 42}.answer, tuple_second({:ok, 1.5})})
 end

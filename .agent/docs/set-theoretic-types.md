@@ -76,7 +76,7 @@ brands     which brand a value carries: top = "no constraint" (the unbranded
 **Numbers have no literal sets — numeric constants are values, not types.** The
 lattice deliberately cannot express `int_lit(42)` or `0 | 1`: `int()` and
 `float()` are indivisible presence bits, exactly as in Elixir's
-`Module.Types.Descr`. Constant dispatch (`fn f(0)`) is a value comparison the
+`Module.Types.Descr`. Constant dispatch (`def f(0)`) is a value comparison the
 matcher performs at runtime; constant map keys ride the lowering as values
 (`LoweredMapKey`). A numeric literal written in TYPE position (`@type d :: 0`)
 means its kind and emits the `type/numeric-literal-widened` warning

@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   {
 2 in [1, 2, 3],
 4 not in [1, 2, 3]

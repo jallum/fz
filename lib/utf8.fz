@@ -17,8 +17,8 @@ defmodule Utf8 do
 
   """
 
-  extern "C" fn fz_bitstring_valid_utf8(any) :: integer
-  extern "C" fn fz_brand_bitstring_as_utf8(any) :: any
+  extern "C" def fz_bitstring_valid_utf8(any) :: integer
+  extern "C" def fz_brand_bitstring_as_utf8(any) :: any
 
   @doc """
   Returns whether `bytes` is byte-aligned, valid UTF-8.
@@ -33,7 +33,7 @@ defmodule Utf8 do
 
   """
   @spec valid?(binary) :: bool
-  fn valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
+  def valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
 
   @doc """
   Brands `bytes` as `utf8`, or aborts.
@@ -48,7 +48,7 @@ defmodule Utf8 do
 
   """
   @spec from_bytes!(binary) :: utf8
-  fn from_bytes!(bytes) do
+  def from_bytes!(bytes) do
     assert(valid?(bytes))
     fz_brand_bitstring_as_utf8(bytes)
   end
@@ -69,7 +69,7 @@ defmodule Utf8 do
 
   """
   @spec from_bytes(binary) :: {:ok, utf8} | {:error, :invalid_utf8}
-  fn from_bytes(bytes) do
+  def from_bytes(bytes) do
     if valid?(bytes) do
       {:ok, fz_brand_bitstring_as_utf8(bytes)}
     else
@@ -87,5 +87,5 @@ defmodule Utf8 do
 
   """
   @spec to_bytes(utf8) :: binary
-  fn to_bytes(s), do: s
+  def to_bytes(s), do: s
 end

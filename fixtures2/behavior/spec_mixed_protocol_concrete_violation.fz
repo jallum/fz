@@ -12,17 +12,17 @@
 # rejected by every enforceable concrete arrow and must produce `spec/violation`
 # on run, interp, and build.
 defprotocol Enumerable do
-  fn reduce(enumerable, acc, reducer)
+  def reduce(enumerable, acc, reducer)
 end
 
 defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: acc
+  def reduce(list, acc, reducer), do: acc
 end
 
 defmodule M do
   @spec use(Enumerable.t(integer)) :: integer
   @spec use(float) :: float
-  fn use(n), do: n
+  def use(n), do: n
 end
 
-fn main(), do: dbg(M.use(41))
+def main(), do: dbg(M.use(41))

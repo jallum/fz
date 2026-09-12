@@ -35,17 +35,17 @@ fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable()
         r#"
 defprotocol Susp do
   @spec run(t(a), (a) -> b) :: () -> b
-  fn run(coll, f)
+  def run(coll, f)
 end
 
 defmodule Mini do
   defimpl Susp, for: List do
-    fn run(_list, f), do: (fn () -> f.(1) end)
+    def run(_list, f), do: (fn () -> f.(1) end)
   end
 end
 
-fn make(f), do: Susp.run([1, 2, 3], f)
-fn main(), do: make(fn x -> x + 1 end)
+def make(f), do: Susp.run([1, 2, 3], f)
+def main(), do: make(fn x -> x + 1 end)
 "#
         .to_string(),
     );
@@ -72,16 +72,16 @@ fn compiler2_protocol_impl_resolves_to_owned_module_not_host() {
         r#"
 defprotocol Greet do
   @spec hello(t(a)) :: a
-  fn hello(x)
+  def hello(x)
 end
 
 defmodule Mini do
   defimpl Greet, for: List do
-    fn hello(list), do: list
+    def hello(list), do: list
   end
 end
 
-fn main(), do: Greet.hello([1, 2, 3])
+def main(), do: Greet.hello([1, 2, 3])
 "#
         .to_string(),
     );
@@ -130,7 +130,7 @@ fn compiler2_protocol_impl_target_struct_is_not_classified_by_last_segment_name(
         r#"
 defprotocol Peek do
   @spec first(t(a)) :: a
-  fn first(x)
+  def first(x)
 end
 
 defmodule Shadow do
@@ -138,15 +138,15 @@ defmodule Shadow do
     defstruct [:head, :tail]
     @type t :: %List{head: integer, tail: integer}
 
-    fn new(head, tail), do: %List{head: head, tail: tail}
+    def new(head, tail), do: %List{head: head, tail: tail}
   end
 
   defimpl Peek, for: List do
-    fn first(l), do: l.head
+    def first(l), do: l.head
   end
 end
 
-fn main(), do: Peek.first(Shadow.List.new(1, 2))
+def main(), do: Peek.first(Shadow.List.new(1, 2))
 "#
         .to_string(),
     );
@@ -247,14 +247,14 @@ fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefin
         r#"
 defprotocol Peek do
   @spec first(t(a)) :: a
-  fn first(x)
+  def first(x)
 end
 
 defimpl Peek, for: Boxy do
-  fn first(b), do: b
+  def first(b), do: b
 end
 
-fn main(x), do: Peek.first(x)
+def main(x), do: Peek.first(x)
 "#
         .to_string(),
     );
@@ -288,10 +288,10 @@ defmodule Boxy do
   defstruct [:val]
   @type t :: %Boxy{val: integer}
 
-  fn ident(x), do: x
+  def ident(x), do: x
 end
 
-fn probe(), do: Boxy.ident(1)
+def probe(), do: Boxy.ident(1)
 "#
         .to_string(),
     );
@@ -332,14 +332,14 @@ fn compiler2_root_colocated_protocol_impl_registers_on_scope() {
         r#"
 defprotocol Greet do
   @spec hello(t(a)) :: a
-  fn hello(x)
+  def hello(x)
 end
 
 defimpl Greet, for: List do
-  fn hello(list), do: list
+  def hello(list), do: list
 end
 
-fn main(), do: Greet.hello([1, 2, 3])
+def main(), do: Greet.hello([1, 2, 3])
 "#
         .to_string(),
     );
@@ -386,9 +386,9 @@ fn compiler2_captured_callable_closure_call_keeps_resolved_return() {
     world.submit_code(
         Some("captured_callable_return.fz".to_string()),
         r#"
-fn apply(f, x, y), do: f.(x, y)
-fn wrap(g), do: (fn (a, b) -> g.(a, b) end)
-fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
+def apply(f, x, y), do: f.(x, y)
+def wrap(g), do: (fn (a, b) -> g.(a, b) end)
+def main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
 "#
         .to_string(),
     );
@@ -428,16 +428,16 @@ fn compiler2_unused_protocol_impl_stays_cold() {
         r#"
 defprotocol Susp do
   @spec run(t(a)) :: integer
-  fn run(coll)
+  def run(coll)
 end
 
 defmodule Mini do
   defimpl Susp, for: List do
-    fn run(_list), do: 0
+    def run(_list), do: 0
   end
 end
 
-fn main(), do: 1
+def main(), do: 1
 "#
         .to_string(),
     );
@@ -484,7 +484,7 @@ fn compiler2_semantic_analysis_does_not_reach_continuation_after_never_return() 
     world.submit_code(
         Some("never_continuation.fz".to_string()),
         r#"
-fn main() do
+def main() do
   panic("stop")
   |> dbg()
 end
@@ -534,7 +534,7 @@ fn compiler2_coalesced_closure_target_keeps_its_capture_slot() {
     world.submit_code(
         Some("coalesced_closure_capture.fz".to_string()),
         r#"
-fn main() do
+def main() do
   cap = if true, do: 1, else: "s"
   f = fn () -> cap end
   f.()

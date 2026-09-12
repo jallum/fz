@@ -1,1 +1,1 @@
-fn main(), do: dbg(%{a: 1, b: 2})
+def main(), do: dbg(%{a: 1, b: 2})

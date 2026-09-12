@@ -16,7 +16,7 @@
 # than the delimiter keeps the difference. Each content line keeps its
 # newline and the closing line contributes nothing, which is why a heredoc
 # with no lines is the empty binary rather than a newline.
-fn main() do
+def main() do
   plain = """
 hello
 """

@@ -4,10 +4,10 @@
 #
 # Expected: main() : {int, {int, int}, :other}
 
-fn pick({:one, x}), do: x
-fn pick({:two, x, y}), do: {x, y}
-fn pick(:other), do: :other
+def pick({:one, x}), do: x
+def pick({:two, x, y}), do: {x, y}
+def pick(:other), do: :other
 
-fn main() do
+def main() do
   {pick({:one, 1}), pick({:two, 1, 2}), pick(:other)}
 end

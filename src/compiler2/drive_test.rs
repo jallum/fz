@@ -71,7 +71,7 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
 
 #[test]
 fn compiler2_list_reconstruction_preserves_duplicate_consumers_and_later_source_use() {
-    let source = "fn rebuild(xs) do\n [h | t] = xs\n first = [h | [9]]\n second = [h | t]\n {first, second, xs}\nend\nfn main() do\n if rebuild([1, 2]) == {[1, 9], [1, 2], [1, 2]}, do: 42, else: 0\nend\n";
+    let source = "def rebuild(xs) do\n [h | t] = xs\n first = [h | [9]]\n second = [h | t]\n {first, second, xs}\nend\ndef main() do\n if rebuild([1, 2]) == {[1, 9], [1, 2], [1, 2]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "preserves_duplicate_consumers_and_later_source_use",
         source,
@@ -84,7 +84,7 @@ fn compiler2_list_reconstruction_preserves_duplicate_consumers_and_later_source_
 
 #[test]
 fn compiler2_list_reconstruction_keeps_physical_alias_across_semantic_call() {
-    let source = "fn rewrite(xs) do\n  [h | _] = xs\n  [h | [9]]\nend\nfn keep(xs) do\n  case xs do\n    [h | t] -> {rewrite(xs), [h | t]}\n    _ -> {[], []}\n  end\nend\nfn main() do\n  if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    let source = "def rewrite(xs) do\n  [h | _] = xs\n  [h | [9]]\nend\ndef keep(xs) do\n  case xs do\n    [h | t] -> {rewrite(xs), [h | t]}\n    _ -> {[], []}\n  end\nend\ndef main() do\n  if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "keeps_physical_alias_across_semantic_call",
         source,
@@ -97,7 +97,7 @@ fn compiler2_list_reconstruction_keeps_physical_alias_across_semantic_call() {
 
 #[test]
 fn compiler2_list_reconstruction_rejects_rewrite_through_joined_alias() {
-    let source = "fn rebuild(flag, xs) do\n  ys = if flag, do: xs, else: []\n  [h | _] = xs\n  changed = [h | [9]]\n  {ys, changed}\nend\nfn main() do\n  if rebuild(true, [1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
+    let source = "def rebuild(flag, xs) do\n  ys = if flag, do: xs, else: []\n  [h | _] = xs\n  changed = [h | [9]]\n  {ys, changed}\nend\ndef main() do\n  if rebuild(true, [1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "rejects_rewrite_through_joined_alias",
         source,
@@ -110,7 +110,7 @@ fn compiler2_list_reconstruction_rejects_rewrite_through_joined_alias() {
 
 #[test]
 fn compiler2_list_reconstruction_composes_retained_identity_without_old_children() {
-    let source = "fn rebuild(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | _] = retained\n changed = [head | [9]]\n {xs, changed}\nend\nfn main() do\n if rebuild([1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
+    let source = "def rebuild(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | _] = retained\n changed = [head | [9]]\n {xs, changed}\nend\ndef main() do\n if rebuild([1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "composes_retained_identity_without_old_children",
         source,
@@ -123,7 +123,7 @@ fn compiler2_list_reconstruction_composes_retained_identity_without_old_children
 
 #[test]
 fn compiler2_list_reconstruction_guards_composed_physical_identity_at_calls() {
-    let source = "fn rewrite(xs) do\n [h | _] = xs\n [h | [9]]\nend\nfn keep(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | tail] = retained\n changed = rewrite(xs)\n {changed, [head | tail]}\nend\nfn main() do\n if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    let source = "def rewrite(xs) do\n [h | _] = xs\n [h | [9]]\nend\ndef keep(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | tail] = retained\n changed = rewrite(xs)\n {changed, [head | tail]}\nend\ndef main() do\n if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "guards_composed_physical_identity_at_calls",
         source,
@@ -136,7 +136,7 @@ fn compiler2_list_reconstruction_guards_composed_physical_identity_at_calls() {
 
 #[test]
 fn compiler2_list_reconstruction_cannot_rewrite_its_own_new_tail() {
-    let source = "fn prepend(xs) do\n  [h | _] = xs\n  [h | xs]\nend\nfn main() do\n  case prepend([1, 2]) do\n    [1, 1, 2] -> 42\n    _ -> 0\n  end\nend\n";
+    let source = "def prepend(xs) do\n  [h | _] = xs\n  [h | xs]\nend\ndef main() do\n  case prepend([1, 2]) do\n    [1, 1, 2] -> 42\n    _ -> 0\n  end\nend\n";
     assert_list_retention_ownership(
         "cannot_rewrite_its_own_new_tail",
         source,
@@ -149,7 +149,7 @@ fn compiler2_list_reconstruction_cannot_rewrite_its_own_new_tail() {
 
 #[test]
 fn compiler2_list_reconstruction_preserves_a_distinct_aliased_input() {
-    let source = "fn rebuild(xs, ys) do\n  [h | _] = xs\n  changed = [h | [9]]\n  {changed, ys}\nend\nfn main() do\n  xs = [1, 2]\n  if rebuild(xs, xs) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    let source = "def rebuild(xs, ys) do\n  [h | _] = xs\n  changed = [h | [9]]\n  {changed, ys}\nend\ndef main() do\n  xs = [1, 2]\n  if rebuild(xs, xs) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
     assert_list_retention_ownership(
         "preserves_a_distinct_aliased_input",
         source,
@@ -255,7 +255,7 @@ fn compiler2_operand_returning_boolean_ops_retain_source_ownership() {
         let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("boolean_operand_ownership.fz".into()),
-            text: format!("fn rebuild(xs) do\n selected = {expression}\n [h | _] = xs\n changed = [h | [9]]\n {{selected, changed}}\nend\nfn main(), do: rebuild([1, 2])\n"),
+            text: format!("def rebuild(xs) do\n selected = {expression}\n [h | _] = xs\n changed = [h | [9]]\n {{selected, changed}}\nend\ndef main(), do: rebuild([1, 2])\n"),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -306,7 +306,7 @@ fn assert_container_list_publication(function: &str, expected: &str) {
     compiler.submit_code(CodeSubmission {
         name: Some("container_list_publication.fz".into()),
         text: format!(
-            "{}\nfn publication_test(), do: if {function}() == {expected}, do: 42, else: 0\n",
+            "{}\ndef publication_test(), do: if {function}() == {expected}, do: 42, else: 0\n",
             include_str!("../../fixtures2/behavior/list_ownership_edges.fz"),
         ),
     });
@@ -384,7 +384,7 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("tuple_ownership.fz".into()),
-        text: "fn split(xs, ys), do: {xs, ys}\nfn duplicate(xs), do: {xs, xs}\nfn kept(xs) do\n box = {xs}\n {box, xs}\nend\nfn main() do\n if {split([1], [2]), duplicate([3]), kept([4])} == {{[1], [2]}, {[3], [3]}, {{[4]}, [4]}}, do: 42, else: 0\nend\n".into(),
+        text: "def split(xs, ys), do: {xs, ys}\ndef duplicate(xs), do: {xs, xs}\ndef kept(xs) do\n box = {xs}\n {box, xs}\nend\ndef main() do\n if {split([1], [2]), duplicate([3]), kept([4])} == {{[1], [2]}, {[3], [3]}, {{[4]}, [4]}}, do: 42, else: 0\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -421,13 +421,13 @@ fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permiss
     for (name, source, arity, expected) in [
         (
             "exclusive",
-            "fn rebuild(flag, xs) do\n  [h | _] = xs\n  if flag, do: [h | [9]], else: [h | [8]]\nend\nfn main(), do: if rebuild(true, [1, 2]) == [1, 9], do: 42, else: 0\n",
+            "def rebuild(flag, xs) do\n  [h | _] = xs\n  if flag, do: [h | [9]], else: [h | [8]]\nend\ndef main(), do: if rebuild(true, [1, 2]) == [1, 9], do: 42, else: 0\n",
             2,
             2,
         ),
         (
             "projected",
-            "fn rebuild(xs) do\n  case xs do\n    [_, h | _] -> [h | [9]]\n    _ -> []\n  end\nend\nfn main(), do: if rebuild([1, 2, 3]) == [2, 9], do: 42, else: 0\n",
+            "def rebuild(xs) do\n  case xs do\n    [_, h | _] -> [h | [9]]\n    _ -> []\n  end\nend\ndef main(), do: if rebuild([1, 2, 3]) == [2, 9], do: 42, else: 0\n",
             1,
             1,
         ),
@@ -477,7 +477,7 @@ fn compiler2_inline_tuple_callable_binding_keeps_its_producer_origin() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("inline_tuple_callable_origin.fz".into()),
-        text: "fn main() do\n  f = fn(x) -> x + 1 end\n  case {f} do\n    {g} -> g.(41)\n  end\nend\n".into(),
+        text: "def main() do\n  f = fn(x) -> x + 1 end\n  case {f} do\n    {g} -> g.(41)\n  end\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -519,7 +519,7 @@ fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("inline_bitstring_recipes.fz".into()),
-        text: "fn main() do\n case <<65, 1>> do\n <<x :: integer-size(8), 0>> -> x\n <<x :: binary-size(1), 1>> -> if x == \"A\", do: 42, else: 0\n _ -> 0\n end\nend\n".into(),
+        text: "def main() do\n case <<65, 1>> do\n <<x :: integer-size(8), 0>> -> x\n <<x :: binary-size(1), 1>> -> if x == \"A\", do: 42, else: 0\n _ -> 0\n end\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -553,7 +553,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("inline_forwarding.fz".into()),
-        text: "fn forward(x), do: case x do y -> y end\nfn main(), do: forward(42)\n".into(),
+        text: "def forward(x), do: case x do y -> y end\ndef main(), do: forward(42)\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -592,8 +592,8 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
     compiler.submit_code(CodeSubmission {
         name: Some("impossible_map_clause.fz".into()),
         text: concat!(
-            "fn metadata(), do: %{__fz_local__: 42}\n",
-            "fn main() do\n",
+            "def metadata(), do: %{__fz_local__: 42}\n",
+            "def main() do\n",
             "  case metadata() do\n",
             "    %{__fz_span__: _} -> 0\n",
             "    _ -> 42\n",
@@ -738,7 +738,7 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     compiler.submit_code(CodeSubmission {
         name: Some("inline_bitstring_bindings.fz".into()),
         text: concat!(
-            "fn main() do\n",
+            "def main() do\n",
             "  case <<2, 65, 66, 67>> do\n",
             "    <<len, payload :: binary-size(len), rest :: binary>> -> len\n",
             "    _ -> 0\n",
@@ -824,7 +824,7 @@ fn compiler2_inline_map_binding_reuses_the_key_present_read() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("inline_map_binding.fz".into()),
-        text: "fn metadata(), do: %{key: 42}\nfn main() do\n case metadata() do\n %{key: value} -> value\n _ -> 0\n end\nend\n".into(),
+        text: "def metadata(), do: %{key: 42}\ndef main() do\n case metadata() do\n %{key: value} -> value\n _ -> 0\n end\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -897,7 +897,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: None,
-        text: "fn main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
+        text: "def main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -919,7 +919,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
     requests.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: None,
-        text: "fn main(), do: 42\n".into(),
+        text: "def main(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     assert!(
@@ -953,7 +953,7 @@ fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("closure_replacement.fz".into()),
-        text: "fn main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
+        text: "def main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -967,7 +967,7 @@ fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("closure_replacement.fz".into()),
-        text: "fn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+        text: "def main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     let after = generated_child(&compiler, owner);
@@ -1005,7 +1005,8 @@ fn executable_construction_and_runtime_demand_share_one_world_type_projection() 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("shared_runtime_demand_projection.fz".to_string()),
-        text: "fn add_one(x), do: x + 1\nfn twice(x), do: add_one(add_one(x))\nfn main(), do: twice(40)\n".to_string(),
+        text: "def add_one(x), do: x + 1\ndef twice(x), do: add_one(add_one(x))\ndef main(), do: twice(40)\n"
+            .to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1092,7 +1093,7 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("executable_facts_direct_fact.fz".to_string()),
-        text: "fn add_one(x), do: x + 1\nfn main(), do: add_one(41)\n".to_string(),
+        text: "def add_one(x), do: x + 1\ndef main(), do: add_one(41)\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1166,10 +1167,10 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
 // longer play the divergent member: `:timeout + 2` is a fatal compile-time
 // spec violation now.)
 const RECEIVE_AFTER_DIVERGENT_DISPATCH: &str = r#"
-fn bump(x :: integer), do: x + 2
-fn bump(:timeout), do: panic(:timeout)
+def bump(x :: integer), do: x + 2
+def bump(:timeout), do: panic(:timeout)
 
-fn main() do
+def main() do
   me = self()
   send(me, 1)
   value = receive do
@@ -1670,13 +1671,13 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         concat!(
             "defprotocol Proof do\n",
             "  @spec pick(t(a), a) :: a\n",
-            "  fn pick(value, fallback)\n",
+            "  def pick(value, fallback)\n",
             "end\n",
             "\n",
             "defmodule Box do\n",
-            "  fn pick(value, _fallback), do: value\n",
+            "  def pick(value, _fallback), do: value\n",
             "  defimpl Proof, for: List do\n",
-            "    fn pick(value, fallback), do: Box.pick(value, fallback)\n",
+            "    def pick(value, fallback), do: Box.pick(value, fallback)\n",
             "  end\n",
             "end\n",
         )
@@ -2052,7 +2053,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
             "end\n",
             "\n",
             "defmodule Helper do\n",
-            "  fn id(x), do: x\n",
+            "  def id(x), do: x\n",
             "end\n",
         )
         .to_string(),
@@ -2208,7 +2209,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
 fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identical_fields() {
     // fz macros ARE able to emit a top-level `defstruct`: an item macro can
     // return a bare `{:defstruct, meta, [fields]}` tuple (the same
-    // compiler-shaped AST literal fixtures2/00124 uses for `{:fn, ...}`),
+    // compiler-shaped AST literal fixtures2/00124 uses for `{:def, ...}`),
     // and `quoted_surface::build_form` recognizes the `:defstruct` head the
     // same way it would from source. When that macro's body writes the
     // fields as a literal (no `__fz_span__` key in its `meta` map), every
@@ -2308,11 +2309,11 @@ fn compiler2_duplicate_global_function_definition_diagnoses_instead_of_silently_
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("foo_first.fz".to_string()),
-        text: "fn foo(), do: 1\n".to_string(),
+        text: "def foo(), do: 1\n".to_string(),
     });
     compiler.submit_code(CodeSubmission {
         name: Some("foo_second.fz".to_string()),
-        text: "fn foo(), do: 2\n".to_string(),
+        text: "def foo(), do: 2\n".to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -2584,7 +2585,7 @@ fn compiler2_struct_spec_type_diagnoses_unknown_field_instead_of_dropping_it() {
             "\n",
             "defmodule M do\n",
             "  @spec run(%Point{bogus: integer}) :: integer\n",
-            "  fn run(p), do: 0\n",
+            "  def run(p), do: 0\n",
             "end\n",
         )
         .to_string(),
@@ -2627,12 +2628,12 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
         name: Some("struct_spec_non_struct.fz".to_string()),
         text: concat!(
             "defmodule NotAStruct do\n",
-            "  fn hello(), do: 0\n",
+            "  def hello(), do: 0\n",
             "end\n",
             "\n",
             "defmodule M do\n",
             "  @spec run(%NotAStruct{x: integer}) :: integer\n",
-            "  fn run(p), do: 0\n",
+            "  def run(p), do: 0\n",
             "end\n",
         )
         .to_string(),
@@ -2665,12 +2666,12 @@ fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_referenc
     let mut compiler = Compiler2::new(tel);
     let source = concat!(
         "defmodule NotAStruct do\n",
-        "  fn hello(), do: 0\n",
+        "  def hello(), do: 0\n",
         "end\n",
         "\n",
         "defmodule M do\n",
         "  @spec run(%NotAStruct{}) :: integer\n",
-        "  fn run(p), do: 0\n",
+        "  def run(p), do: 0\n",
         "end\n",
     )
     .to_string();
@@ -2723,7 +2724,7 @@ fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping
             "end\n",
             "\n",
             "defmodule M do\n",
-            "  fn run(p :: %Point{bogus: integer}), do: 0\n",
+            "  def run(p :: %Point{bogus: integer}), do: 0\n",
             "end\n",
         )
         .to_string(),
@@ -2767,10 +2768,10 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     let source_owner = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
-            "extern \"C\" fn takes(p :: %NotAStruct{x: integer}) :: integer\n",
+            "extern \"C\" def takes(p :: %NotAStruct{x: integer}) :: integer\n",
             "\n",
             "defmodule NotAStruct do\n",
-            "  fn hello(), do: 0\n",
+            "  def hello(), do: 0\n",
             "end\n",
         )
         .to_string(),
@@ -2836,7 +2837,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         Some("struct_literal_pattern_out_of_order.fz".to_string()),
         concat!(
             "defmodule B do\n",
-            "  fn convert(%Point{y: y, x: x}), do: %Point{y: y, x: x}\n",
+            "  def convert(%Point{y: y, x: x}), do: %Point{y: y, x: x}\n",
             "end\n",
             "\n",
             "defmodule Point do\n",
@@ -2934,7 +2935,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         Some("struct_literal_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
-            "  fn make(), do: %Point{x: 1, bogus: 2}\n",
+            "  def make(), do: %Point{x: 1, bogus: 2}\n",
             "end\n",
             "\n",
             "defmodule Point do\n",
@@ -2998,7 +2999,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         Some("struct_pattern_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
-            "  fn take(%Point{x: x, bogus: b}), do: {x, b}\n",
+            "  def take(%Point{x: x, bogus: b}), do: {x, b}\n",
             "end\n",
             "\n",
             "defmodule Point do\n",
@@ -3064,11 +3065,11 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         Some("struct_literal_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
-            "  fn hello(), do: 0\n",
+            "  def hello(), do: 0\n",
             "end\n",
             "\n",
             "defmodule B do\n",
-            "  fn make(), do: %NotAStruct{x: 1}\n",
+            "  def make(), do: %NotAStruct{x: 1}\n",
             "end\n",
         )
         .to_string(),
@@ -3118,11 +3119,11 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
     let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
-        "  fn hello(), do: 0\n",
+        "  def hello(), do: 0\n",
         "end\n",
         "\n",
         "defmodule B do\n",
-        "  fn make(), do: %NotAStruct{}\n",
+        "  def make(), do: %NotAStruct{}\n",
         "end\n",
     )
     .to_string();
@@ -3197,11 +3198,11 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         Some("struct_pattern_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
-            "  fn hello(), do: 0\n",
+            "  def hello(), do: 0\n",
             "end\n",
             "\n",
             "defmodule B do\n",
-            "  fn take(%NotAStruct{x: x}), do: x\n",
+            "  def take(%NotAStruct{x: x}), do: x\n",
             "end\n",
         )
         .to_string(),
@@ -3251,11 +3252,11 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
     let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
-        "  fn hello(), do: 0\n",
+        "  def hello(), do: 0\n",
         "end\n",
         "\n",
         "defmodule B do\n",
-        "  fn take(%NotAStruct{}), do: 0\n",
+        "  def take(%NotAStruct{}), do: 0\n",
         "end\n",
     )
     .to_string();
@@ -3321,7 +3322,7 @@ fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
     let source = concat!(
         "defmodule User do\n",
         "  import Missing\n",
-        "  fn run(), do: nil\n",
+        "  def run(), do: nil\n",
         "end\n",
     )
     .to_string();
@@ -3370,14 +3371,14 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
 
     compiler.submit_code(CodeSubmission {
         name: Some("math_export_span_math.fz".to_string()),
-        text: concat!("defmodule Math do\n", "  fn add(a, b), do: a + b\n", "end\n").to_string(),
+        text: concat!("defmodule Math do\n", "  def add(a, b), do: a + b\n", "end\n").to_string(),
     });
     assert_resolved(compiler.drive(), "Math should settle its own interface on its own");
 
     let source = concat!(
         "defmodule User do\n",
         "  alias Math\n",
-        "  fn run(), do: Math.subtract(1, 2)\n",
+        "  def run(), do: Math.subtract(1, 2)\n",
         "end\n",
     )
     .to_string();
@@ -3436,16 +3437,16 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
             "defmodule Point do\n",
             "  defstruct [:x, :y]\n",
             "\n",
-            "  fn new(x, y), do: %Point{y: y, x: x}\n",
+            "  def new(x, y), do: %Point{y: y, x: x}\n",
             "end\n",
             "\n",
             "defmodule Pair do\n",
             "  defstruct [:first, :second]\n",
             "end\n",
             "\n",
-            "fn describe(%Pair{first: f, second: s}), do: f + s\n",
+            "def describe(%Pair{first: f, second: s}), do: f + s\n",
             "\n",
-            "fn main() do\n",
+            "def main() do\n",
             "  point = Point.new(3, 4)\n",
             "  dbg(point.x)\n",
             "  dbg(point.y)\n",
@@ -3491,7 +3492,7 @@ fn compiler2_backend_keeps_a_struct_named_only_by_a_retained_type_predicate() {
             "defmodule Packet do\n",
             "  defstruct [:value]\n",
             "  @type t :: %Packet{value: integer}\n",
-            "  fn pass(x :: t), do: x\n",
+            "  def pass(x :: t), do: x\n",
             "end\n",
         )
         .to_string(),
@@ -3541,7 +3542,7 @@ fn compiler2_main_root_keeps_its_struct_schema_independent_of_a_macro_root() {
             "  defstruct [:label, :count]\n",
             "end\n",
             "\n",
-            "fn main() do\n",
+            "def main() do\n",
             "  w = %Widget{count: triple(2), label: \"a\"}\n",
             "  dbg(w.label)\n",
             "  dbg(w.count)\n",
@@ -3873,11 +3874,11 @@ fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
     let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
+        text: "def main(), do: 1\n".to_string(),
     });
     let unrelated_code = compiler.submit_code(CodeSubmission {
         name: Some("foo_only.fz".to_string()),
-        text: "fn foo(), do: 2\n".to_string(),
+        text: "def foo(), do: 2\n".to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3940,12 +3941,12 @@ fn compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls
     let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
+        text: "def main(), do: 1\n".to_string(),
     });
     let unrelated_macro_call = |macro_name: &str, produced_atom: &str| {
         format!(
             "defmacro {macro_name}(name_atom, [do: body]) do\n  \
-             {{:fn, %{{}}, [{{name_atom, %{{}}, []}}, [{{:do, body}}]]}}\nend\n\n\
+             {{:def, %{{}}, [{{name_atom, %{{}}, []}}, [{{:do, body}}]]}}\nend\n\n\
              {macro_name}(:{produced_atom}) do\n  1\nend\n"
         )
     };
@@ -4176,8 +4177,8 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let long_doc_text = r#"
 @doc "Removes the first matching left-side item for each item in the right list."
 @spec subtract([a], [a]) :: [a]
-fn subtract(left, []), do: left
-fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+def subtract(left, []), do: left
+def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         "#;
     let long_doc_owner = compiler.submit_code(CodeSubmission {
         name: Some("long_doc_forwarded.fz".into()),
@@ -4219,8 +4220,8 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 defmodule M do
   @doc "Removes the first matching left-side item for each item in the right list."
   @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+  def subtract(left, []), do: left
+  def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
         "#;
     let module_owner = compiler.submit_code(CodeSubmission {
@@ -4937,7 +4938,7 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     let mut compiler = Compiler2::new(tel);
     let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
-        text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
+        text: "import Math, only: [add: 2]\ndef main(), do: &add/2\n".to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the exact fn-ref fixture");
@@ -4981,7 +4982,7 @@ fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("seed_root_no_self_edge.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5107,8 +5108,8 @@ fn compiler2_backend_program_carries_tail_return_flow_from_transport_facts() {
     compiler.submit_code(CodeSubmission {
         name: Some("backend_tail_return_flow.fz".to_string()),
         text: r#"
-fn inc(x), do: x + 1
-fn main(), do: inc(41)
+def inc(x), do: x + 1
+def main(), do: inc(41)
 "#
         .to_string(),
     });
@@ -5357,7 +5358,7 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
         // continuation was a redundant-generic artifact that fz-hwn.23 grounds
         // away — see ground_surface_for_template; that shape is no longer emitted.)
         name: Some("fixtures/enum_each_zero_width_payload.fz".to_string()),
-        text: r#"fn main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
+        text: r#"def main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5701,7 +5702,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
         let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_each_zero_width_payload.fz".to_string()),
-            text: r#"fn main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
+            text: r#"def main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
         });
         let root_id = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -6160,7 +6161,7 @@ fn native_dispatch_does_not_emit_unselected_branch_helpers() {
 
 #[test]
 fn native_no_return_call_does_not_emit_delivery_resume() {
-    assert_native_helpers_are_referenced("fn main() do\n  panic(:done)\n  42\nend\n");
+    assert_native_helpers_are_referenced("def main() do\n  panic(:done)\n  42\nend\n");
 }
 
 /// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
@@ -6227,7 +6228,7 @@ fn measure_native_cps_sharing_corpus() {
     let mut movers = Vec::new();
     for path in paths {
         let source = std::fs::read_to_string(&path).expect("fixture source");
-        if !source.contains("fn main()") {
+        if !source.contains("def main()") {
             continue;
         }
         totals.candidates += 1;
@@ -6959,7 +6960,7 @@ fn compiler2_interp_preserves_range_reduce3_halt_and_suspend_from_backend_artifa
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
     if x > 2 do
       {:halt, acc}
@@ -7002,7 +7003,7 @@ fn compiler2_jit_preserves_range_reduce3_halt_and_suspend_from_native_artifacts(
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
     if x > 2 do
       {:halt, acc}
@@ -7334,7 +7335,7 @@ fn compiler2_null_telemetry_stays_concrete_through_frontdoors_and_runtimes() {
     let mut compiler = Compiler2::new(NullTelemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("null_telemetry_codegen.fz".to_string()),
-        text: "fn main(), do: 42\n".to_string(),
+        text: "def main(), do: 42\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7455,12 +7456,12 @@ fn compiler2_spawned_tuple_return_uses_exact_member_lanes_and_task_halt_repr() {
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_tuple_return.fz".to_string()),
         text: r#"
-fn child(parent) do
+def child(parent) do
   send(parent, :ran)
   {1, 2}
 end
 
-fn main() do
+def main() do
   parent = self()
   spawn(fn () -> child(parent) end)
   receive do
@@ -7593,7 +7594,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_exact_reducer_lanes() 
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/enum_map_reduce_exact.fz".to_string()),
-        text: "fn main() do\n  xs = [1, 2, 3, 4]\n  dbg(Enum.map_reduce(xs, 0, fn (x, acc) -> {x + acc, acc + x} end))\nend\n".to_string(),
+        text: "def main() do\n  xs = [1, 2, 3, 4]\n  dbg(Enum.map_reduce(xs, 0, fn (x, acc) -> {x + acc, acc + x} end))\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7920,7 +7921,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     compiler.submit_code(CodeSubmission {
         name: Some("heap_stats_dbg_resume.fz".to_string()),
         text:
-            "fn main() do\n  stats = Process.heap_alloc_stats()\n  dbg(stats)\n  dbg(stats[:list_cons_allocs])\nend\n"
+            "def main() do\n  stats = Process.heap_alloc_stats()\n  dbg(stats)\n  dbg(stats[:list_cons_allocs])\nend\n"
                 .to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -8151,7 +8152,7 @@ fn compiler2_semantic_preserves_enum_find_halt_payload_distinct_from_default() {
     compiler.submit_code(CodeSubmission {
         name: Some("enum_find_semantic_halt_payload.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   Enum.find([1, 2], :none, fn (_x) -> true end)
 end
 "#
@@ -8197,10 +8198,10 @@ fn compiler2_interp_runs_first_class_callable_captured_by_a_non_tail_continuatio
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/first_class_callable_non_tail_continuation.fz".to_string()),
         text: r#"
-fn maplist([], _f), do: []
-fn maplist([h | t], f), do: [f.(h) | maplist(t, f)]
+def maplist([], _f), do: []
+def maplist([h | t], f), do: [f.(h) | maplist(t, f)]
 
-fn main() do
+def main() do
   g = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
   dbg(maplist([1, 2], g))
 end
@@ -8239,10 +8240,10 @@ fn compiler2_interp_runs_distinct_surface_boxed_callables() {
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/distinct_surface_boxed_callables.fz".to_string()),
         text: r#"
-fn apply_int(f), do: f.(10)
-fn apply_tuple(g), do: g.({3, 4})
+def apply_int(f), do: f.(10)
+def apply_tuple(g), do: g.({3, 4})
 
-fn main() do
+def main() do
   a = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
   b = if true, do: (fn ({x, y}) -> x + y end), else: (fn ({x, y}) -> x * y end)
   dbg(apply_int(a))
@@ -8278,7 +8279,7 @@ fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_with_index_mapper_backend_interp.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   dbg(Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end))
 end
 "#
@@ -8414,7 +8415,7 @@ fn compiler2_jit_preserves_correlated_with_index_mapper_rows() {
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_with_index_mapper_correlated_rows.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   dbg(Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end))
   dbg(Enum.with_index([10, 20], fn (x, index) -> x + index end))
   dbg(Enum.with_index([:a, :b], fn (x, index) -> {index, x} end))
@@ -8515,8 +8516,8 @@ fn compiler2_interp_retains_single_clause_dispatch_failure() {
         // `fz_dbg_value` as `extern "C"`, which reached the runtime helper --
         // an `fn(*mut Process, u64)` -- through a `fn(u64)` transmute.
         text: r#"
-fn choose(:a), do: 1
-fn main(), do: choose(dbg(:b))
+def choose(:a), do: 1
+def main(), do: choose(dbg(:b))
 "#
         .to_string(),
     });
@@ -8742,7 +8743,7 @@ fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
     compiler.submit_code(CodeSubmission {
         name: Some("receive_resume_arith.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   me = self()
   send(me, 1)
   value = receive do
@@ -8849,7 +8850,7 @@ fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
 #[test]
 fn compiler2_receive_after_doomed_timeout_arithmetic_is_rejected_at_compile_time() {
     let source = r#"
-fn main() do
+def main() do
   value = receive do
     x -> x
   after
@@ -8986,7 +8987,7 @@ fn compiler2_native_receive_body_call_resumes_once() {
     compiler.submit_code(CodeSubmission {
         name: Some("receive_body_call_resume.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   me = self()
   send(me, 20)
   x = receive do
@@ -9027,11 +9028,11 @@ fn compiler2_native_receive_branch_call_resumes_once() {
     compiler.submit_code(CodeSubmission {
         name: Some("receive_branch_call_resume.fz".to_string()),
         text: r#"
-fn add2(x) do
+def add2(x) do
   x + 2
 end
 
-fn main() do
+def main() do
   me = self()
   send(me, 20)
   x = receive do
@@ -9077,11 +9078,11 @@ fn compiler2_native_receive_mixed_branch_resume_once() {
     compiler.submit_code(CodeSubmission {
         name: Some("receive_mixed_branch_resume.fz".to_string()),
         text: r#"
-fn add2(x) do
+def add2(x) do
   x + 2
 end
 
-fn main() do
+def main() do
   me = self()
   send(me, 20)
   x = receive do
@@ -9282,9 +9283,9 @@ fn compiler2_native_program_reads_continuation_reprs_from_transport_seams() {
     compiler.submit_code(CodeSubmission {
         name: Some("native_float_resume_reads_transport_seam.fz".to_string()),
         text: r#"
-fn inc(x), do: x + 1.0
+def inc(x), do: x + 1.0
 
-fn main() do
+def main() do
   y = inc(1.0)
   y + 2.0
 end
@@ -9349,7 +9350,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_delivered_lane_adapter.fz".to_string()),
-        text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+        text: "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9455,7 +9456,7 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_reducer_published_value.fz".to_string()),
-        text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+        text: "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9497,13 +9498,13 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
 #[test]
 fn compiler2_jit_reports_runtime_dispatch_fault_at_the_exit_boundary() {
     let source = r#"
-fn pick(0), do: :first
-fn pick(_), do: :third
+def pick(0), do: :first
+def pick(_), do: :third
 
-fn handle(:first), do: 1
-fn handle(:second), do: 2
+def handle(:first), do: 1
+def handle(:second), do: 2
 
-fn main() do
+def main() do
   dbg(1)
   dbg(handle(pick(5)))
   dbg(2)
@@ -9556,9 +9557,9 @@ fn compiler2_nonreturning_nontail_call_has_a_bottom_resume_payload() {
             name: Some(format!("nonreturning_nontail_{case}_call.fz")),
             text: format!(
                 r#"
-fn only(:ok), do: :ok
+def only(:ok), do: :ok
 
-fn main() do
+def main() do
   {invocation}
   :unreachable
 end
@@ -9743,7 +9744,7 @@ fn with_else_lowering_copies_retain_one_source_lambda_denotation() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("with_else_denotation.fz".into()),
-        text: "fn make(a, b) do\n  with :ok <- a, :ok <- b do\n    :ok\n  else\n    _ -> fn () -> 42 end\n  end\nend\nfn main() do\n  dbg(make(:bad, :ok))\n  dbg(make(:ok, :bad))\n  0\nend\n".into(),
+        text: "def make(a, b) do\n  with :ok <- a, :ok <- b do\n    :ok\n  else\n    _ -> fn () -> 42 end\n  end\nend\ndef main() do\n  dbg(make(:bad, :ok))\n  dbg(make(:ok, :bad))\n  0\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10201,10 +10202,10 @@ fn compiler2_unknown_extern_abi_is_a_lower_diagnostic() {
     compiler.submit_code(CodeSubmission {
         name: Some("unknown_extern_abi.fz".to_string()),
         text: r#"defmodule Weird do
-  extern "rust" fn some_symbol(integer) :: integer
+  extern "rust" def some_symbol(integer) :: integer
 end
 
-fn main(), do: Weird.some_symbol(1)
+def main(), do: Weird.some_symbol(1)
 "#
         .to_string(),
     });
@@ -10239,7 +10240,7 @@ fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
     // The `fz` ABI names symbols that BOTH doors also claim by name in their
     // own lowerings, and the two claim sets are not the same. So a foreign
     // declaration of one is a question the doors would answer differently:
-    // `extern "fz" fn fz_op_add_ii` once returned 5 under `run` and a process
+    // `extern "fz" def fz_op_add_ii` once returned 5 under `run` and a process
     // pointer plus two under `interp`. Refusing it in the shared front end is
     // what makes every door refuse it identically.
     let tel = ConfiguredTelemetry::new();
@@ -10250,10 +10251,10 @@ fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
     compiler.submit_code(CodeSubmission {
         name: Some("foreign_fz_abi.fz".to_string()),
         text: r#"defmodule Weird do
-  extern "fz" fn fz_op_add_ii(integer, integer) :: integer
+  extern "fz" def fz_op_add_ii(integer, integer) :: integer
 end
 
-fn main(), do: Weird.fz_op_add_ii(2, 3)
+def main(), do: Weird.fz_op_add_ii(2, 3)
 "#
         .to_string(),
     });
@@ -10299,10 +10300,10 @@ fn compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi() {
     compiler.submit_code(CodeSubmission {
         name: Some("wrong_abi_for_runtime_symbol.fz".to_string()),
         text: r#"defmodule Weird do
-  extern "C" fn fz_dbg_value(any) :: any
+  extern "C" def fz_dbg_value(any) :: any
 end
 
-fn main(), do: Weird.fz_dbg_value(:zz)
+def main(), do: Weird.fz_dbg_value(:zz)
 "#
         .to_string(),
     });
@@ -10459,20 +10460,20 @@ fn compiler2_backend_product_lowers_closed_union_protocol_dispatch_as_call_edge(
         name: Some("fixtures/compiler2_protocol_union_dispatch.fz".to_string()),
         text: r#"
 defprotocol Sizer do
-  fn size(value)
+  def size(value)
 end
 
 defimpl Sizer, for: Range do
-  fn size(value), do: 7
+  def size(value), do: 7
 end
 
 defimpl Sizer, for: List do
-  fn size(value), do: 100
+  def size(value), do: 100
 end
 
-fn describe(value), do: Sizer.size(value)
+def describe(value), do: Sizer.size(value)
 
-fn main() do
+def main() do
   case [1..3, [1, 2, 3]] do
     [a, b] -> describe(a) + describe(b)
     _ -> 0
@@ -12391,19 +12392,19 @@ fn backend_canon(fixture: &str) -> String {
 #[test]
 fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders() {
     const FUNCTIONS: [(&str, &str); 5] = [
-        ("left.fz", "fn left(x), do: fn(y) -> x + y end\n"),
-        ("right.fz", "fn right(x), do: fn(y) -> x * y end\n"),
+        ("left.fz", "def left(x), do: fn(y) -> x + y end\n"),
+        ("right.fz", "def right(x), do: fn(y) -> x * y end\n"),
         (
             "count.fz",
-            "fn count(0), do: fn(x) -> x end\nfn count(n), do: count(n - 1)\n",
+            "def count(0), do: fn(x) -> x end\ndef count(n), do: count(n - 1)\n",
         ),
         (
             "even.fz",
-            "fn even(0), do: fn(x) -> x end\nfn even(n), do: odd(n - 1)\n",
+            "def even(0), do: fn(x) -> x end\ndef even(n), do: odd(n - 1)\n",
         ),
         (
             "odd.fz",
-            "fn odd(0), do: fn(x) -> x + 1 end\nfn odd(n), do: even(n - 1)\n",
+            "def odd(0), do: fn(x) -> x + 1 end\ndef odd(n), do: even(n - 1)\n",
         ),
     ];
     fn settle(order: usize) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
@@ -12430,7 +12431,7 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
         for (_, text) in &FUNCTIONS {
             source.push_str(text);
         }
-        source.push_str("fn main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        source.push_str("def main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
         compiler.submit_code(CodeSubmission {
             name: Some("runtime_demand_order.fz".to_string()),
             text: source,
@@ -12577,7 +12578,7 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("nested_runtime_demand_dependencies.fz".to_string()),
-        text: "fn main() do\n  inner = fn (x) -> x + 1 end\n  outer = fn (x) -> inner.(x) end\n  outer.(1)\nend\n"
+        text: "def main() do\n  inner = fn (x) -> x + 1 end\n  outer = fn (x) -> inner.(x) end\n  outer.(1)\nend\n"
             .to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
@@ -12635,13 +12636,13 @@ fn boxed_callable_members_contribute_their_exact_return_contract() {
     compiler.submit_code(CodeSubmission {
         name: Some("boxed_partial_return_contribution.fz".to_string()),
         text: r#"
-fn make_pair(), do: fn (x) -> {:unused, x} end
-fn observe(pair, x) do
+def make_pair(), do: fn (x) -> {:unused, x} end
+def observe(pair, x) do
   wrapped = {:wrapped, pair.(x)}
   {_, {_, value}} = wrapped
   {pair, value}
 end
-fn main() do
+def main() do
   pair = make_pair()
   observe(pair, 1)
 end
@@ -12795,8 +12796,8 @@ fn direct_only_callable_flow_does_not_contribute_a_retained_return_contract() {
     compiler.submit_code(CodeSubmission {
         name: Some("direct_only_partial_return.fz".to_string()),
         text: r#"
-fn pair(x), do: {:unused, x}
-fn main() do
+def pair(x), do: {:unused, x}
+def main() do
   wrapped = {:wrapped, pair(1)}
   {_, {_, value}} = wrapped
   value
@@ -12987,11 +12988,11 @@ fn compiler2_forwarded_closures_are_not_replaced_by_their_sibling() {
         name: Some("fixtures/forwarded_closure_siblings.fz".to_string()),
         text: r#"
 defmodule Pipeline do
-  fn apply_twice(f, x), do: f.(f.(x))
-  fn run(f, x), do: apply_twice(f, x)
+  def apply_twice(f, x), do: f.(f.(x))
+  def run(f, x), do: apply_twice(f, x)
 end
 
-fn main() do
+def main() do
   dbg(Pipeline.run(fn (n) -> n + 1 end, 10))
   dbg(Pipeline.run(fn (n) -> n * 3 end, 10))
 end
@@ -13740,18 +13741,18 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 /// recursive pair, so the same program carries a plain reachability answer
 /// (nothing on the chain reaches itself) and a cyclic one.
 const STATIC_CALL_GRAPH_SOURCE: &str = r#"
-fn c(x), do: x + 1
-fn b(x), do: c(x) + 1
-fn a(x), do: b(x) + 1
-fn pong(n), do: ping(n - 1)
-fn ping(n) do
+def c(x), do: x + 1
+def b(x), do: c(x) + 1
+def a(x), do: b(x) + 1
+def pong(n), do: ping(n - 1)
+def ping(n) do
   if n <= 0 do
     0
   else
     pong(n)
   end
 end
-fn main(), do: dbg(a(1) + ping(3))
+def main(), do: dbg(a(1) + ping(3))
 "#;
 
 /// fz-kdt.56: the static call graph is a per-function FACT, extracted from one
@@ -14448,9 +14449,9 @@ fn compiler2_lowered_body_records_list_retention_sources_on_delivered_entries() 
     let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("list_retention_continuation.fz".to_string()),
         text: r#"
-fn ping(x), do: x
+def ping(x), do: x
 
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   ping(0)
   [h | t]
@@ -14541,15 +14542,15 @@ fn compiler2_list_retention_crosses_continuations_as_a_traced_construction_opera
     compiler.submit_code(CodeSubmission {
         name: Some("list_retention_continuation.fz".to_string()),
         text: r#"
-fn ping(x), do: x
+def ping(x), do: x
 
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   ping(0)
   [h | t]
 end
 
-fn main(), do: rebuild([1, 2])
+def main(), do: rebuild([1, 2])
 "#
         .to_string(),
     });
@@ -14614,15 +14615,15 @@ fn compiler2_list_retention_telemetry_does_not_count_a_split_without_reconstruct
     compiler.submit_code(CodeSubmission {
         name: Some("list_retention_no_transport.fz".to_string()),
         text: r#"
-fn ping(x), do: x
+def ping(x), do: x
 
-fn ignore(xs) do
+def ignore(xs) do
   [h | t] = xs
   ping(0)
   {h, t}
 end
 
-fn main(), do: ignore([1, 2])
+def main(), do: ignore([1, 2])
 "#
         .to_string(),
     });
@@ -14651,12 +14652,12 @@ fn compiler2_list_retention_runtime_telemetry_reports_source_identity_hits() {
     compiler.submit_code(CodeSubmission {
         name: Some("list_retention_runtime_reuse.fz".to_string()),
         text: r#"
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   [h | t]
 end
 
-fn main(), do: rebuild([1, 2])
+def main(), do: rebuild([1, 2])
 "#
         .to_string(),
     });
@@ -14677,13 +14678,13 @@ fn compiler2_list_retention_preserves_typed_source_and_reuses_a_returned_list() 
     let run = list_retention_run(
         "list_retention_returned_source_alias.fz",
         r#"
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   holder = {xs}
   {holder, [h | t]}
 end
 
-fn main() do
+def main() do
   dbg(rebuild([1, 2]))
   0
 end
@@ -14706,15 +14707,15 @@ fn compiler2_list_retention_erases_unused_call_argument_before_reuse() {
     let run = list_retention_run(
         "list_retention_erased_unused_argument.fz",
         r#"
-fn ping(x), do: x
+def ping(x), do: x
 
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   ping(xs)
   {xs, [h | t]}
 end
 
-fn main(), do: rebuild([1, 2])
+def main(), do: rebuild([1, 2])
 "#,
     );
 
@@ -14797,11 +14798,11 @@ fn list_retention_source_and_rebuild_share_return(program: &NativeProgram) -> bo
 #[test]
 fn compiler2_jit_and_backend_interp_agree_on_a_callable_that_ignores_its_argument() {
     let source = r#"
-fn slice(xs) do
+def slice(xs) do
   {:ok, 3, (fn (_arg) -> xs end)}
 end
 
-fn main() do
+def main() do
   {:ok, n, slicer} = slice([1, 2, 3])
   dbg(n)
   dbg(slicer.([9, 9]))
@@ -14849,7 +14850,7 @@ end
 /// discards the mapper's result:
 ///
 /// ```fz
-/// fnp each_step(entry, acc, fun) do
+/// defp each_step(entry, acc, fun) do
 ///   fun.(entry)
 ///   acc
 /// end
@@ -15059,7 +15060,7 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
 #[test]
 fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
     let source_for = |sites: usize| {
-        let mut source = String::from("fn main() do\n  xs = [1, 2, 3, 4]\n");
+        let mut source = String::from("def main() do\n  xs = [1, 2, 3, 4]\n");
         for bound in 0..sites {
             source.push_str(&format!("  dbg(Enum.find(xs, fn (x) -> x > {bound} end))\n"));
         }
@@ -15138,7 +15139,7 @@ fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
 #[test]
 fn compiler2_jit_and_backend_interp_agree_on_reduce_envelope_materialization() {
     let source = r#"
-fn main() do
+def main() do
   xs = [1, 2, 3, 4, 5]
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
   stats = Process.heap_alloc_stats()
@@ -15196,20 +15197,20 @@ end
 #[ignore = "blocked on fz-k22: generic Enum HOF leaves a backend value unbound"]
 fn compiler2_jit_and_backend_interp_agree_on_list_retention_exit_counters() {
     let source = r#"
-fn ping(x), do: x
+def ping(x), do: x
 
-fn rebuild(xs) do
+def rebuild(xs) do
   [h | t] = xs
   [h | t]
 end
 
-fn rebuild_after_publish(xs) do
+def rebuild_after_publish(xs) do
   [h | t] = xs
   ping(xs)
   {xs, [h | t]}
 end
 
-fn main() do
+def main() do
   rebuild([1, 2])
   rebuild_after_publish([3, 4])
   0
@@ -15310,7 +15311,7 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_wrapper_calls.fz".to_string()),
-        text: "defmodule Main do\n  fn main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
+        text: "defmodule Main do\n  def main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: Some("Main".to_string()),
@@ -15355,7 +15356,7 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_intrinsic_lanes.fz".to_string()),
-        text: "defmodule Main do\n  fn main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
+        text: "defmodule Main do\n  def main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: Some("Main".to_string()),
@@ -15617,7 +15618,7 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("guard_input_owner.fz".into()),
-        text: "fn wanted(_, value) when value == 42, do: true\nfn wanted(_, _), do: false\nfn choose(_guard_subject, _unused, value) when wanted(0, value), do: 42\nfn choose(_, _, _), do: 7\nfn main(), do: choose(:guard_subject, :unused, 42)\n".into(),
+        text: "def wanted(_, value) when value == 42, do: true\ndef wanted(_, _), do: false\ndef choose(_guard_subject, _unused, value) when wanted(0, value), do: 42\ndef choose(_, _, _), do: 7\ndef main(), do: choose(:guard_subject, :unused, 42)\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -15650,7 +15651,7 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("guard_binding_owner.fz".into()),
-        text: "fn wanted(%{\"key\" => value}), do: value == 42\nfn wanted(_), do: false\nfn relayed(value), do: wanted(value)\nfn main() do\n send(self(), %{\"outer\" => %{\"key\" => 42}})\n receive do\n %{\"outer\" => value} when relayed(value) -> 42\n after\n 1000 -> 0\n end\nend\n".into(),
+        text: "def wanted(%{\"key\" => value}), do: value == 42\ndef wanted(_), do: false\ndef relayed(value), do: wanted(value)\ndef main() do\n send(self(), %{\"outer\" => %{\"key\" => 42}})\n receive do\n %{\"outer\" => value} when relayed(value) -> 42\n after\n 1000 -> 0\n end\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -15737,11 +15738,11 @@ fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
     for (label, source) in [
         (
             "receive",
-            "fn wanted(value), do: value == missing\nfn main() do\n receive do\n value when wanted(value) -> 42\n after\n 1000 -> 0\n end\nend\n",
+            "def wanted(value), do: value == missing\ndef main() do\n receive do\n value when wanted(value) -> 42\n after\n 1000 -> 0\n end\nend\n",
         ),
         (
             "case",
-            "fn wanted(value), do: value == missing\nfn main() do\n missing = 42\n case 42 do\n ^missing when wanted(missing) -> 42\n _ -> 7\n end\nend\n",
+            "def wanted(value), do: value == missing\ndef main() do\n missing = 42\n case 42 do\n ^missing when wanted(missing) -> 42\n _ -> 7\n end\nend\n",
         ),
     ] {
         let tel = ConfiguredTelemetry::new();
@@ -16299,7 +16300,7 @@ fn compiler2_imported_macro_expands_in_provider_definition_namespace() {
         name: Some("fixtures/cross_module_macro.fz".to_string()),
         text: r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -16309,7 +16310,7 @@ end
 defmodule App do
   import Helpers, only: [twice: 1]
 
-  fn run(), do: twice(21)
+  def run(), do: twice(21)
 end
 "#
         .to_string(),
@@ -16355,8 +16356,8 @@ fn compiler2_require_except_selects_remote_macro_set() {
         name: Some("fixtures/require_except_remote_macro.fz".to_string()),
         text: r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
-  fn triple(x), do: x * 3
+  def double(x), do: x * 2
+  def triple(x), do: x * 3
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -16370,7 +16371,7 @@ end
 defmodule App do
   require Helpers, except: [twice: 1]
 
-  fn run(), do: Helpers.thrice(14)
+  def run(), do: Helpers.thrice(14)
 end
 "#
         .to_string(),
@@ -16416,7 +16417,7 @@ fn compiler2_cross_file_bare_require_permits_qualified_macro_call() {
         name: Some("fixtures/cross_file_macro_provider.fz".to_string()),
         text: r#"
 defmodule M do
-  fn tag(x), do: {:tagged, x}
+  def tag(x), do: {:tagged, x}
 
   defmacro tagged(x) do
     quote do: tag(unquote(x))
@@ -16431,7 +16432,7 @@ end
 defmodule User do
   require M
 
-  fn run(), do: M.tagged(7)
+  def run(), do: M.tagged(7)
 end
 "#
         .to_string(),
@@ -16473,7 +16474,7 @@ fn compiler2_visible_alias_does_not_permit_remote_macro_without_require() {
         name: Some("fixtures/aliased_macro_provider.fz".to_string()),
         text: r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -16488,7 +16489,7 @@ end
 defmodule App do
   alias Helpers, as: H
 
-  fn run(), do: H.twice(21)
+  def run(), do: H.twice(21)
 end
 "#
         .to_string(),
@@ -16535,7 +16536,7 @@ fn compiler2_dotted_require_permits_full_path_macro_call() {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
 defmodule Foo.Bar do
-  fn tag(x), do: {:tagged, x}
+  def tag(x), do: {:tagged, x}
 
   defmacro tagged(x) do
     quote do: tag(unquote(x))
@@ -16550,7 +16551,7 @@ end
 defmodule User do
   require Foo.Bar
 
-  fn run(), do: Foo.Bar.tagged(7)
+  def run(), do: Foo.Bar.tagged(7)
 end
 "#
         .to_string(),
@@ -16592,7 +16593,7 @@ fn compiler2_dotted_require_does_not_bind_short_alias() {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
 defmodule Foo.Bar do
-  fn tag(x), do: {:tagged, x}
+  def tag(x), do: {:tagged, x}
 
   defmacro tagged(x) do
     quote do: tag(unquote(x))
@@ -16607,7 +16608,7 @@ end
 defmodule User do
   require Foo.Bar
 
-  fn run(), do: Bar.tagged(7)
+  def run(), do: Bar.tagged(7)
 end
 "#
         .to_string(),
@@ -16650,7 +16651,7 @@ fn compiler2_remote_macro_requires_explicit_require() {
         name: Some("fixtures/remote_macro_without_require.fz".to_string()),
         text: r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -16658,7 +16659,7 @@ defmodule Helpers do
 end
 
 defmodule App do
-  fn run(), do: Helpers.twice(21)
+  def run(), do: Helpers.twice(21)
 end
 "#
         .to_string(),
@@ -16718,7 +16719,7 @@ fn compiler2_require_remote_macro_waits_executable_and_expands() {
         name: Some("fixtures/require_remote_macro.fz".to_string()),
         text: r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -16728,7 +16729,7 @@ end
 defmodule App do
   require Helpers, only: [twice: 1]
 
-  fn run(), do: Helpers.twice(21)
+  def run(), do: Helpers.twice(21)
 end
 "#
         .to_string(),
@@ -18222,9 +18223,9 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
     world.submit_code(
         Some("count.fz".to_string()),
         concat!(
-            "fn count(0), do: 0\n",
-            "fn count(n), do: count(n - 1)\n",
-            "fn main(), do: count(3)\n",
+            "def count(0), do: 0\n",
+            "def count(n), do: count(n - 1)\n",
+            "def main(), do: count(3)\n",
         )
         .to_string(),
     );
@@ -18285,7 +18286,7 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
 
 #[test]
 fn compiler2_never_returning_function_settles_with_empty_evidence() {
-    // fn forever(), do: forever() — the least fixpoint of its return is
+    // def forever(), do: forever() — the least fixpoint of its return is
     // bottom. The drive must quiesce (absent evidence is the join identity,
     // so the activation stops waking itself), and the settled evidence stays
     // empty: at the fixpoint, "no evidence" IS the fact "never returns".
@@ -18297,7 +18298,7 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("forever.fz".to_string()),
-        concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
+        concat!("def forever(), do: forever()\n", "def main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
     drive_world_backend_product(&mut world, &tel, &mut sessions, root);
@@ -18328,7 +18329,7 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 
 #[test]
 fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
-    // fn deep(x), do: [deep(x)] — the inner call must produce a value before
+    // def deep(x), do: [deep(x)] — the inner call must produce a value before
     // the list ever exists, so this function NEVER returns: its least
     // fixpoint is bottom. Under the old absent-reads-as-none lie this very
     // program manufactured a divergent ascent (list(none), list(list(none)),
@@ -18343,7 +18344,7 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
     let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
-        concat!("fn deep(x), do: [deep(x)]\n", "fn main(), do: deep(1)\n").to_string(),
+        concat!("def deep(x), do: [deep(x)]\n", "def main(), do: deep(1)\n").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
     assert_resolved(
@@ -18358,8 +18359,8 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
 
 #[test]
 fn compiler2_productive_deepening_terminates_by_widening() {
-    // fn deep(0), do: []
-    // fn deep(n), do: [deep(n - 1)]
+    // def deep(0), do: []
+    // def deep(n), do: [deep(n - 1)]
     // Every round produces REAL evidence one list deeper — the true value is
     // the recursive type μt.([] | list(t)), which the lattice cannot
     // express, so the precise ascent provably never lands. Termination must
@@ -18375,9 +18376,9 @@ fn compiler2_productive_deepening_terminates_by_widening() {
     world.submit_code(
         Some("deep_productive.fz".to_string()),
         concat!(
-            "fn deep(0), do: []\n",
-            "fn deep(n), do: [deep(n - 1)]\n",
-            "fn main(), do: deep(3)\n",
+            "def deep(0), do: []\n",
+            "def deep(n), do: [deep(n - 1)]\n",
+            "def main(), do: deep(3)\n",
         )
         .to_string(),
     );
@@ -18452,7 +18453,7 @@ fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("fixture source");
-        if !text.contains("fn main()") {
+        if !text.contains("def main()") {
             continue;
         }
         swept += 1;
@@ -18709,9 +18710,9 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
     world.submit_code(
         Some("string_dispatch.fz".to_string()),
         concat!(
-            "fn pick(\"a\"), do: 1\n",
-            "fn pick(_), do: 2\n",
-            "fn main(), do: pick(\"b\")\n",
+            "def pick(\"a\"), do: 1\n",
+            "def pick(_), do: 2\n",
+            "def main(), do: pick(\"b\")\n",
         )
         .to_string(),
     );
@@ -18748,10 +18749,10 @@ fn compiler2_entry_reachability_names_clauses_in_source_order_not_arrival_order(
     let reachable = reachable_clauses_for_source(
         "arrival_order_reachability.fz",
         r#"
-fn count([], acc), do: acc
-fn count([_head | tail], acc), do: count(tail, acc + 1)
+def count([], acc), do: acc
+def count([_head | tail], acc), do: count(tail, acc + 1)
 
-fn main(), do: count([1, 2, 3], 0)
+def main(), do: count([1, 2, 3], 0)
 "#,
         "count",
         2,
@@ -18769,15 +18770,15 @@ fn compiler2_dispatch_reachability_preserves_correlated_tuple_inputs() {
     let (direct, direct_return) = semantic_reachability_for_source(
         "correlated_tuple_dispatch.fz",
         r#"
-fn choose() do
+def choose() do
   if true, do: {:a, :x}, else: {:b, :y}
 end
 
-fn classify({:a, :x}), do: :left
-fn classify({:b, :y}), do: :right
-fn classify(_), do: :fallback
+def classify({:a, :x}), do: :left
+def classify({:b, :y}), do: :right
+def classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+def main(), do: classify(choose())
 "#,
         "classify",
         1,
@@ -18795,15 +18796,15 @@ fn main(), do: classify(choose())
     let projected = reachable_clauses_for_source(
         "projected_tuple_dispatch.fz",
         r#"
-fn choose() do
+def choose() do
   if true, do: {:a, [true]}, else: {:b, [false]}
 end
 
-fn classify({:a, [true | _tail]}), do: :left
-fn classify({:b, [false | _tail]}), do: :right
-fn classify(_), do: :fallback
+def classify({:a, [true | _tail]}), do: :left
+def classify({:b, [false | _tail]}), do: :right
+def classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+def main(), do: classify(choose())
 "#,
         "classify",
         1,
@@ -18817,15 +18818,15 @@ fn main(), do: classify(choose())
     let nested = reachable_clauses_for_source(
         "nested_tuple_dispatch.fz",
         r#"
-fn choose() do
+def choose() do
   if true, do: {:outer, {:a, :x}}, else: {:outer, {:b, :y}}
 end
 
-fn classify({:outer, {:a, :x}}), do: :left
-fn classify({:outer, {:b, :y}}), do: :right
-fn classify(_), do: :fallback
+def classify({:outer, {:a, :x}}), do: :left
+def classify({:outer, {:b, :y}}), do: :right
+def classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+def main(), do: classify(choose())
 "#,
         "classify",
         1,
@@ -18839,15 +18840,15 @@ fn main(), do: classify(choose())
     let list_of_tuples = reachable_clauses_for_source(
         "list_of_tuples_dispatch.fz",
         r#"
-fn choose() do
+def choose() do
   if true, do: [{:a, :x}], else: [{:b, :y}]
 end
 
-fn classify([{:a, :x} | _tail]), do: :left
-fn classify([{:b, :y} | _tail]), do: :right
-fn classify(_), do: :fallback
+def classify([{:a, :x} | _tail]), do: :left
+def classify([{:b, :y} | _tail]), do: :right
+def classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+def main(), do: classify(choose())
 "#,
         "classify",
         1,
@@ -18864,10 +18865,10 @@ fn compiler2_dispatch_reachability_keeps_list_positions_and_unknown_tests_conser
     let list_positions = reachable_clauses_for_source(
         "list_position_dispatch.fz",
         r#"
-fn classify([true, true | _tail]), do: :same
-fn classify(_), do: :fallback
+def classify([true, true | _tail]), do: :same
+def classify(_), do: :fallback
 
-fn main(), do: classify([true, false])
+def main(), do: classify([true, false])
 "#,
         "classify",
         1,
@@ -18881,10 +18882,10 @@ fn main(), do: classify([true, false])
     let guarded = reachable_clauses_for_source(
         "guarded_dispatch.fz",
         r#"
-fn classify(value) when value == :a, do: :guarded
-fn classify(_), do: :fallback
+def classify(value) when value == :a, do: :guarded
+def classify(_), do: :fallback
 
-fn main(), do: classify(:a)
+def main(), do: classify(:a)
 "#,
         "classify",
         1,
@@ -18902,19 +18903,19 @@ fn compiler2_declared_domains_drive_function_head_exhaustiveness() {
         "declared_domain_exhaustiveness.fz",
         r#"
 @spec tuple_total({:a, :x} | {:b, :y}) :: atom
-fn tuple_total({:a, :x}), do: :left
-fn tuple_total({:b, :y}), do: :right
+def tuple_total({:a, :x}), do: :left
+def tuple_total({:b, :y}), do: :right
 
 @spec overload_total(:a, :x) :: atom
 @spec overload_total(:b, :y) :: atom
-fn overload_total(:a, :x), do: :left
-fn overload_total(:b, :y), do: :right
+def overload_total(:a, :x), do: :left
+def overload_total(:b, :y), do: :right
 
 @spec count_a([:a]) :: integer
-fn count_a([]), do: 0
-fn count_a([:a | tail]), do: 1 + count_a(tail)
+def count_a([]), do: 0
+def count_a([:a | tail]), do: 1 + count_a(tail)
 
-fn main() do
+def main() do
   {tuple_total({:a, :x}), overload_total(:b, :y), count_a([:a, :a])}
 end
 "#,
@@ -18929,15 +18930,15 @@ fn compiler2_declared_list_domain_recognizes_zero_one_and_two_plus_as_total() {
         "list_length_partition_exhaustiveness.fz",
         r#"
 @spec total([any]) :: integer
-fn total([]), do: 0
-fn total([_single]), do: 1
-fn total([_first, _second | _tail]), do: 2
+def total([]), do: 0
+def total([_single]), do: 1
+def total([_first, _second | _tail]), do: 2
 
 @spec missing_one([any]) :: integer
-fn missing_one([]), do: 0
-fn missing_one([_first, _second | _tail]), do: 2
+def missing_one([]), do: 0
+def missing_one([_first, _second | _tail]), do: 2
 
-fn main(), do: {total([:a]), missing_one([])}
+def main(), do: {total([:a]), missing_one([])}
 "#,
     );
 
@@ -18948,7 +18949,7 @@ fn main(), do: {total([:a]), missing_one([])}
             .collect::<Vec<_>>(),
         vec![(
             "list_length_partition_exhaustiveness.fz",
-            "`fn` clauses don't cover every input",
+            "function clauses don't cover every input",
         )],
         "only the genuinely partial list partition should warn: {diagnostics:?}",
     );
@@ -18960,14 +18961,14 @@ fn compiler2_bounded_contract_domains_drive_function_head_exhaustiveness() {
         "bounded_contract_exhaustiveness.fz",
         r#"
 @spec bounded(t) :: atom when t: :a | :b
-fn bounded(:a), do: :left
-fn bounded(:b), do: :right
+def bounded(:a), do: :left
+def bounded(:b), do: :right
 
 @spec nested({:tag, t}) :: atom when t: :a | :b
-fn nested({:tag, :a}), do: :left
-fn nested({:tag, :b}), do: :right
+def nested({:tag, :a}), do: :left
+def nested({:tag, :b}), do: :right
 
-fn main(), do: {bounded(:a), nested({:tag, :b})}
+def main(), do: {bounded(:a), nested({:tag, :b})}
 "#,
     );
 
@@ -18983,9 +18984,9 @@ fn compiler2_partial_bounded_contract_domain_still_warns() {
         "partial_bounded_contract.fz",
         r#"
 @spec partial(t) :: atom when t: :a | :b
-fn partial(:a), do: :a
+def partial(:a), do: :a
 
-fn main(), do: partial(:a)
+def main(), do: partial(:a)
 "#,
     );
 
@@ -18994,7 +18995,7 @@ fn main(), do: partial(:a)
         1,
         "the uncovered bounded atom must warn: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].1.message, "`fn` clauses don't cover every input");
+    assert_eq!(diagnostics[0].1.message, "function clauses don't cover every input");
 }
 
 #[test]
@@ -19003,13 +19004,13 @@ fn compiler2_partial_declared_domains_warn_with_and_without_guards() {
         "partial_declared_domains.fz",
         r#"
 @spec partial(:a | :b | :c) :: atom
-fn partial(:a), do: :a
-fn partial(:b), do: :b
+def partial(:a), do: :a
+def partial(:b), do: :b
 
 @spec guarded(:a | :b) :: atom
-fn guarded(value) when value == :a, do: :a
+def guarded(value) when value == :a, do: :a
 
-fn main(), do: {partial(:a), guarded(:a)}
+def main(), do: {partial(:a), guarded(:a)}
 "#,
     );
 
@@ -19019,8 +19020,8 @@ fn main(), do: {partial(:a), guarded(:a)}
             .map(|(_, diagnostic)| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "`fn` clauses don't cover every input",
-            "`fn` clauses don't cover every input",
+            "function clauses don't cover every input",
+            "function clauses don't cover every input",
         ],
         "both real fallthroughs must warn: {diagnostics:?}",
     );
@@ -19037,14 +19038,14 @@ fn compiler2_contracted_functions_keep_nested_match_diagnostics() {
         "contracted_nested_case.fz",
         r#"
 @spec nested(:ok) :: integer
-fn nested(:ok) do
+def nested(:ok) do
   case :a do
     :a -> 1
     :b -> 2
   end
 end
 
-fn main(), do: nested(:ok)
+def main(), do: nested(:ok)
 "#,
     );
 
@@ -19062,10 +19063,10 @@ fn compiler2_invalid_contract_does_not_invent_a_domain_warning() {
         "invalid_contract_domain.fz",
         r#"
 @spec invalid(Missing.t) :: atom
-fn invalid(:a), do: :a
-fn invalid(:b), do: :b
+def invalid(:a), do: :a
+def invalid(:b), do: :b
 
-fn main(), do: invalid(:a)
+def main(), do: invalid(:a)
 "#,
     );
 
@@ -19127,9 +19128,9 @@ fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
         "user_partial_function.fz",
         r#"
 @spec partial(:a | :b) :: atom
-fn partial(:a), do: :a
+def partial(:a), do: :a
 
-fn main(), do: partial(:a)
+def main(), do: partial(:a)
 "#,
     );
     assert_eq!(
@@ -19138,7 +19139,10 @@ fn main(), do: partial(:a)
         "a genuine user fallthrough must still warn: {user_diagnostics:?}"
     );
     assert_eq!(user_diagnostics[0].0, "user_partial_function.fz");
-    assert_eq!(user_diagnostics[0].1.message, "`fn` clauses don't cover every input");
+    assert_eq!(
+        user_diagnostics[0].1.message,
+        "function clauses don't cover every input"
+    );
 }
 
 fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(String, Diagnostic)> {
@@ -19239,11 +19243,11 @@ fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
     world.submit_code(
         Some("map_int_key.fz".to_string()),
         concat!(
-            "fn pick() do\n",
+            "def pick() do\n",
             "  m = %{1 => 10, 2 => 20}\n",
             "  m[1]\n",
             "end\n",
-            "fn main(), do: pick()\n",
+            "def main(), do: pick()\n",
         )
         .to_string(),
     );
@@ -19277,8 +19281,8 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
         Some("digit.fz".to_string()),
         concat!(
             "@type digit :: 0\n",
-            "fn pick(d :: digit), do: d\n",
-            "fn main(), do: pick(7)\n",
+            "def pick(d :: digit), do: d\n",
+            "def main(), do: pick(7)\n",
         )
         .to_string(),
     );
@@ -19358,7 +19362,7 @@ fn compiler2_connected_callable_returns_share_one_public_value_ref_contract() {
     compiler.submit_code(CodeSubmission {
         name: Some("connected_callable_returns.fz".to_string()),
         text: r#"
-fn run(flag) do
+def run(flag) do
   p = fn (x) -> {:p, x} end
   r = fn (x) -> {:r, x} end
   q = fn (x) -> x end
@@ -19369,7 +19373,7 @@ fn run(flag) do
   {a, b, p}
 end
 
-fn main() do
+def main() do
   {a1, b1, _} = run(true)
   {a2, b2, _} = run(false)
   dbg({a1, b1, a2, b2})
@@ -19448,7 +19452,7 @@ fn compiler2_published_captured_closure_keeps_its_public_return_contract() {
     compiler.submit_code(CodeSubmission {
         name: Some("published_captured_closure.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   n = 40
   f = fn (x) -> n + x end
   dbg(f)
@@ -20201,75 +20205,75 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     (
         "a slot no callee reads and the body does not return is freight",
         "carry/2",
-        "fn carry(0, junk), do: 0\n\
-         fn carry(n, junk), do: carry(n - 1, junk)\n\
-         fn main() do\n  dbg(carry(3, [1, 2]))\n  dbg(carry(3, [\"a\", \"b\"]))\nend\n",
+        "def carry(0, junk), do: 0\n\
+         def carry(n, junk), do: carry(n - 1, junk)\n\
+         def main() do\n  dbg(carry(3, [1, 2]))\n  dbg(carry(3, [\"a\", \"b\"]))\nend\n",
         1,
     ),
     (
         "an accumulator the recursion itself supplies stays collapsed",
         "tag/3",
-        "fn tag(_f, [], acc), do: acc\n\
-         fn tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
-         fn main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
+        "def tag(_f, [], acc), do: acc\n\
+         def tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
+         def main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
          \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
         1,
     ),
     (
         "three accumulators built by consing are opaque, not forwarded",
         "split3/5",
-        "fn split3(_, [], a, b, c), do: {a, b, c}\n\
-         fn split3(p, [h | t], a, b, c) when h < p, do: split3(p, t, [h | a], b, c)\n\
-         fn split3(p, [h | t], a, b, c) when h == p, do: split3(p, t, a, [h | b], c)\n\
-         fn split3(p, [h | t], a, b, c), do: split3(p, t, a, b, [h | c])\n\
-         fn main() do\n  {a, b, c} = split3(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [])\n\
+        "def split3(_, [], a, b, c), do: {a, b, c}\n\
+         def split3(p, [h | t], a, b, c) when h < p, do: split3(p, t, [h | a], b, c)\n\
+         def split3(p, [h | t], a, b, c) when h == p, do: split3(p, t, a, [h | b], c)\n\
+         def split3(p, [h | t], a, b, c), do: split3(p, t, a, b, [h | c])\n\
+         def main() do\n  {a, b, c} = split3(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [])\n\
          \x20 dbg(a)\n  dbg(b)\n  dbg(c)\nend\n",
         1,
     ),
     (
         "four accumulators do not become a product either",
         "split4/6",
-        "fn split4(_, [], a, b, c, d), do: {a, b, c, d}\n\
-         fn split4(p, [h | t], a, b, c, d) when h < p, do: split4(p, t, [h | a], b, c, d)\n\
-         fn split4(p, [h | t], a, b, c, d) when h == p, do: split4(p, t, a, [h | b], c, d)\n\
-         fn split4(p, [h | t], a, b, c, d) when h > 6, do: split4(p, t, a, b, [h | c], d)\n\
-         fn split4(p, [h | t], a, b, c, d), do: split4(p, t, a, b, c, [h | d])\n\
-         fn main() do\n  {a, b, c, d} = split4(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [], [])\n\
+        "def split4(_, [], a, b, c, d), do: {a, b, c, d}\n\
+         def split4(p, [h | t], a, b, c, d) when h < p, do: split4(p, t, [h | a], b, c, d)\n\
+         def split4(p, [h | t], a, b, c, d) when h == p, do: split4(p, t, a, [h | b], c, d)\n\
+         def split4(p, [h | t], a, b, c, d) when h > 6, do: split4(p, t, a, b, [h | c], d)\n\
+         def split4(p, [h | t], a, b, c, d), do: split4(p, t, a, b, c, [h | d])\n\
+         def main() do\n  {a, b, c, d} = split4(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [], [])\n\
          \x20 dbg(a)\n  dbg(b)\n  dbg(c)\n  dbg(d)\nend\n",
         1,
     ),
     (
         "a transported callable is freight to its forwarder even when a callee tests it",
         "fwd/2",
-        "fn apply2(:none, x), do: x\n\
-         fn apply2(f, x), do: f.(x)\n\
-         fn fwd(f, x), do: apply2(f, x)\n\
-         fn main() do\n  dbg(fwd(fn (a) -> a + 1 end, 1))\n  dbg(fwd(fn (a) -> a + 2 end, 1))\nend\n",
+        "def apply2(:none, x), do: x\n\
+         def apply2(f, x), do: f.(x)\n\
+         def fwd(f, x), do: apply2(f, x)\n\
+         def main() do\n  dbg(fwd(fn (a) -> a + 1 end, 1))\n  dbg(fwd(fn (a) -> a + 2 end, 1))\nend\n",
         1,
     ),
     (
         "a slot the body RETURNS and the recursion carries keys its users apart",
         "loop/2",
-        "fn loop(0, junk), do: junk\n\
-         fn loop(n, junk), do: loop(n - 1, junk)\n\
-         fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
+        "def loop(0, junk), do: junk\n\
+         def loop(n, junk), do: loop(n - 1, junk)\n\
+         def main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
         2,
     ),
     (
         "a self-call that PERMUTES two carried slots supplies neither, so a returned one still keys",
         "go/3",
-        "fn go(0, a, _b), do: a\n\
-         fn go(n, a, b), do: go(n - 1, b, a)\n\
-         fn main() do\n  dbg(go(2, [\"x\"], [\"y\"]))\n  dbg(go(2, [9], [8]))\nend\n",
+        "def go(0, a, _b), do: a\n\
+         def go(n, a, b), do: go(n - 1, b, a)\n\
+         def main() do\n  dbg(go(2, [\"x\"], [\"y\"]))\n  dbg(go(2, [9], [8]))\nend\n",
         2,
     ),
     (
         "a returned tuple FIELD keys its users apart while the key names the tag",
         "walk/2",
-        "fn walk({:stop, acc}, _n), do: acc\n\
-         fn walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
-         fn walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
-         fn main() do\n  dbg(walk({:go, [1, 2]}, 2))\n  dbg(walk({:go, [\"a\"]}, 2))\nend\n",
+        "def walk({:stop, acc}, _n), do: acc\n\
+         def walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
+         def walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
+         def main() do\n  dbg(walk({:go, [1, 2]}, 2))\n  dbg(walk({:go, [\"a\"]}, 2))\nend\n",
         4,
     ),
 ];

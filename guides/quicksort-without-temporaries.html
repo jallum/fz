@@ -16,8 +16,8 @@
 <p>Here is a direct list quicksort in the style used in many functional
 programming introductions:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">qsort</span>([]), do: []
-<span class="kw">fn</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">qsort</span>([]), do: []
+<span class="kw">def</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
   {lo, hi} = <span class="fn">partition</span>(p, rest, [], [])
   <span class="fn">append</span>(<span class="fn">qsort</span>(lo), [p | <span class="fn">qsort</span>(hi)])
 <span class="kw">end</span></pre>
@@ -77,20 +77,20 @@ callsite capability, then lower that capability mechanically in native codegen.
 <p>Here is the program from the pinned fixture in our test library, with its
 driver (the fixture uses <code>dbg</code> to print):</p>
 
-<pre><span class="kw">fn</span> <span class="fn">append</span>([], ys), do: ys
-<span class="kw">fn</span> <span class="fn">append</span>([h | t], ys), do: [h | <span class="fn">append</span>(t, ys)]
+<pre><span class="kw">def</span> <span class="fn">append</span>([], ys), do: ys
+<span class="kw">def</span> <span class="fn">append</span>([h | t], ys), do: [h | <span class="fn">append</span>(t, ys)]
 
-<span class="kw">fn</span> <span class="fn">partition</span>(_, [], lo, hi), do: {lo, hi}
-<span class="kw">fn</span> <span class="fn">partition</span>(p, [h | t], lo, hi) <span class="kw">when</span> h &lt; p, do: <span class="fn">partition</span>(p, t, [h | lo], hi)
-<span class="kw">fn</span> <span class="fn">partition</span>(p, [h | t], lo, hi), do: <span class="fn">partition</span>(p, t, lo, [h | hi])
+<span class="kw">def</span> <span class="fn">partition</span>(_, [], lo, hi), do: {lo, hi}
+<span class="kw">def</span> <span class="fn">partition</span>(p, [h | t], lo, hi) <span class="kw">when</span> h &lt; p, do: <span class="fn">partition</span>(p, t, [h | lo], hi)
+<span class="kw">def</span> <span class="fn">partition</span>(p, [h | t], lo, hi), do: <span class="fn">partition</span>(p, t, lo, [h | hi])
 
-<span class="kw">fn</span> <span class="fn">qsort</span>([]), do: []
-<span class="kw">fn</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">qsort</span>([]), do: []
+<span class="kw">def</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
   {lo, hi} = <span class="fn">partition</span>(p, rest, [], [])
   <span class="fn">append</span>(<span class="fn">qsort</span>(lo), [p | <span class="fn">qsort</span>(hi)])
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   sorted = <span class="fn">qsort</span>([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
   <span class="fn">dbg</span>(sorted)
 

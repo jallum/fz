@@ -16,6 +16,6 @@
 # protocol's own `:: binary` result type. The damage showed up later and
 # elsewhere: the next `<>` aborted inside `fz_binary_concat` with a
 # byte-alignment assertion, far from the call that actually went wrong.
-fn main() do
+def main() do
   dbg(to_string(<<1::4>>))
 end

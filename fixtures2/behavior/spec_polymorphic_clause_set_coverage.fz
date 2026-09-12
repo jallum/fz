@@ -16,10 +16,10 @@
 defmodule M do
   @spec pick({integer, a}) :: a
   @spec pick({binary, a}) :: a
-  fn pick({_tag, v}), do: v
+  def pick({_tag, v}), do: v
 end
 
-fn main() do
+def main() do
   xs = [{1, 7}, {"s", 8}]
   [h | _] = xs
   dbg(M.pick(h))

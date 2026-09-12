@@ -36,10 +36,10 @@
 #   * no `fz_alloc_frame` at the caller's call site (the previous frame
 #     allocation was the dominant per-call overhead)
 #   * `tail` calling convention enables future return_call TCO
-fn sum3(a, b, c) do
+def sum3(a, b, c) do
   a + b + c
 end
 
-fn main() do
+def main() do
   dbg(sum3(40, 1, 1))
 end

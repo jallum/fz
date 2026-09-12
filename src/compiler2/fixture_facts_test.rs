@@ -37,9 +37,9 @@ fn build_lambda_root(compiler: &mut Compiler2<ConfiguredTelemetry>, source: &str
 #[test]
 fn canonical_call_edge_facts_preserve_source_spans_and_hide_generated_ids() {
     let source = r#"
-fn apply1(f, x), do: f.(x)
+def apply1(f, x), do: f.(x)
 
-fn main() do
+def main() do
   add1 = fn x -> x + 1 end
   apply1(add1, 41)
 end
@@ -72,9 +72,9 @@ end
 #[test]
 fn canonical_call_edge_snapshots_are_stable_across_reruns() {
     let source = r#"
-fn apply1(f, x), do: f.(x)
+def apply1(f, x), do: f.(x)
 
-fn main() do
+def main() do
   add1 = fn x -> x + 1 end
   apply1(add1, 41)
 end
@@ -111,11 +111,11 @@ fn closure_surface_vars_render_by_stable_owner_relative_provenance() {
     // lambda's owner-relative source provenance, which is invariant under that
     // churn — stable by construction, no re-bless treadmill.
     let source = r#"
-fn add(x) do
+def add(x) do
   fn y -> x + y end
 end
 
-fn main() do
+def main() do
   add(1)
 end
 "#;
@@ -137,9 +137,9 @@ end
 #[test]
 fn lowered_callsites_keep_source_span_identity() {
     let source = r#"
-fn add1(x), do: x + 1
+def add1(x), do: x + 1
 
-fn main(), do: add1(41)
+def main(), do: add1(41)
 "#;
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();

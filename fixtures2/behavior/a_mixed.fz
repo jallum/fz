@@ -19,7 +19,7 @@
 # after the FIRST boxed element, on JIT and AOT alike.
 #
 # `:done` proves control came back past both halves.
-fn main() do
+def main() do
   double = fn (x) -> dbg(x * 2) end
   Enum.each([1, 2], double)
 

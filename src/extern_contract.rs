@@ -15,7 +15,7 @@ use crate::types::Types;
 ///
 /// It is provenance, not preference: `fz_dbg_value` is
 /// `fn(*mut Process, u64) -> u64` whatever a declaration says about it, so a
-/// foreign `extern "C" fn fz_dbg_value(any) :: any` ends in a transmute. That
+/// foreign `extern "C" def fz_dbg_value(any) :: any` ends in a transmute. That
 /// used to be harmless only because both doors claimed those symbols by name
 /// before the declaration was consulted; once the ABI became the authority the
 /// lie reached the callee and segfaulted the JIT and AOT doors.

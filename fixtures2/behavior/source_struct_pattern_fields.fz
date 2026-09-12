@@ -13,28 +13,28 @@ defmodule Nested.Envelope do
   defstruct [:value]
 end
 
-fn literal(%Parcel{value: 7}), do: :seven
-fn literal(%Parcel{value: x}), do: {:parcel, x}
-fn literal(_), do: :other
+def literal(%Parcel{value: 7}), do: :seven
+def literal(%Parcel{value: x}), do: {:parcel, x}
+def literal(_), do: :other
 
-fn seven?(%Parcel{value: x}), do: x == 7
-fn seven?(_), do: false
+def seven?(%Parcel{value: x}), do: x == 7
+def seven?(_), do: false
 
-fn guarded(value) do
+def guarded(value) do
   case value do
     x when seven?(x) -> :seven
     _ -> :other
   end
 end
 
-fn nested(value) do
+def nested(value) do
   case value do
     {%Nested.Envelope{value: %Parcel{value: x}}, :tag} -> {:nested, x}
     _ -> :other
   end
 end
 
-fn main() do
+def main() do
   a = %Parcel{value: 7, unused: 99}
   b = %Parcel{value: 8, unused: 99}
   other = %OtherParcel{value: 7, unused: 99}

@@ -1,16 +1,16 @@
-fn handle_get(ref, from, key) do
+def handle_get(ref, from, key) do
   send(from, {:reply, ref, key})
   server()
 end
 
-fn server() do
+def server() do
   receive do
     {:get, ref, from, key} -> handle_get(ref, from, key)
     {:stop} -> nil
   end
 end
 
-fn main() do
+def main() do
   s = spawn(server)
   ref_a = make_ref()
   ref_b = make_ref()

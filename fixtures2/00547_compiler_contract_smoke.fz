@@ -6,14 +6,14 @@
 # assert.metric.semantic.callsites: 3
 # assert.metric.call_edges.count: 3
 # assert.metric.return_type.widened: 0
-# assert.edge: apply1/2[(a0_p0) -> a0_r, int] | @21-26 | closure | main/0#lambda@0/1
-# assert.edge: main/0[] | @70-86 | direct | apply1/2
-# assert.edge: main/0#lambda@0/1[int] | @58-63 | direct | Kernel.+/2
+# assert.edge: apply1/2[(a0_p0) -> a0_r, int] | @22-27 | closure | main/0#lambda@0/1
+# assert.edge: main/0[] | @72-88 | direct | apply1/2
+# assert.edge: main/0#lambda@0/1[int] | @60-65 | direct | Kernel.+/2
 # snapshot.call_edges: call_edges
 #---
-fn apply1(f, x), do: f.(x)
+def apply1(f, x), do: f.(x)
 
-fn main() do
+def main() do
   add1 = fn x -> x + 1 end
   apply1(add1, 41)
 end

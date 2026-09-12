@@ -11,18 +11,18 @@
 # `Q` is `P` mirrored: the float call first. Arrival order must not decide the
 # answer, and each module has its own forwarder so each order is checked.
 defmodule P do
-  fn twice(f, x), do: f.(f.(x))
-  fn run(f, x), do: twice(f, x)
-  fn mk(c), do: fn (n) -> n + c end
+  def twice(f, x), do: f.(f.(x))
+  def run(f, x), do: twice(f, x)
+  def mk(c), do: fn (n) -> n + c end
 end
 
 defmodule Q do
-  fn twice(f, x), do: f.(f.(x))
-  fn run(f, x), do: twice(f, x)
-  fn mk(c), do: fn (n) -> n + c end
+  def twice(f, x), do: f.(f.(x))
+  def run(f, x), do: twice(f, x)
+  def mk(c), do: fn (n) -> n + c end
 end
 
-fn main() do
+def main() do
   dbg(P.run(P.mk(1), 10))
   dbg(P.run(P.mk(0.5), 10))
   dbg(Q.run(Q.mk(0.5), 10))

@@ -6,6 +6,6 @@
 # and `step`. Protocol devirtualization then chooses Enumerable.Range.reduce/3,
 # and struct-field projection feeds the callback enough type information for
 # public Enum.reduce/3 to settle to int.
-fn main() do
+def main() do
   dbg(Enum.reduce(1..3, 0, fn (x, a) -> x + a end))
 end

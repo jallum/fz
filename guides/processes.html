@@ -72,11 +72,11 @@ state to race over.
 process running it, and returns the new process's <strong>pid</strong> —
 an integer that identifies it.</p>
 
-<pre><span class="kw">fn</span> <span class="fn">child</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">child</span>() <span class="kw">do</span>
   <span class="fn">dbg</span>(<span class="atm">:hello</span>)
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   pid = <span class="fn">spawn</span>(<span class="fn">child</span>)
   <span class="fn">dbg</span>(pid)
 <span class="kw">end</span></pre>
@@ -92,12 +92,12 @@ to run next.</p>
 <p>Often you want to give the new process a parameter. A lambda captures
 variables from its surrounding scope, so:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">parent</span>(tag) <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">parent</span>(tag) <span class="kw">do</span>
   <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(<span class="num">1</span>, tag) <span class="kw">end</span>)
   <span class="fn">receive</span> <span class="kw">do</span> msg -&gt; msg <span class="kw">end</span>
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   <span class="fn">dbg</span>(<span class="fn">parent</span>(<span class="num">99</span>))
 <span class="kw">end</span></pre>
 
@@ -120,8 +120,8 @@ of aspirational.
 <p>Anything that's a zero-arg function value:</p>
 
 <ul>
-  <li>A top-level fn reference: <code>spawn(worker)</code> (where
-      <code>fn worker(), do: …</code> exists).</li>
+  <li>A top-level function reference: <code>spawn(worker)</code> (where
+      <code>def worker(), do: …</code> exists).</li>
   <li>An explicit reference: <code>spawn(&amp;worker/0)</code>.</li>
   <li>A lambda: <code>spawn(fn () -&gt; do_thing(x, y) end)</code>.</li>
 </ul>
@@ -136,7 +136,7 @@ running until something else makes it stop.</p>
 <p>Every process has a pid. The currently-running process knows its own
 pid via <code>self()</code>:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   me = <span class="fn">self</span>()
   <span class="fn">dbg</span>(me)        <span class="com"># prints 1 (the first process)</span>
 <span class="kw">end</span></pre>
@@ -152,12 +152,12 @@ recycled within one run.</p>
 canonical pattern: a parent spawns a child and passes its own pid in,
 so the child can send back:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">worker</span>(home) <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">worker</span>(home) <span class="kw">do</span>
   result = <span class="num">42</span>
   <span class="fn">send</span>(home, result)
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   home = <span class="fn">self</span>()
   <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">worker</span>(home) <span class="kw">end</span>)
   reply = <span class="fn">receive</span> <span class="kw">do</span>
@@ -208,7 +208,7 @@ the mechanism that lets two processes safely "share" a complex value.</p>
 message in my mailbox, block if there's nothing there yet, return whatever
 arrives.</p>
 
-<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   msg = <span class="fn">receive</span> <span class="kw">do</span>
     x -&gt; x
   <span class="kw">end</span>
@@ -269,7 +269,7 @@ resumes.</p>
 <p>Sometimes you want to match against the <em>current value</em> of a
 variable, not bind a fresh one. <code>^var</code> does that:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">wait_for_reply</span>(my_ref) <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">wait_for_reply</span>(my_ref) <span class="kw">do</span>
   <span class="kw">receive do</span>
     {<span class="atm">:reply</span>, ^my_ref, value} -&gt; value
   <span class="kw">end</span>
@@ -377,19 +377,19 @@ can't be mistaken for new ones.</p>
 
 <p>Everything we've covered, in one fixture:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">handle_get</span>(ref, from, key) <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">handle_get</span>(ref, from, key) <span class="kw">do</span>
   <span class="fn">send</span>(from, {<span class="atm">:reply</span>, ref, key})
   <span class="fn">server</span>()
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">server</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">server</span>() <span class="kw">do</span>
   <span class="kw">receive do</span>
     {<span class="atm">:get</span>, ref, from, key} -&gt; <span class="fn">handle_get</span>(ref, from, key)
     {<span class="atm">:stop</span>}                 -&gt; <span class="atm">:nil</span>
   <span class="kw">end</span>
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   s = <span class="fn">spawn</span>(<span class="fn">server</span>)
   ref_a = <span class="fn">make_ref</span>()
   ref_b = <span class="fn">make_ref</span>()
@@ -451,7 +451,7 @@ can't be mistaken for new ones.</p>
 process. It reads process-local runtime state, not the compiler telemetry
 stream.</p>
 
-<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   xs = [<span class="num">1</span>, <span class="num">2</span>]
   stats = Process.heap_alloc_stats()
   <span class="fn">dbg</span>(stats[<span class="atm">:list_cons_allocs</span>])

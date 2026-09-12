@@ -1,9 +1,9 @@
 defprotocol P do
-  fn each(value)
+  def each(value)
 end
 
 defimpl P, for: List do
-  fn each(value), do: value
+  def each(value), do: value
 end
 
-fn main(), do: P.each(42)
+def main(), do: P.each(42)

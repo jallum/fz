@@ -1,1 +1,1 @@
-fn main(), do: -(-(42))
+def main(), do: -(-(42))

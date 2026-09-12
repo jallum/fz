@@ -11,10 +11,10 @@
 # budget.planner.stmts: 12
 # budget.planner.dispatches: 12
 #---
-fn add3(x), do: fn(y) -> fn(z) -> x + y + z end end
-fn apply(f, x), do: f.(x)
+def add3(x), do: fn(y) -> fn(z) -> x + y + z end end
+def apply(f, x), do: f.(x)
 
-fn main() do
+def main() do
   assert(
     apply(apply(add3(10), 20), 12) == 42,
     "three nested closures preserve their captured outer values"

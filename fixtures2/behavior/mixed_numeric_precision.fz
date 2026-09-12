@@ -1,10 +1,10 @@
 #---
 # purpose: mixed numeric expressions and guards compare exact values without losing integer precision
 #---
-fn greater?(left, right) when left > right, do: true
-fn greater?(_, _), do: false
+def greater?(left, right) when left > right, do: true
+def greater?(_, _), do: false
 
-fn check(integer :: integer, float :: float) do
+def check(integer :: integer, float :: float) do
   assert(integer != float, "a rounded float is not the adjacent integer")
   assert(integer > float, "mixed expression order retains the integer's low bit")
   assert(float < integer, "reverse mixed expression order agrees")
@@ -12,7 +12,7 @@ fn check(integer :: integer, float :: float) do
   assert(not greater?(float, integer), "reverse mixed guard order agrees")
 end
 
-fn main() do
+def main() do
   check(9007199254740993, 9007199254740992.0)
   check(-9007199254740993, -9007199254740994.0)
   check(0, -0.5)

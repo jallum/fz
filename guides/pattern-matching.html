@@ -149,8 +149,8 @@ runs <em>after</em> the structural tests for that clause have passed:</p>
   _                 -&gt; <span class="atm">:zero</span>
 <span class="kw">end</span>
 
-<span class="kw">fn</span> <span class="fn">classify</span>(<span class="num">0</span>),      <span class="kw">do</span>: <span class="atm">:zero</span>
-<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> n &gt; <span class="num">0</span>, <span class="kw">do</span>: <span class="atm">:positive</span></pre>
+<span class="kw">def</span> <span class="fn">classify</span>(<span class="num">0</span>),      <span class="kw">do</span>: <span class="atm">:zero</span>
+<span class="kw">def</span> <span class="fn">classify</span>(n) <span class="kw">when</span> n &gt; <span class="num">0</span>, <span class="kw">do</span>: <span class="atm">:positive</span></pre>
 
 <p>Guards are restricted to things the matcher can safely evaluate
 itself: arithmetic, comparisons, boolean
@@ -244,8 +244,8 @@ matching clause.</p>
 
 <p>fz still has the surface syntax you'd expect. You write:</p>
 
-<pre><span class="kw">fn</span> <span class="fn">name_of</span>(%{name: n}), <span class="kw">do</span>: n
-<span class="kw">fn</span> <span class="fn">name_of</span>(_), <span class="kw">do</span>: <span class="atm">:unknown</span>
+<pre><span class="kw">def</span> <span class="fn">name_of</span>(%{name: n}), <span class="kw">do</span>: n
+<span class="kw">def</span> <span class="fn">name_of</span>(_), <span class="kw">do</span>: <span class="atm">:unknown</span>
 
 <span class="kw">case</span> msg <span class="kw">do</span>
   {<span class="atm">:ok</span>, value} -&gt; value
@@ -458,7 +458,7 @@ order (the Erlang save-queue rule). No match leaves the task
 <p>This is a fixture in the tree. It's small and exercises maps,
 binding, wildcard fallback, and repeated receives.</p>
 
-<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+<pre><span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
   <span class="fn">send</span>(<span class="fn">self</span>(), %{name: <span class="atm">:alice</span>, age: <span class="num">30</span>})
   <span class="fn">send</span>(<span class="fn">self</span>(), %{name: <span class="atm">:bob</span>, age: <span class="num">42</span>})
   <span class="fn">send</span>(<span class="fn">self</span>(), <span class="atm">:stop</span>)

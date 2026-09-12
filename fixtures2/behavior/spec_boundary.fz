@@ -27,12 +27,12 @@
 #
 #          runs identically on run, interp, build
 @spec twice(integer) :: integer
-fn twice(n) do
+def twice(n) do
   x = n + n
   x + 1
 end
 
-fn main() do
+def main() do
   dbg(twice(10))
   dbg(twice(21))
 end

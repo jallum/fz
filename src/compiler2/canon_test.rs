@@ -277,7 +277,7 @@ fn generated_function_labels_follow_typed_origin_not_function_allocation() {
         }
         compiler.submit_code(CodeSubmission {
             name: Some("generated_label.fz".into()),
-            text: "fn main(), do: (fn (x) -> x + 1 end).(41)\n".into(),
+            text: "def main(), do: (fn (x) -> x + 1 end).(41)\n".into(),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,
@@ -329,7 +329,7 @@ fn same_range_generated_peers_order_independently_of_function_allocation() {
 defmacro deferred(x) do
   {:fn, %{}, [{:"->", %{}, [[], x]}]}
 end
-fn main() do
+def main() do
   left = deferred(20)
   right = deferred(22)
   left.() + right.()

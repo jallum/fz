@@ -55,7 +55,7 @@
 #
 # Locks that interp/JIT/AOT all bind `h` to the list's first element, route
 # `[]` to the EmptyList arm, and fall through atoms to the wildcard.
-fn main() do
+def main() do
   send(self(), [10, 20, 30])
   send(self(), [])
   send(self(), :stop)

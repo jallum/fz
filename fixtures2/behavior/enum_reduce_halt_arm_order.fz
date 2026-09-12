@@ -38,7 +38,7 @@
 # lowered as a grounded direct call to some other body's closure literal, this
 # line would read `{:done, 15}`.
 #
-fn main() do
+def main() do
   dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
     if x > 2 do
       {:halt, acc}

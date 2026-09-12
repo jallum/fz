@@ -20,7 +20,7 @@
 # must agree (`true`). Before fz-bsx, native `run`/`build` folded this to `false`.
 import Utf8
 
-fn main() do
+def main() do
   good = <<104, 105>>
   r = Utf8.from_bytes(good)
   dbg(r == {:ok, "hi"})

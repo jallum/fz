@@ -2,7 +2,7 @@
 # purpose: "Enum count, member, reduce, and Enumerable.reduce over lists match Elixir"
 # oracle: oracle.exs
 #---
-fn main() do
+def main() do
   dbg({
     Enum.count([1, 2, 3]),
     Enum.member?([1, 2, 3], 2),

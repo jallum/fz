@@ -126,7 +126,7 @@ fn compiler_drive_and_job_spans_render_raw_authorities() {
     let mut compiler = crate::compiler2::Compiler2::new(telemetry);
     compiler.submit_code(crate::compiler2::CodeSubmission {
         name: Some("raw_span.fz".to_string()),
-        text: "fn main(), do: 0\n".to_string(),
+        text: "def main(), do: 0\n".to_string(),
     });
 
     let outcome = compiler.drive();

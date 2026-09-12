@@ -30,6 +30,6 @@
 # false_id in src/ir_codegen.rs); `iconst.i64 19` is the codegen
 # signature for the fold. We exclude icmp eq because no comparison
 # instruction should reach the emit.
-fn main() do
+def main() do
   dbg(1 == :ok)
 end

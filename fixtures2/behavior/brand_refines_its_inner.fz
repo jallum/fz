@@ -17,10 +17,10 @@ import Utf8
 
 defmodule M do
   @spec echo(binary) :: binary
-  fn echo(b), do: b
+  def echo(b), do: b
 end
 
-fn main() do
+def main() do
   s = Utf8.from_bytes!(<<104, 105>>)
   dbg(M.echo(s))
   dbg(Utf8.to_bytes(s))

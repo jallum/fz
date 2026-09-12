@@ -994,7 +994,7 @@ entry resume_k:
       <div class="step">
         <h3><span class="num">01</span>Discovery is cheap</h3>
         <p>
-          Submit quicksort plus an extra top-level <code>fn foo(), do: 42</code>. The first drive
+          Submit quicksort plus an extra top-level <code>def foo(), do: 42</code>. The first drive
           only runs <code>IndexCode</code>. It parses the source, stores the top-level items, and
           publishes <code>CodeIndexed(code)</code>. No functions are defined yet. No bodies are
           lowered. No activations exist.

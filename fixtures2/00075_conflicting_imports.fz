@@ -1,11 +1,11 @@
 defmodule A do
-  fn f(), do: 1
+  def f(), do: 1
 end
 defmodule B do
-  fn f(), do: 2
+  def f(), do: 2
 end
 defmodule User do
   import A
   import B
-  fn run(), do: f()
+  def run(), do: f()
 end

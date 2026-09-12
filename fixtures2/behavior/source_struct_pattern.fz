@@ -5,14 +5,14 @@ defmodule Box do
   defstruct [:value]
 end
 
-fn classify(v) do
+def classify(v) do
   case v do
     %Box{value: x} -> {:box, x}
     _ -> :other
   end
 end
 
-fn main() do
+def main() do
   dbg(classify(%Box{value: 7}))
   dbg(classify(%{1 => :one}))
 end

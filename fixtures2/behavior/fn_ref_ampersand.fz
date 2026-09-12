@@ -1,14 +1,14 @@
 #---
 # purpose: "&name/arity parses as an explicit function reference, disambiguating overloaded names by arity"
 #---
-fn double(x), do: x * 2
-fn neg(x), do: 0 - x
-fn add(x, y), do: x + y
+def double(x), do: x * 2
+def neg(x), do: 0 - x
+def add(x, y), do: x + y
 
-fn apply1(f, x), do: f.(x)
-fn apply2(f, x, y), do: f.(x, y)
+def apply1(f, x), do: f.(x)
+def apply2(f, x, y), do: f.(x, y)
 
-fn main() do
+def main() do
   # Explicit &name/arity passes the disambiguated function reference
   # through apply1/apply2 and back into a call site.
   assert(apply1(&double/1, 21) == 42, "&double/1 reference applied")

@@ -136,7 +136,7 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 const SEAM_FACTS: &[(&str, &str)] = &[];
 const LEGACY_00181_NO_DUMP_JOB_STARTS: usize = 379;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
-fn main() do
+def main() do
   {
     Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
     Enum.reduce([1, 2, 3], 0, &+/2)
@@ -197,9 +197,9 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
 #[test]
 fn compiler2_transport_float_resume_consumes_the_emitted_abi_endpoint() {
     let source = r#"
-fn inc(x), do: x + 1.0
+def inc(x), do: x + 1.0
 
-fn main() do
+def main() do
   y = inc(1.0)
   y + 2.0
 end
@@ -249,8 +249,8 @@ end
 #[test]
 fn compiler2_transport_float_tail_call_preserves_raw_return_delivery() {
     let source = r#"
-fn inc(x), do: x + 1.0
-fn main(), do: inc(1.0)
+def inc(x), do: x + 1.0
+def main(), do: inc(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -282,7 +282,7 @@ fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
     let mut world = World::new();
     world.submit_code(
         Some("direct_transport_shape_products.fz".to_string()),
-        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.drop_while(xs, fn (x) -> x < 4 end))\n  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))\nend\n".to_string(),
+        "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.drop_while(xs, fn (x) -> x < 4 end))\n  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
@@ -307,8 +307,8 @@ fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
 #[test]
 fn compiler2_transport_flow_names_tail_return_payload_position() {
     let source = r#"
-fn inc(x), do: x + 1.0
-fn main(), do: inc(1.0)
+def inc(x), do: x + 1.0
+def main(), do: inc(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -462,8 +462,8 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
 #[test]
 fn compiler2_transport_callable_publication_retains_runtime_wrapper_contracts() {
     let source = r#"
-fn make(), do: fn (x) -> x + 1.0 end
-fn main(), do: make()
+def make(), do: fn (x) -> x + 1.0 end
+def main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -491,7 +491,7 @@ fn main(), do: make()
 #[test]
 fn compiler2_callable_wrapper_keeps_capture_carriers_distinct_from_raw_arguments() {
     let source = r#"
-fn main() do
+def main() do
   flag = self() == self()
   f = if flag do
     fn () -> {41.5, :ok} end
@@ -578,8 +578,8 @@ end
 #[test]
 fn compiler2_transport_float_extern_preserves_raw_abi_lanes() {
     let source = r#"
-extern "C" fn fz_float_id(float) :: float
-fn main(), do: fz_float_id(1.0)
+extern "C" def fz_float_id(float) :: float
+def main(), do: fz_float_id(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -606,8 +606,8 @@ fn main(), do: fz_float_id(1.0)
 #[test]
 fn compiler2_extern_any_marshals_a_raw_scalar_without_promoting_its_transport_carrier() {
     let source = r#"
-extern "C" fn fz_any_id(any) :: any
-fn main(), do: fz_any_id(1.0)
+extern "C" def fz_any_id(any) :: any
+def main(), do: fz_any_id(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -649,10 +649,10 @@ fn main(), do: fz_any_id(1.0)
 #[test]
 fn compiler2_transport_flow_publishes_callable_value_lane_for_spawn_boundary_input() {
     let source = r#"
-extern "C" fn fz_spawn(() -> any) :: pid
-fn spawn(fun), do: fz_spawn(fun)
-fn child(), do: 42
-fn main(), do: spawn(child)
+extern "C" def fz_spawn(() -> any) :: pid
+def spawn(fun), do: fz_spawn(fun)
+def child(), do: 42
+def main(), do: spawn(child)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -686,9 +686,9 @@ fn main(), do: spawn(child)
 #[test]
 fn compiler2_transport_flow_keeps_extern_value_input_boxed_when_argument_is_tuple() {
     let source = r#"
-extern "C" fn fz_dbg(any) :: any
-fn dbg(x), do: fz_dbg(x)
-fn main(), do: dbg({:zero, :pos, :other})
+extern "C" def fz_dbg(any) :: any
+def dbg(x), do: fz_dbg(x)
+def main(), do: dbg({:zero, :pos, :other})
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -740,9 +740,9 @@ fn main(), do: dbg({:zero, :pos, :other})
 #[test]
 fn compiler2_transport_tuple_resume_consumes_emitted_leaf_abi_lanes() {
     let source = r#"
-fn pair(x, y), do: {x, y}
+def pair(x, y), do: {x, y}
 
-fn main() do
+def main() do
   {left, right} = pair(1.0, 2)
   {left, right}
 end
@@ -806,10 +806,10 @@ end
 #[test]
 fn compiler2_transport_flow_publishes_integer_and_atom_codegen_reprs() {
     let source = r#"
-fn id_int(x), do: x + 1
-fn id_atom(x), do: x
+def id_int(x), do: x + 1
+def id_atom(x), do: x
 
-fn main() do
+def main() do
   int_value = id_int(41)
   atom_value = id_atom(:ok)
   {int_value, atom_value}
@@ -838,9 +838,9 @@ end
 #[test]
 fn compiler2_transport_flow_publishes_value_ref_codegen_reprs_for_boxed_internal_lanes() {
     let source = r#"
-fn id_box(x), do: x
+def id_box(x), do: x
 
-fn main() do
+def main() do
   y = id_box("hello")
   {y, 1}
 end
@@ -904,8 +904,8 @@ end
 #[test]
 fn compiler2_transport_flow_publishes_value_ref_codegen_reprs_for_boxed_tail_and_extern_lanes() {
     let source = r#"
-extern "C" fn fz_binary_id(binary) :: binary
-fn main(), do: fz_binary_id("hello")
+extern "C" def fz_binary_id(binary) :: binary
+def main(), do: fz_binary_id("hello")
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -959,9 +959,9 @@ fn main(), do: fz_binary_id("hello")
 #[test]
 fn compiler2_transport_plan_maps_ignored_returns_to_nothing_once() {
     let source = r#"
-fn ping(x), do: x + 1
+def ping(x), do: x + 1
 
-fn main() do
+def main() do
   ping(41)
   :ok
 end
@@ -984,10 +984,10 @@ end
 #[test]
 fn compiler2_transport_plan_shares_direct_callable_return_and_resume_shapes() {
     let source = r#"
-fn apply1(f, x), do: f.(x)
-fn make_adder(a), do: fn (x) -> x + a end
+def apply1(f, x), do: f.(x)
+def make_adder(a), do: fn (x) -> x + a end
 
-fn main() do
+def main() do
   f = make_adder(1)
   apply1(f, 41)
 end
@@ -1066,13 +1066,13 @@ end
 #[test]
 fn compiler2_transport_plan_is_the_artifact_handoff_contract() {
     let source = r#"
-fn apply1(f, x), do: f.(x)
-fn make_adder(a), do: fn (x) -> x + a end
-fn pair(x), do: {x, make_adder(x)}
-fn escape(), do: make_adder(10)
-fn double(n), do: n + n
+def apply1(f, x), do: f.(x)
+def make_adder(a), do: fn (x) -> x + a end
+def pair(x), do: {x, make_adder(x)}
+def escape(), do: make_adder(10)
+def double(n), do: n + n
 
-fn main() do
+def main() do
   {n, f} = pair(41)
   y = apply1(f, n)
 
@@ -1236,9 +1236,9 @@ end
 #[test]
 fn compiler2_transport_plan_does_not_publish_unused_callable_construction() {
     let source = r#"
-fn make(), do: fn (x) -> x + 1 end
+def make(), do: fn (x) -> x + 1 end
 
-fn main() do
+def main() do
   make()
   :ok
 end
@@ -1262,7 +1262,7 @@ end
 #[test]
 fn compiler2_transport_plan_tracks_direct_lambda_use_without_boundary_publication() {
     let source = r#"
-fn main() do
+def main() do
   add1 = fn (x) -> x + 1 end
   add1.(1)
 end
@@ -1319,8 +1319,8 @@ end
 #[test]
 fn compiler2_transport_plan_requires_a_boundary_for_an_escaped_lambda() {
     let source = r#"
-fn make(), do: fn (x) -> x + 1 end
-fn main(), do: make()
+def make(), do: fn (x) -> x + 1 end
+def main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -1361,7 +1361,7 @@ fn main(), do: make()
 
 #[test]
 fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
-    let source = "fn main(f), do: f.(1)\n";
+    let source = "def main(f), do: f.(1)\n";
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -1405,13 +1405,13 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
 fn compiler2_runtime_demand_excludes_unused_same_source_callable_sibling() {
     let source = r#"
 @spec use((integer) -> integer) :: integer
-fn use(f), do: f.(1)
+def use(f), do: f.(1)
 
-fn ignore(_), do: 0
+def ignore(_), do: 0
 
-fn make(v), do: fn (_) -> v end
+def make(v), do: fn (_) -> v end
 
-fn main() do
+def main() do
   use(make(1))
   ignore(make(:unused))
 end
@@ -1459,7 +1459,7 @@ end
 #[test]
 fn compiler2_transport_plan_keeps_opaque_callable_contracts_distinct_by_surface() {
     let source = r#"
-fn main(f, g) do
+def main(f, g) do
   f.(1)
   g.({1, 2})
 end
@@ -1516,10 +1516,10 @@ end
 #[test]
 fn compiler2_transport_plan_distinguishes_same_surface_callables_by_capture_obligation() {
     let source = r#"
-fn make1(a), do: fn (x) -> x + a end
-fn make2(a, b), do: fn (x) -> x + a + b end
+def make1(a), do: fn (x) -> x + a end
+def make2(a, b), do: fn (x) -> x + a + b end
 
-fn main(), do: {make1(1), make2(1, 2)}
+def main(), do: {make1(1), make2(1, 2)}
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -1555,7 +1555,7 @@ fn main(), do: {make1(1), make2(1, 2)}
 #[test]
 fn compiler2_transport_plan_publishes_callable_argument_lanes_at_boundaries() {
     let source = r#"
-fn main(f) do
+def main(f) do
   g = fn (x) -> x + 1 end
   f.(g)
 end
@@ -1589,13 +1589,13 @@ end
 #[test]
 fn compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures() {
     let escaped_source = r#"
-fn make() do
+def make() do
   fn () ->
     Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
   end
 end
 
-fn main(), do: make()
+def main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -1650,13 +1650,13 @@ fn main(), do: make()
     assert_suspend_continuation_captures(&world, continuation);
 
     let consumed_source = r#"
-fn make() do
+def make() do
   fn () ->
     Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
   end
 end
 
-fn main() do
+def main() do
   {:suspended, acc, cont} = make().()
   dbg(cont.())
   acc
@@ -1704,7 +1704,7 @@ end
     compiler.submit_code(CodeSubmission {
         name: Some("transport_enumerable_reduce_suspend_continuation_runtime.fz".to_string()),
         text: r#"
-fn main() do
+def main() do
   {:suspended, acc, cont} = Enumerable.reduce(1..5, {:suspend, 9}, fn (x, sum) -> {:cont, sum + x} end)
   dbg(acc)
   dbg(cont.())
@@ -1765,9 +1765,9 @@ fn assert_suspend_continuation_captures(world: &World, continuation: super::tran
 #[test]
 fn compiler2_transport_plan_publishes_tuple_returned_callable_captured_by_resume() {
     let source = r#"
-fn make(a, b, c), do: {:ok, a + b + c, fn (x) -> a + b + c + x end}
+def make(a, b, c), do: {:ok, a + b + c, fn (x) -> a + b + c + x end}
 
-fn main() do
+def main() do
   {:ok, n, f} = make(1, 10, 2)
   dbg(n)
   f.(3)
@@ -1880,17 +1880,17 @@ fn compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capt
     let source = r#"
 defprotocol Susp do
   @spec run(t(a), (a) -> b) :: () -> b
-  fn run(coll, f)
+  def run(coll, f)
 end
 
 defmodule Mini do
   defimpl Susp, for: List do
-    fn run(_list, f), do: (fn () -> f.(1) end)
+    def run(_list, f), do: (fn () -> f.(1) end)
   end
 end
 
-fn make(f), do: Susp.run([1, 2, 3], f)
-fn main(), do: make(fn x -> x + 1 end)
+def make(f), do: Susp.run([1, 2, 3], f)
+def main(), do: make(fn x -> x + 1 end)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -1931,7 +1931,7 @@ fn main(), do: make(fn x -> x + 1 end)
 #[test]
 fn compiler2_transport_plan_keeps_direct_surfaces_when_a_callable_also_escapes() {
     let source = r#"
-fn main() do
+def main() do
   add1 = fn (x) -> x + 1 end
   add1.(1)
   add1
@@ -2013,7 +2013,7 @@ end
 #[test]
 fn compiler2_transport_plan_shapes_callable_captures_from_upstream_callable_flow() {
     let source = r#"
-fn main() do
+def main() do
   add1 = fn (x) -> x + 1 end
   outer = fn (y) -> add1.(y) end
   outer.(41)
@@ -2072,10 +2072,10 @@ end
 #[test]
 fn compiler2_transport_plan_preserves_recursive_callable_return_identity() {
     let source = r#"
-fn make(0), do: fn (x) -> x + 1 end
-fn make(n), do: make(n - 1)
+def make(0), do: fn (x) -> x + 1 end
+def make(n), do: make(n - 1)
 
-fn main() do
+def main() do
   f = make(2)
   f.(41)
 end
@@ -2108,8 +2108,8 @@ end
 #[test]
 fn compiler2_transport_plan_preserves_capture_lane_order_and_duplicates() {
     let source = r#"
-fn make(a, b), do: fn (x) -> a + b + x end
-fn main(), do: make(1, 2)
+def make(a, b), do: fn (x) -> a + b + x end
+def main(), do: make(1, 2)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -2148,7 +2148,7 @@ fn main(), do: make(1, 2)
 #[test]
 fn compiler2_transport_plan_publishes_boundary_contracts_per_surface() {
     let source = r#"
-fn main() do
+def main() do
   id = fn (x) -> x end
   id.(1)
   id.({1, 2})
@@ -2254,13 +2254,13 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
 #[test]
 fn compiler2_transport_plan_shares_recursive_return_and_resume_shapes() {
     let source = r#"
-fn pair_down(0), do: {0, 1}
-fn pair_down(n) do
+def pair_down(0), do: {0, 1}
+def pair_down(n) do
   {left, right} = pair_down(n - 1)
   {left, right}
 end
 
-fn main() do
+def main() do
   {left, right} = pair_down(2)
   left + right
 end
@@ -2354,8 +2354,8 @@ fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
     world.submit_code(
         Some("unused_callable_input.fz".to_string()),
         r#"
-fn ignore(f), do: 1
-fn main() do
+def ignore(f), do: 1
+def main() do
   id = fn x -> x end
   ignore(id)
 end
@@ -2392,7 +2392,7 @@ fn compiler2_exact_enum_with_index_mapper_enters_the_selected_clause_without_a_r
     world.submit_code(
         Some("enum_with_index_selected_clause.fz".to_string()),
         r#"
-fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
+def main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
 "#
         .to_string(),
     );
@@ -2456,9 +2456,9 @@ fn compiler2_multi_clause_activation_retains_runtime_entry_dispatch() {
     assert_entry_dispatch_control(
         "multi_clause_runtime_dispatch.fz",
         r#"
-fn main(:a), do: 1
-fn main(:b), do: 2
-fn main(_), do: 3
+def main(:a), do: 1
+def main(:b), do: 2
+def main(_), do: 3
 "#,
         "main",
         3,
@@ -2471,8 +2471,8 @@ fn compiler2_single_reachable_clause_with_reachable_failure_retains_runtime_entr
     assert_entry_dispatch_control(
         "single_clause_reachable_failure.fz",
         r#"
-fn choose(:a), do: 1
-fn main(value), do: choose(value)
+def choose(:a), do: 1
+def main(value), do: choose(value)
 "#,
         "choose",
         1,
@@ -2489,7 +2489,7 @@ fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call()
     world.submit_code(
         Some("direct_lambda_call.fz".to_string()),
         r#"
-fn main() do
+def main() do
   add1 = fn x -> x + 1 end
   add1.(1)
 end
@@ -2562,8 +2562,8 @@ fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes
 
     let boxed = returned_lambda_return_demand(
         r#"
-fn make_adder(a), do: fn (x) -> x + a end
-fn main() do
+def make_adder(a), do: fn (x) -> x + a end
+def main() do
   f = make_adder(10)
   f.(1)
   f
@@ -2578,8 +2578,8 @@ end
 
     let never_boxed = returned_lambda_return_demand(
         r#"
-fn make_adder(a), do: fn (x) -> x + a end
-fn main() do
+def make_adder(a), do: fn (x) -> x + a end
+def main() do
   f = make_adder(10)
   f.(1)
   0
@@ -2603,10 +2603,10 @@ fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
     world.submit_code(
         Some("escaped_callable.fz".to_string()),
         r#"
-fn make() do
+def make() do
   fn x -> x + 1 end
 end
-fn main(), do: make()
+def main(), do: make()
 "#
         .to_string(),
     );
@@ -2651,11 +2651,11 @@ fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_
     world.submit_code(
         Some("returned_direct_callable_transport.fz".to_string()),
         r#"
-fn apply(fun), do: fun.(41)
+def apply(fun), do: fun.(41)
 
-fn make_adder(a), do: fn x -> x + a end
+def make_adder(a), do: fn x -> x + a end
 
-fn main(), do: apply(make_adder(1))
+def main(), do: apply(make_adder(1))
 "#
         .to_string(),
     );
@@ -2685,7 +2685,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     let mut world = World::new();
     world.submit_code(
         Some("opaque_callable_use.fz".to_string()),
-        "fn main(f), do: f.(1)\n".to_string(),
+        "def main(f), do: f.(1)\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -2724,7 +2724,7 @@ fn compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class
     world.submit_code(
         Some("opaque_call_callable_argument.fz".to_string()),
         r#"
-fn main(f) do
+def main(f) do
   g = fn (x) -> x + 1 end
   f.(g)
 end
@@ -2859,7 +2859,7 @@ fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_befo
     let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_enum_take_reducer_surfaces.fz".to_string()),
-        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+        "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -2889,8 +2889,8 @@ fn compiler2_runtime_demand_keeps_escaped_callable_return_opaque() {
     world.submit_code(
         Some("runtime_demand_opaque_callable_tuple_return.fz".to_string()),
         r#"
-fn make_pairer(), do: fn (x) -> {{1, 2}, 3} end
-fn main(), do: make_pairer()
+def make_pairer(), do: fn (x) -> {{1, 2}, 3} end
+def main(), do: make_pairer()
 "#
         .to_string(),
     );
@@ -2941,13 +2941,13 @@ fn compiler2_runtime_demand_records_recursive_tuple_resume_value_demand() {
     world.submit_code(
         Some("runtime_demand_recursive_tuple_resume.fz".to_string()),
         r#"
-fn pair_down(0), do: {0, 1}
-fn pair_down(n) do
+def pair_down(0), do: {0, 1}
+def pair_down(n) do
   {left, right} = pair_down(n - 1)
   {left, right}
 end
 
-fn main() do
+def main() do
   {left, right} = pair_down(2)
   left + right
 end
@@ -2984,13 +2984,13 @@ fn compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_
     world.submit_code(
         Some("runtime_demand_enumerable_reduce_suspend_continuation.fz".to_string()),
         r#"
-fn make() do
+def make() do
   fn () ->
     Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
   end
 end
 
-fn main(), do: make()
+def main(), do: make()
 "#
         .to_string(),
     );
@@ -3056,7 +3056,7 @@ fn compiler2_runtime_demand_keeps_dbg_inputs_live_when_the_return_is_ignored() {
     world.submit_code(
         Some("heap_stats_dbg_resume.fz".to_string()),
         r#"
-fn main() do
+def main() do
   stats = Process.heap_alloc_stats()
   dbg(stats)
   dbg(stats[:list_cons_allocs])
@@ -3101,7 +3101,7 @@ end
 
 #[test]
 fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
-    let source = "fn identity(x), do: x\nfn main(), do: dbg(identity)\n";
+    let source = "def identity(x), do: x\ndef main(), do: dbg(identity)\n";
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -3524,10 +3524,10 @@ fn executable_input_shape_is_nothing(
 #[test]
 fn compiler2_transport_plan_publishes_joined_enum_reduce_reducer_as_first_class() {
     let source = r#"
-fn add_a(x, acc), do: acc + x
-fn add_b(x, acc), do: acc + x
+def add_a(x, acc), do: acc + x
+def add_b(x, acc), do: acc + x
 
-fn main(flag) do
+def main(flag) do
   reducer = case flag do
     true -> add_a
     _ -> add_b
@@ -3812,10 +3812,10 @@ fn compiler2_transport_plan_keeps_a_continuation_captured_first_class_callable_b
     // callable. The carrier owns the boxed pointer while callable structure
     // remains capture-free.
     let source = r#"
-fn maplist([], _f), do: []
-fn maplist([h | t], f), do: [f.(h) | maplist(t, f)]
+def maplist([], _f), do: []
+def maplist([h | t], f), do: [f.(h) | maplist(t, f)]
 
-fn main() do
+def main() do
   g = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
   maplist([1, 2], g)
 end
@@ -3857,16 +3857,16 @@ end
 #[test]
 fn compiler2_transport_plan_preserves_callable_capture_inside_enum_style_reducer() {
     let source = r#"
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+def reduce_plain([], acc, _reducer), do: acc
+def reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
 
-fn count_via_param(enumerable, fun) do
+def count_via_param(enumerable, fun) do
   reduce_plain(enumerable, 0, fn (entry, acc) ->
     if fun.(entry), do: acc + 1, else: acc
   end)
 end
 
-fn main() do
+def main() do
   predicate = fn (x) -> x > 2 end
   count_via_param([1, 2, 3, 4], predicate)
 end
@@ -4032,14 +4032,14 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
 #[test]
 fn compiler2_callable_construction_capture_carriers_reach_backend_wrappers() {
     let source = r#"
-fn make(n) do
+def make(n) do
   if true do
     fn x -> n + x end
   else
     fn x -> n - x end
   end
 end
-fn main(), do: make(41).(1)
+def main(), do: make(41).(1)
 "#;
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -4387,7 +4387,7 @@ fn world_facts_and_product_memo_share_their_immutable_payloads() {
     let mut world = World::new();
     world.submit_code(
         Some("shared_product_payloads.fz".to_string()),
-        "fn add1(x), do: x + 1\nfn main(), do: add1(41)".to_string(),
+        "def add1(x), do: x + 1\ndef main(), do: add1(41)".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
@@ -4624,7 +4624,7 @@ fn positioned_callable_owners_have_observable_obligations() {
             "take_drop",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
         ),
-        ("scalar", "fn main(), do: 42"),
+        ("scalar", "def main(), do: 42"),
     ] {
         let tel = ConfiguredTelemetry::new();
         let evaluated = Rc::new(RefCell::new(Vec::new()));
@@ -4699,7 +4699,7 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
     let mut world = World::new();
     world.submit_code(
         Some("ignored_forwarded_input.fz".into()),
-        "fn discard(_), do: 0\nfn forward(x), do: discard(x)\nfn main(), do: forward(42)".into(),
+        "def discard(_), do: 0\ndef forward(x), do: discard(x)\ndef main(), do: forward(42)".into(),
     );
     let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
@@ -4753,16 +4753,16 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
 #[test]
 fn compiler2_unused_lexical_capture_is_retained_without_expanding_the_member_abi() {
     let source = r#"
-fn discard(_), do: 0
+def discard(_), do: 0
 
-fn make(n) do
+def make(n) do
   if true do
     fn (x) -> if discard(n) == 0, do: x, else: x end
   else
     fn (x) -> if discard(n) == 0, do: x, else: x end
   end
 end
-fn main(), do: make(41).(1)
+def main(), do: make(41).(1)
 "#;
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -4848,7 +4848,7 @@ fn main(), do: make(41).(1)
 
 #[test]
 fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_source_publication() {
-    let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+    let source = "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -4904,7 +4904,7 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
 
 #[test]
 fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_callable_inputs() {
-    let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+    let source = "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -4958,7 +4958,7 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
 
 #[test]
 fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
-    let source = "fn make(seed) do\n  dbg(seed)\n  fn (x) -> x end\nend\nfn apply_int(f), do: f.(1)\nfn apply_atom(f), do: f.(:ok)\nfn main(), do: {apply_int(make(1)), apply_atom(make(:ok))}\n";
+    let source = "def make(seed) do\n  dbg(seed)\n  fn (x) -> x end\nend\ndef apply_int(f), do: f.(1)\ndef apply_atom(f), do: f.(:ok)\ndef main(), do: {apply_int(make(1)), apply_atom(make(:ok))}\n";
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -5004,7 +5004,7 @@ fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
 #[test]
 fn compiler2_callable_construction_owners_preserve_shared_boundary_publications() {
     let source =
-        "fn inc(x), do: x + 1\nfn left(), do: &inc/1\nfn right(), do: &inc/1\nfn main(), do: {left(), right()}\n";
+        "def inc(x), do: x + 1\ndef left(), do: &inc/1\ndef right(), do: &inc/1\ndef main(), do: {left(), right()}\n";
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -5067,10 +5067,10 @@ fn compiler2_callable_construction_owners_preserve_shared_boundary_publications(
 #[test]
 fn compiler2_transport_plan_publishes_direct_reducer_capture_prefix_shape() {
     let source = r#"
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+def reduce_plain([], acc, _reducer), do: acc
+def reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
 
-fn main() do
+def main() do
   predicate = fn x -> x > 2 end
   reducer = fn (entry, acc) ->
     if predicate.(entry), do: acc + 1, else: acc
@@ -5152,7 +5152,7 @@ end
 #[test]
 fn compiler2_escaped_callable_uses_its_exact_target_to_project_branded_capture_demand() {
     let source = r#"
-fn main() do
+def main() do
   predicate = fn x -> x > 2 end
   fn (entry, acc) ->
     if predicate.(entry), do: acc + 1, else: acc
@@ -5286,7 +5286,7 @@ fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float()
     let mut world = World::new();
     world.submit_code(
         Some("range_int_elements.fz".to_string()),
-        "fn main() do\n  dbg(Enum.to_list(1..3))\nend\n".to_string(),
+        "def main() do\n  dbg(Enum.to_list(1..3))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -6423,7 +6423,7 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
 #[test]
 fn compiler2_transport_plan_carries_captures_when_one_layout_covers_several_activations() {
     let source = r#"
-fn main() do
+def main() do
   send(self(), fn (x, acc) -> acc + x end)
   reducer = receive do f -> f end
   Enum.reduce([1, 2, 3], 0, reducer)

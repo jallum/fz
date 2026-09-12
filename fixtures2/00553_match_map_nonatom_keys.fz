@@ -9,11 +9,11 @@
 # Expected: main() : any (int/float/string leaves plus the catch-all all stay
 # live because none of the non-atom keys can be proven present or absent).
 
-fn pick(%{1 => x}), do: x
-fn pick(%{3.14 => y}), do: y
-fn pick(%{"a" => z}), do: z
-fn pick(_), do: :other
+def pick(%{1 => x}), do: x
+def pick(%{3.14 => y}), do: y
+def pick(%{"a" => z}), do: z
+def pick(_), do: :other
 
-fn main() do
+def main() do
   pick(%{1 => 10})
 end

@@ -1,1 +1,1 @@
-fn main(), do: {1, :ok} == {1, :ok}
+def main(), do: {1, :ok} == {1, :ok}

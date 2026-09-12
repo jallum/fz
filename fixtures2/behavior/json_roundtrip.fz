@@ -56,7 +56,7 @@
 # JSON object keys are strings, so a decoded object is a BINARY-keyed map --
 # exactly the case where fz's iteration order matches Elixir's. An atom-keyed
 # map could not be oracled at all (fz-5xp.50).
-fn main() do
+def main() do
   dbg(Json.decode("true"))
   dbg(Json.decode("false"))
   dbg(Json.decode("null"))
@@ -124,6 +124,6 @@ fn main() do
   dbg(roundtrip(%{"a" => [1, nil], "b" => 2}))
 end
 
-fnp roundtrip(v), do: same(Json.decode(Json.encode!(v)), v)
-fnp same({:ok, decoded}, original), do: decoded == original
-fnp same(_other, _original), do: false
+defp roundtrip(v), do: same(Json.decode(Json.encode!(v)), v)
+defp same({:ok, decoded}, original), do: decoded == original
+defp same(_other, _original), do: false

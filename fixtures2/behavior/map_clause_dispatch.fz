@@ -31,7 +31,7 @@
 #     question rather than the `map_key` one;
 #   * the same shapes in `case`, which reaches the same dispatch;
 #   * a map with non-atom keys, and one with more keys than the pattern names.
-fn main() do
+def main() do
   dbg(kind(%{tag: :a, value: 7}))
   dbg(kind(%{tag: :b}))
   dbg(kind(%{tag: :b, extra: 1}))
@@ -48,15 +48,15 @@ fn main() do
   dbg(described(:not_a_map))
 end
 
-fnp kind(%{tag: :a, value: v}), do: {:a, v}
-fnp kind(%{tag: :b}), do: :b
-fnp kind(%{}), do: :some_map
-fnp kind(_other), do: :not_a_map
+defp kind(%{tag: :a, value: v}), do: {:a, v}
+defp kind(%{tag: :b}), do: :b
+defp kind(%{}), do: :some_map
+defp kind(_other), do: :not_a_map
 
-fnp lookup(%{"name" => name}), do: {:named, name}
-fnp lookup(%{}), do: :anonymous
+defp lookup(%{"name" => name}), do: {:named, name}
+defp lookup(%{}), do: :anonymous
 
-fnp described(subject) do
+defp described(subject) do
   case subject do
     %{tag: :a, value: v} -> {:case_a, v}
     %{value: v} -> {:case_value, v}

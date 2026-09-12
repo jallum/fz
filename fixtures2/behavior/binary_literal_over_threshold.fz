@@ -27,13 +27,13 @@
 # The fix is the invariant the heap already keeps -- 16-byte alignment, so the
 # low four bits are never part of an address. This fixture is FOUR literals over
 # the threshold, matched, so no single alignment accident can make it pass.
-fnp first_byte(<<c, _rest :: binary>>), do: c
-fnp first_byte(_b), do: :no_match
+defp first_byte(<<c, _rest :: binary>>), do: c
+defp first_byte(_b), do: :no_match
 
-fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-fnp walk(_b, n), do: n
+defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+defp walk(_b, n), do: n
 
-fn main() do
+def main() do
   dbg(first_byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
   dbg(first_byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
   dbg(walk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0))

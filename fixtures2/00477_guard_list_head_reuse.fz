@@ -1,5 +1,5 @@
-fn positive(n), do: n > 0
-fn classify(xs) do
+def positive(n), do: n > 0
+def classify(xs) do
   case xs do
     [h | _] when positive(h) -> h + h
     _ -> 0

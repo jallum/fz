@@ -19,7 +19,7 @@
 # ## Notes
 #
 # (icmp_imm eq + bxor_imm are signatures of the elided tag-check scaffold.
-#  brif appears unrelatedly for the cont-ptr null check at fn exit, so we
+#  brif appears unrelatedly for the cont-ptr null check at def exit, so we
 #  don't exclude it.)
 #
 # Both operands of each op are Int literals → ir_planner narrows to int →
@@ -27,7 +27,7 @@
 # scaffold around fz_arith_add is elided. We still see the unbox/iadd/rebox
 # inline (raw add on the tagged-int payload), but no dispatch test.
 # Closing the boxing gap is VR.3 (raw frame slots) and VR.4 (typed ABI).
-fn main() do
+def main() do
   dbg(40 + 2)
   dbg(100 - 7)
   dbg(6 * 7)

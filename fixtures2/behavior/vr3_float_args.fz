@@ -27,10 +27,10 @@
 # `f64const 1.5` / `f64const 2.5` flow straight to the call.
 # fz-cps.1.a (fz-siu.1.1): trailing v2:i64 is the cont parameter per
 # docs/cps-in-clif.md §2.1; threaded but unused in .1.1.
-fn dist(x, y) do
+def dist(x, y) do
   x * x + y * y
 end
 
-fn main() do
+def main() do
   dbg(dist(1.5, 2.5))
 end

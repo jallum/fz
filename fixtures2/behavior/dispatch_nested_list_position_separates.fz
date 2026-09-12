@@ -47,34 +47,34 @@
 # narrow-first order asks a question the blind position could get wrong, and
 # that is the order written here. The other three pairs are disjoint, so both
 # their orders print the same two lines, which is the claim those twins carry.
-fn kind(x :: {:a, [integer]}), do: 1
-fn kind(x :: {:a, [:ok | :err]}), do: 2
+def kind(x :: {:a, [integer]}), do: 1
+def kind(x :: {:a, [:ok | :err]}), do: 2
 
-fn dnik(x :: {:a, [:ok | :err]}), do: 2
-fn dnik(x :: {:a, [integer]}), do: 1
+def dnik(x :: {:a, [:ok | :err]}), do: 2
+def dnik(x :: {:a, [integer]}), do: 1
 
-fn axis(x :: {:a, [integer]}), do: 1
-fn axis(x :: {:a, integer}), do: 2
+def axis(x :: {:a, [integer]}), do: 1
+def axis(x :: {:a, integer}), do: 2
 
-fn sixa(x :: {:a, integer}), do: 2
-fn sixa(x :: {:a, [integer]}), do: 1
+def sixa(x :: {:a, integer}), do: 2
+def sixa(x :: {:a, [integer]}), do: 1
 
-fn size(x :: {:a, []}), do: 1
-fn size(x :: {:a, [integer]}), do: 2
+def size(x :: {:a, []}), do: 1
+def size(x :: {:a, [integer]}), do: 2
 
-fn deep(x :: {:a, {:b, [integer]}}), do: 1
-fn deep(x :: {:a, {:b, [:ok | :err]}}), do: 2
+def deep(x :: {:a, {:b, [integer]}}), do: 1
+def deep(x :: {:a, {:b, [:ok | :err]}}), do: 2
 
-fn peed(x :: {:a, {:b, [:ok | :err]}}), do: 2
-fn peed(x :: {:a, {:b, [integer]}}), do: 1
+def peed(x :: {:a, {:b, [:ok | :err]}}), do: 2
+def peed(x :: {:a, {:b, [integer]}}), do: 1
 
-fn twin(x :: {[integer], [:ok | :err]}), do: 1
-fn twin(x :: {[:ok | :err], [integer]}), do: 2
+def twin(x :: {[integer], [:ok | :err]}), do: 1
+def twin(x :: {[:ok | :err], [integer]}), do: 2
 
-fn niwt(x :: {[:ok | :err], [integer]}), do: 2
-fn niwt(x :: {[integer], [:ok | :err]}), do: 1
+def niwt(x :: {[:ok | :err], [integer]}), do: 2
+def niwt(x :: {[integer], [:ok | :err]}), do: 1
 
-fn pick_head(n) do
+def pick_head(n) do
   if n > 0 do
     {:a, [n, n]}
   else
@@ -82,7 +82,7 @@ fn pick_head(n) do
   end
 end
 
-fn pick_axis(n) do
+def pick_axis(n) do
   if n > 0 do
     {:a, [n, n]}
   else
@@ -90,7 +90,7 @@ fn pick_axis(n) do
   end
 end
 
-fn pick_size(n) do
+def pick_size(n) do
   if n > 0 do
     {:a, []}
   else
@@ -98,7 +98,7 @@ fn pick_size(n) do
   end
 end
 
-fn pick_deep(n) do
+def pick_deep(n) do
   if n > 0 do
     {:a, {:b, [n, n]}}
   else
@@ -106,7 +106,7 @@ fn pick_deep(n) do
   end
 end
 
-fn pick_twin(n) do
+def pick_twin(n) do
   if n > 0 do
     {[n, n], [:ok, :err]}
   else
@@ -114,7 +114,7 @@ fn pick_twin(n) do
   end
 end
 
-fn main() do
+def main() do
   dbg(kind(pick_head(1)))
   dbg(kind(pick_head(0)))
   dbg(dnik(pick_head(1)))

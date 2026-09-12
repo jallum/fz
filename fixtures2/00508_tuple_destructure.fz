@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   {a, b} = {1, 2}
   a + b
 end

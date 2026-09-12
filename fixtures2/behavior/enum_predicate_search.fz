@@ -25,7 +25,7 @@
 # The perf detector this replaces has to be work-based, not time-based -- assert
 # the settlement count from the telemetry job trace, which is machine
 # independent and names the defect when it fires. That is [[fz-f98.23]].
-fn main() do
+def main() do
   xs = [1, 2, 3, 4]
 
   dbg(Enum.all?(xs))

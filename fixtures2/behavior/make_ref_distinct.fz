@@ -17,7 +17,7 @@
 # fz-ht5 — Two successive calls to `make_ref()` must return distinct values. The
 # value's type is the opaque `ref`; arithmetic on it is rejected by the planner
 # (separate fixture / negative test).
-fn main() do
+def main() do
   a = make_ref()
   b = make_ref()
   refute(a == b)

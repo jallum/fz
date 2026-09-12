@@ -222,8 +222,8 @@ The compiler only chooses their tail before building the prefix.</p>
 predictable. A plain recursive append:</p>
 
 <pre>
-  fn append([], ys), do: ys
-  fn append([h | t], ys), do: [h | append(t, ys)]
+  def append([], ys), do: ys
+  def append([h | t], ys), do: [h | append(t, ys)]
 </pre>
 
 <p>still compiles as source code. In the <code>append</code> fixture,
@@ -786,7 +786,7 @@ The whole binary is simply the suffix at offset&nbsp;0.</p>
 <p>That is what makes a byte scanner cheap. This clause asks for a suffix:</p>
 
 <pre>
-  fnp walk(&lt;&lt;_c, rest :: binary&gt;&gt;, n), do: walk(rest, n + 1)
+  defp walk(&lt;&lt;_c, rest :: binary&gt;&gt;, n), do: walk(rest, n + 1)
 </pre>
 
 <p>so <code>rest</code> becomes another stub over the <em>same</em> bytes at

@@ -29,7 +29,7 @@
 # in Elixir as well and denies the folder its operands — so the same answers
 # have to come from the emitted comparison rather than from compile-time
 # arithmetic. Both halves must agree with Elixir, and with each other.
-fn main() do
+def main() do
   dbg({1 < 1.0, 1 <= 1.0, 1 > 1.0, 1 >= 1.0, 1 == 1.0, 1 != 1.0})
   dbg({2 < 1.0, 2 <= 1.0, 2 > 1.0, 2 >= 1.0, 2 == 1.0, 2 != 1.0})
   dbg({1 < 2.0, 1 <= 2.0, 1 > 2.0, 1 >= 2.0, 1 == 2.0, 1 != 2.0})
@@ -70,15 +70,15 @@ fn main() do
   dbg({literal(1), literal(1.0), literal(2)})
 end
 
-fnp ordering(a, b) when a < b, do: :lt
-fnp ordering(a, b) when a > b, do: :gt
-fnp ordering(_a, _b), do: :eq
+defp ordering(a, b) when a < b, do: :lt
+defp ordering(a, b) when a > b, do: :gt
+defp ordering(_a, _b), do: :eq
 
-fnp literal(1), do: :int_one
-fnp literal(1.0), do: :float_one
-fnp literal(_other), do: :other
+defp literal(1), do: :int_one
+defp literal(1.0), do: :float_one
+defp literal(_other), do: :other
 
-fnp launder(value) do
+defp launder(value) do
   send(self(), value)
 
   receive do

@@ -6,9 +6,9 @@
 #
 # Expected: main() : {int, :ok}
 
-fn id(x), do: x
+def id(x), do: x
 
-fn main() do
+def main() do
   f = &id/1
   {f.(1), f.(:ok)}
 end

@@ -19,7 +19,7 @@
 # specialized cases cover the atom and tuple clauses, with the wildcard clause
 # forming a reachable default Leaf (not a Fail). Locks the AOT
 # `compile_pattern` shape that H9's compiled matcher fn must reproduce.
-fn main() do
+def main() do
   send(self(), {:msg, 42})
 
   v = receive do

@@ -30,7 +30,7 @@
 # fz has no such type. The value is the same list of integers, and the name says
 # so rather than claiming a parity it cannot show -- the oracle asks Elixir for
 # `charlists: :as_lists` to compare the values at all.
-fn main() do
+def main() do
   dbg(String.length("héllo"))
   dbg(String.starts_with?("hello", "he"))
   dbg(String.starts_with?("hello", "xx"))

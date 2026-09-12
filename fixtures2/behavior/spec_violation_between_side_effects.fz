@@ -11,7 +11,7 @@
 # Kernel arithmetic `@spec`s reject the middle expression at compile time on
 # every path, so neither `1` nor `2` is ever printed and the program never
 # runs.
-fn main() do
+def main() do
   dbg(1)
   dbg(:bad + 1)
   dbg(2)

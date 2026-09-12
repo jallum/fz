@@ -38,11 +38,11 @@
 # its MSO sweep) at process exit, not at let-binding scope end. Order
 # within the dtor block reflects the MSO chain's LIFO push order — the
 # last `make_resource` is at the head of the chain and sweeps first.
-extern "C" fn fz_resource_test_print_dtor(integer) :: nil
+extern "C" def fz_resource_test_print_dtor(integer) :: nil
 
-fn dwrap(x), do: fz_resource_test_print_dtor(x)
+def dwrap(x), do: fz_resource_test_print_dtor(x)
 
-fn main() do
+def main() do
   _a = make_resource(10, &dwrap/1)
   _b = make_resource(20, &dwrap/1)
   _c = make_resource(30, &dwrap/1)
