@@ -6,7 +6,8 @@
     "fz-tfn.6"
   ],
   "blocks": [
-    "fz-kdt.36.1"
+    "fz-kdt.36.1",
+    "fz-tfn.13"
   ],
   "created": "2026-09-03T09:40:38Z",
   "description": "## Goal\n\nDerive one final InputDemand answer from source-owned LoweredBody, EntryDispatch, exact protocol and provider facts, peer demand values, and the recursive denotation supplied by fz-kdt.177. Activation identity follows the resulting canonical semantic question and evidence; it is not reconstructed from a historical input arrow.\n\n## Output contract\n\nInputDemand retains normalized typed questions with ordered operand bindings: dispatch predicates, equality and order, executable membership, shape and content, returned denotation and callable identity. Correlated rows stay whole. Identity, projection and construction remain parameterized when joining concrete callers would lose a real answer.\n\nFinite source sites alone do not prove a finite exact observation partition. Before implementation, prove the smallest final-consumer algebra, its decidable recursive operations and every deliberate approximation. Do not preselect a DFA, powerset engine, BDD or copied semantic body.\n\n## Authorities\n\nLoweredBody remains the sole operation, value and control denotation. EntryDispatch, StaticCallees and provider facts remain separate only at real dependency boundaries. ActivationInputs and fz-kdt.64 supported alternatives are the exact correlated input authority. Typed comparisons use the World memo and canonical interned operands.\n\nRoot and caller discovery publish exact rows from their real owners. Delete SeedActivation key-to-row reconstruction and historical RootSlot keys. A formula reads peer values without waiting on cyclic peer finality. No display string, raw Ty order, key-derived evidence or second flow authority is permitted.\n\n## TDD and signal\n\nProve direct, delivered, projected, constructed, tuple, list, map, bitstring, protocol and callable questions; repeated versus distinct operands; same-callee callsite isolation; ordered outcomes; root rekeying; owner withdrawal; no resurrection; explicit success, failure and Halt; and self or mutual recursion.\n\nIdentity and same_depth style controls must show where parametric or relational meaning is retained. Quicksort and take or drop must preserve answers while exact semantic and product work falls below the pre-invalid-214 baseline. An aggregate reduction elsewhere cannot substitute.\n\n## Required deletion and acceptance\n\nDelete InputFlow types and stores, alias closure, lineage expansion, the private InputDemand cone or SCC solver, function-wide returned-supply subtraction, Whole or coarse structural demand, BodyKeying callable flags, historical activation reconstruction, compatibility bridges, transition telemetry and stale docs.\n\nNo per-question product traversal, peer-finality wait or global graph rescan survives. Equal answers retain allocation and generation and wake nobody. Full focused, causal, corpus, three-door, deterministic, documentation, formatting, check and strict-Clippy gates pass; fresh ticket-scoped cold review precedes one commit and close.",
@@ -23,5 +24,5 @@
   "status": "open",
   "title": "Derive final InputDemand directly from source-owned bodies",
   "type": "task",
-  "updated_at": "2026-09-11T19:06:51Z"
+  "updated_at": "2026-09-12T15:38:51Z"
 }
