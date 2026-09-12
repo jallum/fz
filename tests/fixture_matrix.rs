@@ -55,7 +55,7 @@
 //! `<name>.actual.txt` and `<name>.actual.diagnostics` for diffing.
 //! Compiler-shape contracts live in compiler2 telemetry and fixture metadata.
 
-use fz::compiler2::{
+use fz_fixture_metadata::{
     FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMatrixPath, FixtureMetadata,
     fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };

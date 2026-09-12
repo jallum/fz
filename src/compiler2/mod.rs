@@ -16,7 +16,6 @@ mod drive;
 mod dump;
 mod executable_facts;
 mod facts;
-mod fixture_metadata;
 mod frontdoor;
 mod identity;
 pub(crate) mod incoming_inputs;
@@ -80,13 +79,6 @@ pub(crate) use drive::JobEffects;
 mod macro_product_test;
 pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
 pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
-#[cfg(test)]
-pub use fixture_metadata::fixture_frontmatter_prefix_bytes;
-pub use fixture_metadata::{
-    BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMatrixPath, FixtureMetadata, FixtureMetadataError, FixtureRoot, MetricAssertion, PathTimeout,
-    fixture_matrix_paths_from_filename, parse_fixture_metadata,
-};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
@@ -148,12 +140,9 @@ mod fixture_facts;
 #[cfg(test)]
 mod fixture_facts_test;
 #[cfg(test)]
-mod fixture_metadata_test;
-#[cfg(test)]
 mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
-#[cfg(test)]
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]

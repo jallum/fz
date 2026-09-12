@@ -119,7 +119,6 @@ fn production_activation_order_has_one_typed_nontextual_authority() {
         transport,
         include_str!("world.rs"),
         include_str!("dump.rs"),
-        include_str!("fixture_facts.rs"),
         include_str!("jobs/artifact.rs"),
         include_str!("jobs/backend.rs"),
         include_str!("jobs/runtime_demand.rs"),

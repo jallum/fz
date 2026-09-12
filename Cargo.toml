@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [workspace]
-members = ["runtime"]
+members = ["fixture-metadata", "runtime"]
 
 [workspace.lints.rust]
 # `runtime` uses `cfg(loom)` to swap in loom's synchronization primitives for
@@ -41,6 +41,7 @@ rustyline = { version = "18.0.0", default-features = false }
 serde_json = "1"
 
 [dev-dependencies]
+fz-fixture-metadata = { path = "fixture-metadata" }
 # fz-fkv — fixture matrix uses libtest-mimic so each (fixture, path) pair
 # is its own trial in `cargo test` output (filterable, parallelizable,
 # named individually instead of collapsing into one `fixture_matrix ... ok`).

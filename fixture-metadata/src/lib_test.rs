@@ -1,4 +1,4 @@
-use super::fixture_metadata::{
+use super::{
     BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
     FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
     fixture_matrix_paths_from_filename, parse_fixture_metadata,
