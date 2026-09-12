@@ -9,9 +9,15 @@
   "id": "fz-6lf.1",
   "labels": [],
   "parent": "fz-6lf",
+  "comments": [
+    {
+      "text": "Implemented via TDD. General binary when now has one Pratt authority; named temporary grammar feeds its parsed lhs through that suffix; case no longer constructs guards. No-parens calls suppress nested do capture while every matched boundary reopens local ownership, including capture grouping. Removed the redundant/non-Elixir completed-call comma-do attachment. Added whole-tree quoted-shape assertions and adjacent lexer/frontdoor tests, plus parser authority docs. Fresh holistic reviews found and drove the matched-boundary, capture, comma-do, and test-signal corrections. Gates: cargo test --workspace --lib (2022 passed, 6 ignored; fz_runtime 257 passed), cargo test --workspace --doc, cargo clippy --workspace --all-targets -- -D warnings, cargo fmt --all -- --check, git diff --check.",
+      "timestamp": "2026-09-12T14:57:33Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Make when and trailing-do ownership general expression grammar",
   "type": "task",
-  "updated_at": "2026-09-12T14:18:30Z"
+  "updated_at": "2026-09-12T14:57:33Z"
 }
