@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-6lf.2"
+  ],
   "blocks": [],
   "created": "2026-09-12T18:21:47Z",
   "description": "Goal\nRestore the accepted Elixir-shaped `call(args), do: body` item-macro surface that regressed when whitespace began distinguishing parenthesized calls from no-parens calls. This blocks the def/defp corpus migration because `fz2 test` readiness fixtures use this form.\n\nSignal\nAn adjacent frontdoor test proves `test(:passes), do: assert(true)` parses as one `test/2` AST call with a fresh `[do: ...]` argument, and both `fz2 test` readiness/timeout integration tests pass through JIT and interpreter paths.\n\nStrategy\nMake the general call grammar own comma-keyword trailing bodies for parenthesized calls. Reuse the existing trailing-do attachment authority; do not special-case `test`, `def`, or item position. Preserve the existing rule that `echo(label: :work) do ... end` keeps its two keyword lists distinct.\n\nRemoval/collapse\nCollapse comma-do and do/end attachment into the same call-body path if possible. Do not add a compatibility recognizer or reconstructed AST.\n\nAcceptance\nFocused parser and integration tests pass, the full library suite is green, documentation/comments describe the shared grammar accurately, and a fresh holistic review has no findings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Preserve comma-do attachment after parenthesized macro calls",
   "type": "bug",
-  "updated_at": "2026-09-12T18:21:47Z"
+  "updated_at": "2026-09-12T18:21:54Z"
 }
