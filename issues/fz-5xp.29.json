@@ -4,14 +4,16 @@
   "blocks": [
     "fz-5xp.32"
   ],
+  "closed_at": "2026-09-12T15:38:19Z",
+  "close_reason": "Superseded by the atomic implementation boundary fz-5xp.30; all valid acceptance criteria moved into that description.",
   "created": "2026-09-07T06:39:06Z",
   "description": "## Status\n\nThis ticket is superseded by the atomic typed-intrinsic cutover in fz-5xp.30. Its valid requirements are now part of that ticket: operator and comparison primitives stop masquerading as extern symbols, carry one exact typed intrinsic identity, and delete every per-door symbol-name interception path.\n\nNo implementation from this ticket is to land separately. Consult fz-5xp.30 for the current goal, model, TDD signal, deletion list and ordering. This description replaces the former plan; historical comments are evidence only.",
   "id": "fz-5xp.29",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Absorbed into fz-5xp.30",
   "type": "task",
-  "updated_at": "2026-09-12T15:38:18Z"
+  "updated_at": "2026-09-12T15:38:19Z"
 }
