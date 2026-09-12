@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T14:23:37Z",
+  "description": "## Signal\n\nA numeric guard over a field bound by a struct pattern is ignored at runtime on interpreter and JIT:\n\n```fz\nfn choose(%Range{step: step}) when step \u003e 0, do: :positive\nfn choose(%Range{}), do: :nonpositive\n\nfn main() do\n  dbg(choose(Range.new(0, 2, 0)))\nend\n```\n\nExpected: `:nonpositive`. Both doors print `:positive`. The original Enum.slice witness reached `Range.count/3` with a zero step and divided by zero instead of taking the fallback clause.\n\nThis is distinct from fz-kdt.10: that ticket retains both runtime clauses correctly but loses literal-correlated return evidence. Here runtime selection itself is wrong.\n\n## Reduction\n\nThe equivalent decision works when the field comparison is evaluated in the body and its boolean result is sent to `true`/`false` clauses. The bad path is the guarded clause whose numeric input was projected from the struct parameter.\n\n## Strategy\n\nPromote the reproducer to a three-door oracle fixture. Trace the projected field from entry matching through guard-plan construction and runtime entry dispatch. Repair the shared dispatch representation or lowering; do not special-case Range, `step`, or `\u003e/2`. Preserve ordinary parameter guards and the fz-kdt.10 evidence distinction.\n\n## Acceptance\n\n- The exact reproducer prints `:nonpositive` on interpreter, JIT, and AOT.\n- Positive and dynamically supplied field controls select the correct clause.\n- Plain numeric parameter guards remain correct.\n- The atom-clause boolean formulation remains equivalent.\n- Full compiler, runtime, fixture, formatting, and strict Clippy gates pass.",
+  "id": "fz-5xp.108",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "A guard on a destructured struct field always selects the guarded clause",
+  "type": "bug",
+  "updated_at": "2026-09-12T14:23:37Z"
+}
