@@ -21,11 +21,15 @@
     {
       "text": "Draft PR: https://github.com/jallum/fz/pull/138 (stacked on #137).",
       "timestamp": "2026-09-12T13:56:59Z"
+    },
+    {
+      "text": "Current-main integration is final at e1a5ce75c. Clause helpers own their recursive continuations, and list-specific split paths preserve callable transport and allocation behavior. The surface-membership ratchet remains non-vacuous at 316 observations per affected arrival with zero escapes after generic reducer wrappers leave the list path. Final stack gates: fixture matrix 754/754, compiler library 2060 passed/5 ignored, runtime 269/269, CLI 30/30, doctests, AOT variadic integration, strict Clippy, formatting, and diff hygiene. PR #138 remains stacked on the now-green #137.",
+      "timestamp": "2026-09-12T18:16:33Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Enum: decide with clauses where the module already decides with clauses",
   "type": "task",
-  "updated_at": "2026-09-12T13:56:59Z"
+  "updated_at": "2026-09-12T18:16:33Z"
 }
