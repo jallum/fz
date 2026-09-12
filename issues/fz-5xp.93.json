@@ -9,9 +9,15 @@
   "id": "fz-5xp.93",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Decision: finish the existing slicing scaffold. Enumerable.slice/1 is the protocol callback that should power public Enum.slice/2,3; the names do not conflict because they belong to different modules. This ticket will add the consumer and remove slice/2,3 from fz-5xp.82 rather than delete the optimized Map and Range paths.",
+      "timestamp": "2026-09-12T13:57:48Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Enumerable.slice/1 is surface nothing reaches",
   "type": "task",
-  "updated_at": "2026-09-12T13:57:47Z"
+  "updated_at": "2026-09-12T13:57:48Z"
 }
