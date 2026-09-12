@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-5xp.80",
     "fz-5xp.93"
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enum: complete the API up to what fz's capabilities allow",
   "type": "task",
-  "updated_at": "2026-09-12T14:08:19Z"
+  "updated_at": "2026-09-12T14:42:04Z"
 }
