@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T15:09:23Z",
+  "description": "Goal: make quote reification preserve Elixir's raw two-tuple quoted representation so structural keyword tuples remain valid inside macro-generated source definitions. Signal: an ordinary legacy-surface item macro using quote to emit fn answer(), do: 42 must publish and execute answer/0; assert the quoted tuple contract in an adjacent *_test.rs path. Strategy: teach the one QuoteLowerer Expr::Tuple arm to emit a raw tuple when arity is exactly two, retaining {} AST calls for every other tuple arity. This removes no syntax and is a prerequisite for ticket fz-6lf.2's generated def proof. Fresh holistic review, full warnings-as-errors gate, one commit/close/draft stacked PR.",
+  "id": "fz-6lf.5",
+  "labels": [],
+  "parent": "fz-6lf",
+  "priority": 1,
+  "status": "open",
+  "title": "Preserve literal two-tuples while quoting generated source",
+  "type": "bug",
+  "updated_at": "2026-09-12T15:09:23Z"
+}
