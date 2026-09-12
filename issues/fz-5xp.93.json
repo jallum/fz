@@ -4,6 +4,8 @@
   "blocks": [
     "fz-5xp.82"
   ],
+  "closed_at": "2026-09-12T14:40:51Z",
+  "close_reason": "completed",
   "created": "2026-09-07T22:05:29Z",
   "description": "## What is unreachable\n\n`Enumerable` declares `slice/1` and three implementations answer it:\n\n```\nlib/enumerable.fz:68   fn slice(_list), do: {:error, :unsupported}\nlib/enumerable.fz:76   fn slice(map), do: Map.slice(map)\nlib/enumerable.fz:85   fn slice(%Range{...}) do ... Range.slice(...) end\n```\n\nNothing calls it. There is no `Enum.slice` in `lib/enum.fz`, and no other caller of `Enumerable.slice` anywhere in `lib/`. `Map.slice/1` and `Range.slice/6` exist only to be reached through it, so they are unreachable too -- `Range.slice/6` is the reason `Range.reverse/2` exists, which is the private helper in fz-5xp.92.\n\nFor lists the callback would not help even if something did call it: `List`'s implementation returns `{:error, :unsupported}` unconditionally.\n\n## The choice\n\nEither `Enum.slice/2,3` is coming and this is scaffolding waiting for its consumer, or it is not and this is a protocol callback, three implementations and two helper functions carrying maintenance weight for nobody.\n\nIf it is the former, this ticket is a note that the scaffolding predates its consumer and should be finished. If the latter, it is a deletion: the callback, the three `defimpl` bodies, `Map.slice/1`, `Range.slice/6`, and `Range.reverse/2` all go together.\n\n## Found how\n\nDocumenting `Enumerable`'s callbacks: writing an honest `@doc` for `slice/1` meant naming the `Enum` function that reaches it, and there is none.",
   "id": "fz-5xp.93",
@@ -20,8 +22,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enumerable.slice/1 is surface nothing reaches",
   "type": "task",
-  "updated_at": "2026-09-12T14:40:50Z"
+  "updated_at": "2026-09-12T14:40:51Z"
 }
