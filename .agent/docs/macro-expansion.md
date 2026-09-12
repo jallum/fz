@@ -58,8 +58,7 @@ There is one important sub-case inside the eager bucket — and one origin
 exception:
 
 - `runtime.fz` defines the compiler-owned definition macros `def`, `defp`,
-  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`. The legacy named
-  `fn`/`fnp` macros remain only during the surface migration.
+  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`.
 - `def` and `defp` are ordinary identifier calls at the lexer and front door;
   neither has a token kind or a definition-specific item parser. Their runtime
   macros forward the untouched grouped clause root and `__CALLER__` to

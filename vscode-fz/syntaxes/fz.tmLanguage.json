@@ -151,7 +151,7 @@
     },
     {
       "comment": "Function with parameters",
-      "begin": "\\b(defp?|defmacrop?|defguardp?|defdelegate|fnp?)\\b\\s*([_\\p{Ll}\\p{Lo}][\\p{L}\\p{N}_]*[?!]?)\\s*\\(",
+      "begin": "\\b(defp?|defmacrop?|defguardp?|defdelegate)\\b\\s*([_\\p{Ll}\\p{Lo}][\\p{L}\\p{N}_]*[?!]?)\\s*\\(",
       "name": "meta.function.definition.elixir",
       "beginCaptures": {
         "1": {
@@ -170,7 +170,7 @@
     },
     {
       "comment": "Function without parameters",
-      "match": "\\b(defp?|defmacrop?|defguardp?|defdelegate|fnp?)\\b\\s*([_\\p{Ll}\\p{Lo}][\\p{L}\\p{N}_]*[?!]?)",
+      "match": "\\b(defp?|defmacrop?|defguardp?|defdelegate)\\b\\s*([_\\p{Ll}\\p{Lo}][\\p{L}\\p{N}_]*[?!]?)",
       "name": "meta.function.definition.elixir",
       "captures": {
         "1": {
@@ -182,7 +182,7 @@
       }
     },
     {
-      "match": "(?<!\\.)\\b(do|end|case|for|if|cond|with|unless|try|receive|fn|fnp|defmodule|defprotocol|defimpl|defrecordp?|defstruct|defcallback|defexception|defoverridable|exit|after|rescue|catch|else|raise|reraise|throw|quote|unquote|unquote_splicing|super|when|and|or|not|in)\\b(?![?!])",
+      "match": "(?<!\\.)\\b(do|end|case|for|if|cond|with|unless|try|receive|fn|defmodule|defprotocol|defimpl|defrecordp?|defstruct|defcallback|defexception|defoverridable|exit|after|rescue|catch|else|raise|reraise|throw|quote|unquote|unquote_splicing|super|when|and|or|not|in)\\b(?![?!])",
       "name": "keyword.control.elixir"
     },
     {

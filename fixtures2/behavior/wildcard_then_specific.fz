@@ -1,5 +1,5 @@
 #---
-# purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause fn and case)"
+# purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause function and case)"
 #---
 def catch(_), do: :anything
 def catch(0), do: :zero

@@ -12,7 +12,7 @@
 //!   * The dtor receives the **payload only**, not the wrapper. The
 //!     runtime frees the wrapper (Box::from_raw drop) after the dtor
 //!     returns. This keeps fz-side externs ergonomic
-//!     (`extern fn fd_close(integer)` rather than wrapping/unwrapping).
+//!     (`extern "C" def fd_close(integer) :: nil` rather than wrapping/unwrapping).
 //!
 //! FFI constraint for v0: payload is a raw 64-bit integer handle. That
 //! covers fd-like resources today and leaves room for an opaque pointer
@@ -126,7 +126,7 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
 /// is the raw integer payload.
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
-/// in an `extern "C" fn` declaration and observe dtor invocation through
+/// in an `extern "C" def` declaration and observe dtor invocation through
 /// the linked binary's stdout. Stable, documented sink — usable both
 /// by the in-process JIT tests (via the existing test-symbol registration
 /// hook) and by AOT fixtures (via the regular extern path).

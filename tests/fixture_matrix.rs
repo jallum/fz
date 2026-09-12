@@ -542,7 +542,6 @@ fn has_main(src: &str) -> bool {
 fn fixture_main_detection_follows_def_surface() {
     assert!(has_main("def main(), do: :ok\n"));
     assert!(has_main("def main do\n  :ok\nend\n"));
-    assert!(!has_main("fn main(), do: :ok\n"));
 }
 
 fn parse_header(fixture: &FixtureCase) -> Result<Header, String> {

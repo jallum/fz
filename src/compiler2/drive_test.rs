@@ -3614,7 +3614,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         .filter(|record| {
             !matches!(
                 record.function_ref.name(),
-                "fn" | "fnp" | "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
+                "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
             )
         })
         .map(|record| {
@@ -3669,7 +3669,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
                     .is_none_or(|function_ref| {
                         matches!(
                             function_ref.name(),
-                            "fn" | "fnp" | "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
+                            "def" | "defp" | "defmacro" | "defmodule" | "defprotocol" | "defimpl"
                         )
                     })
             }),
@@ -4040,8 +4040,6 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
     }
 
     for (name, arity) in [
-        ("fn", 1),
-        ("fnp", 1),
         ("def", 1),
         ("defp", 1),
         ("defmacro", 1),
@@ -4131,7 +4129,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let forward_define = function_id(&functions, "forward_define", 1);
     let forwarded_source = builder
         .call(
-            "fn",
+            "def",
             &QuotedSourceMetadata::default(),
             &[
                 builder

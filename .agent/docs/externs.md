@@ -34,10 +34,9 @@ extern "fz" def fz_binary_concat(binary, binary) :: binary # an fz runtime helpe
 
 `def` is contextual here: it is still an ordinary identifier token, but the
 `extern` declaration grammar requires that spelling between the ABI and symbol;
-the legacy `fn` spelling remains accepted only for the staged migration.
-`defp` is not valid for an external declaration. The resulting quoted extern
-node and every downstream ABI/marshalling stage are independent of the source
-spelling.
+`fn` is anonymous-only and `defp` is not valid for an external declaration.
+The resulting quoted extern node and every downstream ABI/marshalling stage use
+one source spelling.
 
 The ABI decides two things at once.
 

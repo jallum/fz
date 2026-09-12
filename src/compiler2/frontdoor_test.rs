@@ -134,14 +134,14 @@ fn quoted_shape(cursor: &super::QuotedSourceCursor, sources: &crate::source::Sou
     }
 }
 
-/// Digs out the `do:` body of the first top-level `fn`/`fnp`/`defmacro` item:
+/// Digs out the `do:` body of the first top-level `defmacro` item:
 /// `{head_name, meta, [head, [{:do, body}]]}` -> `body`.
-fn fn_do_body(root: &super::QuotedSourceRoot) -> super::QuotedSourceCursor {
+fn macro_do_body(root: &super::QuotedSourceRoot) -> super::QuotedSourceCursor {
     let items = root.cursor().list_items().expect("top-level items");
-    let fn_node = items[0].trusted_ast_node().expect("fn cursor").expect("fn node");
-    fn_node.tail.list_items().expect("fn args")[1]
+    let macro_node = items[0].trusted_ast_node().expect("macro cursor").expect("macro node");
+    macro_node.tail.list_items().expect("macro args")[1]
         .list_items()
-        .expect("fn kw list")[0]
+        .expect("macro kw list")[0]
         .tuple_items()
         .expect("do tuple")[1]
         .clone()
@@ -956,7 +956,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_operator() {
         &tel,
     )
     .expect("trailing operator newline parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -979,7 +979,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
         &tel,
     )
     .expect("trailing dot newline parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1010,7 +1010,7 @@ fn compiler2_frontdoor_continues_alias_path_across_newline_after_dot() {
         &tel,
     )
     .expect("trailing dot newline in alias path parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1048,7 +1048,7 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
         &tel,
     )
     .expect("lowercase field after dotted newline parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1098,7 +1098,7 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
         &tel,
     )
     .expect("trailing dot newline in capture target parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1177,7 +1177,7 @@ fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("block-separation.fz", "def main() do\n  a\n  b\nend\n", &tel)
         .expect("block separation parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1236,7 +1236,7 @@ fn compiler2_frontdoor_keeps_a_newline_after_no_parens_keyword_arguments_as_the_
     )
     .expect("a no-parens keyword call must leave its trailing newline for the block grammar");
 
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1270,7 +1270,7 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
         &tel,
     )
     .expect("leading operator new-statement parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
@@ -1322,7 +1322,7 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
         &tel,
     )
     .expect("leading struct-literal new-statement parse");
-    let body = fn_do_body(&root)
+    let body = macro_do_body(&root)
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");

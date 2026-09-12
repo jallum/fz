@@ -57,7 +57,7 @@ fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
 }
 
 #[test]
-fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
+fn re_scoping_the_runtime_prelude_does_not_churn_def_macro_source() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let prelude = world.runtime_prelude();
@@ -67,29 +67,29 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     let scoped = scope_code(&mut world, &tel, None, prelude).expect("runtime prelude should scope");
     world.complete_job(Job::ScopeCode(prelude), scoped);
 
-    let fn_macro = world.reference_function(ModuleId::GLOBAL, "fn", 1);
+    let def_macro = world.reference_function(ModuleId::GLOBAL, "def", 1);
     // Scope only stashes the body now (fz-f98.14.5); pull it through the
     // demand-addressed publish job before expanding/defining.
     let publish =
-        publish_function_source_job(&mut world, &tel, fn_macro).expect("fn/1 source should publish from stash");
-    world.complete_job(Job::PublishFunctionSource(fn_macro), publish);
-    let expand = expand_function_source(&mut world, &tel, None, fn_macro).expect("fn/1 source should expand");
-    world.complete_job(Job::ExpandFunctionSource(fn_macro), expand);
-    let define = define_function(&mut world, &tel, fn_macro).expect("fn/1 should define from expanded source");
-    world.complete_job(Job::DefineFunction(fn_macro), define);
+        publish_function_source_job(&mut world, &tel, def_macro).expect("def/1 source should publish from stash");
+    world.complete_job(Job::PublishFunctionSource(def_macro), publish);
+    let expand = expand_function_source(&mut world, &tel, None, def_macro).expect("def/1 source should expand");
+    world.complete_job(Job::ExpandFunctionSource(def_macro), expand);
+    let define = define_function(&mut world, &tel, def_macro).expect("def/1 should define from expanded source");
+    world.complete_job(Job::DefineFunction(def_macro), define);
 
     let initial_revision = world
-        .fact_revision(&FactKey::FunctionSource(fn_macro))
-        .expect("fn/1 source fact should exist after first scope");
+        .fact_revision(&FactKey::FunctionSource(def_macro))
+        .expect("def/1 source fact should exist after first scope");
     let replay = scope_code(&mut world, &tel, None, prelude).expect("re-scoping runtime prelude should not fatal");
     assert!(
-        !replay.changed.contains(&FactKey::FunctionSource(fn_macro)),
-        "stable re-scoping must not republish fn/1 source as changed: {replay:?}",
+        !replay.changed.contains(&FactKey::FunctionSource(def_macro)),
+        "stable re-scoping must not republish def/1 source as changed: {replay:?}",
     );
     world.complete_job(Job::ScopeCode(prelude), replay);
     assert_eq!(
-        world.fact_revision(&FactKey::FunctionSource(fn_macro)),
+        world.fact_revision(&FactKey::FunctionSource(def_macro)),
         Some(initial_revision),
-        "re-scoping the unchanged prelude must keep the fn/1 source revision stable",
+        "re-scoping the unchanged prelude must keep the def/1 source revision stable",
     );
 }
