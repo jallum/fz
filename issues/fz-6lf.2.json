@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-6lf.1",
-    "fz-6lf.5"
+    "fz-6lf.5",
+    "fz-6lf.6"
   ],
   "blocks": [
     "fz-6lf.3"
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Route identifier def/defp through the existing definition macro pipeline",
   "type": "task",
-  "updated_at": "2026-09-12T15:09:29Z"
+  "updated_at": "2026-09-12T15:43:35Z"
 }
