@@ -14,9 +14,15 @@
   "id": "fz-6lf.2",
   "labels": [],
   "parent": "fz-6lf",
+  "comments": [
+    {
+      "text": "Full fixture-matrix verification from the next ticket exposed six deterministic golden mismatches owned by this ticket: adding the two runtime definition macros shifts rendered closure IDs by +2 in closure_render_arity and enum_reduce_suspend. Reopened to amend the one ticket commit with the observed goldens and repeat fresh review/gates.",
+      "timestamp": "2026-09-12T18:27:52Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Route identifier def/defp through the existing definition macro pipeline",
   "type": "task",
-  "updated_at": "2026-09-12T18:27:51Z"
+  "updated_at": "2026-09-12T18:27:52Z"
 }
