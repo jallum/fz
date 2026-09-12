@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-tfn.60",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make native and/or return the selected operand",
   "type": "bug",
-  "updated_at": "2026-09-12T18:14:32Z"
+  "updated_at": "2026-09-12T18:15:08Z"
 }
