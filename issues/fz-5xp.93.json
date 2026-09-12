@@ -7,7 +7,7 @@
   "closed_at": "2026-09-12T14:40:51Z",
   "close_reason": "completed",
   "created": "2026-09-07T22:05:29Z",
-  "description": "## What is unreachable\n\n`Enumerable` declares `slice/1` and three implementations answer it:\n\n```\nlib/enumerable.fz:68   fn slice(_list), do: {:error, :unsupported}\nlib/enumerable.fz:76   fn slice(map), do: Map.slice(map)\nlib/enumerable.fz:85   fn slice(%Range{...}) do ... Range.slice(...) end\n```\n\nNothing calls it. There is no `Enum.slice` in `lib/enum.fz`, and no other caller of `Enumerable.slice` anywhere in `lib/`. `Map.slice/1` and `Range.slice/6` exist only to be reached through it, so they are unreachable too -- `Range.slice/6` is the reason `Range.reverse/2` exists, which is the private helper in fz-5xp.92.\n\nFor lists the callback would not help even if something did call it: `List`'s implementation returns `{:error, :unsupported}` unconditionally.\n\n## The choice\n\nEither `Enum.slice/2,3` is coming and this is scaffolding waiting for its consumer, or it is not and this is a protocol callback, three implementations and two helper functions carrying maintenance weight for nobody.\n\nIf it is the former, this ticket is a note that the scaffolding predates its consumer and should be finished. If the latter, it is a deletion: the callback, the three `defimpl` bodies, `Map.slice/1`, `Range.slice/6`, and `Range.reverse/2` all go together.\n\n## Found how\n\nDocumenting `Enumerable`'s callbacks: writing an honest `@doc` for `slice/1` meant naming the `Enum` function that reaches it, and there is none.",
+  "description": "## Goal\n\nDelete the unused Enumerable slicing scaffold rather than grow public `Enum.slice` surface. There is no public caller; the only direct protocol calls are scaffold fixtures.\n\n## Why deletion is correct\n\nThe old expansion commit `2f2855ce` adds 165 Enum lines and roughly 36 definitions to rescue dead code. Its `Enumerable.slice/1` result erases incompatible Map and Range callback shapes as `any`; Enum then reconstructs receiver-specific dispatch and impossible-state repairs, creating a second authority and overlapping fz-5xp.85. It also exposes the known composed-stride bug in the current Range callback, while its fixture omits the source-step plus slice-step case.\n\nDeletion removes work, unreachable maintenance surface, erased callback shape, protocol implementations, and two deterministic Range specialization rungs without losing a demanded capability.\n\n## Scope\n\nDelete `Enumerable.slice/1`, all list/map/range implementations, `Map.slice/1`, `Range.slice/6`, `Range.slice_from/5`, and now-unused `Range.reverse/2`; remove slice-only protocol fixtures/assertions and stale census prose; preserve any independent sparse-callable regression without claiming Map.slice is its production motivation. Re-measure deterministic work after deletion.\n\nUpdate fz-5xp.82 to omit slicing until a real demand exists. Keep fz-5xp.108 and fz-kdt.117; their reduced witnesses are independent.\n\n## Acceptance\n\n- No maintained source calls or declares `Enumerable.slice` / `Enum.slice` / `Map.slice` / `Range.slice`.\n- The deleted callback shape has no reconstruction, fallback, or compatibility residue.\n- Focused protocol/range/fixture tests, deterministic rung/work evidence, formatting, and strict checks prove the smaller result.\n- PR #139 is replaced by this deletion work; do not replay its expansion commit.",
   "id": "fz-5xp.93",
   "labels": [],
   "parent": "fz-5xp",
@@ -27,7 +27,7 @@
   ],
   "priority": 3,
   "status": "closed",
-  "title": "Enumerable.slice/1 is surface nothing reaches",
+  "title": "Delete unused Enumerable slicing scaffold",
   "type": "task",
-  "updated_at": "2026-09-12T14:41:51Z"
+  "updated_at": "2026-09-12T23:46:47Z"
 }
