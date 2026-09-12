@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-6lf.2"
+    "fz-6lf.2",
+    "fz-6lf.7"
   ],
   "blocks": [
     "fz-6lf.4"
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Migrate the complete FZ corpus and public language contract to def/defp",
   "type": "task",
-  "updated_at": "2026-09-12T17:01:58Z"
+  "updated_at": "2026-09-12T18:21:54Z"
 }
