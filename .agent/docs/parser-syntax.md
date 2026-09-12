@@ -76,6 +76,34 @@ per-token fact resolved once at tokenize time (leading position) or an
 ordinary grammar rule (trailing position) — never a runtime guess about
 what a future token "looks like".
 
+## `when` and trailing `do` belong to expression grammar
+
+`when` is a reserved operator token, but it is not definition grammar. The
+front door's Pratt table is its one binary parse authority: it is
+right-associative, weaker than `=` and `::`, and stronger than the comma and
+clause boundaries owned by enclosing productions. A guarded definition, case
+pattern, `with` pattern, or single-argument anonymous clause therefore receives
+the same `{:when, meta, [left, guard]}` expression shape. The anonymous-function
+reader only packages the distinct multi-argument clause shape
+`{:when, meta, [arg1, ..., guard]}` after the expression parser has parsed the
+guard; it does not own `when` precedence. The `when` following an `extern`
+return type remains a different production: it introduces type-variable
+constraints, not a guard expression.
+
+A trailing `do ... end` block belongs to the outermost unparenthesized call.
+While the parser reads that call's no-parens arguments, nested unmatched calls
+may not consume the block; after the arguments are complete, the outer call
+appends one fresh `[do: body]` argument. `, do:` remains ordinary keyword-call
+syntax: `outer value: 1, do: 42` has one `[value: 1, do: 42]` argument, while
+`def head, do: body` has the already-parsed head followed by that keyword-list
+argument.
+
+Every matched delimiter reopens local block ownership for its contents and
+restores the enclosing suppression when it closes. Thus
+`outer(inner() do body end)` and `outer (inner() do body end)` give the block
+to `inner`, as do nested calls inside call arguments and container literals;
+`outer inner() do body end` gives it to `outer`.
+
 ## Heredocs are string literals
 
 `"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines

@@ -1307,7 +1307,7 @@ fn kind_test_commands_signal_execution_ready_once() {
     let fixture = temp_dir().join(format!("fz_kind_test_ready_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture,
-        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes), do: assert(true)\n",
+        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes, do: assert(true))\n",
     )
     .expect("write kind:test readiness probe");
 
@@ -1360,7 +1360,7 @@ fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
     let fixture = temp_dir().join(format!("fz_kind_test_hang_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture,
-        "#---\n# purpose: timeout probe\n# kind: test\n#---\ntest(:hangs), do: loop()\nfn loop(), do: loop()\n",
+        "#---\n# purpose: timeout probe\n# kind: test\n#---\ntest(:hangs, do: loop())\nfn loop(), do: loop()\n",
     )
     .expect("write kind:test timeout probe");
 

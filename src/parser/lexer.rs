@@ -133,6 +133,7 @@ fn is_infix_only_continuation(tok: &Tok) -> bool {
         tok,
         Tok::Dot
             | Tok::Eq
+            | Tok::When
             | Tok::Or
             | Tok::And
             | Tok::EqEq

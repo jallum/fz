@@ -2,11 +2,13 @@ use super::source_test::assert_quoted_mentions;
 use crate::modules::runtime_library;
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
+use fz_runtime::any_value::ValueKind;
 
 #[derive(Debug)]
 struct ParsedQuoted {
     root: super::QuotedSourceRoot,
     sources: crate::source::SourceMap,
+    version: crate::source::SourceVersion,
 }
 
 impl std::ops::Deref for ParsedQuoted {
@@ -25,7 +27,18 @@ fn parse_quoted_program(
     let mut sources = crate::source::SourceMap::default();
     let version = sources.add_code(Some(source_name.as_ref()), source_text);
     let root = super::parse_quoted_program(&sources, version, tel)?;
-    Ok(ParsedQuoted { root, sources })
+    Ok(ParsedQuoted { root, sources, version })
+}
+
+fn parse_quoted_error(
+    source_name: impl AsRef<str>,
+    source_text: &str,
+    tel: &ConfiguredTelemetry,
+) -> (super::FrontDoorError, crate::source::SourceVersion) {
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(source_name.as_ref()), source_text);
+    let error = super::parse_quoted_program(&sources, version, tel).expect_err("quoted parse must fail");
+    (error, version)
 }
 
 fn head_name(node: &super::QuotedAstNode) -> String {
@@ -49,6 +62,76 @@ fn token_kinds(cursor: &super::QuotedSourceCursor, sources: &crate::source::Sour
         .into_iter()
         .map(|token| token.tok)
         .collect()
+}
+
+fn quoted_shapes(root: &ParsedQuoted) -> Vec<String> {
+    root.cursor()
+        .list_items()
+        .expect("top-level quoted list")
+        .iter()
+        .map(|cursor| quoted_shape(cursor, &root.sources))
+        .collect()
+}
+
+fn quoted_shape(cursor: &super::QuotedSourceCursor, sources: &crate::source::SourceMap) -> String {
+    match cursor.root().tag() {
+        ValueKind::INT => cursor.int_value().expect("quoted integer").to_string(),
+        ValueKind::FLOAT => cursor.root().load_float().expect("quoted float").to_string(),
+        ValueKind::ATOM => format!(":{}", cursor.atom_name().expect("quoted atom")),
+        ValueKind::BITSTRING | ValueKind::PROCBIN => {
+            format!("{:?}", cursor.utf8_binary_text().expect("quoted UTF-8 binary"))
+        }
+        ValueKind::LIST => format!(
+            "[{}]",
+            cursor
+                .list_items()
+                .expect("quoted list")
+                .iter()
+                .map(|cursor| quoted_shape(cursor, sources))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ValueKind::STRUCT => {
+            if let Some(node) = cursor.ast_node(sources).expect("quoted AST probe") {
+                let head = node.head.atom_name().expect("quoted AST head");
+                if node.tail.root().tag() == ValueKind::LIST {
+                    let args = node
+                        .tail
+                        .list_items()
+                        .expect("quoted AST args")
+                        .iter()
+                        .map(|cursor| quoted_shape(cursor, sources))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{head}({args})")
+                } else {
+                    format!("${head}")
+                }
+            } else {
+                format!(
+                    "{{{}}}",
+                    cursor
+                        .tuple_items()
+                        .expect("quoted tuple")
+                        .iter()
+                        .map(|cursor| quoted_shape(cursor, sources))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        }
+        ValueKind::MAP => format!(
+            "%{{{}}}",
+            cursor
+                .map_entries()
+                .expect("quoted map")
+                .iter()
+                .map(|(key, value)| { format!("{} => {}", quoted_shape(key, sources), quoted_shape(value, sources)) })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        other => panic!("unsupported quoted value in shape assertion: {other:?}"),
+    }
 }
 
 /// Digs out the `do:` body of the first top-level `fn`/`fnp`/`defmacro` item:
@@ -336,6 +419,132 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
 }
 
 #[test]
+fn compiler2_frontdoor_parses_when_once_at_elixir_precedence() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "general_when.fz",
+        "def positive(x) when x > 0, do: x\nprobe a = b when c\nprobe a when b = c\nprobe value\n  when ready\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "def(when(positive($x), >($x, 0)), [{:do, $x}])",
+            "probe(when(=($a, $b), $c))",
+            "probe(when($a, =($b, $c)))",
+            "probe(when($value, $ready))",
+        ]
+    );
+
+    let items = root.cursor().list_items().expect("top-level items");
+    let definition = items[0].ast_node(&root.sources).expect("def cursor").expect("def call");
+    let guarded_head = definition.tail.list_items().expect("def args")[0]
+        .ast_node(&root.sources)
+        .expect("guarded head cursor")
+        .expect("guarded head");
+    assert_eq!(guarded_head.span, Some(crate::source::Span::new(root.version, 4, 26)));
+}
+
+#[test]
+fn compiler2_frontdoor_trailing_do_belongs_to_the_outermost_unparenthesized_call() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "nested_do.fz",
+        "outer inner() do\n  41\nend\nouter(inner() do\n  42\nend)\nouter (inner() do\n  43\nend)\nouter value: inner() do\n  44\nend\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "outer(inner(), [{:do, 41}])",
+            "outer(inner([{:do, 42}]))",
+            "outer(inner([{:do, 43}]))",
+            "outer([{:value, inner()}], [{:do, 44}])",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_matched_boundaries_restore_nested_do_ownership() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "matched_nested_do.fz",
+        "outer inner(foo() do 45 end)\nouter %{x: inner() do 46 end}\nouter {inner() do 47 end}\nouter zero, [inner() do 48 end]\nouter <<inner() do 49 end>>\nouter &(inner() do 50 end)\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "outer(inner(foo([{:do, 45}])))",
+            "outer(%{}({:x, inner([{:do, 46}])}))",
+            "outer({}(inner([{:do, 47}])))",
+            "outer($zero, [inner([{:do, 48}])])",
+            "outer(<<>>(inner([{:do, 49}])))",
+            "outer(&(inner([{:do, 50}])))",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_keeps_anonymous_clause_packaging_outside_when_precedence() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "anonymous_when.fz",
+        "probe fn x when x > 0 -> x end\nprobe fn (x, y) when x > y -> x end\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(fn(->([when($x, >($x, 0))], $x)))",
+            "probe(fn(->([when($x, $y, >($x, $y))], $x)))",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_general_when_feeds_each_guarded_clause_shape() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "guarded_shapes.fz",
+        "probe(case value do\n  x when x > 0 -> x\nend)\nprobe(receive do\n  x when x > 0 -> x\nend)\nprobe(with x when x > 0 <- value, do: x)\nprobe(value when ready: true)\nprobe fn x when x > 0 -> x\n  x -> 0\nend\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "probe(case($value, [{:do, [->([when($x, >($x, 0))], $x)]}]))",
+            "probe(receive([{:do, [->([when($x, >($x, 0))], $x)]}]))",
+            "probe(with(<-(when($x, >($x, 0)), $value), [{:do, $x}]))",
+            "probe(when($value, [{:ready, :true}]))",
+            "probe(fn(->([when($x, >($x, 0))], $x), ->([$x], 0)))",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_rejects_when_as_an_expression_prefix() {
+    let tel = ConfiguredTelemetry::new();
+    let (error, version) = parse_quoted_error("invalid_when.fz", "when ready\n", &tel);
+    assert!(
+        error.msg.contains("When"),
+        "the diagnostic should name the rejected token: {}",
+        error.msg
+    );
+    assert_eq!(error.span, crate::source::Span::new(version, 0, 4));
+}
+
+#[test]
 fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_keyword_list() {
     // Elixir never merges a trailing `do:` into a preceding keyword-list
     // argument, even when that argument came from paren-call keyword sugar:
@@ -371,6 +580,17 @@ fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_k
             .expect("do key"),
         "do"
     );
+}
+
+#[test]
+fn compiler2_frontdoor_rejects_keyword_arguments_after_a_closed_parenthesized_call() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "test(:passes), do: assert(true)\n";
+    let (error, version) = parse_quoted_error("comma_after_call.fz", source, &tel);
+
+    let comma = source.find(',').expect("comma in source") as u32;
+    assert_eq!(error.msg, "unexpected item without a newline: Comma");
+    assert_eq!(error.span, crate::source::Span::new(version, comma, comma + 1));
 }
 
 #[test]
@@ -460,21 +680,15 @@ fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
 }
 
 #[test]
-fn compiler2_frontdoor_paren_call_comma_do_keyword_attaches_do_argument() {
+fn compiler2_frontdoor_rejects_paren_call_comma_do_keyword() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("keyword_comma_do.fz", "echo(:work), do: 42\n", &tel).expect("quoted parse");
-
-    let items = root.cursor().list_items().expect("top-level items");
-    assert_eq!(items.len(), 1);
-    let call = items[0].trusted_ast_node().expect("call cursor").expect("call node");
-    assert_eq!(head_name(&call), "echo");
-    let args = call.tail.list_items().expect("call args");
-    assert_eq!(args.len(), 2, "comma `do:` appends a fresh do keyword-list argument");
-    assert_eq!(args[0].atom_name().expect("first arg"), "work");
-    let do_kw = args[1].list_items().expect("do keyword-list arg");
-    let do_tuple = do_kw[0].tuple_items().expect("do tuple");
-    assert_eq!(do_tuple[0].atom_name().expect("do key"), "do");
-    assert_eq!(do_tuple[1].int_value().expect("do body"), 42);
+    let error = parse_quoted_program("keyword_comma_do.fz", "echo(:work), do: 42\n", &tel)
+        .expect_err("a completed parenthesized call cannot acquire a comma keyword argument");
+    assert!(
+        error.msg.contains("Comma"),
+        "the diagnostic should identify the unexpected comma; got `{}`",
+        error.msg
+    );
 }
 
 #[test]
