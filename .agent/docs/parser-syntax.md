@@ -104,6 +104,13 @@ restores the enclosing suppression when it closes. Thus
 to `inner`, as do nested calls inside call arguments and container literals;
 `outer inner() do body end` gives it to `outer`.
 
+Whitespace also keeps Elixir's call/grouping distinction: `callee(arg)` is a
+parenthesized call, while `callee (arg)` is a no-parens call whose first
+argument is the grouped expression `(arg)`. This lets an ordinary identifier
+macro receive operator heads such as
+`def (left :: integer) + (right :: integer), do: left + right` without a
+definition-only operand parser.
+
 ## Heredocs are string literals
 
 `"""` opens a heredoc, which lexes to a single `Tok::Binary` holding its lines

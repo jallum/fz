@@ -1,6 +1,6 @@
 use super::quoted_surface::{
-    ScopeForm, read_compiler_fragment_surface, read_module_body_surface, read_protocol_impl_body_surface,
-    read_scope_surface,
+    ProtocolForm, ScopeForm, read_compiler_fragment_surface, read_module_body_surface, read_protocol_body_surface,
+    read_protocol_impl_body_surface, read_scope_surface,
 };
 use super::{CodeMap, parse_quoted_program};
 use crate::compiler2::quoted_function::derive_function_surface;
@@ -13,6 +13,239 @@ fn parse_code(code: &CodeMap, owner: super::SourceOwner, tel: &ConfiguredTelemet
         tel,
     )
     .expect("quoted parse")
+}
+
+#[test]
+fn compiler2_quoted_surface_groups_def_and_derives_defp_privacy_and_bare_arity() {
+    let tel = ConfiguredTelemetry::new();
+    let source = concat!(
+        "@doc \"identity\"\n",
+        "@spec alpha(integer) :: integer\n",
+        "def alpha(0), do: 0\n",
+        "def alpha(x), do: x\n",
+        "defp hidden(x), do: x\n",
+        "def zero do\n  0\nend\n",
+    );
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("definition_surface.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+    let source_map = code.source_map();
+    let sources = source_map.borrow();
+
+    let source_surface = read_scope_surface(&root, &sources).expect("source surface");
+    assert_eq!(source_surface.forms.len(), 3, "alpha clauses should be one macro call");
+    assert!(
+        source_surface
+            .forms
+            .iter()
+            .all(|form| matches!(form, ScopeForm::MacroCall(_)))
+    );
+
+    let fragment = read_compiler_fragment_surface(&root, &sources).expect("compiler fragment");
+    let functions = fragment
+        .forms
+        .iter()
+        .map(|form| match form {
+            ScopeForm::Function(function) => function,
+            other => panic!("expected function form, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        functions
+            .iter()
+            .map(|function| (
+                function.name.as_str(),
+                function.arity,
+                function.is_private,
+                function.is_macro
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("alpha", 1, false, false),
+            ("hidden", 1, true, false),
+            ("zero", 0, false, false)
+        ]
+    );
+    let alpha = derive_function_surface(&functions[0].source, &sources).expect("alpha surface");
+    assert_eq!(alpha.clauses.len(), 2);
+    assert_eq!(
+        alpha.attrs.len(),
+        2,
+        "doc and spec attributes must remain attached to the grouped def surface"
+    );
+    assert!(
+        derive_function_surface(&functions[2].source, &sources)
+            .expect("bare zero-arity surface")
+            .clauses[0]
+            .params
+            .is_empty()
+    );
+}
+
+#[test]
+fn compiler2_quoted_surface_rejects_mixed_def_and_defp_clauses() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "def same(0), do: 0\ndefp same(x), do: x\n";
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("mixed_visibility.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+    let source_map = code.source_map();
+    let sources = source_map.borrow();
+
+    let error =
+        read_scope_surface(&root, &sources).expect_err("one function group cannot mix public and private clauses");
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_MIXED_FUNCTION_VISIBILITY)
+    );
+    assert!(
+        error.to_string().contains("mixes `def` and `defp`"),
+        "diagnostic should name both conflicting heads: {error}"
+    );
+}
+
+#[test]
+fn compiler2_protocol_surface_rejects_a_bodyless_defp_fragment() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "defprotocol Fold do\n  def reduce(value)\nend\n";
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("protocol_private_callback.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+    let source_map = code.source_map();
+    let sources = source_map.borrow();
+    let protocol = root.cursor().list_items().expect("top-level items")[0]
+        .ast_node(&sources)
+        .expect("protocol cursor")
+        .expect("protocol node");
+    let protocol_args = protocol.tail.list_items().expect("protocol args");
+    let body_entry = protocol_args[1].list_items().expect("protocol keywords")[0]
+        .tuple_items()
+        .expect("do tuple");
+    let callback = body_entry[1].list_items().expect("protocol body")[0]
+        .ast_node(&sources)
+        .expect("callback cursor")
+        .expect("callback node");
+    let callback_head = callback.tail.list_items().expect("callback args")[0].root();
+    let builder = root.builder();
+    let private_callback_args = builder.list(&[callback_head]).expect("private callback args");
+    let private_callback = builder
+        .tuple(&[builder.atom("defp"), callback.meta.root(), private_callback_args])
+        .expect("private callback node");
+    let private_body = builder.list(&[private_callback]).expect("private callback body");
+    let private_keywords = builder
+        .list(&[builder.keyword("do", private_body).expect("do keyword")])
+        .expect("protocol keywords");
+    let private_protocol_args = builder
+        .list(&[protocol_args[0].root(), private_keywords])
+        .expect("protocol args");
+    let private_protocol = builder
+        .tuple(&[builder.atom("defprotocol"), protocol.meta.root(), private_protocol_args])
+        .expect("protocol node");
+    let form = ProtocolForm {
+        source: root.subroot(private_protocol),
+        name: crate::modules::identity::ModuleName::parse_dotted("Fold").expect("module name"),
+        span: crate::source::Span::DUMMY,
+    };
+
+    let error = read_protocol_body_surface(&form, &sources).expect_err("defp cannot become a protocol callback");
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION)
+    );
+    assert!(error.to_string().contains("must use `def`, got `defp`"), "{error}");
+}
+
+#[test]
+fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "def valid(value), do: value\n";
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("generated_definition_names.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+    let source_map = code.source_map();
+    let sources = source_map.borrow();
+    let definition = root.cursor().list_items().expect("items")[0]
+        .ast_node(&sources)
+        .expect("definition cursor")
+        .expect("definition node");
+    let definition_args = definition.tail.list_items().expect("definition args");
+    let valid_head = definition_args[0]
+        .ast_node(&sources)
+        .expect("head cursor")
+        .expect("head node");
+    let builder = root.builder();
+
+    for invalid_name in ["_", "Foo", "if"] {
+        let invalid_head = builder
+            .tuple(&[
+                builder.atom(invalid_name),
+                valid_head.meta.root(),
+                valid_head.tail.root(),
+            ])
+            .expect("invalid head node");
+        let invalid_args = builder
+            .list(&[invalid_head, definition_args[1].root()])
+            .expect("definition args");
+        let invalid_definition = builder
+            .tuple(&[definition.head.root(), definition.meta.root(), invalid_args])
+            .expect("definition node");
+        let invalid_root = root
+            .interned_list_subroot(&[invalid_definition])
+            .expect("definition root");
+
+        let error = read_compiler_fragment_surface(&invalid_root, &sources)
+            .expect_err("non-identifier source words cannot become local function names");
+        assert_eq!(
+            error.user_code(),
+            Some(crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION),
+            "{invalid_name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn compiler2_quoted_surface_rejects_nested_when_definition_heads() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "def valid(value) when value > 0, do: value\n";
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("nested_definition_guard.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+    let source_map = code.source_map();
+    let sources = source_map.borrow();
+    let definition = root.cursor().list_items().expect("items")[0]
+        .ast_node(&sources)
+        .expect("definition cursor")
+        .expect("definition node");
+    let definition_args = definition.tail.list_items().expect("definition args");
+    let guard = definition_args[0]
+        .ast_node(&sources)
+        .expect("guard cursor")
+        .expect("guard node");
+    let guard_args = guard.tail.list_items().expect("guard args");
+    let builder = root.builder();
+    let nested_guard_args = builder
+        .list(&[definition_args[0].root(), guard_args[1].root()])
+        .expect("nested guard args");
+    let nested_guard = builder
+        .tuple(&[guard.head.root(), guard.meta.root(), nested_guard_args])
+        .expect("nested guard");
+    let nested_definition_args = builder
+        .list(&[nested_guard, definition_args[1].root()])
+        .expect("definition args");
+    let nested_definition = builder
+        .tuple(&[definition.head.root(), definition.meta.root(), nested_definition_args])
+        .expect("definition node");
+    let nested_root = root
+        .interned_list_subroot(&[nested_definition])
+        .expect("definition root");
+
+    let error = read_compiler_fragment_surface(&nested_root, &sources)
+        .expect_err("accepted function heads must not discard an inner guard");
+    assert_eq!(
+        error.user_code(),
+        Some(crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION)
+    );
+    assert!(error.to_string().contains("nested `when` guards"), "{error}");
 }
 
 #[test]

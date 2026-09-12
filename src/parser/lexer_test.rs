@@ -28,6 +28,22 @@ fn when_at_the_start_of_a_line_continues_the_previous_expression() {
     );
 }
 
+#[test]
+fn def_and_defp_are_ordinary_identifiers() {
+    let tokens = test_lexer("def public(), do: 1\ndefp private(), do: 2\n")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let heads = tokens
+        .into_iter()
+        .filter_map(|token| match token.tok {
+            Tok::Ident(name) if name == "def" || name == "defp" => Some(name),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(heads, ["def", "defp"]);
+}
+
 // DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]
 fn tokens_carry_accurate_byte_spans() {

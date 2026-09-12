@@ -182,6 +182,18 @@ pub struct Lexer<'a> {
     pending: VecDeque<Token>,
 }
 
+/// Classifies a complete source word through the same spelling and keyword
+/// authority used while lexing. `None` means source text cannot produce one
+/// word token with this spelling.
+pub(crate) fn source_word_token(name: &str) -> Option<Tok> {
+    let mut bytes = name.bytes();
+    let first = bytes.next()?;
+    if !Lexer::<'static>::ident_start(first) || !bytes.all(Lexer::<'static>::ident_cont) {
+        return None;
+    }
+    Some(Lexer::<'static>::keyword_or_ident(name.to_string()))
+}
+
 #[derive(Debug)]
 pub struct LexError {
     pub msg: String,

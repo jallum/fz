@@ -57,8 +57,13 @@ so duplicating a `with`-else branch in lowering cannot split one denotation.
 There is one important sub-case inside the eager bucket — and one origin
 exception:
 
-- `runtime.fz` defines the compiler-owned definition macros `fn`, `fnp`,
-  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`.
+- `runtime.fz` defines the compiler-owned definition macros `def`, `defp`,
+  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`. The legacy named
+  `fn`/`fnp` macros remain only during the surface migration.
+- `def` and `defp` are ordinary identifier calls at the lexer and front door;
+  neither has a token kind or a definition-specific item parser. Their runtime
+  macros forward the untouched grouped clause root and `__CALLER__` to
+  `Fz.Compiler.define`.
 - In ordinary (user) source there is exactly one read: a def-head parses to a
   `MacroCall` (`build_form` in `quoted_surface.rs`), and its structure emerges
   from the expand -> `Fz.Compiler.define` -> define pipeline, never from a
@@ -104,6 +109,9 @@ It does four macro-relevant jobs:
 For compiler-owned definition macros, the returned fragment is expected to cross
 back into the compiler through `Fz.Compiler.define(source, __CALLER__)`. That
 callback is the single source-publication authority for top-level definitions.
+At quoted-surface extraction, `defp` becomes `FunctionForm { is_private: true,
+.. }`; downstream publication consumes that flag and never branches on the
+source spelling.
 
 For module/protocol/impl fragments, nested indexing advances through the
 same callback path:

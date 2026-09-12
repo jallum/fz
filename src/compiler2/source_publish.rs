@@ -1633,8 +1633,11 @@ fn publish_function_source(
         variadic: function.variadic,
         source: function.source.clone(),
     };
-    emit_compiler_service_define(world, tel, &function_id, &source);
-    let stashed_changed = super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source);
+    let stashed_changed =
+        super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source.clone());
+    if stashed_changed {
+        emit_compiler_service_define(world, tel, &function_id, &source);
+    }
 
     let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
         function: function_id,

@@ -448,6 +448,106 @@ fn compiler2_frontdoor_parses_when_once_at_elixir_precedence() {
 }
 
 #[test]
+fn compiler2_frontdoor_quotes_def_and_defp_as_ordinary_calls() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "definition_calls.fz",
+        "def answer do\n  42\nend\ndefp hidden(x), do: x\ndef add(left, right) when left > 0, do: left + right\ndef left + right, do: left\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    assert_eq!(
+        quoted_shapes(&root),
+        [
+            "def($answer, [{:do, 42}])",
+            "defp(hidden($x), [{:do, $x}])",
+            "def(when(add($left, $right), >($left, 0)), [{:do, +($left, $right)}])",
+            "def(+($left, $right), [{:do, $left}])",
+        ]
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_uses_general_ascription_shape_for_typed_def_operator_heads() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "typed_definition_call.fz",
+        "def (left :: integer) + (right :: float), do: left + right\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let definition = root.cursor().list_items().expect("items")[0]
+        .ast_node(&root.sources)
+        .expect("definition cursor")
+        .expect("definition call");
+    assert_eq!(head_name(&definition), "def");
+    let operator = definition.tail.list_items().expect("definition args")[0]
+        .ast_node(&root.sources)
+        .expect("operator cursor")
+        .expect("operator call");
+    assert_eq!(head_name(&operator), "+");
+    let operands = operator.tail.list_items().expect("operator operands");
+    for (operand, expected_type) in operands.iter().zip(["integer", "float"]) {
+        let ascription = operand
+            .ast_node(&root.sources)
+            .expect("ascription cursor")
+            .expect("ascription call");
+        assert_eq!(head_name(&ascription), "::");
+        let parts = ascription.tail.list_items().expect("ascription args");
+        assert_eq!(
+            token_kinds(&parts[1], &root.sources),
+            [Tok::Ident(expected_type.to_string())]
+        );
+    }
+}
+
+#[test]
+fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_externs() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "contextual_def.fz",
+        "defprotocol Fold do\n  def reduce(value)\nend\nextern \"C\" def libc::abs(integer) :: integer\n",
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    let protocol = items[0]
+        .ast_node(&root.sources)
+        .expect("protocol cursor")
+        .expect("protocol call");
+    let protocol_keywords = protocol.tail.list_items().expect("protocol args")[1]
+        .list_items()
+        .expect("protocol keywords");
+    let callback = protocol_keywords[0].tuple_items().expect("do entry")[1]
+        .list_items()
+        .expect("protocol body")[0]
+        .ast_node(&root.sources)
+        .expect("callback cursor")
+        .expect("callback call");
+    assert_eq!(head_name(&callback), "def");
+    assert_eq!(
+        quoted_shape(&callback.tail.list_items().expect("callback args")[0], &root.sources),
+        "reduce($value)"
+    );
+
+    let extern_form = items[1]
+        .ast_node(&root.sources)
+        .expect("extern cursor")
+        .expect("extern call");
+    assert_eq!(head_name(&extern_form), "extern");
+    let details = extern_form.tail.list_items().expect("extern args")[1]
+        .map_entries()
+        .expect("extern details");
+    assert_eq!(
+        map_value(&details, "name").utf8_binary_text().expect("extern name"),
+        "libc::abs"
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_trailing_do_belongs_to_the_outermost_unparenthesized_call() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(

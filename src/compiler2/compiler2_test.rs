@@ -3,6 +3,7 @@ use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
+use crate::source::{SourceMap, SourceVersion};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1213,6 +1214,468 @@ fn env_in_function_body_resolves_via_namespace_splice() {
 }
 
 #[test]
+fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let compiler_defines = Rc::new(RefCell::new(Vec::<(super::FunctionId, SourceOwner)>::new()));
+    let compiler_defines_sink = Rc::clone(&compiler_defines);
+    tel.attach_raw_event3::<super::World, super::FunctionId, super::FunctionSource, _>(
+        &["fz", "compiler2", "compiler_service", "define"],
+        move |_, _, _, _, function, source| {
+            compiler_defines_sink.borrow_mut().push((*function, source.owner));
+        },
+    );
+    let expanded = Rc::new(RefCell::new(Vec::<(super::FunctionId, super::QuotedSourceRoot)>::new()));
+    let expanded_sink = Rc::clone(&expanded);
+    tel.attach_raw_event3::<super::World, super::FunctionId, super::QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, output| {
+            expanded_sink.borrow_mut().push((*function, output.clone()));
+        },
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    let code = compiler.submit_code(CodeSubmission {
+        name: Some("def_pipeline.fz".to_string()),
+        text: concat!(
+            "defmodule Math do\n",
+            "  @doc \"increments through the private helper\"\n",
+            "  @spec public(integer) :: integer\n",
+            "  def public(x), do: private(x)\n",
+            "  defp private(x), do: x + 1\n",
+            "end\n",
+            "defmacro make_answer() do\n",
+            "  quote do\n",
+            "    def generated(), do: 1\n",
+            "  end\n",
+            "end\n",
+            "make_answer()\n",
+            "def main do\n",
+            "  Math.public(40) + generated()\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(42),
+        "diagnostics: {:?}",
+        diagnostics.events(),
+    );
+
+    let code_version = compiler.world().source_version(code).expect("submitted source version");
+    let source_map = compiler.source_map();
+    let source_map = source_map.borrow();
+
+    let expansion_targets = expanded
+        .borrow()
+        .iter()
+        .filter_map(|(function, output)| {
+            let macro_name = compiler.world().function_ref(*function).name();
+            let (target, target_version) = definition_target_from_macro_output(output, &source_map)?;
+            if matches!(macro_name, "def" | "defp") && target_version == code_version {
+                Some((macro_name.to_string(), target))
+            } else {
+                None
+            }
+        })
+        .fold(HashMap::new(), |mut counts, target| {
+            *counts.entry(target).or_insert(0) += 1;
+            counts
+        });
+    assert_eq!(
+        expansion_targets,
+        HashMap::from([
+            (("def".to_string(), "main".to_string()), 1),
+            (("def".to_string(), "public".to_string()), 1),
+            (("defp".to_string(), "private".to_string()), 1),
+        ]),
+        "each source definition group should cross exactly one def/defp macro layer; generated/0 arrives as an already-expanded item-macro fragment"
+    );
+    let defined_names = compiler_defines
+        .borrow()
+        .iter()
+        .filter(|(_, source_owner)| *source_owner == code)
+        .map(|(function, _)| compiler.world().function_ref(*function).name().to_string())
+        .fold(HashMap::new(), |mut counts, name| {
+            *counts.entry(name).or_insert(0) += 1;
+            counts
+        });
+    assert_eq!(
+        defined_names,
+        HashMap::from([
+            ("__info__".to_string(), 1),
+            ("generated".to_string(), 1),
+            ("main".to_string(), 1),
+            ("make_answer".to_string(), 1),
+            ("private".to_string(), 1),
+            ("public".to_string(), 1),
+        ]),
+        "the compiler-service boundary should publish each grouped definition plus the module's synthesized metadata function"
+    );
+
+    let math = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Math").expect("module name"));
+    let interface = compiler.world().module_interface(math);
+    let public = interface
+        .public_function_with_name_arity("public", 1)
+        .expect("def must enter the module interface");
+    assert!(
+        interface.public_function_with_name_arity("private", 1).is_none(),
+        "defp must stay callable inside its module without entering the public interface"
+    );
+    assert_eq!(
+        compiler.world().function_definition(public).1.attrs.len(),
+        2,
+        "function attributes must survive the def macro boundary"
+    );
+}
+
+#[test]
+fn compiler_reports_invalid_contextual_protocol_defs_as_parse_diagnostics() {
+    for (name, text, expected) in [
+        (
+            "protocol_def_body.fz",
+            "defprotocol Fold do\n  def reduce(value), do: value\nend\n",
+            "cannot have a body",
+        ),
+        (
+            "protocol_def_zero_arity.fz",
+            "defprotocol Fold do\n  def reduce()\nend\n",
+            "at least one parameter",
+        ),
+        (
+            "protocol_def_guard.fz",
+            "defprotocol Fold do\n  def reduce(value) when value != nil\nend\n",
+            "cannot have a guard",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let diagnostics = Capture::new();
+        diagnostics.install(&tel, &["fz", "diag"]);
+        let mut compiler = Compiler2::new(tel);
+        let code = compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+
+        assert!(matches!(compiler.drive(), DriveOutcome::Fatal { .. }));
+        let events = diagnostics.events();
+        let diagnostic = events
+            .iter()
+            .find_map(|event| event.diagnostic.as_ref())
+            .expect("frontdoor failure should emit a diagnostic");
+        assert_eq!(diagnostic.code, crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION);
+        assert!(
+            diagnostic.message.contains(expected),
+            "{name} diagnostic should contain `{expected}`; got `{}`",
+            diagnostic.message
+        );
+        let start = text.find("def reduce").expect("protocol callback") as u32;
+        let end = start + text[start as usize..].find('\n').expect("callback newline") as u32;
+        assert_eq!(
+            diagnostic.primary.span,
+            crate::source::Span::new(
+                compiler.world().source_version(code).expect("submitted source version"),
+                start,
+                end,
+            ),
+            "{name} diagnostic should retain the callback clause provenance"
+        );
+    }
+}
+
+#[test]
+fn compiler_reports_mixed_def_visibility_at_the_conflicting_clause() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    let source = "def same(0), do: 0\ndefp same(x), do: x\n";
+    let code = compiler.submit_code(CodeSubmission {
+        name: Some("mixed_def_visibility.fz".to_string()),
+        text: source.to_string(),
+    });
+
+    assert!(matches!(compiler.drive(), DriveOutcome::Fatal { .. }));
+    let events = diagnostics.events();
+    let diagnostic = events
+        .iter()
+        .find_map(|event| event.diagnostic.as_ref())
+        .expect("mixed def visibility should emit a diagnostic");
+    assert_eq!(diagnostic.code.0, "parse/mixed-function-visibility");
+    assert!(
+        diagnostic.message.contains("mixes `def` and `defp`"),
+        "{}",
+        diagnostic.message
+    );
+    assert_eq!(
+        diagnostic.primary.span.source_version,
+        compiler.world().source_version(code).expect("submitted source version")
+    );
+    assert_eq!(
+        diagnostic.primary.span.start as usize,
+        source.find("defp").expect("conflicting clause")
+    );
+}
+
+#[test]
+fn compiler_rejects_cold_malformed_defs_before_publication() {
+    for (name, source, expected) in [
+        (
+            "bodyless_def.fz",
+            "def broken\ndef main(), do: 42\n",
+            "must have exactly one `do` body",
+        ),
+        (
+            "extra_def_body_keyword.fz",
+            "def broken(), do: 1, nope: 2\ndef main(), do: 42\n",
+            "must have exactly one `do` body",
+        ),
+        (
+            "literal_def_head.fz",
+            "def 1, do: 1\ndef main(), do: 42\n",
+            "invalid `def` function head",
+        ),
+        (
+            "special_form_def_head.fz",
+            "def left = right, do: left\ndef main(), do: 42\n",
+            "invalid `def` function head",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let diagnostics = Capture::new();
+        diagnostics.install(&tel, &["fz", "diag"]);
+        let mut compiler = Compiler2::new(tel);
+        let code = compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: source.to_string(),
+        });
+
+        assert!(matches!(compiler.drive(), DriveOutcome::Fatal { .. }));
+        let events = diagnostics.events();
+        let diagnostic = events
+            .iter()
+            .find_map(|event| event.diagnostic.as_ref())
+            .expect("malformed cold def should emit a diagnostic");
+        assert_eq!(
+            diagnostic.code,
+            crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+            "{name}: {}",
+            diagnostic.message
+        );
+        assert!(diagnostic.message.contains(expected), "{name}: {}", diagnostic.message);
+        assert_eq!(
+            diagnostic.primary.span.source_version,
+            compiler.world().source_version(code).expect("submitted source version")
+        );
+        assert_eq!(diagnostic.primary.span.start, 0);
+    }
+}
+
+#[test]
+fn compiler_accepts_bodyless_def_only_as_a_valid_protocol_callback() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("protocol_def_callback.fz".to_string()),
+        text: concat!(
+            "defprotocol Identity do\n",
+            "  def value(item)\n",
+            "end\n",
+            "defimpl Identity, for: List do\n",
+            "  def value(_item), do: 41\n",
+            "end\n",
+            "def main(), do: Identity.value([])\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(root), Ok(41), "{:?}", diagnostics.events());
+}
+
+fn definition_target_from_macro_output(
+    output: &super::QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Option<(String, SourceVersion)> {
+    let define = output.cursor().ast_node(sources).ok()??;
+    let source = define.tail.list_items().ok()?.into_iter().next()?;
+    let clause = if source.root().tag() == fz_runtime::any_value::ValueKind::LIST {
+        source.list_items().ok()?.into_iter().find(|item| {
+            item.ast_node(sources)
+                .ok()
+                .flatten()
+                .and_then(|node| node.head.atom_name().ok())
+                .is_some_and(|head| !head.starts_with('@'))
+        })?
+    } else {
+        source
+    };
+    let definition = clause.ast_node(sources).ok()??;
+    let mut head = definition.tail.list_items().ok()?.into_iter().next()?;
+    if let Some(guard) = head.ast_node(sources).ok()?
+        && guard.head.atom_name().ok()?.as_str() == "when"
+    {
+        head = guard.tail.list_items().ok()?.into_iter().next()?;
+    }
+    let name = match head.ast_node(sources).ok()? {
+        Some(call) => call.head.atom_name().ok(),
+        None => head.atom_name().ok(),
+    }?;
+    Some((name, definition.span?.source_version))
+}
+
+#[test]
+fn def_replacement_preserves_environments_lambda_identity_and_retracts_old_edges() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("def_identity_first.fz".to_string()),
+        text: concat!(
+            "def old_value(), do: 40\n",
+            "def new_value(), do: 41\n",
+            "defmacro caller_is_main() do\n",
+            "  quote do: unquote(__CALLER__.function) == {:main, 0}\n",
+            "end\n",
+            "defmacro plus_one(value) do\n",
+            "  quote do: unquote(value) + 1\n",
+            "end\n",
+            "def main do\n",
+            "  assert(__ENV__.function == {:main, 0}, \"definition env\")\n",
+            "  assert(caller_is_main(), \"caller env\")\n",
+            "  run = fn () -> plus_one(old_value()) end\n",
+            "  run.()\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(41), "{:?}", diagnostics.events());
+
+    let main = compiler.root_function(root);
+    let old_value = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "old_value", 0);
+    let new_value = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "new_value", 0);
+    let generated_before = compiler
+        .world()
+        .job_outputs(&Job::LowerFunction(main))
+        .into_iter()
+        .find_map(|fact| match fact {
+            super::FactKey::FunctionDefined(function) if function != main => Some(function),
+            _ => None,
+        })
+        .expect("main lowering should publish its lambda definition");
+    let before = compiler.retained_backend_program(root);
+    assert!(
+        before
+            .executables()
+            .iter()
+            .any(|body| body.key.activation.function == old_value)
+    );
+    assert!(
+        before
+            .executables()
+            .iter()
+            .any(|body| body.key.activation.function == generated_before)
+    );
+    assert!(
+        before
+            .executables()
+            .iter()
+            .all(|body| body.key.activation.function != new_value)
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("def_identity_replacement.fz".to_string()),
+        text: concat!(
+            "def old_value(), do: 40\n",
+            "def new_value(), do: 41\n",
+            "defmacro caller_is_main() do\n",
+            "  quote do: unquote(__CALLER__.function) == {:main, 0}\n",
+            "end\n",
+            "defmacro plus_one(value) do\n",
+            "  quote do: unquote(value) + 1\n",
+            "end\n",
+            "def main do\n",
+            "  assert(__ENV__.function == {:main, 0}, \"definition env\")\n",
+            "  assert(caller_is_main(), \"caller env\")\n",
+            "  run = fn () -> plus_one(new_value()) end\n",
+            "  run.()\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(42),
+        "the replacement should preserve env and body-macro semantics: {:?}",
+        diagnostics.events()
+    );
+    let generated_after = compiler
+        .world()
+        .job_outputs(&Job::LowerFunction(main))
+        .into_iter()
+        .find_map(|fact| match fact {
+            super::FactKey::FunctionDefined(function) if function != main => Some(function),
+            _ => None,
+        })
+        .expect("replacement lowering should publish its lambda definition");
+    assert_eq!(
+        generated_after, generated_before,
+        "the same lambda occurrence in the same def must keep its generated function identity"
+    );
+    let after = compiler.retained_backend_program(root);
+    assert!(
+        after
+            .executables()
+            .iter()
+            .all(|body| body.key.activation.function != old_value),
+        "replacing the closure callee must withdraw the old semantic edge and backend member"
+    );
+    assert!(
+        after
+            .executables()
+            .iter()
+            .any(|body| body.key.activation.function == new_value),
+        "the replacement closure must publish its new semantic edge"
+    );
+    assert!(
+        after
+            .executables()
+            .iter()
+            .any(|body| body.key.activation.function == generated_before),
+        "the stable lambda identity must remain reachable after replacement"
+    );
+}
+
+#[test]
 fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     // A macro whose body never uses __CALLER__ leaves that input Nothing-shaped,
     // so the executable carries no runtime lane for it. The macro caller
@@ -1278,6 +1741,29 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
         .count();
 
     (minted, stash_count)
+}
+
+#[test]
+fn quicksort_compiles_when_only_named_definition_heads_change_to_def() {
+    let legacy = include_str!("../../fixtures2/behavior/quicksort.fz");
+    let source = legacy.replace("\nfn ", "\ndef ");
+    assert!(
+        !source.contains("\nfn "),
+        "the test must migrate every named definition"
+    );
+    let legacy_counts = drive_and_count_function_source_production("quicksort_fn_surface.fz", legacy);
+    let def_counts = drive_and_count_function_source_production("quicksort_def_surface.fz", &source);
+
+    assert_eq!(
+        def_counts.1, legacy_counts.1,
+        "the same FunctionSource population must be stashed"
+    );
+    assert_eq!(
+        def_counts.0,
+        legacy_counts.0 + 1,
+        "the def surface should demand the same program plus its def/1 definition macro"
+    );
+    assert!(def_counts.0 > 0, "the comparison must exercise demanded functions");
 }
 
 #[test]
