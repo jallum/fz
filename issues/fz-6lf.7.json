@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-6lf.2"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-09-12T18:21:47Z",
   "description": "Goal\nRemove readiness-probe reliance on the accidental FZ extension `test(:name), do: body`. Elixir rejects a comma after a closed parenthesized call; canonical source is either `test(:name, do: body)` or `test(:name) do ... end`. This blocks the corpus migration because the stricter ordinary-call grammar now correctly exposes the stale probes.\n\nSignal\nThe existing JIT/interpreter readiness and timeout integration tests are red on the stale spelling and green on canonical syntax. An adjacent frontdoor test pins the old form as a parse error at its comma. The Elixir authority is `Code.string_to_quoted!/1`, which raises `SyntaxError` for the stale form.\n\nStrategy\nMigrate only the test-command probes to canonical keyword arguments. Preserve the general parser rejection; do not add a `test`, `def`, macro, or item-position special case.\n\nAcceptance\nFocused parser and readiness/timeout integration tests pass, the full library suite is green, and a fresh holistic reviewer confirms the change fits the Elixir-surface goal.",
@@ -13,5 +11,5 @@
   "status": "in_progress",
   "title": "Use canonical comma-do syntax in test command probes",
   "type": "bug",
-  "updated_at": "2026-09-12T18:28:55Z"
+  "updated_at": "2026-09-12T18:28:56Z"
 }
