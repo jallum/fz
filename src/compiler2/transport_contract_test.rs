@@ -4678,10 +4678,10 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 223),
+                    (("metadata", false), 219),
                     (("metadata", true), 184)
                 ]),
-                "all 445 owners preserve their obligations; separating retained closure values from member execution demand removes lanes from 118 metadata-only positions"
+                "all 441 owners preserve their obligations; Enum decision clauses remove four unused metadata-only callback positions"
             );
         }
     }

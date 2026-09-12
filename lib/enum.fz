@@ -595,7 +595,7 @@ defmodule Enum do
   fn take_every(enumerable, nth) do
     take_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
-        {:cont, if countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1}}
+        {:cont, take_every_step(entry, acc, countdown, nth)}
       end)
     )
   end
@@ -634,12 +634,7 @@ defmodule Enum do
   fn drop_while(enumerable, fun) do
     drop_while_finish(
       reduce_while(enumerable, {[], true}, fn (entry, {acc, dropping}) ->
-        {:cont,
-         if dropping do
-           if fun.(entry), do: {acc, true}, else: {[entry | acc], false}
-         else
-           {[entry | acc], false}
-         end}
+        {:cont, drop_while_step(entry, acc, dropping, fun)}
       end)
     )
   end
@@ -664,7 +659,7 @@ defmodule Enum do
   fn drop_every(enumerable, nth) do
     drop_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
-        {:cont, if countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1}}
+        {:cont, drop_every_step(entry, acc, countdown, nth)}
       end)
     )
   end
@@ -704,12 +699,7 @@ defmodule Enum do
   fn split_while(enumerable, fun) do
     split_pair_finish(
       reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
-        {:cont,
-         if right == [] do
-           if fun.(entry), do: {[entry | left], []}, else: {left, [entry]}
-         else
-           {left, [entry | right]}
-         end}
+        {:cont, split_while_step(entry, left, right, fun)}
       end)
     )
   end
@@ -813,13 +803,13 @@ defmodule Enum do
   fnp member_result({:ok, found}, _enumerable, _value), do: found
   fnp member_result({:error, _module}, enumerable, value) do
     reduce_while(enumerable, false, fn (entry, _found) ->
-      if entry === value do
-        {:halt, true}
-      else
-        {:cont, false}
-      end
+      member_entry_step(entry === value)
     end)
   end
+
+  @spec member_entry_step(bool) :: {:halt, bool} | {:cont, bool}
+  fnp member_entry_step(true), do: {:halt, true}
+  fnp member_entry_step(false), do: {:cont, false}
 
   @spec map_list([a], (a) -> b) :: [b]
   fnp map_list([], _fun), do: []
@@ -827,13 +817,12 @@ defmodule Enum do
 
   @spec filter_list([a], (a) -> any) :: [a]
   fnp filter_list([], _fun), do: []
-  fnp filter_list([head | tail], fun) do
-    if fun.(head) do
-      [head | filter_list(tail, fun)]
-    else
-      filter_list(tail, fun)
-    end
-  end
+  fnp filter_list([head | tail], fun), do: filter_list_step(fun.(head), head, tail, fun)
+
+  @spec filter_list_step(any, a, [a], (a) -> any) :: [a]
+  fnp filter_list_step(false, _head, tail, fun), do: filter_list(tail, fun)
+  fnp filter_list_step(nil, _head, tail, fun), do: filter_list(tail, fun)
+  fnp filter_list_step(_value, head, tail, fun), do: [head | filter_list(tail, fun)]
 
   @spec flat_map_list([a], (a) -> Enumerable.t(b)) :: [b]
   fnp flat_map_list([], _fun), do: []
@@ -877,9 +866,13 @@ defmodule Enum do
   @spec map_every_list([a], integer, integer, (a) -> a) :: [a]
   fnp map_every_list([], _nth, _index, _fun), do: []
   fnp map_every_list([head | tail], nth, index, fun) do
-    next = if (index % nth) == 0, do: fun.(head), else: head
+    next = map_every_step(head, nth, index, fun)
     [next | map_every_list(tail, nth, index + 1, fun)]
   end
+
+  @spec map_every_step(a, integer, integer, (a) -> a) :: a
+  fnp map_every_step(head, nth, index, fun) when (index % nth) == 0, do: fun.(head)
+  fnp map_every_step(head, _nth, _index, _fun), do: head
 
   @spec map_join_list([a], binary, (a) -> binary) :: binary
   fnp map_join_list([], _joiner, _mapper), do: ""
@@ -939,13 +932,21 @@ defmodule Enum do
   fnp take_positive(enumerable, amount) do
     take_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
-        if remaining == 1, do: {:halt, {[entry | acc], 0}}, else: {:cont, {[entry | acc], remaining - 1}}
+        take_positive_step(entry, acc, remaining)
       end)
     )
   end
 
+  @spec take_positive_step(a, [a], integer) :: {:halt, {[a], integer}} | {:cont, {[a], integer}}
+  fnp take_positive_step(entry, acc, 1), do: {:halt, {[entry | acc], 0}}
+  fnp take_positive_step(entry, acc, remaining), do: {:cont, {[entry | acc], remaining - 1}}
+
   @spec take_positive_finish({[a], integer}) :: [a]
   fnp take_positive_finish({acc, _amount}), do: reverse_list(acc)
+
+  @spec take_every_step(a, [a], integer, integer) :: {[a], integer}
+  fnp take_every_step(entry, acc, 0, nth), do: {[entry | acc], nth - 1}
+  fnp take_every_step(_entry, acc, countdown, _nth), do: {acc, countdown - 1}
 
   @spec take_every_finish({[a], integer}) :: [a]
   fnp take_every_finish({acc, _countdown}), do: reverse_list(acc)
@@ -965,8 +966,30 @@ defmodule Enum do
   @spec drop_while_finish({[a], bool}) :: [a]
   fnp drop_while_finish({acc, _dropping}), do: reverse_list(acc)
 
+  @spec drop_while_step(a, [a], bool, (a) -> any) :: {[a], bool}
+  fnp drop_while_step(entry, acc, true, fun), do: drop_while_value_step(fun.(entry), entry, acc)
+  fnp drop_while_step(entry, acc, false, _fun), do: {[entry | acc], false}
+
+  @spec drop_while_value_step(any, a, [a]) :: {[a], bool}
+  fnp drop_while_value_step(false, entry, acc), do: {[entry | acc], false}
+  fnp drop_while_value_step(nil, entry, acc), do: {[entry | acc], false}
+  fnp drop_while_value_step(_value, _entry, acc), do: {acc, true}
+
+  @spec drop_every_step(a, [a], integer, integer) :: {[a], integer}
+  fnp drop_every_step(_entry, acc, 0, nth), do: {acc, nth - 1}
+  fnp drop_every_step(entry, acc, countdown, _nth), do: {[entry | acc], countdown - 1}
+
   @spec drop_every_finish({[a], integer}) :: [a]
   fnp drop_every_finish({acc, _countdown}), do: reverse_list(acc)
+
+  @spec split_while_step(a, [a], [a], (a) -> any) :: {[a], [a]}
+  fnp split_while_step(entry, left, [], fun), do: split_while_value_step(fun.(entry), entry, left)
+  fnp split_while_step(entry, left, right, _fun), do: {left, [entry | right]}
+
+  @spec split_while_value_step(any, a, [a]) :: {[a], [a]}
+  fnp split_while_value_step(false, entry, left), do: {left, [entry]}
+  fnp split_while_value_step(nil, entry, left), do: {left, [entry]}
+  fnp split_while_value_step(_value, entry, left), do: {[entry | left], []}
 
   @spec split_positive(Enumerable.t(a), integer) :: {[a], [a]}
   fnp split_positive(enumerable, count) do
@@ -1011,12 +1034,16 @@ defmodule Enum do
   fnp merge_sort_lists([], right, _sorter), do: right
   fnp merge_sort_lists(left, [], _sorter), do: left
   fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
-    if sorter.(left_head, right_head) do
-      [left_head | merge_sort_lists(left_tail, [right_head | right_tail], sorter)]
-    else
-      [right_head | merge_sort_lists([left_head | left_tail], right_tail, sorter)]
+    case merge_sort_decision(sorter.(left_head, right_head)) do
+      :right -> [right_head | merge_sort_lists([left_head | left_tail], right_tail, sorter)]
+      _ -> [left_head | merge_sort_lists(left_tail, [right_head | right_tail], sorter)]
     end
   end
+
+  @spec merge_sort_decision(any) :: :left | :right
+  fnp merge_sort_decision(false), do: :right
+  fnp merge_sort_decision(nil), do: :right
+  fnp merge_sort_decision(_value), do: :left
 
   # The min/max family is written against `Kernel.compare/2` rather than `<=`,
   # for the same reason `sort/1` is: `<=` is declared only for the operand
@@ -1072,12 +1099,14 @@ defmodule Enum do
   @spec extreme_fold([a], a, integer) :: a
   fnp extreme_fold([], best, _want), do: best
   fnp extreme_fold([head | tail], best, want) do
-    if Kernel.compare(head, best) == want do
-      extreme_fold(tail, head, want)
-    else
-      extreme_fold(tail, best, want)
-    end
+    extreme_fold_step(Kernel.compare(head, best), head, tail, best, want)
   end
+
+  @spec extreme_fold_step(integer, a, [a], a, integer) :: a
+  fnp extreme_fold_step(comparison, head, tail, _best, want) when comparison == want do
+    extreme_fold(tail, head, want)
+  end
+  fnp extreme_fold_step(_comparison, _head, tail, best, want), do: extreme_fold(tail, best, want)
 
   @doc """
   Returns the element of `enumerable` for which `fun` returns the largest
@@ -1132,11 +1161,15 @@ defmodule Enum do
   fnp extreme_by_fold([], best, _best_key, _fun, _want), do: best
   fnp extreme_by_fold([head | tail], best, best_key, fun, want) do
     key = fun.(head)
-    if Kernel.compare(key, best_key) == want do
-      extreme_by_fold(tail, head, key, fun, want)
-    else
-      extreme_by_fold(tail, best, best_key, fun, want)
-    end
+    extreme_by_fold_step(Kernel.compare(key, best_key), head, tail, best, best_key, key, fun, want)
+  end
+
+  @spec extreme_by_fold_step(integer, a, [a], a, any, any, (a) -> any, integer) :: a
+  fnp extreme_by_fold_step(comparison, head, tail, _best, _best_key, key, fun, want) when comparison == want do
+    extreme_by_fold(tail, head, key, fun, want)
+  end
+  fnp extreme_by_fold_step(_comparison, _head, tail, best, best_key, _key, fun, want) do
+    extreme_by_fold(tail, best, best_key, fun, want)
   end
 
   @doc """
@@ -1351,9 +1384,11 @@ defmodule Enum do
 
   @spec dedup_after([a], a) :: [a]
   fnp dedup_after([], _last), do: []
-  fnp dedup_after([head | tail], last) do
-    if head === last, do: dedup_after(tail, last), else: [head | dedup_after(tail, head)]
-  end
+  fnp dedup_after([head | tail], last), do: dedup_step(head === last, head, tail, last)
+
+  @spec dedup_step(bool, a, [a], a) :: [a]
+  fnp dedup_step(true, _head, tail, last), do: dedup_after(tail, last)
+  fnp dedup_step(false, head, tail, _last), do: [head | dedup_after(tail, head)]
 
   @doc """
   Returns a list of the elements of `enumerable`, with each run of
@@ -1377,8 +1412,12 @@ defmodule Enum do
   fnp dedup_by_after([], _last, _fun), do: []
   fnp dedup_by_after([head | tail], last, fun) do
     key = fun.(head)
-    if key === last, do: dedup_by_after(tail, last, fun), else: [head | dedup_by_after(tail, key, fun)]
+    dedup_by_step(key === last, head, tail, last, key, fun)
   end
+
+  @spec dedup_by_step(bool, a, [a], any, any, (a) -> any) :: [a]
+  fnp dedup_by_step(true, _head, tail, last, _key, fun), do: dedup_by_after(tail, last, fun)
+  fnp dedup_by_step(false, head, tail, _last, key, fun), do: [head | dedup_by_after(tail, key, fun)]
 
   @doc """
   Returns the number of elements in `enumerable`, without counting past
@@ -1484,11 +1523,13 @@ defmodule Enum do
   @spec chunk_by_run([a], (a) -> any, any, [a]) :: [[a]]
   fnp chunk_by_run([], _fun, _key, acc), do: [reverse_list(acc)]
   fnp chunk_by_run([head | tail], fun, key, acc) do
-    if fun.(head) === key do
-      chunk_by_run(tail, fun, key, [head | acc])
-    else
-      [reverse_list(acc) | chunk_by_run(tail, fun, fun.(head), [head])]
-    end
+    chunk_by_step(fun.(head) === key, head, tail, fun, key, acc)
+  end
+
+  @spec chunk_by_step(bool, a, [a], (a) -> any, any, [a]) :: [[a]]
+  fnp chunk_by_step(true, head, tail, fun, key, acc), do: chunk_by_run(tail, fun, key, [head | acc])
+  fnp chunk_by_step(false, head, tail, fun, _key, acc) do
+    [reverse_list(acc) | chunk_by_run(tail, fun, fun.(head), [head])]
   end
 
   @doc """
@@ -1554,12 +1595,12 @@ defmodule Enum do
   fnp uniq_walk([], _fun, _seen), do: []
   fnp uniq_walk([head | tail], fun, seen) do
     key = fun.(head)
-    if List.member?(seen, key) do
-      uniq_walk(tail, fun, seen)
-    else
-      [head | uniq_walk(tail, fun, [key | seen])]
-    end
+    uniq_step(List.member?(seen, key), head, tail, fun, seen, key)
   end
+
+  @spec uniq_step(bool, a, [a], (a) -> any, [any], any) :: [a]
+  fnp uniq_step(true, _head, tail, fun, seen, _key), do: uniq_walk(tail, fun, seen)
+  fnp uniq_step(false, head, tail, fun, seen, key), do: [head | uniq_walk(tail, fun, [key | seen])]
 
   @doc """
   Returns a map from each distinct value of `fun.(element)` to the list of

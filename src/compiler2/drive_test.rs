@@ -10565,8 +10565,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// identity semantics only because guards happen to be strict -- and says
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
+/// Enum's named decision helpers contribute 44 clause-head plans. All 44 are
+/// unreadable structural/guard questions, so the readable denominator remains
+/// 8 and both escape populations remain unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 156, 148), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 200, 192), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,

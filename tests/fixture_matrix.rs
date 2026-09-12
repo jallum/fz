@@ -2418,7 +2418,7 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         stats,
         ReusableConsTelemetryStats {
             birth_count: 14,
-            transport_count: 20,
+            transport_count: 22,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,
         },

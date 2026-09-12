@@ -461,7 +461,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            113,
+            // filter_list_step and map_every_step each contribute one concrete specialization.
+            115,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
@@ -495,12 +496,14 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reach their list arguments through `Enum.to_list/1`'s `[a]`
             // clause, so the reduce-and-reverse activations they used to mint
             // on the way in are never specialized.
-            226,
+            // The named take/drop/split decision helpers contribute 22
+            // concrete specializations on this surface.
+            248,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            226,
+            248,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
