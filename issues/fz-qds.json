@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-12T17:59:03Z",
@@ -7,8 +7,8 @@
   "id": "fz-qds",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "CI: restore bounded coverage-test parallelism after resolved contention defects",
   "type": "task",
-  "updated_at": "2026-09-12T17:59:03Z"
+  "updated_at": "2026-09-12T18:14:18Z"
 }
