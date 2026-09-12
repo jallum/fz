@@ -805,10 +805,12 @@ fn decode_bitstring_expr(
             });
             continue;
         }
-        fields.push(BitField {
-            value: decode_expr(occurrences, field, Some(span))?,
-            spec: BitFieldSpec::default(),
-        });
+        let value = decode_expr(occurrences, field, Some(span))?;
+        let spec = match &value.node {
+            Expr::Binary(bytes) => binary_literal_bit_spec(BitFieldSpec::default(), bytes.len(), false),
+            _ => BitFieldSpec::default(),
+        };
+        fields.push(BitField { value, spec });
     }
     Ok(Spanned::new(Expr::Bitstring(fields), span))
 }
@@ -980,31 +982,34 @@ fn decode_struct_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Span
     Ok(Spanned::new(Pattern::Struct { module, fields }, span))
 }
 
-/// A STRING LITERAL segment is a binary of its own byte length.
+/// A STRING LITERAL segment is a binary, not the integer field default.
 ///
-/// `<<"true", rest :: binary>>` is Elixir's spelling and it has to match the
-/// four bytes `true`. Without this the segment kept the default integer spec,
-/// so the matcher read ONE BYTE, compared it against the four-byte literal, and
-/// never matched -- silently, falling through to the next clause. A scanner
-/// written the natural way compiled, ran, and did nothing (fz-5xp.52).
+/// Quoted source represents an unsuffixed string field as the raw binary value,
+/// with no `:: binary` node to carry its type. This is the one place that turns
+/// that source shape into the binary field spec used by both construction and
+/// matching.
 ///
-/// Only an unsized segment is adjusted: an explicit size is the author's, and a
-/// literal of the wrong length under it should fail to match rather than be
-/// quietly resized.
+/// A construction consumes the whole source binary when size is absent. A
+/// pattern may put another field after the literal, so it needs the literal's
+/// byte length made explicit. An authored size remains authoritative.
+fn binary_literal_bit_spec(mut spec: BitFieldSpec, byte_len: usize, size_when_missing: bool) -> BitFieldSpec {
+    if spec.size.is_some() {
+        return spec;
+    }
+    spec.ty = BitType::Binary;
+    if size_when_missing {
+        // BYTES, not bits: a `binary` segment's size is in units of 8, which is
+        // what `binary-size(1)` means for one byte.
+        spec.size = Some(BitSize::Literal(byte_len as u32));
+    }
+    spec
+}
+
 fn sized_for_binary_literal(value: &Pattern, spec: BitFieldSpec) -> BitFieldSpec {
     let Pattern::Binary(bytes) = value else {
         return spec;
     };
-    if spec.size.is_some() {
-        return spec;
-    }
-    BitFieldSpec {
-        ty: BitType::Binary,
-        // BYTES, not bits: a `binary` segment's size is in units of 8, which is
-        // what `binary-size(1)` means for one byte.
-        size: Some(BitSize::Literal(bytes.len() as u32)),
-        ..spec
-    }
+    binary_literal_bit_spec(spec, bytes.len(), true)
 }
 
 fn decode_bitstring_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {

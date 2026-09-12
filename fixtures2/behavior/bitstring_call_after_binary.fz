@@ -1,0 +1,18 @@
+#---
+# purpose: "unsuffixed binary literals stay binary fields in runtime-built bitstrings"
+#---
+#
+# A call field prevents the whole bitstring from folding to one constant, so
+# construction must use each decoded field spec at runtime. An unsuffixed
+# string literal is a binary field even though quoted source carries no
+# explicit `:: binary` node for it. The following integer call result keeps its
+# ordinary integer field alongside that binary.
+@spec digit(integer) :: integer
+fnp digit(n), do: 48 + n
+
+fn main() do
+  assert(<<digit(1)>> == "1", "a call result works as the first field")
+  assert(<<digit(1), digit(2)>> == "12", "adjacent call results keep their fields")
+  assert(<<"x", digit(1)>> == "x1", "one binary literal does not shift a following call result")
+  assert(<<"x", "y", digit(1)>> == "xy1", "several binary literals still occupy one field each")
+end
