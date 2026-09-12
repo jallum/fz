@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-12T21:04:09Z",
@@ -7,8 +7,8 @@
   "id": "fz-jkq",
   "labels": [],
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "CI: name the coverage step without ticket history",
   "type": "task",
-  "updated_at": "2026-09-12T21:04:09Z"
+  "updated_at": "2026-09-12T21:04:13Z"
 }
