@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-5xp.82"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enum.zip/1 needs runtime-sized tuple construction",
   "type": "task",
-  "updated_at": "2026-09-12T14:46:40Z"
+  "updated_at": "2026-09-12T14:47:12Z"
 }
