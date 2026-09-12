@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-6lf.2"
+  ],
   "created": "2026-09-12T14:10:48Z",
   "description": "## Goal\nMake the ordinary expression parser the sole authority for `when` and for which no-parens call owns a trailing `do` block. A generic call such as `def foo(x) when guard, do: body` must quote correctly before definition semantics know or care that the callee is def.\n\n## Paper contract\n- `def foo(x) when x \u003e 0, do: x` -\u003e `def(when(foo(x), x \u003e 0), [do: x])`.\n- `a = b when c` -\u003e `when(=(a, b), c)`.\n- `a when b = c` -\u003e `when(a, =(b, c))`.\n- `outer inner() do body end` -\u003e `outer(inner(), [do: body])`.\n- `outer(inner() do body end)` -\u003e `outer(inner([do: body]))`.\nThese are parser contracts, not definition-specific rewrites.\n\n## Strategy\nRefactor the Pratt loop so an already-parsed lhs can continue through the same infix authority. Add Tok::When to that authority as a right-associative operator at Elixir relative precedence: weaker than `=` and `::`, stronger than comma/clause separators. Suppress trailing-do capture while reading each no-parens argument, then let the outer call attach it; explicit parentheses re-enable inner ownership.\n\nDelete the case-clause guard constructor and every other binary `when` constructor that the general expression path makes redundant. Named fn/fnp parsing is temporary scaffolding until the final cutover, but if its head must start through a dedicated routine, feed that lhs into the same Pratt suffix rather than manufacturing a second when node. Anonymous multi-argument clauses may retain only the clause-shape adapter needed for Elixir AST `when(arg1, arg2, guard)`; it must not decide precedence or parse the guard through a second grammar. Extern `when` constraints remain explicitly separate because they describe type variables, not guard expressions.\n\n## TDD and signal\nStart with frontdoor tests built from `Code.string_to_quoted` oracle outputs for the five paper examples. Add guarded case, receive, with, single-argument lambda, multi-argument lambda, multiline operator continuation, keyword guard, and invalid-context cases. Assert full quoted shape and source spans, not only that `when` is mentioned. Run existing frontdoor, quoted-function, macro, protocol, and fixture tests.\n\n## What goes away\nBespoke named-function and case binary guard construction; implicit permission for an inner argument call to steal the outer do block; comments/docs describing when as definition-only grammar. Update `.agent/docs/parser-syntax.md` with precedence and ownership rules.\n\n## Acceptance\nOne code path parses binary when expressions. Elixir-oracled AST tests distinguish both do ownership cases. No parser regression is hidden by downstream definition canonicalization, and all warnings remain errors.",
   "id": "fz-6lf.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make when and trailing-do ownership general expression grammar",
   "type": "task",
-  "updated_at": "2026-09-12T14:10:48Z"
+  "updated_at": "2026-09-12T14:11:52Z"
 }
