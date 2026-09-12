@@ -4,6 +4,8 @@
   "blocks": [
     "fz-5xp.109"
   ],
+  "closed_at": "2026-09-12T15:31:04Z",
+  "close_reason": "Fixed in 8398e6cfe: stable semantic suspension/resumption assertions replace allocator-order function rendering.",
   "created": "2026-09-12T15:01:44Z",
   "description": "GOAL\n\nMake enum_reduce_suspend prove the semantic suspension boundary without depending on allocator-order function numbering.\n\nSIGNAL\n\nAdding two unrelated functions to lib/enum.fz changes the rendered continuation from #fn\u003c125/0\u003e to #fn\u003c127/0\u003e on interp, JIT, and AOT. Allocation counters and behavior are unchanged. The fixture prose already says schema/function numbering is not semantic, but expected.txt and expected.interp.txt still pin the number. The prose also carries stale historical IDs and tactical implementation notes instead of a durable statement of the behavior under test.\n\nSTRATEGY\n\nPattern-match the suspended result into a stable summary, capture allocation stats before resuming, then invoke the returned zero-arity function and assert its completed reduction result. Remove the historical commentary. Keep the allocation goldens that prove a real heap closure exists and preserve the separate interpreter/native counts.\n\nACCEPTANCE\n\n- No golden or fixture prose names a numeric function ID.\n- The fixture proves the suspended accumulator, the closure allocation boundary, and the resumed result.\n- interp, JIT, and AOT legs pass before any dependent library surface is pushed.\n- The full fixture matrix remains green.",
   "id": "fz-5xp.110",
@@ -16,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum suspend fixture pins a nonsemantic function ID",
   "type": "bug",
-  "updated_at": "2026-09-12T15:31:03Z"
+  "updated_at": "2026-09-12T15:31:04Z"
 }
