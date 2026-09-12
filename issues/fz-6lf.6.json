@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T15:37:37Z",
+  "description": "Observed while proving fz-6lf.2 telemetry: a single defmodule/public definition and an item macro emit repeated [fz, compiler2, macro, expanded] events when ScopeCode blocks and retries (public/1 expanded three times; make_answer/0 and enclosing defmodule likewise repeat). Goal: make one logical source macro invocation execute once per unchanged quoted input/product generation, retaining its expanded root across downstream waits so macros with compile-time effects are not replayed. Signal: an adjacent source-publication test deliberately forces downstream blocking and asserts one expansion event per macro call identity, then verifies invalidation re-executes exactly when an input or macro product changes. Investigate whether caching belongs in retained product state or ScopeSession without adding a second expansion authority.",
+  "id": "fz-6lf.6",
+  "labels": [],
+  "parent": "fz-6lf",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] Memoize item-macro expansion across blocked scope retries",
+  "type": "bug",
+  "updated_at": "2026-09-12T15:37:37Z"
+}
