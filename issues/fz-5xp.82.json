@@ -8,7 +8,7 @@
     "fz-5xp.83"
   ],
   "created": "2026-09-07T20:04:29Z",
-  "description": "## Missing against Elixir's `Enum`\n\nPure list work, nothing new required from the runtime:\n\n`chunk_while/4`, `flat_map_reduce/3`, `zip/1`, `zip_with/2`, `zip_with/3`, `zip_reduce/3`, `zip_reduce/4`, `slide/3`, `reverse_slice/3`, `slice/2`, `slice/3`, `sort/2` taking `:asc`/`:desc`, `sort_by/3`, `max/2` and `min/2` taking a comparator, `max_by/3` and `min_by/3` taking a sorter and an empty fallback, `count_until/3`.\n\n`slice/2` and `slice/3` need the name that `Enum.slice/1` currently squats on; that removal is its own ticket and comes first.\n\n## Not in scope, and why\n\n- `into/2`, `into/3` need `Collectable`.\n- `random/1`, `shuffle/1`, `take_random/2` need a random source.\n- `partition/2` and `filter_map/3` are deprecated in Elixir; `split_with/2` and `map/2 |\u003e filter/2` are the replacements and both exist.\n\n## Acceptance\n\n- Each new function has an oracle-checked fixture case proving it against its Elixir twin.\n- Behaviour matches Elixir at the edges the twin can show: empty input, an index past the end, a negative count, a step that overshoots.",
+  "description": "## Missing against Elixir's `Enum`\n\nPure list work, nothing new required from the runtime:\n\n`chunk_while/4`, `flat_map_reduce/3`, `zip/1`, `zip_with/2`, `zip_with/3`, `zip_reduce/3`, `zip_reduce/4`, `slide/3`, `reverse_slice/3`, `sort/2` taking `:asc`/`:desc`, `sort_by/3`, `max/2` and `min/2` taking a comparator, `max_by/3` and `min_by/3` taking a sorter and an empty fallback, `count_until/3`.\n\n`Enum.slice/2,3` and the existing `Enumerable.slice/1` optimization belong to fz-5xp.93, which lands first.\n\n## Not in scope, and why\n\n- `into/2`, `into/3` need `Collectable`.\n- `random/1`, `shuffle/1`, `take_random/2` need a random source.\n- `partition/2` and `filter_map/3` are deprecated in Elixir; `split_with/2` and `map/2 |\u003e filter/2` are the replacements and both exist.\n\n## Acceptance\n\n- Each new function has an oracle-checked fixture case proving it against its Elixir twin.\n- Behaviour matches Elixir at the edges the twin can show: empty input, an index past the end, a negative count, a step that overshoots.",
   "id": "fz-5xp.82",
   "labels": [],
   "parent": "fz-5xp",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Enum: complete the API up to what fz's capabilities allow",
   "type": "task",
-  "updated_at": "2026-09-12T13:57:47Z"
+  "updated_at": "2026-09-12T14:08:19Z"
 }
