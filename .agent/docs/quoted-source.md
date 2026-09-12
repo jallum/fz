@@ -84,6 +84,8 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   cannot be consumed before their provenance is checked. It is local to each
   structural read; there is no whole-graph validation pass.
 - Most calls use an atom head and `tail = [arg, ...]`.
+- Named `def` / `defp` forms have that same ordinary call shape. The lexer and
+  front door do not assign either spelling a dedicated grammar node.
 - Remote calls and closure calls are allowed to carry a quoted callee AST in
   `head`, not just an atom.
 - Variables use `tail = lexical_context_map`.
@@ -135,10 +137,20 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Compiler2 function surfaces are then composed back into first-class grouped
   quoted roots on that same heap:
   a logical function surface is a quoted list carrying attached `@doc` /
-  `@spec` items plus every grouped `fn` / `fnp` / `defmacro` clause, or a
-  single `extern` item surface.
+  `@spec` items plus every grouped `def` / `defp` / `defmacro` clause (and the
+  transitional `fn` / `fnp` spellings), or a single `extern` item surface.
 - Grouping is by `{name, arity}` and flushes at the same non-function
   boundaries the legacy item surface exposes.
+- A bare head such as `def answer do ... end` is represented by the ordinary
+  variable-shaped head tail and extracts as arity zero. `defp` supplies the
+  private flag at this extraction boundary; later stages consume
+  `FunctionForm` rather than source-head strings.
+- That extraction boundary validates every definition before it can publish a
+  name or interface entry: ordinary clauses require exactly one `do` body and
+  either a local name or a supported binary operator head. Protocol extraction
+  is the explicit exception, accepting only a public, bodyless, unguarded
+  callback with at least one parameter. Cold functions obey the same checks as
+  demanded ones.
 - Grouped roots are interned per quoted-source heap. Re-reading the same body
   must yield the same `{heap, root}` for the same logical function surface.
 - Protocol-impl callback bodies use that same grouped-root substrate; they are

@@ -10,6 +10,8 @@ pub use super::diagnostic::DiagCode;
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 pub const PARSE_DANGLING_FUNCTION_ATTR: DiagCode = DiagCode("parse/dangling-function-attr");
+pub const PARSE_INVALID_FUNCTION_DEFINITION: DiagCode = DiagCode("parse/invalid-function-definition");
+pub const PARSE_MIXED_FUNCTION_VISIBILITY: DiagCode = DiagCode("parse/mixed-function-visibility");
 pub const PARSE_SPEC_NAME_MISMATCH: DiagCode = DiagCode("parse/spec-name-mismatch");
 pub const PARSE_SPEC_ARITY_MISMATCH: DiagCode = DiagCode("parse/spec-arity-mismatch");
 pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad-modifier");

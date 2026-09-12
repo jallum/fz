@@ -17,7 +17,7 @@ pub struct ScopeSurface {
 }
 
 pub(crate) fn is_function_definition_head(head: &str) -> bool {
-    matches!(head, "fn" | "fnp" | "defmacro")
+    matches!(head, "fn" | "fnp" | "def" | "defp" | "defmacro")
 }
 
 pub(crate) fn is_scope_definition_head(head: &str) -> bool {
@@ -120,6 +120,12 @@ pub(crate) enum ReservedSourceDefinition {
     ProtocolImpl,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FunctionFormContext {
+    Definition,
+    ProtocolCallback,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionGroupKey {
     name: String,
@@ -136,7 +142,7 @@ type ImportFilterList = Vec<(String, usize)>;
 type ImportKeywordArgs = Vec<(String, ImportFilterList)>;
 
 /// Reads user surface: there is exactly one source read, and a def-head
-/// (`fn`/`fnp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
+/// (`fn`/`fnp`/`def`/`defp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
 /// later. Structure is never re-parsed from source here; it emerges from the
 /// expand -> `Fz.Compiler.define` -> define pipeline.
 pub fn read_scope_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
@@ -153,20 +159,24 @@ pub fn read_compiler_fragment_surface(
     source: &QuotedSourceRoot,
     sources: &SourceMap,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_surface(source, sources)?, sources)
+    canonicalize_definitions(read_surface(source, sources)?, FunctionFormContext::Definition, sources)
 }
 
 /// Extracts the typed definitions out of an already-read surface. A def-head
 /// that the user reader produced as a `MacroCall` becomes its typed form; every
 /// other form passes through unchanged.
-fn canonicalize_definitions(surface: ScopeSurface, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
+fn canonicalize_definitions(
+    surface: ScopeSurface,
+    function_context: FunctionFormContext,
+    sources: &SourceMap,
+) -> Result<ScopeSurface, QuotedSourceError> {
     let ScopeSurface { attrs, forms } = surface;
     let mut canonical = Vec::with_capacity(forms.len());
     for form in forms {
         match form {
             ScopeForm::MacroCall(call) => match surface_head_name(&call.source, sources)? {
                 Some(head) if is_scope_definition_head(&head) => {
-                    canonical.push(build_definition_form(call.source, &head, sources)?);
+                    canonical.push(build_definition_form(call.source, &head, function_context, sources)?);
                 }
                 _ => canonical.push(ScopeForm::MacroCall(call)),
             },
@@ -209,7 +219,14 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
 
         match head_name.as_str() {
             head if is_function_definition_head(head) => {
-                let key = parse_function_group_key(&source.subroot(quoted_item.root()), sources)?;
+                let clause_span = node.span.unwrap_or(Span::DUMMY);
+                let key = parse_function_group_key(&source.subroot(quoted_item.root()), sources).map_err(|error| {
+                    QuotedSourceError::user(
+                        crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+                        Some(clause_span),
+                        format!("invalid `{head_name}` function head: {error}"),
+                    )
+                })?;
                 let order_key = key.clone();
                 let entry = groups.entry(key.clone()).or_insert_with(|| {
                     group_order.push(order_key);
@@ -219,10 +236,14 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
                     }
                 });
                 if entry.kind != head_name {
-                    return Err(QuotedSourceError::new(format!(
-                        "quoted function group `{}/{} ` mixes `{}` and `{}` heads",
-                        key.name, key.arity, entry.kind, head_name
-                    )));
+                    return Err(QuotedSourceError::user(
+                        crate::diag::codes::PARSE_MIXED_FUNCTION_VISIBILITY,
+                        node.span,
+                        format!(
+                            "quoted function group `{}/{}` mixes `{}` and `{}` heads",
+                            key.name, key.arity, entry.kind, head_name
+                        ),
+                    ));
                 }
                 entry.item_roots.append(&mut pending_function_attrs);
                 entry.item_roots.push(quoted_item.root());
@@ -252,14 +273,22 @@ pub fn read_module_body_surface(form: &ModuleForm, sources: &SourceMap) -> Resul
 }
 
 pub fn read_protocol_body_surface(form: &ProtocolForm, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_do_body_surface(&form.source, sources)?, sources)
+    canonicalize_definitions(
+        read_do_body_surface(&form.source, sources)?,
+        FunctionFormContext::ProtocolCallback,
+        sources,
+    )
 }
 
 pub fn read_protocol_impl_body_surface(
     form: &ProtocolImplForm,
     sources: &SourceMap,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_do_body_surface(&form.source, sources)?, sources)
+    canonicalize_definitions(
+        read_do_body_surface(&form.source, sources)?,
+        FunctionFormContext::Definition,
+        sources,
+    )
 }
 
 fn read_do_body_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
@@ -315,18 +344,21 @@ fn flush_function_groups(
 }
 
 /// Builds the typed [`ScopeForm`] for a recognized scope-definition head
-/// (`fn`/`fnp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl`). This is the
+/// (`fn`/`fnp`/`def`/`defp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl`). This is the
 /// canonical structural extraction of a def-head — the analogue of Elixir
 /// `store_definition`/module compile — invoked by the define pipeline and the
 /// bootstrap. It does not depend on any surface-read mode: it always extracts a
 /// definition from a node already known to be a def-head.
-pub(crate) fn build_definition_form(
+fn build_definition_form(
     source: QuotedSourceRoot,
     head: &str,
+    function_context: FunctionFormContext,
     sources: &SourceMap,
 ) -> Result<ScopeForm, QuotedSourceError> {
     Ok(match head {
-        head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source, sources)?),
+        head if is_function_definition_head(head) => {
+            ScopeForm::Function(parse_function_form(source, function_context, sources)?)
+        }
         "defmodule" => ScopeForm::Module(parse_module_form(source, sources)?),
         "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source, sources)?),
         "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, sources)?),
@@ -357,7 +389,11 @@ fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm
             span: surface_span(&source, sources)?,
             source,
         })),
-        "extern" => Ok(ScopeForm::Function(parse_function_form(source, sources)?)),
+        "extern" => Ok(ScopeForm::Function(parse_function_form(
+            source,
+            FunctionFormContext::Definition,
+            sources,
+        )?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, sources)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
             span: surface_span(&source, sources)?,
@@ -567,7 +603,11 @@ fn parse_import_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<Im
     })
 }
 
-fn parse_function_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<FunctionForm, QuotedSourceError> {
+fn parse_function_form(
+    source: QuotedSourceRoot,
+    context: FunctionFormContext,
+    sources: &SourceMap,
+) -> Result<FunctionForm, QuotedSourceError> {
     let span = surface_span(&source, sources)?;
     let head = surface_head_name(&source, sources)?
         .ok_or_else(|| QuotedSourceError::new("expected atom-headed function form"))?;
@@ -603,16 +643,107 @@ fn parse_function_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<
         });
     }
 
-    let FunctionGroupKey { name, arity } = parse_function_group_key(&source, sources)?;
+    let FunctionGroupKey { name, arity } = validate_function_clauses(&source, context, sources)?;
     Ok(FunctionForm {
         source,
         name,
         arity,
         is_macro: head == "defmacro",
-        is_private: head == "fnp",
+        is_private: matches!(head.as_str(), "fnp" | "defp"),
         variadic: false,
         span,
     })
+}
+
+fn validate_function_clauses(
+    source: &QuotedSourceRoot,
+    context: FunctionFormContext,
+    sources: &SourceMap,
+) -> Result<FunctionGroupKey, QuotedSourceError> {
+    let items = if source.cursor().ast_node(sources)?.is_some() {
+        vec![source.cursor()]
+    } else {
+        source.cursor().list_items()?
+    };
+    let mut group_key = None;
+    for item in items {
+        let Some(node) = item.ast_node(sources)? else {
+            return Err(QuotedSourceError::new("expected quoted function clause AST node"));
+        };
+        let head = node.head.atom_name()?;
+        if head.starts_with('@') {
+            continue;
+        }
+        let clause_span = node.span.unwrap_or(Span::DUMMY);
+        let args = node.tail.list_items()?;
+        let key = match context {
+            FunctionFormContext::Definition if args.len() != 2 || !is_single_do_keyword(&args[1]) => Err(
+                QuotedSourceError::new(format!("`{head}` function clause must have exactly one `do` body")),
+            ),
+            FunctionFormContext::Definition => parse_function_head_key(&args[0], head == "defmacro", sources)
+                .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}"))),
+            FunctionFormContext::ProtocolCallback => {
+                validate_protocol_callback_clause(&node, sources).map(|(name, arity)| FunctionGroupKey { name, arity })
+            }
+        }
+        .map_err(|error| {
+            QuotedSourceError::user(
+                crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+                Some(clause_span),
+                error.to_string(),
+            )
+        })?;
+        if group_key.is_none() {
+            group_key = Some(key);
+        }
+    }
+    group_key.ok_or_else(|| QuotedSourceError::new("grouped quoted function source has no clauses"))
+}
+
+fn is_single_do_keyword(cursor: &QuotedSourceCursor) -> bool {
+    let Ok(entries) = cursor.list_items() else {
+        return false;
+    };
+    let [entry] = entries.as_slice() else {
+        return false;
+    };
+    let Ok(tuple) = entry.tuple_items() else {
+        return false;
+    };
+    matches!(tuple.as_slice(), [key, _] if key.atom_name().as_deref() == Ok("do"))
+}
+
+pub(crate) fn validate_protocol_callback_clause(
+    node: &QuotedAstNode,
+    sources: &SourceMap,
+) -> Result<(String, usize), QuotedSourceError> {
+    let definition_head = node.head.atom_name()?;
+    if !matches!(definition_head.as_str(), "def" | "fn") {
+        return Err(QuotedSourceError::new(format!(
+            "protocol callback must use `def`, got `{definition_head}`"
+        )));
+    }
+    let args = node.tail.list_items()?;
+    let [head] = args.as_slice() else {
+        return Err(QuotedSourceError::new(format!(
+            "protocol callback `{definition_head}` cannot have a body"
+        )));
+    };
+    let callback = head
+        .ast_node(sources)?
+        .ok_or_else(|| QuotedSourceError::new("protocol callback expected a function head"))?;
+    if callback.head.atom_name()? == "when" {
+        return Err(QuotedSourceError::new(format!(
+            "protocol callback `{definition_head}` cannot have a guard"
+        )));
+    }
+    let key = parse_function_head_key(head, false, sources)?;
+    if key.arity == 0 {
+        return Err(QuotedSourceError::new(format!(
+            "protocol callback `{definition_head}` must have at least one parameter"
+        )));
+    }
+    Ok((key.name, key.arity))
 }
 
 fn parse_module_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ModuleForm, QuotedSourceError> {
@@ -688,13 +819,14 @@ fn parse_function_group_key(
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
     let node = first_non_attr_node(root, sources)?;
+    let definition_head = node.head.atom_name()?;
     let args = node.tail.list_items()?;
     let Some(head) = args.first() else {
         return Err(QuotedSourceError::new(
             "quoted function clause is missing its head expression",
         ));
     };
-    parse_function_head_key(head, sources)
+    parse_function_head_key(head, definition_head == "defmacro", sources)
 }
 
 pub(crate) fn reserved_source_definition(
@@ -705,7 +837,7 @@ pub(crate) fn reserved_source_definition(
         return Ok(None);
     };
     Ok(match head.as_str() {
-        "fn" | "fnp" | "defmacro" => {
+        "fn" | "fnp" | "def" | "defp" | "defmacro" => {
             let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
                 name,
@@ -751,24 +883,88 @@ pub(crate) fn reserved_source_definition(
 
 fn parse_function_head_key(
     cursor: &QuotedSourceCursor,
+    allow_reserved_macro_name: bool,
+    sources: &SourceMap,
+) -> Result<FunctionGroupKey, QuotedSourceError> {
+    parse_function_head_key_inner(cursor, allow_reserved_macro_name, true, sources)
+}
+
+fn parse_function_head_key_inner(
+    cursor: &QuotedSourceCursor,
+    allow_reserved_macro_name: bool,
+    allow_guard: bool,
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
     let Some(node) = cursor.ast_node(sources)? else {
         return Err(QuotedSourceError::new("expected quoted function head AST node"));
     };
-    if node.head.atom_name()? == "when" {
-        let args = node.tail.list_items()?;
-        let Some(inner) = args.first() else {
+    let name = node.head.atom_name()?;
+    if name == "when" {
+        if !allow_guard {
             return Err(QuotedSourceError::new(
-                "quoted `when` head is missing the guarded function head",
+                "quoted function head cannot contain nested `when` guards",
+            ));
+        }
+        let args = node.tail.list_items()?;
+        let [inner, _guard] = args.as_slice() else {
+            return Err(QuotedSourceError::new(
+                "quoted `when` function head expects head and guard",
             ));
         };
-        return parse_function_head_key(inner, sources);
+        return parse_function_head_key_inner(inner, allow_reserved_macro_name, false, sources);
     }
-    Ok(FunctionGroupKey {
-        name: node.head.atom_name()?,
-        arity: node.tail.list_items()?.len(),
-    })
+    let arity = function_head_args(&node.tail)?.len();
+    if is_definable_operator(&name) {
+        if arity != 2 {
+            return Err(QuotedSourceError::new(format!(
+                "operator function `{name}` must have two parameters"
+            )));
+        }
+        return Ok(FunctionGroupKey { name, arity });
+    }
+    if is_local_function_name(&name, allow_reserved_macro_name) {
+        return Ok(FunctionGroupKey { name, arity });
+    }
+    Err(QuotedSourceError::new(format!(
+        "`{name}` is not a definable function name"
+    )))
+}
+
+fn is_definable_operator(name: &str) -> bool {
+    matches!(
+        name,
+        "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>"
+    )
+}
+
+fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
+    match crate::parser::lexer::source_word_token(name) {
+        Some(Tok::Ident(_)) => true,
+        Some(
+            Tok::Fn
+            | Tok::Fnp
+            | Tok::Defmacro
+            | Tok::Defmodule
+            | Tok::Defprotocol
+            | Tok::Defimpl
+            | Tok::Defstruct
+            | Tok::Alias
+            | Tok::Import
+            | Tok::Require
+            | Tok::Extern,
+        ) => allow_reserved_macro_name,
+        _ => false,
+    }
+}
+
+pub(crate) fn function_head_args(tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, QuotedSourceError> {
+    match tail.root().tag() {
+        fz_runtime::any_value::ValueKind::LIST => tail.list_items(),
+        fz_runtime::any_value::ValueKind::MAP => Ok(Vec::new()),
+        other => Err(QuotedSourceError::new(format!(
+            "quoted function head tail must be an argument list or bare-name context, got {other:?}"
+        ))),
+    }
 }
 
 fn parse_alias_segments(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<String>, QuotedSourceError> {

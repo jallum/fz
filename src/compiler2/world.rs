@@ -2628,7 +2628,7 @@ enum FunctionSurfaceMatch {
     /// An unexpanded item-macro call whose head is not reserved: its
     /// expansion is unknown until it runs, so it is only a MAYBE home.
     Opaque,
-    /// A plain `fn`/`fnp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl` head
+    /// A plain `fn`/`fnp`/`def`/`defp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl` head
     /// names the wanted name+arity statically: scoping this code is
     /// guaranteed to publish the function (or the reference is to a form
     /// scoping cannot change its mind about).
@@ -2673,7 +2673,7 @@ fn code_surface_function_match(
     Ok(best)
 }
 
-/// The span of `function_ref`'s matching `fn`/`fnp`/`defmacro` form in
+/// The span of `function_ref`'s matching `fn`/`fnp`/`def`/`defp`/`defmacro` form in
 /// `source`'s top-level surface, when it has one — a plain `ScopeForm::Function`
 /// always carries a real source span (`quoted_surface::FunctionForm::span`);
 /// the `CompilerService` match shape (bootstrap-only) does not carry a form
@@ -2703,7 +2703,7 @@ fn source_definition_matches_function(
 }
 
 /// How definitively an unexpanded item-level macro call could turn out to be
-/// the home of `function_ref`. A reserved head (`fn`/`fnp`/`defmacro`/
+/// the home of `function_ref`. A reserved head (`fn`/`fnp`/`def`/`defp`/`defmacro`/
 /// `defmodule`/`defprotocol`/`defimpl`) names its target statically, so a
 /// definite mismatch rules the call out for good (same rule as
 /// `source_definition_matches_function`) and a match is `Certain`. Any other

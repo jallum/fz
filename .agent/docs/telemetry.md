@@ -606,7 +606,8 @@ this event for ordinary undemanded bodies; item-macro publication remains
 scope-order work, while body-local expansion remains demand-time work.
 
 Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
-when `Fz.Compiler.define` publishes an expanded source root. Its exact raw
+when `Fz.Compiler.define` changes the published grouped source root. Blocked
+scope retries that reproduce the same stash do not emit it again. Its exact raw
 signature is `(&World, &FunctionId, &FunctionSource)`. Handlers derive ids,
 namespace, and quoted-source identity during the callback. Literal functions,
 protocol callbacks, synthesized module-info functions, item-macro returned

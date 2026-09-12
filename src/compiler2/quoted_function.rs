@@ -7,6 +7,7 @@ use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
+use super::quoted_surface::function_head_args;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
 
@@ -247,7 +248,7 @@ fn decode_function_head(
     let name = atom_name(&node.head)?;
     let mut params = Vec::new();
     let mut annotations = Vec::new();
-    for arg in node.tail.list_items()? {
+    for arg in function_head_args(&node.tail)? {
         if let Some(ascribe) = arg.ast_node(sources)?
             && atom_name(&ascribe.head)? == "::"
         {

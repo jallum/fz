@@ -28,9 +28,16 @@ into `ExternAbi` when the extern is lowered. Only two names exist; anything
 else is a `lower/unsupported` error, never a silent fall back:
 
 ```fz
-extern "C"  fn libc::close(integer) :: integer            # a plain C symbol
-extern "fz" fn fz_binary_concat(binary, binary) :: binary # an fz runtime helper
+extern "C"  def libc::close(integer) :: integer            # a plain C symbol
+extern "fz" def fz_binary_concat(binary, binary) :: binary # an fz runtime helper
 ```
+
+`def` is contextual here: it is still an ordinary identifier token, but the
+`extern` declaration grammar requires that spelling between the ABI and symbol;
+the legacy `fn` spelling remains accepted only for the staged migration.
+`defp` is not valid for an external declaration. The resulting quoted extern
+node and every downstream ABI/marshalling stage are independent of the source
+spelling.
 
 The ABI decides two things at once.
 
@@ -94,7 +101,7 @@ scope, and then a fixed list of standard C libraries it opens itself
 (`STANDARD_C_LIBRARIES`). The list exists because the scope is not enough: on
 macOS the C library and the math library are one thing (libSystem) that every
 process already has, while elsewhere libm is separate and nothing references
-it, so `--as-needed` drops it and `extern "C" fn libc::sqrt(float) :: float`
+it, so `--as-needed` drops it and `extern "C" def libc::sqrt(float) :: float`
 fails with `dlsym: symbol sqrt not found` on Linux while passing on macOS
 (fz-5xp.59).
 
@@ -119,7 +126,7 @@ A declaration outside the bootstrap may not name it. The reason is not
 etiquette: the symbols the `fz` ABI can reach are the ones both doors ALSO
 claim by name in their own lowerings, and those two claim sets are not equal.
 `fz_op_add_ii` has a native rung and no interpreter one, so a foreign
-`extern "fz" fn fz_op_add_ii` once answered `5` under `run` and a process
+`extern "fz" def fz_op_add_ii` once answered `5` under `run` and a process
 pointer plus two under `interp`. `resolve_extern_abi` refuses it in the shared
 front end, which is the only place a refusal reaches every door identically.
 
@@ -179,7 +186,7 @@ position travels in, and caller and callee must agree per position. This is the
 subsystem's load-bearing invariant, and every door used to break it:
 
 ```fz
-extern "C" fn libc::sqrt(float) :: float
+extern "C" def libc::sqrt(float) :: float
 libc::sqrt(9.0)        # 3.0
 ```
 
@@ -229,8 +236,8 @@ specialization, because one syntactic call can need different marshal classes in
 different contexts, so there is no single answer baked onto the declaration.
 
 ```fz
-extern "C" fn libc::printf(fmt :: cstring, ...) :: integer
-fn main() do libc::printf("%d", 7) end
+extern "C" def libc::printf(fmt :: cstring, ...) :: integer
+def main() do libc::printf("%d", 7) end
 ```
 
 `"%d"` is the fixed `cstring` param; `7` is an `Auto` variadic argument that
@@ -260,7 +267,7 @@ what makes an ordinary wrapper come back correctly:
 fn dbg(x), do: fz_dbg_value(x)
 ```
 
-The body calls `extern "fz" fn fz_dbg_value(any) :: any`, so the argument is
+The body calls `extern "fz" def fz_dbg_value(any) :: any`, so the argument is
 boxed (the ABI adds the process alongside it, which the wrapper never sees) and the
 result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
 unboxes that word back to an `i64`. A repeated type variable means "same type",
@@ -294,7 +301,7 @@ through the staticlib link.
 flows from the boundary:
 
 ```fz
-extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+extern "C" def fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 ```
 

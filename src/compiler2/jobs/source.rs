@@ -8,7 +8,7 @@ use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
     emit_surface_read_error,
 };
-use super::super::quoted_surface::{read_compiler_fragment_surface, read_scope_surface};
+use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::source::{QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceRoot};
@@ -632,10 +632,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         if head == "extern" {
             return Ok(ExpandedValue::Complete(cursor.root()));
         }
-        if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {
+        if !is_function_definition_head(&head) {
             return Err(emit_internal_surface_error(
                 self.telemetry,
-                format!("function source expected fn/fnp/defmacro/extern, got `{head}`"),
+                format!("function source expected a definition form or extern, got `{head}`"),
             ));
         }
 

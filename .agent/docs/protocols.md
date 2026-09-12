@@ -23,13 +23,21 @@ module like `Enum`), but the semantic object is a registry fact. The pieces:
 ```fz
 defprotocol Enumerable do
   @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
-  fn reduce(enumerable, acc, reducer)
+  def reduce(enumerable, acc, reducer)
 end
 
 defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+  def reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
 end
 ```
+
+The `def` in a protocol body is still lexed as an identifier. The protocol
+body reader accepts that identifier in its callback slot and the ordinary
+quoted-surface extractor derives the callback name and arity. `defp` is not a
+protocol callback form; callback declarations also require at least one
+parameter and accept neither a body nor a guard. Implementation bodies use the
+same grouped `def` surface and `FunctionSource` publication path as module
+functions.
 
 `defprotocol Enumerable` publishes a first-class namespace at its lexical path
 (a root declaration publishes `Enumerable`, not `Enumerable.Enumerable`). It owns

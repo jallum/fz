@@ -54,6 +54,10 @@ defmacro fn(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(_
 
 defmacro fnp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
+defmacro def(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+
+defmacro defp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+
 defmacro defmacro(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
 defmacro defmodule(name, kw) do

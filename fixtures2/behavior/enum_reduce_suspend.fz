@@ -22,7 +22,7 @@
 # - one protocol-control struct is allocated (`struct_allocs = 1`,
 #   `struct_bytes = 48`);
 # - the accumulator is never boxed (`scalar_box_allocs = 0`);
-# - the rendered function identity is `#fn<4/0>`.
+# - the rendered function identity is `#fn<127/0>`.
 #
 # Current contract, `interp`:
 #
@@ -33,11 +33,8 @@
 #   as native (`struct_allocs = 1`, `struct_bytes = 48`), because a tuple whose
 #   value layout does not carry `ValueRef` travels as its fields' lanes on both
 #   backends;
-# - the rendered function identity is `#fn<2/0>`. The arity matches native's
-#   because arity is a property of the source (`fn () -> ... end` takes no
-#   arguments); the leading env-schema id differs because schema ids are
-#   assigned in allocation order, which is not a semantic difference in the
-#   suspend boundary.
+# - the rendered function identity is `#fn<127/0>`. Its `/0` arity is a
+#   property of the source (`fn () -> ... end` takes no arguments).
 fn main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)

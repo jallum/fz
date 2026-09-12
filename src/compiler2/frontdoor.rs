@@ -234,6 +234,7 @@ impl FrontDoorParser {
         match self.peek() {
             Tok::At => self.parse_attribute_item(module_path),
             Tok::Fn => self.parse_protocol_callback_item(module_path),
+            Tok::Ident(name) if name == "def" => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door expected protocol callback or attribute, got {:?}",
                 other
@@ -250,7 +251,6 @@ impl FrontDoorParser {
         let meta = self.meta(module_path, &scope, span)?;
         self.builder.call("fn", &meta, &[head]).map_err(FrontDoorError::from)
     }
-
     fn parse_item_macro_call(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let expr = self.parse_expr(module_path, &[])?;
         if !self.builder.root(expr.root)?.cursor().trusted_builder_ast_call()? {
@@ -418,7 +418,13 @@ impl FrontDoorParser {
                 .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
             other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
         };
-        self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
+        match self.bump() {
+            Tok::Fn => {}
+            Tok::Ident(name) if name == "def" => {}
+            other => {
+                return Err(self.error(format!("expected `def` after extern ABI string, got {:?}", other)));
+            }
+        }
         let name = self.parse_extern_name()?;
         self.expect(&Tok::LParen, "`(`")?;
         let mut params = Vec::new();
@@ -633,7 +639,7 @@ impl FrontDoorParser {
             // none of the arms below match it and the loop falls through
             // to `break`, handing the boundary to the caller's
             // `skip_newlines` (the block/`eoe` layer).
-            if self.peek_is(&Tok::LParen) {
+            if self.peek_is(&Tok::LParen) && !self.space_before_at(0) {
                 lhs = self.finish_call(lhs, module_path, scope)?;
                 continue;
             }
@@ -2272,6 +2278,7 @@ impl FrontDoorParser {
             | Tok::Nil
             | Tok::Ident(_)
             | Tok::Upper(_)
+            | Tok::LParen
             | Tok::LBrace
             | Tok::PercentLBrace
             | Tok::LBitstr

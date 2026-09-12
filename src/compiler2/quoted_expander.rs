@@ -775,7 +775,7 @@ fn read_surface_root_with(
         root.interned_list_subroot(&[root.root()])
             .map_err(|error| emit_internal_surface_error(tel, format!("{context} wrapper failed: {error}")))?
     };
-    read(&source, sources).map_err(|error| emit_internal_surface_error(tel, format!("{context} read failed: {error}")))
+    read(&source, sources).map_err(|error| emit_surface_read_error(tel, &format!("{context} read failed"), &error))
 }
 
 pub(crate) fn emit_macro_expanded(

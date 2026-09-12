@@ -123,7 +123,7 @@ declared later in the same scope:
    function and scope each child module onto the current head.
 
 A non-private function or macro becomes a `ModuleInterfaceCallable`; private
-(`fnp`) functions stay callable in-module but out of the interface. Non-global
+(`defp`, plus transitional `fnp`) functions stay callable in-module but out of the interface. Non-global
 modules that do not define `__info__/1` get a synthesized ordinary function
 source for their callable interface. The pass returns the finished namespace head
 plus the callable interface, which `define_module` freezes onto the module slot.
@@ -137,7 +137,7 @@ source through `ensure_runtime_module`, which `submit_code`s it as ordinary code
 the same `index_code` / `scope_code` / `define_module` jobs handle it.
 
 The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the
-prelude plus the runtime modules) is read canonically — def-heads are parsed as
+prelude plus the runtime modules) is read canonically — definition heads are parsed as
 definitions rather than macro calls — because the macros that implement def-heads
 are defined in the bootstrap and cannot be bounced through. Everything else is
 ordinary user source; see macro-expansion.md.
