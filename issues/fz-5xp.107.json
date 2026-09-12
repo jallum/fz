@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T13:05:46Z",
+  "description": "Elixir rejects a literal string bitstring field with size(...), including \u003c\u003c\"ab\"::size(2)\u003e\u003e and \u003c\u003c\"ab\"::binary-size(2)\u003e\u003e: literal strings accept only endianness and a compatible type specifier. fz quoted-source decoding accepts the size and sized_for_binary_literal deliberately preserves it, leaving an integer-typed/binary-valued mismatch or a surprising binary size interpretation downstream.\n\nAdd diagnostic fixtures for expression and pattern positions, point at the modifier span, and validate this at the quoted-source field boundary before semantic/backend construction. This is separate from fz-5xp.101, which supplies the missing implicit binary spec for a valid unsuffixed literal.",
+  "id": "fz-5xp.107",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] Bitstring literal strings accept unsupported size modifiers",
+  "type": "bug",
+  "updated_at": "2026-09-12T13:05:46Z"
+}
