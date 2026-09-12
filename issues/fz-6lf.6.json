@@ -4,14 +4,15 @@
   "blocks": [
     "fz-6lf.2"
   ],
+  "closed_at": "2026-09-12T16:18:59Z",
   "created": "2026-09-12T15:37:37Z",
   "description": "Observed while proving fz-6lf.2 telemetry: one logical macro invocation emitted repeated [fz, compiler2, macro, expanded] events whenever ScopeCode or demanded function-source expansion blocked and retried. Goal: execute each logical source invocation once while its quoted call, source-visible caller scope, and retained macro backend are unchanged; retain the immediate expanded root so downstream recursive waits resume without replaying compile-time effects. Signal: adjacent tests force item, body, pipe, and capture retries and assert one event per call identity; macro-product tests prove unchanged and equal reproduction reuse the result, while changed quoted input, changed retained backend content, and product retirement invalidate it. Strategy: one World-owned expansion memo keyed by rooted invocation identity and stable caller scope, with a weak reference to the retained backend allocation; retirement clears its entries. Each quoted heap also memoizes deterministic sugar rewrites so synthesized descendant identities remain stable without becoming a second authority. Function-body expansion removes only its transient __ENV__ splice through ScopeSnapshot::with_namespace.",
   "id": "fz-6lf.6",
   "labels": [],
   "parent": "fz-6lf",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Memoize macro expansion across blocked retries",
   "type": "bug",
-  "updated_at": "2026-09-12T16:16:25Z"
+  "updated_at": "2026-09-12T16:18:59Z"
 }
