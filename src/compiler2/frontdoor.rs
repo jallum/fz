@@ -214,15 +214,14 @@ impl FrontDoorParser {
             Tok::Defmacro => "defmacro",
             other => unreachable!("guarded by parse_item: {:?}", other),
         };
-        let (function_name, mut head) = self.parse_function_head(module_path)?;
+        let (function_name, head) = self.parse_function_head(module_path)?;
         let scope = vec![function_name];
-        if self.eat(&Tok::When) {
-            let guard = self
-                .with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, &scope))?
-                .root;
-            let meta = self.meta(module_path, &scope, start.merge(self.prev_span()))?;
-            head = self.builder.call("when", &meta, &[head, guard])?;
-        }
+        let head_span = start.merge(self.prev_span());
+        let head = self
+            .with_trailing_do_suppressed(|parser| {
+                parser.parse_bp_tail(ParsedExpr::plain(head, head_span), 0, module_path, &scope)
+            })?
+            .root;
         let body = self.parse_function_body(module_path, &scope)?;
         let meta = self.meta(module_path, &scope, start.merge(self.prev_span()))?;
         let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
@@ -614,7 +613,17 @@ impl FrontDoorParser {
 
     fn parse_bp(&mut self, min_bp: u8, module_path: &[String], scope: &[String]) -> Result<ParsedExpr, FrontDoorError> {
         self.saw_no_parens_call = false;
-        let mut lhs = self.parse_prefix(module_path, scope)?;
+        let lhs = self.parse_prefix(module_path, scope)?;
+        self.parse_bp_tail(lhs, min_bp, module_path, scope)
+    }
+
+    fn parse_bp_tail(
+        &mut self,
+        mut lhs: ParsedExpr,
+        min_bp: u8,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ParsedExpr, FrontDoorError> {
         loop {
             // No newline-continuation lookahead here by construction: the
             // lexer has already swallowed any newline that precedes a
@@ -669,7 +678,8 @@ impl FrontDoorParser {
                 continue;
             }
             if lhs.callable_head && self.starts_no_parens_arg() {
-                let mut args = self.parse_no_parens_args(module_path, scope)?;
+                let mut args =
+                    self.with_trailing_do_suppressed(|parser| parser.parse_no_parens_args(module_path, scope))?;
                 self.attach_trailing_do(&mut args, module_path, scope)?;
                 let span = lhs.span.merge(self.prev_span());
                 let meta = self.meta(module_path, scope, span)?;
@@ -716,7 +726,13 @@ impl FrontDoorParser {
             }
             self.bump();
             self.skip_newlines();
-            let rhs = self.parse_bp(rbp, module_path, scope)?;
+            let rhs = if op == "when" && matches!(self.peek(), Tok::KwKey(_)) {
+                let start = self.cur_span();
+                let root = self.parse_keyword_list_expr(module_path, scope, &Tok::Eof)?;
+                ParsedExpr::plain(root, start.merge(self.prev_span()))
+            } else {
+                self.parse_bp(rbp, module_path, scope)?
+            };
             let span = lhs.span.merge(rhs.span);
             let meta = self.meta(module_path, scope, span)?;
             lhs = ParsedExpr::plain(self.builder.call(op, &meta, &[lhs.root, rhs.root])?, span);
@@ -763,15 +779,21 @@ impl FrontDoorParser {
             }
             Tok::Upper(name) => self.parse_alias_expr(name, module_path, scope, start),
             Tok::LParen => {
-                let inner = self.parse_expr(module_path, scope)?;
+                let inner = self.with_matched_do_boundary(|parser| parser.parse_expr(module_path, scope))?;
                 self.expect(&Tok::RParen, "`)`")?;
                 Ok(ParsedExpr::plain(inner.root, start.merge(self.prev_span())))
             }
-            Tok::LBrack => self.parse_list_literal(module_path, scope, start),
-            Tok::LBrace => self.parse_tuple_literal(module_path, scope, start),
-            Tok::PercentLBrace => self.parse_map_literal(module_path, scope, start),
-            Tok::Percent => self.parse_struct_expr(module_path, scope, start),
-            Tok::LBitstr => self.parse_bitstring_literal(module_path, scope, start),
+            Tok::LBrack => self.with_matched_do_boundary(|parser| parser.parse_list_literal(module_path, scope, start)),
+            Tok::LBrace => {
+                self.with_matched_do_boundary(|parser| parser.parse_tuple_literal(module_path, scope, start))
+            }
+            Tok::PercentLBrace => {
+                self.with_matched_do_boundary(|parser| parser.parse_map_literal(module_path, scope, start))
+            }
+            Tok::Percent => self.with_matched_do_boundary(|parser| parser.parse_struct_expr(module_path, scope, start)),
+            Tok::LBitstr => {
+                self.with_matched_do_boundary(|parser| parser.parse_bitstring_literal(module_path, scope, start))
+            }
             Tok::Minus => {
                 let inner = self.parse_bp(120, module_path, scope)?;
                 let span = start.merge(inner.span);
@@ -784,14 +806,18 @@ impl FrontDoorParser {
                 let meta = self.meta(module_path, scope, span)?;
                 Ok(ParsedExpr::plain(self.builder.call("not", &meta, &[inner.root])?, span))
             }
-            Tok::Quote => self.parse_quote_expr(module_path, scope, start),
-            Tok::Unquote => self.parse_unquote_expr(module_path, scope, start),
-            Tok::If => self.parse_if_expr(module_path, scope, start),
-            Tok::Cond => self.parse_cond_expr(module_path, scope, start),
-            Tok::Receive => self.parse_receive_expr(module_path, scope, start),
-            Tok::Case => self.parse_case_expr(module_path, scope, start),
-            Tok::With => self.parse_with_expr(module_path, scope, start),
-            Tok::Fn => self.parse_lambda_expr(module_path, scope, start),
+            Tok::Quote => self.with_matched_do_boundary(|parser| parser.parse_quote_expr(module_path, scope, start)),
+            Tok::Unquote => {
+                self.with_matched_do_boundary(|parser| parser.parse_unquote_expr(module_path, scope, start))
+            }
+            Tok::If => self.with_matched_do_boundary(|parser| parser.parse_if_expr(module_path, scope, start)),
+            Tok::Cond => self.with_matched_do_boundary(|parser| parser.parse_cond_expr(module_path, scope, start)),
+            Tok::Receive => {
+                self.with_matched_do_boundary(|parser| parser.parse_receive_expr(module_path, scope, start))
+            }
+            Tok::Case => self.with_matched_do_boundary(|parser| parser.parse_case_expr(module_path, scope, start)),
+            Tok::With => self.with_matched_do_boundary(|parser| parser.parse_with_expr(module_path, scope, start)),
+            Tok::Fn => self.with_matched_do_boundary(|parser| parser.parse_lambda_expr(module_path, scope, start)),
             Tok::Amp => self.parse_capture_expr(module_path, scope, start),
             Tok::Caret => self.parse_pin_expr(module_path, scope, start),
             other => self.err(format!(
@@ -808,7 +834,8 @@ impl FrontDoorParser {
         scope: &[String],
     ) -> Result<ParsedExpr, FrontDoorError> {
         self.expect(&Tok::LParen, "`(`")?;
-        let mut args = self.parse_paren_call_args(&Tok::RParen, module_path, scope)?;
+        let mut args =
+            self.with_matched_do_boundary(|parser| parser.parse_paren_call_args(&Tok::RParen, module_path, scope))?;
         self.expect(&Tok::RParen, "`)`")?;
         self.attach_trailing_do(&mut args, module_path, scope)?;
         let span = lhs.span.merge(self.prev_span());
@@ -830,7 +857,8 @@ impl FrontDoorParser {
         self.expect(&Tok::Dot, "`.`")?;
         self.skip_newlines();
         self.expect(&Tok::LParen, "`(`")?;
-        let mut args = self.parse_paren_call_args(&Tok::RParen, module_path, scope)?;
+        let mut args =
+            self.with_matched_do_boundary(|parser| parser.parse_paren_call_args(&Tok::RParen, module_path, scope))?;
         self.expect(&Tok::RParen, "`)`")?;
         self.attach_trailing_do(&mut args, module_path, scope)?;
         let dot_span = lhs.span.merge(self.prev_span());
@@ -869,7 +897,7 @@ impl FrontDoorParser {
         scope: &[String],
     ) -> Result<ParsedExpr, FrontDoorError> {
         self.expect(&Tok::LBrack, "`[`")?;
-        let key = self.parse_expr(module_path, scope)?;
+        let key = self.with_matched_do_boundary(|parser| parser.parse_expr(module_path, scope))?;
         self.expect(&Tok::RBrack, "`]`")?;
         let span = lhs.span.merge(self.prev_span());
         let meta = self.meta(module_path, scope, span)?;
@@ -1261,7 +1289,7 @@ impl FrontDoorParser {
         }
 
         if self.eat(&Tok::LParen) {
-            let body = self.parse_expr(module_path, scope)?;
+            let body = self.with_matched_do_boundary(|parser| parser.parse_expr(module_path, scope))?;
             self.expect(&Tok::RParen, "`)` to close `&(...)` capture")?;
             let span = start.merge(self.prev_span());
             let meta = self.meta(module_path, scope, span)?;
@@ -1467,13 +1495,7 @@ impl FrontDoorParser {
 
     fn parse_case_clause(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
-        let mut pattern = self.parse_expr(module_path, scope)?;
-        if self.eat(&Tok::When) {
-            let guard = self.parse_expr(module_path, scope)?;
-            let span = pattern.span.merge(guard.span);
-            let meta = self.meta(module_path, scope, span)?;
-            pattern = ParsedExpr::plain(self.builder.call("when", &meta, &[pattern.root, guard.root])?, span);
-        }
+        let pattern = self.parse_expr(module_path, scope)?;
         self.expect(&Tok::Arrow, "`->`")?;
         let body = self.parse_expr(module_path, scope)?;
         let span = start.merge(body.span);
@@ -1600,8 +1622,8 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
-    /// Attaches a trailing `do ... end` / `, do: ...` block to a call as a
-    /// fresh `[do: body]` argument. Elixir never folds the do-block into a
+    /// Attaches a trailing `do ... end` block to a call as a fresh `[do: body]`
+    /// argument. Elixir never folds the do-block into a
     /// preceding keyword-list argument, even when that argument came from
     /// keyword-call sugar (`echo(label: :work) do 42 end` is arity-2
     /// `echo([label: :work], [do: 42])`, not arity-1 `echo([label: :work, do:
@@ -1622,10 +1644,6 @@ impl FrontDoorParser {
             let body = self.parse_block_until(&[Tok::End], module_path, scope)?;
             self.expect(&Tok::End, "`end`")?;
             Some(body)
-        } else if self.peek_is(&Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(key) if key == "do") {
-            self.bump();
-            self.bump();
-            Some(self.parse_expr(module_path, scope)?.root)
         } else {
             None
         };
@@ -2181,6 +2199,17 @@ impl FrontDoorParser {
         out
     }
 
+    fn with_matched_do_boundary<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, FrontDoorError>,
+    ) -> Result<T, FrontDoorError> {
+        let old = self.allow_trailing_do;
+        self.allow_trailing_do = true;
+        let out = f(self);
+        self.allow_trailing_do = old;
+        out
+    }
+
     fn with_extern_symbol_folding_suppressed<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, FrontDoorError>,
@@ -2256,6 +2285,7 @@ impl FrontDoorParser {
 
     fn infix_bp(&self, tok: &Tok) -> Option<(u8, u8, &'static str)> {
         Some(match tok {
+            Tok::When => (4, 4, "when"),
             Tok::Or => (20, 21, "or"),
             Tok::And => (30, 31, "and"),
             Tok::EqEq => (40, 41, "=="),

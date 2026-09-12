@@ -7,6 +7,27 @@ fn test_lexer(src: &str) -> Lexer<'_> {
     Lexer::with_source_version_and_name(src, version, "<test>")
 }
 
+#[test]
+fn when_at_the_start_of_a_line_continues_the_previous_expression() {
+    let tokens = test_lexer("value\n  when ready\nnext\n")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let kinds = tokens.into_iter().map(|token| token.tok).collect::<Vec<_>>();
+
+    assert_eq!(
+        kinds,
+        vec![
+            Tok::Ident("value".to_string()),
+            Tok::When,
+            Tok::Ident("ready".to_string()),
+            Tok::Newline,
+            Tok::Ident("next".to_string()),
+            Tok::Newline,
+            Tok::Eof,
+        ]
+    );
+}
+
 // DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]
 fn tokens_carry_accurate_byte_spans() {
