@@ -47,6 +47,13 @@ pub(crate) trait QuotedExpansionCtx {
     fn note_read(&mut self, fact: FactKey);
     fn products(&self) -> Option<&ProductSessions>;
     fn note_product_read(&mut self, product: ProductAddress);
+
+    /// The source-visible caller scope for macro execution and memoization.
+    /// Expansion may layer transient compiler bindings onto `scope`; those
+    /// bindings must not change `__CALLER__` or the identity of a call site.
+    fn macro_caller_scope(&self, scope: ScopeSnapshot) -> ScopeSnapshot {
+        scope
+    }
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId>;
     fn wait_for_callable_module_interface(&mut self, function: FunctionId) -> JobEffects {
         let world = self.world();
@@ -115,9 +122,11 @@ pub(crate) trait QuotedExpansionCtx {
             {
                 return Ok(ExpandedValue::Complete(snippet.root()));
             }
-            if let Some(rewritten) = rewrite_source_sugar(owner, &node, &source_map.borrow()).map_err(|error| {
-                emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
-            })? {
+            if let Some(rewritten) =
+                rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow()).map_err(|error| {
+                    emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
+                })?
+            {
                 return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
                     ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
                     ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
@@ -189,7 +198,8 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
 
-        if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, &args)? {
+        let invocation = owner.subroot(cursor.root());
+        if let Some(result) = self.expand_remote_ast_call(owner, &invocation, node, scope, depth, &args)? {
             return Ok(Some(result));
         }
 
@@ -224,13 +234,14 @@ pub(crate) trait QuotedExpansionCtx {
             | NamespaceSymbol::Type(_)
             | NamespaceSymbol::Splice(_) => return Ok(None),
         };
-        self.expand_macro_invocation(owner, function, scope, depth, &args)
+        self.expand_macro_invocation(owner, invocation, function, scope, depth, &args)
             .map(Some)
     }
 
     fn expand_remote_ast_call(
         &mut self,
         owner: &QuotedSourceRoot,
+        invocation: &QuotedSourceRoot,
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
@@ -293,6 +304,7 @@ pub(crate) trait QuotedExpansionCtx {
         if module == self.current_module() {
             return self.expand_current_module_remote_ast_call(
                 owner,
+                invocation,
                 scope,
                 depth,
                 args,
@@ -341,13 +353,14 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, function, scope, depth, args)
+        self.expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
             .map(Some)
     }
 
     fn expand_current_module_remote_ast_call(
         &mut self,
         owner: &QuotedSourceRoot,
+        invocation: &QuotedSourceRoot,
         scope: ScopeSnapshot,
         depth: usize,
         args: &[QuotedSourceCursor],
@@ -367,13 +380,14 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, function, scope, depth, args)
+        self.expand_macro_invocation(owner, invocation.clone(), function, scope, depth, args)
             .map(Some)
     }
 
     fn expand_macro_invocation(
         &mut self,
         owner: &QuotedSourceRoot,
+        invocation: QuotedSourceRoot,
         function: FunctionId,
         scope: ScopeSnapshot,
         depth: usize,
@@ -401,10 +415,21 @@ pub(crate) trait QuotedExpansionCtx {
         };
         self.note_product_read(address);
 
+        let caller_scope = self.macro_caller_scope(scope);
+        if let Some(expanded) = self
+            .world()
+            .memoized_macro_expansion(function, &invocation, caller_scope, &program)
+        {
+            return match self.expand_root(expanded, scope, depth + 1)? {
+                ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+                ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+            };
+        }
+
         let builder = owner.builder();
         let caller = self
             .world()
-            .project_env_value(&builder, scope, QuotedLexicalContextKind::Caller)
+            .project_env_value(&builder, caller_scope, QuotedLexicalContextKind::Caller)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("__ENV__ projection failed: {error}"))
             })?;
@@ -416,6 +441,7 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;
         emit_macro_expanded(world, tel, &function, &expanded);
+        world.memoize_macro_expansion(function, invocation, caller_scope, &program, expanded.clone());
         match self.expand_root(expanded, scope, depth + 1)? {
             ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
             ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
@@ -561,6 +587,7 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
     } else {
         ctx.expand_macro_invocation(
             owner,
+            owner.clone(),
             invocation
                 .function
                 .expect("grouped item macro should resolve a compiler macro"),

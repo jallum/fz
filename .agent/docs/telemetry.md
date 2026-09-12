@@ -594,6 +594,9 @@ continues. Its exact raw signature is `(&World, &FunctionId,
 &QuotedSourceRoot)` for the expanded output. Handlers derive module identity
 and quoted-source heap/root identity during the callback. The shared quoted
 expander emits the same event for item macros and demanded function-body macros.
+It is an execution event, not a traversal event: blocked retries reuse the
+memoized immediate output and do not emit it again. A changed invocation or a
+different retained macro backend executes again and emits a new event.
 
 Demand-time body staging emits `[fz, compiler2, function, source, expanded]`
 when `ExpandFunctionSource(function)` materializes `ExpandedFunctionSource`.

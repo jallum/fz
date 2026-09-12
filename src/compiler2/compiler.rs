@@ -340,6 +340,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         let retired = self.product_sessions.retire(root, self.world.types());
         ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions)
             .apply_product_changes(changes);
+        if retired {
+            self.world.retire_macro_expansions_for_root(root);
+        }
         retired
     }
 

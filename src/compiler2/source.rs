@@ -191,6 +191,7 @@ pub struct QuotedSourceHeap {
     process: RefCell<Process>,
     tuple_schemas: RefCell<HashMap<usize, u32>>,
     interned_lists: RefCell<HashMap<Vec<u64>, AnyValueRef>>,
+    source_sugar_rewrites: RefCell<HashMap<u64, AnyValueRef>>,
 }
 
 impl fmt::Debug for QuotedSourceHeap {
@@ -214,6 +215,7 @@ impl QuotedSourceHeap {
             process: RefCell::new(Self::fresh_process()),
             tuple_schemas: RefCell::new(HashMap::new()),
             interned_lists: RefCell::new(HashMap::new()),
+            source_sugar_rewrites: RefCell::new(HashMap::new()),
         }
     }
 
@@ -501,6 +503,21 @@ impl QuotedSourceRoot {
 
     pub fn key(&self) -> QuotedSourceKey {
         self.key
+    }
+
+    pub(crate) fn source_sugar_rewrite(&self, source: AnyValueRef) -> Option<AnyValueRef> {
+        self.heap
+            .source_sugar_rewrites
+            .borrow()
+            .get(&source.raw_word())
+            .copied()
+    }
+
+    pub(crate) fn memoize_source_sugar_rewrite(&self, source: AnyValueRef, rewritten: AnyValueRef) {
+        self.heap
+            .source_sugar_rewrites
+            .borrow_mut()
+            .insert(source.raw_word(), rewritten);
     }
 
     /// Semantic structural equality, fast-failing at the first difference.

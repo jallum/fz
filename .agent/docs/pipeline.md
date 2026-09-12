@@ -776,6 +776,11 @@ Runtime consumers and macro expansion clone the `Rc<BackendProgram>`, not the
 program tree. Equal product reproduction retains the existing allocation and
 generation. `NativeProgram` also lives only in the memo and returns an
 `Rc<NativeProgram>`; World owns no backend, macro, or native artifact mirror.
+World's macro-invocation memo owns only quoted call/output roots and a weak
+backend handle, so it cannot extend a retained product's lifetime. Retiring a
+macro root removes its invocation entries immediately. Otherwise the memo has
+one replaceable entry per submitted quoted invocation and caller scope; backend
+changes replace that entry, and blocked retries do not grow it.
 
 An external backend/native request owns one retained root-session activation.
 It applies queued edits before reading products. Native requests pull
