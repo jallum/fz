@@ -728,6 +728,51 @@ defmodule Enum do
     )
   end
 
+  @doc """
+  Returns the elements whose zero-based indexes fall within `index_range`.
+
+  Negative indexes count from the end. A positive range step selects every
+  nth index, and indexes outside the enumerable are ignored. A step of zero
+  or less aborts.
+
+  ## Examples
+
+      Enum.slice([1, 2, 3, 4, 5], 1..3)
+      #=> [2, 3, 4]
+
+      Enum.slice([1, 2, 3, 4, 5], 0..10//3)
+      #=> [1, 4]
+
+  """
+  @spec slice(Enumerable.t(a), Range.t) :: [a]
+  fn slice(enumerable, %Range{first: first, last: last, step: step}) do
+    slice_range_step(step > 0, enumerable, first, last, step)
+  end
+
+  @doc """
+  Returns up to `amount` elements beginning at the zero-based `start_index`.
+
+  A negative start counts from the end. Starts before the beginning clamp to
+  the first element; starts past the end and an amount of zero return `[]`.
+  A negative amount aborts.
+
+  ## Examples
+
+      Enum.slice([1, 2, 3, 4, 5], 1, 3)
+      #=> [2, 3, 4]
+
+      Enum.slice([1, 2, 3, 4, 5], -2, 3)
+      #=> [4, 5]
+
+  """
+  @spec slice(Enumerable.t(a), integer, integer) :: [a]
+  fn slice(_enumerable, _start_index, 0), do: []
+  fn slice(_enumerable, _start_index, amount) when amount < 0, do: panic("Enum.OutOfBoundsError")
+  fn slice(enumerable, start_index, amount) when start_index < 0 do
+    slice_counted(enumerable, {:start, start_index, amount}, 1)
+  end
+  fn slice(enumerable, start_index, amount), do: slice_forward(enumerable, start_index, amount, 1)
+
   # The default sort is Erlang's total term order, not `<=`. `<=` is declared
   # only for the operand pairs fz can prove, so `Enum.sort/1` over a mixed
   # list could not even be written in terms of it; `Kernel.compare/2` is the
@@ -1051,6 +1096,126 @@ defmodule Enum do
   fnp split_counted_finish({left, right, _count}), do: {reverse_list(left), reverse_list(right)}
   @spec split_pair_finish({[a], [a]}) :: {[a], [a]}
   fnp split_pair_finish({left, right}), do: {reverse_list(left), reverse_list(right)}
+
+  @spec slice_range_step(bool, Enumerable.t(a), integer, integer, integer) :: [a]
+  fnp slice_range_step(true, enumerable, first, last, step), do: slice_range(enumerable, first, last, step)
+  fnp slice_range_step(false, _enumerable, _first, _last, _step), do: panic("Enum.OutOfBoundsError")
+
+  @spec slice_range(Enumerable.t(a), integer, integer, integer) :: [a]
+  fnp slice_range(enumerable, first, last, step) when last >= first and last >= 0 and first >= 0 do
+    slice_forward(enumerable, first, last - first + 1, step)
+  end
+  fnp slice_range(enumerable, first, last, step), do: slice_counted(enumerable, {:range, first, last}, step)
+
+  @spec slice_forward([a], integer, integer, integer) :: [a]
+  fnp slice_forward(list :: [a], start, amount, step) do
+    slice_list(list, start, amount_with_step(amount, step), step)
+  end
+  @spec slice_forward(Range.t, integer, integer, integer) :: [integer]
+  fnp slice_forward(range :: Range.t, start, amount, step) do
+    case Enumerable.slice(range) do
+      {:ok, count, slicer} ->
+        case slice_window_result(count, start, amount, step) do
+          {:slice, slice_start, slice_amount, slice_step} -> slicer.(slice_start, slice_amount, slice_step)
+          :empty -> []
+          _ -> panic("Enum.SliceStateError")
+        end
+      _ -> panic("Enum.SliceStateError")
+    end
+  end
+  @spec slice_forward(map, integer, integer, integer) :: [any]
+  fnp slice_forward(map :: map, start, amount, step) do
+    case Enumerable.slice(map) do
+      {:ok, _count, to_list} -> slice_list(to_list.(map), start, amount_with_step(amount, step), step)
+      _ -> panic("Enum.SliceStateError")
+    end
+  end
+  @spec slice_forward(Enumerable.t(a), integer, integer, integer) :: [a]
+  fnp slice_forward(enumerable, start, amount, step), do: slice_list(to_list(enumerable), start, amount_with_step(amount, step), step)
+
+  @spec slice_counted([a], any, integer) :: [a]
+  fnp slice_counted(list :: [a], bounds, step) do
+    slice_list_window(list, slice_window(bounds, List.count(list), step))
+  end
+  @spec slice_counted(Range.t, any, integer) :: [integer]
+  fnp slice_counted(range :: Range.t, bounds, step) do
+    case Enumerable.slice(range) do
+      {:ok, count, slicer} ->
+        case slice_window(bounds, count, step) do
+          {:slice, start, amount, slice_step} -> slicer.(start, amount, slice_step)
+          :empty -> []
+          _ -> panic("Enum.SliceStateError")
+        end
+      _ -> panic("Enum.SliceStateError")
+    end
+  end
+  @spec slice_counted(map, any, integer) :: [any]
+  fnp slice_counted(map :: map, bounds, step) do
+    case Enumerable.slice(map) do
+      {:ok, count, to_list} -> slice_list_window(to_list.(map), slice_window(bounds, count, step))
+      _ -> panic("Enum.SliceStateError")
+    end
+  end
+  @spec slice_counted(Enumerable.t(a), any, integer) :: [a]
+  fnp slice_counted(enumerable, bounds, step) do
+    list = to_list(enumerable)
+    slice_list_window(list, slice_window(bounds, List.count(list), step))
+  end
+
+  @spec slice_window(any, integer, integer) :: :empty | {:slice, integer, integer, integer}
+  fnp slice_window({:start, start, amount}, count, step) do
+    slice_window_result(count, non_negative(count + start), amount, step)
+  end
+  fnp slice_window({:range, first, last}, count, step) do
+    normalized_first = normalize_slice_start(first, count)
+    normalized_last = normalize_slice_end(last, count)
+    slice_window_result(count, normalized_first, normalized_last - normalized_first + 1, step)
+  end
+  fnp slice_window(_bounds, _count, _step), do: panic("Enum.SliceStateError")
+
+  @spec slice_window_result(integer, integer, integer, integer) :: :empty | {:slice, integer, integer, integer}
+  fnp slice_window_result(count, start, amount, step) when start < count and amount > 0 do
+    bounded_amount = min_value(amount, count - start)
+    {:slice, start, amount_with_step(bounded_amount, step), step}
+  end
+  fnp slice_window_result(_count, _start, _amount, _step), do: :empty
+
+  @spec slice_list_window([a], :empty | {:slice, integer, integer, integer}) :: [a]
+  fnp slice_list_window(_list, :empty), do: []
+  fnp slice_list_window(list, {:slice, start, amount, step}), do: slice_list(list, start, amount, step)
+
+  @spec slice_list([a], integer, integer, integer) :: [a]
+  fnp slice_list([], _start, _amount, _step), do: []
+  fnp slice_list(list, 0, amount, step), do: slice_list_take(list, amount, step)
+  fnp slice_list([_head | tail], start, amount, step), do: slice_list(tail, start - 1, amount, step)
+
+  @spec slice_list_take([a], integer, integer) :: [a]
+  fnp slice_list_take(_list, 0, _step), do: []
+  fnp slice_list_take([], _amount, _step), do: []
+  fnp slice_list_take([head | tail], amount, step) do
+    [head | slice_list_take(slice_list_skip(tail, step - 1), amount - 1, step)]
+  end
+
+  @spec slice_list_skip([a], integer) :: [a]
+  fnp slice_list_skip(list, 0), do: list
+  fnp slice_list_skip([], _amount), do: []
+  fnp slice_list_skip([_head | tail], amount), do: slice_list_skip(tail, amount - 1)
+
+  @spec normalize_slice_start(integer, integer) :: integer
+  fnp normalize_slice_start(index, _count) when index >= 0, do: index
+  fnp normalize_slice_start(index, count), do: non_negative(index + count)
+
+  @spec normalize_slice_end(integer, integer) :: integer
+  fnp normalize_slice_end(index, _count) when index >= 0, do: index
+  fnp normalize_slice_end(index, count), do: index + count
+
+  @spec amount_with_step(integer, integer) :: integer
+  fnp amount_with_step(amount, 1), do: amount
+  fnp amount_with_step(amount, step), do: div(amount - 1, step) + 1
+
+  @spec min_value(integer, integer) :: integer
+  fnp min_value(left, right) when left < right, do: left
+  fnp min_value(_left, right), do: right
 
   @spec sort_list([a], (a, a) -> bool) :: [a]
   fnp sort_list([], _sorter), do: []

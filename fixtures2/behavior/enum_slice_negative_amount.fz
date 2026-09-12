@@ -1,0 +1,7 @@
+#---
+# purpose: "Enum.slice rejects a negative amount on every execution path"
+# expect: abort
+#---
+fn main() do
+  Enum.slice([1, 2, 3], 0, -1)
+end
