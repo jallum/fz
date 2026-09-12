@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T17:59:03Z",
+  "description": "Goal: reduce pull-request CI latency while retaining the full all-features coverage ratchet and its deterministic signal.\n\nSignal (2026-09-11/12): twelve completed successful CI runs spent a mean 1,654s (27m34s; range 21m16s–33m43s) in cargo llvm-cov, 96.6% of the test job. In run 34703940486, coverage compilation took 52s; fz lib tests took 1,117.42s, fixture_matrix took 656.07s, and fz2 CLI tests took 136.25s. CI globally forces RUST_TEST_THREADS=1, serializing all three bodies.\n\nWhy this is now actionable: the two historical reasons not to parallelize the fixture matrix have been repaired. The former 3s contention tripwire is now the 20s nontermination guard (fz-kdt.175), and the concurrent AOT runtime-archive mtime race was closed by deterministic archive selection (fz-0lm). The current default-parallel local all-features suite passed: 2,016 lib tests, 676 fixture trials, 30 CLI tests, 257 runtime tests, docs.\n\nStrategy: on a branch, preserve the existing cargo llvm-cov command and coverage threshold. Run controlled GitHub Actions measurements for RUST_TEST_THREADS=1, then 2, then 4 (not host-default fanout), with at least five clean repetitions of the chosen candidate. Compare successful-run wall time and the exact coverage JSON line percentage; check for timeout, archive/link, temp-file, global-state, and output-determinism failures. Choose the fastest stable bounded value, document the rationale beside the env setting, update CI timing telemetry/reporting so regressions are visible, and delete the old blanket-serialization rationale. Do not move coverage off PRs or weaken the threshold as a shortcut.\n\nAcceptance: chosen setting passes strict full CI repeatedly; coverage result is unchanged or improves; no historical parallel-flake class recurs; measured median coverage time is materially below the current 27m34s baseline; CI workflow comments/docs state the measured worker count and the timeout/archive invariants it depends on.",
+  "id": "fz-qds",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "CI: restore bounded coverage-test parallelism after resolved contention defects",
+  "type": "task",
+  "updated_at": "2026-09-12T17:59:03Z"
+}
