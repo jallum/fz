@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T18:37:12Z",
+  "description": "SURFACED by PR #149 / CI run 34710897082 with RUST_TEST_THREADS=4. The parallel fixture matrix opened enough readiness pipes that FZ_EXEC_READY_FD became 10. Four static harness tests execute sh snippets using dynamic redirection through eval, for example eval \"exec ${FZ_EXEC_READY_FD}\u003e\u0026-\" and eval \"printf x \u003e\u0026${FZ_EXEC_READY_FD}\". On Ubuntu Actions /bin/sh is dash; after expansion it reports `sh: 1: exec: 10: not found` because dash only parses a literal single-digit redirect before expansion. Serial RUST_TEST_THREADS=1 hid the invalid contract by keeping descriptors below 10.\n\nGoal: make readiness-probe controls descriptor-number agnostic, with no shell-specific dynamic-redirection grammar. Pass the ready descriptor through an executable-safe mechanism or write/close it in Rust-owned probes; preserve the probes exact lifecycle assertions, process-group semantics, and bounded capture behavior. Add a regression that exercises a multi-digit fd on Linux. Verify the four historical tests plus the default-parallel fixture matrix under cargo llvm-cov on Ubuntu. This blocks fz-qds.",
+  "id": "fz-zwj",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Fixture readiness probes must support multi-digit file descriptors",
+  "type": "bug",
+  "updated_at": "2026-09-12T18:37:12Z"
+}
