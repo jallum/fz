@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-5xp.82"
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enumerable.slice/1 is surface nothing reaches",
   "type": "task",
-  "updated_at": "2026-09-12T13:57:48Z"
+  "updated_at": "2026-09-12T13:57:49Z"
 }
