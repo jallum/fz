@@ -954,7 +954,7 @@ impl ProgramCanon<'_> {
             BackendEntryOrigin::ReceiveOutcome => "receive_outcome".to_string(),
             BackendEntryOrigin::DeliveredResume { value, layout } => {
                 let name = self.names.value(*value);
-                format!("delivered_resume {name} {}", self.return_layout(layout))
+                format!("delivered_resume {name} {}", self.layout(layout))
             }
         }
     }

@@ -2597,13 +2597,10 @@ fn bind_delivered_value(
     proc: *mut Process,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<&BackendBoundValue>,
-    layout: &crate::compiler2::BackendReturnLayout,
+    layout: &crate::compiler2::BackendValueLayout,
 ) -> Result<Option<BackendBoundValue>, String> {
-    if transport
-        .interners()
-        .shape(layout.layout.structural)
-        .is_semantically_absent()
-        && matches!(layout.layout.carrier, TransportCarrier::Absent)
+    if transport.interners().shape(layout.structural).is_semantically_absent()
+        && matches!(layout.carrier, TransportCarrier::Absent)
     {
         Ok(None)
     } else {
@@ -2624,20 +2621,20 @@ fn project_backend_value_for_contract(
     program: &BackendProgram,
     proc: *mut Process,
     value: &BackendBoundValue,
-    layout: &crate::compiler2::BackendReturnLayout,
+    layout: &crate::compiler2::BackendValueLayout,
 ) -> Result<BackendBoundValue, String> {
-    if matches!(layout.layout.carrier, TransportCarrier::ValueRef(_)) {
+    if matches!(layout.carrier, TransportCarrier::ValueRef(_)) {
         return Ok(BackendBoundValue::Runtime(materialize_backend_value(
             transport, proc, value,
         )?));
     }
     let mut lanes = Vec::new();
-    encode_runtime_value(transport, program, proc, value, layout.layout.structural, &mut lanes)?;
+    encode_runtime_value(transport, program, proc, value, layout.structural, &mut lanes)?;
     let mut lane_index = 0;
     let decoded = decode_transport_layout(
         transport,
         &lanes,
-        TransportLayout::structural(layout.layout.structural),
+        TransportLayout::structural(layout.structural),
         &mut lane_index,
     )?;
     if lane_index != lanes.len() {
@@ -3516,17 +3513,13 @@ mod tests {
                     .is_semantically_absent(),
                 index == 0
             );
-            let layout = crate::compiler2::BackendReturnLayout {
-                layout: input.layout.clone(),
-                diverges: false,
-            };
             let result = bind_delivered_value(
                 &transport,
                 &empty_backend_program(),
                 std::ptr::null_mut(),
                 crate::compiler2::ControlEntryId::from_u32(0),
                 None,
-                &layout,
+                &input.layout,
             );
             assert_eq!(
                 result.is_ok(),

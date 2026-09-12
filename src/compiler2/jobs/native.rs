@@ -2263,7 +2263,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
             }
             BackendEntryOrigin::DeliveredResume { value: _, layout } => {
-                let (mut entry_tys, mut param_reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
+                let (mut entry_tys, mut param_reprs) = (layout.tys.to_vec(), layout.reprs.to_vec());
                 let extra_params = param_reprs.len();
                 entry_tys.extend(param_tys.iter().copied());
                 param_reprs.extend(param_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
@@ -2301,14 +2301,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(entry.params.len())
             }
             BackendEntryOrigin::DeliveredResume { value, layout } => {
-                if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::Absent)
-                    && matches!(self.world.shape(layout.layout.structural), ShapeDescr::Nothing)
+                if matches!(layout.carrier, super::super::pull::TransportCarrier::Absent)
+                    && matches!(self.world.shape(layout.structural), ShapeDescr::Nothing)
                 {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                     return Ok(0);
                 }
                 let mut lane_index = 0;
-                let bound = self.decode_runtime_value_for_layout(&layout.layout, entry_vars, &mut lane_index)?;
+                let bound = self.decode_runtime_value_for_layout(layout, entry_vars, &mut lane_index)?;
                 bind_local_value(ctx, executable, env, *value, bound);
                 Ok(lane_index)
             }
@@ -2376,9 +2376,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         if input_vars.is_empty() {
             return Ok(());
         }
-        let shape = layout.layout.structural;
+        let shape = layout.structural;
         let mut lane_index = 0;
-        if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::ValueRef(_)) {
+        if matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef(_)) {
             let ignore = RuntimeDemand::ignore();
             let demand = executable
                 .abi
@@ -2783,14 +2783,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let local = env
                     .cloned_value(value_id)
                     .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
-                self.encode_runtime_value_for_layout(
-                    ctx,
-                    executable,
-                    Some(value_id),
-                    &local,
-                    &layout.layout,
-                    &mut lanes,
-                )?;
+                self.encode_runtime_value_for_layout(ctx, executable, Some(value_id), &local, layout, &mut lanes)?;
                 lanes
             }
         };

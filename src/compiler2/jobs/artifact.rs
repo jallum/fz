@@ -570,7 +570,6 @@ fn required_resume_transport_positions(
     };
     let symbol = transport_executable_symbol(executable, world.types());
     let mut positions = Vec::new();
-    let mut deliver_callsites = HashMap::new();
     for entry in entries {
         let Some((callsite, ControlDestination::Deliver(entry_id))) = (match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
@@ -589,23 +588,11 @@ fn required_resume_transport_positions(
             .get(entry_id.as_u32() as usize)
             .copied()
             .unwrap_or(*entry_id);
-        deliver_callsites.insert(entry_id, callsite);
-    }
-    for (entry_index, entry) in entries.iter().enumerate() {
-        let ControlEntryOrigin::DeliveredResume { .. } = entry.origin else {
-            continue;
-        };
-        let entry_id = materialized
-            .original_entry_ids
-            .get(entry_index)
-            .copied()
-            .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32));
-        let position = TransportPosition::ResumePayload {
+        positions.push(TransportPosition::ResumePayload {
             executable: symbol.clone(),
-            callsite: deliver_callsites.get(&entry_id).copied(),
+            callsite,
             entry: entry_id,
-        };
-        positions.push(position);
+        });
     }
     positions
 }
@@ -650,6 +637,16 @@ fn required_local_backend_transport_positions(
         positions.push(position);
     }
     for entry in entries {
+        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
+            assert!(
+                materialized.value_types.contains_key(&value),
+                "a delivered resume value must have an analyzed type: {value:?} in executable {executable:?}",
+            );
+            positions.push(TransportPosition::Value {
+                executable: symbol.clone(),
+                value,
+            });
+        }
         let (callsite, args, value) = match &entry.tail {
             LoweredTail::DirectCall {
                 value, callsite, args, ..
@@ -1301,7 +1298,7 @@ fn call_return_flow(
                 .unwrap_or(*entry);
             let resume = TransportPosition::ResumePayload {
                 executable: caller_symbol.clone(),
-                callsite: Some(callsite),
+                callsite,
                 entry: transport_entry,
             };
             let source = if public_callable {
@@ -2016,6 +2013,49 @@ mod tests {
     };
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn delivered_resume_requires_analyzed_type_even_when_no_callsite_delivers() {
+        let mut world = World::new();
+        let executable = fake_call_executable(&mut world, 10, 11, &[]);
+        let empty = world.types_mut().none();
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let mut backend =
+            super::super::super::artifact::BackendExecutable::for_test(executable.clone(), empty, nothing);
+        let materialized = Rc::make_mut(&mut Rc::make_mut(&mut backend.abi).materialized);
+        let value = ValueId::from_u32(0);
+        let LoweredBody::Clauses { entries, .. } = &mut materialized.body else {
+            unreachable!()
+        };
+        entries.push(LoweredEntry {
+            span: Span::DUMMY,
+            origin: ControlEntryOrigin::DeliveredResume { value },
+            params: Vec::new(),
+            captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
+            steps: Vec::new(),
+            tail: LoweredTail::Halt {
+                atom: UNREACHABLE_CONTROL_ATOM.into(),
+            },
+        });
+        let missing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            required_local_backend_transport_positions(&world, &executable, materialized)
+        }));
+        assert!(
+            missing.is_err(),
+            "missing analysis is not an unconstrained joined value"
+        );
+        materialized.value_types.insert(value, empty);
+        assert_eq!(
+            required_local_backend_transport_positions(&world, &executable, materialized),
+            vec![TransportPosition::Value {
+                executable: transport_executable_symbol(&executable, world.types()),
+                value,
+            }],
+            "settled NoReturn has an explicit empty type and still owns its join position",
+        );
+    }
 
     #[test]
     fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {

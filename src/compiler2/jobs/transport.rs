@@ -387,32 +387,18 @@ fn produce_generic_callable_owner(
                     });
                 }
             }
-            TransportPosition::ResumePayload { callsite, entry, .. } => {
-                if let Some(callsite) = callsite {
-                    if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
-                        !append_origin_children(
-                            world,
-                            executable,
-                            position.executable(),
-                            facts,
-                            origin,
-                            &mut source_positions,
-                        )
-                    }) {
-                        source_positions.clear();
-                    }
-                } else if let LoweredBody::Clauses { entries, .. } = facts.body()
-                    && let Some(value) = entries
-                        .get(entry.as_u32() as usize)
-                        .and_then(|entry| match entry.origin {
-                            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
-                            _ => None,
-                        })
-                {
-                    source_positions.push(TransportPosition::Value {
-                        executable: position.executable().clone(),
-                        value,
-                    });
+            TransportPosition::ResumePayload { callsite, .. } => {
+                if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
+                    !append_origin_children(
+                        world,
+                        executable,
+                        position.executable(),
+                        facts,
+                        origin,
+                        &mut source_positions,
+                    )
+                }) {
+                    source_positions.clear();
                 }
             }
         }
@@ -1757,21 +1743,14 @@ fn produce_named_transport_position(
         }
         TransportPosition::ResumePayload { callsite, entry, .. } => {
             let value = resume_payload_value(&facts, *entry);
-            if let Some(callsite) = callsite {
-                recipe = origin_transport_recipe(
-                    world,
-                    &symbol,
-                    &facts,
-                    facts
-                        .callsite_return_origin(*callsite)
-                        .expect("every resume payload must have a normalized callsite origin"),
-                );
-            } else {
-                recipe = TransportRecipe::Alias(TransportPosition::Value {
-                    executable: symbol,
-                    value,
-                });
-            }
+            recipe = origin_transport_recipe(
+                world,
+                &symbol,
+                &facts,
+                facts
+                    .callsite_return_origin(*callsite)
+                    .expect("every resume payload must have a normalized callsite origin"),
+            );
             (
                 resume_payload_ty(world.types(), executable, &facts, *entry),
                 runtime.value_demands.get(&value).cloned().unwrap_or_default(),

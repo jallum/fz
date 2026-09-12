@@ -149,6 +149,14 @@ result value as `none`. This gives a structurally retained resume entry a
 truthful bottom payload type without manufacturing `any` or pretending its
 unreachable body can execute.
 
+A delivered entry can join several call results and local values. Its value
+origin retains every contributor, while each callsite keeps its own return
+transport identity. The entry's analyzed value type and joined transport layout
+include every live branch: a nonreturning call contributes the empty type, so
+it cannot replace a sibling's `nil` payload with absence. Requiring the joined
+`Value` transport position checks that its analyzed type exists; missing
+evidence is distinct from an explicit empty type.
+
 The ARGUMENT decides which specialization a closure call reaches, and nothing
 narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that
 lambda has already been analyzed at — not a contract the caller is checked

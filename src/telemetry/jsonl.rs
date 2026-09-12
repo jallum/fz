@@ -2152,9 +2152,7 @@ fn write_transport_position_body(out: &mut String, position: &crate::compiler2::
         }
         TransportPosition::ExecutableReturn { .. } => {}
         TransportPosition::ResumePayload { callsite, entry, .. } => {
-            if let Some(callsite) = callsite {
-                write_callsite_id(out, *callsite);
-            }
+            write_callsite_id(out, *callsite);
             write_control_entry_id(out, *entry);
         }
         TransportPosition::ReturnPayload { callsite, .. } => {

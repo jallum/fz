@@ -1256,10 +1256,7 @@ pub enum BackendEntryOrigin {
     Clause,
     Branch,
     ReceiveOutcome,
-    DeliveredResume {
-        value: ValueId,
-        layout: BackendReturnLayout,
-    },
+    DeliveredResume { value: ValueId, layout: BackendValueLayout },
 }
 
 impl BackendEntryOrigin {

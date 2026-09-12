@@ -7881,7 +7881,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         .iter()
         .find(|entry| match &entry.origin {
             BackendEntryOrigin::DeliveredResume { value, layout } => {
-                let _shape = layout.layout.structural;
+                let _shape = layout.structural;
                 entry.steps.iter().any(|step| {
                     matches!(
                         step,
@@ -7900,7 +7900,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 
     match &resume_entry.origin {
         BackendEntryOrigin::DeliveredResume { layout, .. } => {
-            let _shape = layout.layout.structural;
+            let _shape = layout.structural;
         }
         other => panic!("expected delivered-resume position for heap_alloc_stats continuation, got {other:?}"),
     }
@@ -7984,7 +7984,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
 
     match &resume_entry.origin {
         BackendEntryOrigin::DeliveredResume { value, layout } => {
-            let _shape = layout.layout.structural;
+            let _shape = layout.structural;
             assert!(
                 main_exec
                     .abi
@@ -9407,15 +9407,13 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
             BackendBody::Extern { .. } | BackendBody::Intrinsic { .. } => Vec::new(),
         })
         .find_map(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { layout, .. }
-                if layout.layout.reprs.as_ref() == [AbiValueRepr::RawInt] =>
-            {
+            BackendEntryOrigin::DeliveredResume { layout, .. } if layout.reprs.as_ref() == [AbiValueRepr::RawInt] => {
                 Some(layout)
             }
             _ => None,
         })
         .expect("the exact count-result demand should project one delivered integer lane");
-    assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
+    assert_eq!(count_resume.carrier, TransportCarrier::Absent);
 
     let program = native.last(root_id).program;
     let adapter = program

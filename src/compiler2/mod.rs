@@ -57,8 +57,9 @@ pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReceive, BackendReturnLayout,
-    BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    BackendSemanticInputLayout, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget, DirectCallEdge,
+    DispatchCallArm, DispatchCallEdge, DispatchCallMiss, ExecutableDispatch, MaterializedCallEdge,
+    MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};

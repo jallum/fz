@@ -1076,34 +1076,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 }
 
 fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry: &LoweredEntry) -> BackendEntryOrigin {
-    let entry_id = original_entry_id(executable, entry_index);
     if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
-        if let Some(position) = executable
-            .transport
-            .resume_positions
-            .iter()
-            .find(|position| {
-                matches!(
-                    position,
-                    super::super::transport::TransportPosition::ResumePayload {
-                        entry: resume_entry,
-                        ..
-                    } if *resume_entry == entry_id
-                )
-            })
+        let layout = executable
+            .value_layouts
+            .get(&value)
             .cloned()
-        {
-            let layout = executable
-                .return_endpoints
-                .iter()
-                .find_map(|(candidate, layout)| (candidate == &position).then(|| layout.clone()))
-                .expect("resume ABI owns its return endpoint");
-            return BackendEntryOrigin::DeliveredResume { value, layout };
-        }
-        if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
-            return BackendEntryOrigin::Branch;
-        }
-        panic!("resume entry {entry_index} should have a settled transport position: {entry:?}");
+            .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled value layout: {entry:?}"));
+        return BackendEntryOrigin::DeliveredResume { value, layout };
     }
     if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
         return BackendEntryOrigin::Branch;

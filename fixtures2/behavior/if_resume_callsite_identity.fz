@@ -1,0 +1,27 @@
+#---
+# purpose: shared if joins preserve each delivering callsite and every live payload
+#---
+fn int_value(), do: 1
+fn float_value(), do: 2.0
+fn nil_value(), do: nil
+
+fn mixed(flag) do
+  value = if flag, do: int_value(), else: float_value()
+  {value}
+end
+
+fn mixed_closure(flag) do
+  value = if flag, do: (&int_value/0).(), else: (&float_value/0).()
+  {value}
+end
+
+fn main() do
+  assert((if nil, do: panic(:unselected_branch), else: nil) == nil)
+  assert((if true, do: nil, else: panic(:unselected_branch)) == nil)
+  assert((if nil, do: panic(:unselected_branch), else: nil_value()) == nil)
+  assert((if nil, do: panic(:unselected_branch), else: (&nil_value/0).()) == nil)
+  assert(mixed(true) == {1})
+  assert(mixed(false) == {2.0})
+  assert(mixed_closure(true) == {1})
+  assert(mixed_closure(false) == {2.0})
+end

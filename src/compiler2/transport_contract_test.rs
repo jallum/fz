@@ -195,6 +195,274 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
 }
 
 #[test]
+fn compiler2_transport_resume_positions_preserve_every_delivering_callsite() {
+    use super::body::{ControlDestination, ControlEntryOrigin, LoweredBody, LoweredTail};
+
+    for (case, left, right) in [("mixed", "1", "2.0"), ("diverging", "panic(:bad)", "nil")] {
+        for (door, invoke_left, invoke_right) in [
+            ("direct", "left()", "right()"),
+            ("closure", "(&left/0).()", "(&right/0).()"),
+        ] {
+            let tel = ConfiguredTelemetry::new();
+            let mut world = World::new();
+            world.submit_code(
+                Some(format!("resume_callsite_{case}_{door}.fz")),
+                format!(
+                    "fn left(), do: {left}\nfn right(), do: {right}\n\
+                     fn choose(flag) do\n value = if flag, do: {invoke_left}, else: {invoke_right}\n\
+                     dbg(value)\n value\nend\nfn main() do\n choose(true)\n choose(false)\nend\n"
+                ),
+            );
+            let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
+            let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+            let symbol = executable_for(&world, &driver.session(), "choose", 1);
+            let consumer = retained_executable(&program, &symbol);
+            let materialized = &consumer.abi.materialized;
+            let LoweredBody::Clauses { entries, .. } = &materialized.body else {
+                panic!("choose has clauses")
+            };
+            let original_entry =
+                |entry: super::ControlEntryId| materialized.original_entry_ids[entry.as_u32() as usize];
+            let expected = entries
+                .iter()
+                .filter_map(|entry| match &entry.tail {
+                    LoweredTail::DirectCall {
+                        callsite,
+                        dest: ControlDestination::Deliver(entry),
+                        ..
+                    }
+                    | LoweredTail::ClosureCall {
+                        callsite,
+                        dest: ControlDestination::Deliver(entry),
+                        ..
+                    } => Some(TransportPosition::ResumePayload {
+                        executable: symbol.clone(),
+                        callsite: *callsite,
+                        entry: original_entry(*entry),
+                    }),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            let actual = consumer
+                .abi
+                .transport
+                .resume_positions
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            assert_eq!(
+                actual, expected,
+                "{case}/{door}: every delivering callsite owns a distinct position"
+            );
+            for position in &expected {
+                let TransportPosition::ResumePayload { callsite, .. } = position else {
+                    unreachable!()
+                };
+                let edge = &consumer.abi.call_edges[callsite].target;
+                let flows = match edge {
+                    super::artifact::CallEdge::Direct(edge) => vec![&edge.return_flow],
+                    super::artifact::CallEdge::Dispatch(edge) => edge.arms.iter().map(|arm| &arm.return_flow).collect(),
+                    super::artifact::CallEdge::Indirect(flow) => vec![flow],
+                };
+                for flow in flows {
+                    match flow {
+                        super::artifact::CallReturnFlow::Deliver { resume, .. } => {
+                            assert_eq!(resume, position, "the call return flow names its own exact endpoint");
+                        }
+                        super::artifact::CallReturnFlow::NoReturn { .. } => {
+                            assert_eq!(case, "diverging", "only the deliberately raising branch cannot return");
+                        }
+                        other => panic!("a non-tail branch call must deliver or not return: {other:?}"),
+                    }
+                }
+            }
+
+            let join = entries
+                .iter()
+                .enumerate()
+                .find_map(|(index, entry)| {
+                    let ControlEntryOrigin::DeliveredResume { value } = entry.origin else {
+                        return None;
+                    };
+                    let id = materialized.original_entry_ids[index];
+                    let endpoints = expected
+                        .iter()
+                        .filter(|position| matches!(position, TransportPosition::ResumePayload { entry, .. } if *entry == id))
+                        .collect::<Vec<_>>();
+                    (endpoints.len() == 2).then_some((id, value, endpoints))
+                })
+                .expect("both branches deliver into one shared join");
+            let mut reprs = join
+                .2
+                .iter()
+                .map(|position| {
+                    consumer
+                        .abi
+                        .return_endpoints
+                        .iter()
+                        .find_map(|(candidate, layout)| (candidate == *position).then(|| layout.layout.reprs.to_vec()))
+                        .expect("each exact callsite position has an emitted continuation endpoint")
+                })
+                .collect::<Vec<_>>();
+            reprs.sort_by_key(|repr| format!("{repr:?}"));
+            let mut expected_reprs = if case == "mixed" {
+                vec![vec![AbiValueRepr::RawInt], vec![AbiValueRepr::RawF64]]
+            } else {
+                vec![vec![], vec![AbiValueRepr::RawAtom]]
+            };
+            expected_reprs.sort_by_key(|repr| format!("{repr:?}"));
+            assert_eq!(
+                reprs, expected_reprs,
+                "{case}/{door}: endpoint layouts are solved independently"
+            );
+            let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
+                panic!("clauses")
+            };
+            let layout = entries
+                .iter()
+                .find_map(|entry| match &entry.origin {
+                    super::artifact::BackendEntryOrigin::DeliveredResume { value, layout } if *value == join.1 => {
+                        Some(layout)
+                    }
+                    _ => None,
+                })
+                .expect("joined delivered value has an entry ABI");
+            assert_eq!(
+                layout, &consumer.abi.value_layouts[&join.1],
+                "the entry consumes its joined Value contract"
+            );
+            assert_eq!(
+                layout.reprs.as_ref(),
+                &[if case == "mixed" {
+                    AbiValueRepr::ValueRef
+                } else {
+                    AbiValueRepr::RawAtom
+                }],
+                "the join accepts both numeric representations or the live nil value beside NoReturn",
+            );
+        }
+    }
+}
+
+#[test]
+fn compiler2_transport_resume_endpoints_retain_independent_product_causality() {
+    let tel = ConfiguredTelemetry::new();
+    let produced = PullTelemetryCapture::install(&tel);
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("resume_endpoint_causality.fz".into()),
+        text: "fn left(), do: 1\nfn right(), do: 2\nfn choose(flag) do\n value = if flag, do: left(), else: right()\n {value}\nend\nfn main() do\n dbg(choose(true))\n dbg(choose(false))\n 0\nend\n".into(),
+    });
+    let choose = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "choose", 1);
+    let left = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "left", 0);
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    let before = compiler.retained_backend_program(root);
+    let owner = before
+        .executables()
+        .iter()
+        .find(|owner| owner.key.activation.function == choose)
+        .unwrap();
+    let super::LoweredBody::Clauses { entries, .. } = &owner.abi.materialized.body else {
+        panic!("choose clauses")
+    };
+    let left_call = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            super::LoweredTail::DirectCall { callee, callsite, .. } if *callee == left => Some(*callsite),
+            _ => None,
+        })
+        .expect("left incoming callsite");
+    let joined_value = entries
+        .iter()
+        .find_map(|entry| entry.origin.input_value())
+        .expect("shared if join");
+    let join_position = TransportPosition::Value {
+        executable: owner.abi.transport.executable.clone(),
+        value: joined_value,
+    };
+    let positions = owner
+        .abi
+        .transport
+        .resume_positions
+        .iter()
+        .cloned()
+        .chain(std::iter::once(join_position.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(positions.len(), 3, "two exact endpoints and their shared joined value");
+    let generations = positions
+        .iter()
+        .map(|position| compiler.retained_product_generation(root, &ProductKey::TransportShape(position.clone())))
+        .collect::<Vec<_>>();
+    assert!(
+        generations.iter().all(Option::is_some),
+        "every required position has a retained memo generation"
+    );
+    let work = produced.produced_count();
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    assert_eq!(
+        produced.produced_count(),
+        work,
+        "unchanged compilation settles no products"
+    );
+    assert!(Rc::ptr_eq(&before, &compiler.retained_backend_program(root)));
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_resume_edit.fz".into()),
+        text: "defmodule UnrelatedResume do\n fn idle(), do: :unused\nend\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    assert!(
+        Rc::ptr_eq(&before, &compiler.retained_backend_program(root)),
+        "unrelated source preserves the retained artifact"
+    );
+    for (position, generation) in positions.iter().zip(&generations) {
+        assert_eq!(
+            compiler.retained_product_generation(root, &ProductKey::TransportShape(position.clone())),
+            *generation,
+            "unrelated source moves no resume position"
+        );
+    }
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("left_resume_edit.fz".into()),
+        text: "fn left(), do: 1.5\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(0));
+    let after = compiler.retained_backend_program(root);
+    for (position, generation) in positions.iter().zip(generations) {
+        let moved =
+            compiler.retained_product_generation(root, &ProductKey::TransportShape(position.clone())) != generation;
+        let expected_movement = position == &join_position
+            || matches!(position, TransportPosition::ResumePayload { callsite, .. } if *callsite == left_call);
+        assert_eq!(
+            moved, expected_movement,
+            "only the edited edge and its joined value change: {position:?}"
+        );
+        assert_eq!(
+            retained_shape_at(&before, position) != retained_shape_at(&after, position),
+            expected_movement,
+            "generation movement reflects the exact layout change",
+        );
+    }
+    assert!(
+        dbg.lines().ends_with(&["{1.5}".into(), "{2}".into()]),
+        "both branches execute with their current payloads"
+    );
+}
+
+#[test]
 fn compiler2_transport_float_resume_consumes_the_emitted_abi_endpoint() {
     let source = r#"
 fn inc(x), do: x + 1.0
@@ -230,9 +498,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the non-tail call has a delivered return endpoint");
     assert_eq!(resume.layout.structural, producer.abi.return_layout.layout.structural);
     assert_eq!(resume.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
@@ -241,7 +507,7 @@ end
     };
     assert!(
         entries.iter().any(|entry| matches!(&entry.origin,
-        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == resume)),
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == &resume.layout)),
         "the backend continuation consumes its authoritative ABI endpoint"
     );
 }
@@ -784,9 +1050,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the tuple call has a continuation endpoint");
     assert_eq!(endpoint.layout.structural, pair_return);
     assert_eq!(
@@ -798,7 +1062,7 @@ end
     };
     assert!(
         entries.iter().any(|entry| matches!(&entry.origin,
-        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == &endpoint.layout)),
         "the tuple continuation consumes the exact endpoint contract"
     );
 }
@@ -885,9 +1149,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the binary result has a continuation endpoint");
     assert_eq!(endpoint.layout.structural, id_box_return);
     assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
@@ -896,7 +1158,7 @@ end
     };
     assert!(
         entries.iter().any(|entry| matches!(&entry.origin,
-        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == &endpoint.layout)),
         "boxed block input and continuation entry share the exact ABI endpoint"
     );
 }
@@ -1217,8 +1479,7 @@ end
         .return_endpoints
         .iter()
         .find_map(|(position, layout)| {
-            (matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. })
-                && layout.layout.structural == double_return)
+            (matches!(position, TransportPosition::ResumePayload { .. }) && layout.layout.structural == double_return)
                 .then_some(layout)
         })
         .expect("double/1 has an emitted continuation endpoint");
@@ -1228,7 +1489,7 @@ end
     };
     assert!(
         entries.iter().any(|entry| matches!(&entry.origin,
-        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == &endpoint.layout)),
         "the backend continuation uses the producer endpoint's integer contract"
     );
 }
@@ -1790,7 +2051,6 @@ end
                 position,
                 TransportPosition::ResumePayload {
                     executable,
-                    callsite: Some(_),
                     ..
                 } if *executable == main
             ) && shape_contains_callable(&world, layout.structural)
@@ -1854,7 +2114,7 @@ end
     };
     assert!(
         entries.iter().any(|entry| matches!(&entry.origin,
-        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == endpoint)),
+        super::artifact::BackendEntryOrigin::DeliveredResume { layout, .. } if layout == &endpoint.layout)),
         "the backend continuation retains the tuple endpoint including its closure word"
     );
 }

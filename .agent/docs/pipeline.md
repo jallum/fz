@@ -346,15 +346,21 @@ That makes local control explicit instead of positional.
   settled executable projection closes the analysis-time absence into the empty
   type, so that descriptor remains typed even though no runtime value can reach
   it.
-  The structural shape of a delivered DATA payload is owned by the PRODUCER: the
-  callee's settled `ExecutableReturn` ABI. A destination-passing callee writes
-  every field of its return into the caller's continuation, so the resume's shape
-  is unioned with the callee return position and a field this caller ignores is
-  never erased — the caller's value-demand may select the callable-boundary lane
-  for a callable return, but it never drops delivered data structure.
-- `ControlEntryOrigin::LocalResume { value }` is where local control like
-  `if` or `dispatch` delivers a value without creating a callable
-  continuation boundary.
+  Each delivering callsite owns a distinct
+  `ResumePayload { executable, callsite, entry }` transport position. Its
+  producer's settled return ABI supplies the payload structure, including data
+  fields the consumer ignores. Two calls into one entry keep two independently
+  solved endpoints.
+  The shared entry itself consumes `Value { executable, value }`, whose origin
+  joins every incoming call return and local value. Its `BackendValueLayout`
+  therefore describes the value that any live incoming edge can deliver, not an
+  arbitrarily selected callsite's payload. Native continuation adapters convert
+  each producer's payload to this shared entry contract. Local `if` and
+  `dispatch` joins use the same entry model, even when no callsite delivers.
+  A nonreturning branch contributes no payload; it cannot erase a live sibling's
+  `nil` value. Every retained delivered value must have an analyzed type before
+  its transport position is demanded, including an explicit empty type for a
+  wholly nonreturning join.
 
 So a non-tail direct call is not "call, then keep walking the remaining steps."
 It is:
