@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-6lf.3"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-6lf",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete named fn/fnp grammar and the temporary dual surface",
   "type": "task",
-  "updated_at": "2026-09-12T16:31:02Z"
+  "updated_at": "2026-09-12T18:58:20Z"
 }
