@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-5xp.80"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-5xp",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enum: decide with clauses where the module already decides with clauses",
   "type": "task",
-  "updated_at": "2026-09-07T20:05:00Z"
+  "updated_at": "2026-09-12T13:08:38Z"
 }
