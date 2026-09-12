@@ -245,6 +245,10 @@ That quote seam treats quote/unquote specially:
 - `Expr::Unquote(inner)` is legal only inside `quote`
 - inside quote lowering, `unquote(...)` evaluates the inner expression and
   splices its runtime value into the quoted tree being constructed
+- literal two-tuples lower directly to two-element tuples, matching Elixir's
+  quoted representation; every other tuple arity lowers to the `{}` AST form.
+  Keyword entries depend on this distinction because each `[key: value]`
+  element is a structural two-tuple rather than a tuple-literal AST node.
 
 The result is a backend program that builds Fz-shaped AST values on the process
 heap. The backend interpreter then runs that program like any other backend

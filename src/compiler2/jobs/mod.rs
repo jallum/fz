@@ -10,6 +10,8 @@ use super::scheduler::FatalError;
 pub(crate) mod artifact;
 pub(crate) mod backend;
 mod body;
+#[cfg(test)]
+mod body_test;
 mod callable_target;
 mod contract;
 mod dispatch;
