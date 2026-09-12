@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T14:46:33Z",
+  "description": "GOAL\n\nMake it possible for a library function to construct a tuple whose arity is known only at runtime, so Enum.zip/1 can return the Elixir-shaped tuple for any finite collection of enumerables.\n\nCURRENT SIGNAL\n\nEnum.zip/1 must transpose a collection and turn each row into a tuple whose arity equals the number of input enumerables. fz tuple literals have a source-known arity. There is no List.to_tuple/1, Tuple module, tuple constructor extern, or other library surface for a list to become a tuple. The compiler IR represents tuple construction as MakeTuple(Vec\u003cVar\u003e), and AOT registers tuple schemas by walking source-known tuple arities. Returning row lists instead would be an incompatible API, and hard-coding a few arities would only hide the missing capability.\n\nSTRATEGY\n\nTrace tuple construction from source lowering through tuple schema registration, heap layout, GC, comparison, rendering, and field projection. Add one runtime-sized construction authority whose output remains an ordinary tuple to every existing consumer. Expose it through the narrowest honest standard-library API, then implement Enum.zip/1 by transposing rows and using that API. Reuse the existing tuple schema and AnyValue representation; do not introduce a second tuple kind.\n\nACCEPTANCE\n\n- A list can be converted to ordinary tuples at multiple runtime-selected arities, including zero, two, and three.\n- Constructed tuples render, compare, pattern-match, survive GC, and expose fields exactly like tuple literals.\n- Enum.zip/1 matches Elixir for zero, two, and three input enumerables and stops at the shortest input.\n- Tests cover interp, JIT, and AOT; full gates are green with warnings denied.\n- Any temporary tuple-registration or test scaffolding is removed.",
+  "id": "fz-5xp.109",
+  "labels": [],
+  "parent": "fz-5xp",
+  "priority": 2,
+  "status": "open",
+  "title": "Enum.zip/1 needs runtime-sized tuple construction",
+  "type": "task",
+  "updated_at": "2026-09-12T14:46:33Z"
+}
