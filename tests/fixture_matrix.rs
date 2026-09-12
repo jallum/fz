@@ -2407,10 +2407,10 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     assert_eq!(
         stats,
         ListRetentionTelemetryStats {
-            construction_count: 14,
-            physical_capture_count: 8,
-            runtime_attempted_count: 132,
-            runtime_reused_count: 132,
+            construction_count: 12,
+            physical_capture_count: 2,
+            runtime_attempted_count: 105,
+            runtime_reused_count: 105,
         },
         "enum_sort pins retaining constructions, actual physical captures, and runtime reuse",
     );

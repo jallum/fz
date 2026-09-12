@@ -4663,7 +4663,7 @@ fn positioned_callable_owners_have_observable_obligations() {
         }
         assert!(
             !classes.keys().any(|(class, _)| *class == "empty"),
-            "every retained owner carries construction or callable/boundary facts"
+            "every retained owner carries construction or callable/boundary facts: {classes:?}"
         );
         if name == "scalar" {
             assert!(
@@ -4677,11 +4677,11 @@ fn positioned_callable_owners_have_observable_obligations() {
             assert_eq!(
                 classes,
                 BTreeMap::from([
-                    (("construction", true), 38),
-                    (("metadata", false), 223),
-                    (("metadata", true), 184)
+                    (("construction", true), 31),
+                    (("metadata", false), 161),
+                    (("metadata", true), 195)
                 ]),
-                "all 445 owners preserve their obligations; separating retained closure values from member execution demand removes lanes from 118 metadata-only positions"
+                "all 387 owners preserve their obligations; list-specific split clauses avoid reducer callback positions"
             );
         }
     }

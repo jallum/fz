@@ -85,3 +85,41 @@ pub fn prelude_source() -> &'static str {
 pub(crate) fn module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     RUNTIME_MODULE_SOURCES.iter().map(|source| (source.name, source.source))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn enum_if_decisions_are_single_non_nested_value_choices() {
+        let mut inside_doc = false;
+
+        for (line_index, line) in include_str!("../../lib/enum.fz").lines().enumerate() {
+            let doc_delimiter_count = line.match_indices("\"\"\"").count();
+            if doc_delimiter_count > 0 {
+                if doc_delimiter_count % 2 == 1 {
+                    inside_doc = !inside_doc;
+                }
+                continue;
+            }
+            if inside_doc || line.trim_start().starts_with('#') {
+                continue;
+            }
+
+            let if_count = line.match_indices("if ").count();
+            if if_count == 0 {
+                continue;
+            }
+
+            assert_eq!(
+                if_count,
+                1,
+                "Enum decision nests `if` expressions on source line {}: {line}",
+                line_index + 1,
+            );
+            assert!(
+                line.contains("do:") && line.contains("else:"),
+                "Enum decision is not a one-line value choice on source line {}: {line}",
+                line_index + 1,
+            );
+        }
+    }
+}

@@ -11529,8 +11529,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// identity semantics only because guards happen to be strict -- and says
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
+/// Enum's named decision helpers contribute 52 clause-head plans. All 52 are
+/// unreadable structural/guard questions, so the readable denominator remains
+/// 8 and both escape populations remain unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 159, 151), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 211, 203), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -11996,113 +11999,30 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// `FZ_STRESS_PERMUTE_DISPATCH` setting the fixpoint could legally have
 /// delivered instead.
 ///
-/// OBSERVATIONS ARE THE DENOMINATOR, and without them a row cannot be read
-/// (fz-kdt.187). `observe` fires once per `Region::Type` question a running
+/// Observations are the denominator. `observe` fires once per `Region::Type` question a running
 /// dispatch plan MATCHES, so a fixture that runs no such question reports no
 /// escape for the same reason an empty room is quiet: its 0 says "nothing was
 /// looked at", not "nothing escaped". The gate asserts the count is positive
 /// before it reads the escapes, and pins it, so a row cannot go blind in
 /// silence.
 ///
-/// The list-tail reading (fz-kdt.144) replaced the tuple-era population, which
-/// fz-kdt.132 emptied and fz-kdt.138 then made empty by construction. The first
-/// seven rows are that tuple-era population, kept at 0 because a table that
-/// only lists what escapes cannot say that anything stopped escaping.
-///
-/// **`00277_enum_tier0_fixture` and `enum_predicate_search` are GONE from this
-/// table, and the observation counter is what found them.** Both held
-/// fz-kdt.179's and fz-kdt.183's cures; both now observe ZERO at every arrival
-/// this table drove them at. Read off `interp --dump backend=`, the cause is
-/// the same for both and it is fz-kdt.199: `00277` publishes five construction
-/// wrappers and `enum_predicate_search` publishes 32, and EVERY one
-/// of them is single-member with no selection plan, so
-/// `select_construction_member` takes its `None if members.len() == 1` branch
-/// and no dispatch runs. The cures are real and their fixtures no longer build
-/// the shape that shows them.
-///
-/// WHERE THE SEVEN BLIND ROWS WENT. `00277`'s three wrapper orders and its
-/// `arms:6` moved to `behavior/enum_take_drop_split`, which still builds what
-/// they were written to watch: 23 of its 38 wrappers are multi-member WITH a
-/// selection plan, so a permuted wrapper or arm order really does reseat the
-/// members a value is routed among, and it observes 375 at each of those four
-/// arrivals. `enum_predicate_search`'s `arms:6` moved to `00419_enum_take_mixed`
-/// -- fz-kdt.183's cure was about two list arms whose ELEMENTS differ, and that
-/// is `enum_take_mixed`'s subject; all four of its wrappers are two-member with
-/// a selection plan, and it observes 36 under `arms:6`. The two SETTLED rows
-/// were DELETED rather than re-homed, because the settled arrival is already
-/// held by the six settled rows above them and a re-homing would have been a
-/// duplicate row, not a kept property.
-///
-/// WHAT THE OLD `00277` ROWS RECORDED, kept here because the table no longer
-/// can. Its construction wrapper's member-selection plan for
-/// `Enum.reverse(1..7//2, [:tail])`'s reducer used to seat `list(int)` ahead of
-/// `list(int | :tail)`, so the accumulator `[1, :tail]` and its growth passed
-/// `list(int)`'s head test and ran the body compiled for `[integer]` -- 12
-/// escapes at the settled arrival, 12 under `arms:6` and `arms:reverse`, 0
-/// under every wrapper order. stdout was right on every door because the
-/// accumulator lane is `ValueRef` in both bodies (boxed element access, the
-/// fz-kdt.131 correlation nobody proved), so the escape was latent. Member
-/// selection now runs through `routable_alternatives` (fz-kdt.179): the
-/// covering member stands in for `list(int)`, the drop takes it, and every
-/// arrival read 0 -- until fz-kdt.199 left the fixture with nothing to select
-/// among at all.
-///
-/// WHAT THE OLD `enum_predicate_search` ROWS RECORDED. The `arms:6` row was
-/// fz-kdt.131's facet-3 pair -- two list arms whose heads overlap and neither
-/// of whose surfaces contains the other -- measured on the production path for
-/// the first time, and fz-kdt.183 cured it 1 -> 0. The pair existed because one
-/// `List.reduce_while_step/3` key stood for two callers whose list elements
-/// differ; with the element in the key the two arms are two keys and neither is
-/// blind to the other's values. fz-kdt.131 has no reproducer in this tree and
-/// must decide one -- the facet-3 shape is still constructible, this fixture
-/// just no longer builds it.
-///
-/// A RATCHET, not a blessing. Every row reads 0 escapes now, each holding a
-/// fixture and arrival that once escaped or could regress; a count this table
-/// does not carry -- in either direction, and in either column -- is either a
-/// new latent miscompile, a cure, or a fixture that stopped exercising the
-/// property, and all three want the table edited deliberately rather than a
-/// number re-blessed.
-///
-/// fz-kdt.120: `enum_take_drop_split` reads 375 -> 373 OBSERVATIONS at all six
-/// of its arrivals, escapes flat at 0. The denominator moved because the plan
-/// shape did. With the fz-f98.16 empty-list veto gone,
-/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
-/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
-/// rung; the body's two rungs must then be told apart, so the artifact grows an
-/// entry clause dispatch asking `tuple_arity(2)` and `equal(:cont)`/
-/// `equal(:halt)`. Measured on the `--dump backend=` canon: +2 dispatch plans,
-/// `tuple_arity` questions 21 -> 28, `equal` +2, `Region::Type` questions FLAT
-/// at 62, executables flat at 237, and interp and run stdout byte-identical.
-/// Two evaluations that used to reach a matched `Region::Type` question are
-/// settled by that clause dispatch instead, which is the denominator changing
-/// under the row and not the escape count moving. fz-tfn.26 then coalesces
-/// fifteen content-caused analyses on this combined stack; eleven of those runs had
-/// reached a matched `Region::Type` question, so each affected row's
-/// observation denominator falls 373 -> 362 while escapes stay at zero.
-/// Exact input alternatives retain separate callable surfaces, so runtime
-/// member selection observes more type questions while every escape stays zero.
+/// The Enum split fixtures retain multi-member callable constructions after
+/// their list inputs take the list-specific path, so they continue to exercise
+/// both arm and wrapper permutations without paying for the generic reducer
+/// wrappers that path bypasses.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 82, 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 82, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 12, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "", 82, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 382, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 316, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 316, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 12, 0),
-    // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
-    // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 382, 0),
-    // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
-    // fixture whose list arms still differ at the element.
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 316, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 316, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 316, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 316, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 82, 0),
-    // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
-    // says why (the fold hands the TAIL to the recursive dispatch, so the
-    // mixed list never reaches the `[:false | :true]` arm), and this row is
-    // what holds that sentence to the tree.
     ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
 ];
 

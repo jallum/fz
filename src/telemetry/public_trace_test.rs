@@ -1322,11 +1322,7 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
-// fz-5xp.2: the take/drop/split row falls 232 -> 228 reachable executables --
-// `Enum.to_list/1`'s `[a]` clause removes the reduce-and-reverse activations
-// those families used to mint on the way to their list arguments. The
-// construction-wrapper column is unchanged.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (172, 32), (228, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (172, 32), (225, 31)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1521,7 +1517,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[228, 0, 0, 9, 155], [603, 0, 0, 64, 392], [1106, 0, 0, 70, 661]][fixture_index][scenario],
+                [[228, 0, 0, 9, 155], [603, 0, 0, 64, 392], [1181, 0, 0, 1, 590]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1660,7 +1656,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 125, 63),
     ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 158, 83),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 261, 134),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 134, 26, 285, 146),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -1719,8 +1715,7 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
         assert_eq!(
             (callees.evaluations, callees.blocked_completions),
             (callee_evaluations, callee_blocked),
-            "{fixture}: DeriveStaticCallees work moved off its fz-kdt.56 pin; the family this \
-             ticket added must not drift silently. Full row: {callees:?}"
+            "{fixture}: DeriveStaticCallees work moved off its measured pin. Full row: {callees:?}"
         );
 
         for (formula, work) in &report.formulas {
@@ -2208,7 +2203,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 270 -> 261 identities. Nine redundant list-union
         // identities are absorbed before activation keying; retractions stay
         // at zero.
-        activations: lifecycle(263, 263, 0),
+        activations: lifecycle(248, 248, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2246,7 +2241,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 459 -> 449 identities and 469 -> 459 first
         // appearances. The ten absorbed callsites were never separate
         // denotations; retractions stay flat.
-        callsites: lifecycle(451, 461, 10),
+        callsites: lifecycle(429, 439, 10),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2315,7 +2310,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // artifact/runtime gates below remain the authority on coverage.
         // fz-kdt.182 removes thirteen analyses of absorbed identities; equal
         // reproductions remain flat.
-        analyze_evaluations: 891,
+        analyze_evaluations: 796,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
@@ -2324,9 +2319,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182 removes the same thirteen absorbed-identity analyses
         // from the semantic total.
         // fz-5xp.6 lowers this by 30 -- see the work-start census.
-        // Exact caller rows reduce semantic work without weakening the
-        // retained claim or final executable population.
-        total_evaluations: 2469,
+        total_evaluations: 2524,
     },
 ];
 

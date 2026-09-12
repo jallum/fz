@@ -229,30 +229,30 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4081, 11, 21, 401),
-        "exact caller rows and retained closure values reduce applications while scope, module, and executable-fact work remain exact"
+        (5456, 11, 21, 1585),
+        "Enum decision helpers add exact executable-fact work while scope and module work remain flat"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1430,
-        "exact caller rows reduce non-demand changed-revision starts while macro waits and product wakes remain exact",
+        2644,
+        "Enum decision-helper activations add exact content wakes; macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1162,
-        "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities, fz-5xp.2 removes four more with the unminted reduce-and-reverse activations, and fz-5xp.87 adds the five blocked-waiter starts used by its six private-helper contract derivations; macro products require no separate readiness producer",
+        1277,
+        "Enum decision helpers add exact blocked expansions; macro products require no separate readiness producer",
     );
     assert_eq!(
         (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
-        (1154, 926, [58, 228, 144, 496, 0]),
-        "every demand completion and wake retains its precise cause; removing retention feedback must reduce work without readiness-only or unexplained starts",
+        (1225, 990, [39, 235, 137, 537, 42]),
+        "every Enum helper demand completion and wake retains its precise cause without readiness-only or unexplained starts",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        300,
-        "fz-kdt.182 removed seven absorbed identities from the RuntimeDemand and construction-target key frontier and fz-5xp.2 removes four more",
+        290,
+        "the RuntimeDemand and construction-target key frontier includes every reached Enum helper clause",
     );
     assert_eq!(
         (
@@ -262,8 +262,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 261, 0, 0, 0),
-        "exact caller rows expose six more activations on the shared root/callee frontier; unsanctioned and scanning paths stay absent",
+        (2, 253, 0, 0, 0),
+        "the retained root, callees, and Enum helpers share one activation frontier with no unsanctioned or scanning path -- the last three columns stay zero",
     );
 
     let world = compiler.world();
