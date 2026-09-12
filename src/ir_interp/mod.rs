@@ -16,6 +16,7 @@ mod backend;
 mod binop;
 mod dispatch_exec;
 mod extern_call;
+mod intrinsic;
 mod prim;
 mod value;
 

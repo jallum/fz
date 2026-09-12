@@ -108,18 +108,22 @@ giving the operators a catch-all makes every comparison callsite with an
 unresolved operand blind to the dispatcher, which the blind-escape census
 catches as a latent miscompile (fz-5xp.64).
 
-**Arithmetic** — no single owner, and that is deliberate. The typed shim NAMES
-are the shared fact: `fz_op_add_ii`, `_if`, `_ff` and so on say which lanes they
-take, so each door implements the same typed operation rather than re-deriving
-which operation applies. Native lowers them in place (`ARITH_SHIMS` in
-`native_codegen/prim.rs`); the interpreter has private Rust shims
-(`ir_interp/extern_call.rs`). They agree because the name carries the types.
+**Arithmetic** — owner `Intrinsic` and its descriptor
+(`runtime/src/intrinsic.rs`). An intrinsic declaration resolves once into a
+closed identity with exact ordered input and result lanes. The interpreter
+uses its checked numeric evaluator; native codegen emits corresponding checked
+instructions. Integer overflow, zero divisors, and nonfinite floating results
+are `IntrinsicFault`, separate from every language value. Faults stay
+observable when a caller ignores the result.
 
-`%` is the one operator with no Elixir counterpart to be checked against —
-Elixir has no `%`, and its `rem/2` is integer-only. fz's `%` is C's `fmod`, so
-the result takes the sign of the dividend, and its float lanes are a CALL rather
-than an instruction because Cranelift has no `frem`: `fz_op_rem_ff` lives in the
-runtime crate so the AOT door can link it (fz-5xp.34).
+`DivII` returns a truncating integer quotient; `SlashII` converts integer
+inputs and returns a float. Mixed noncommutative lanes retain operand order.
+The comparison identities distinguish widening equality from structural
+identity and use the shared term comparator and numeric adapters.
+
+Floating `%` follows C's `fmod`: its result has the dividend's sign.
+Cranelift has no floating remainder instruction, so native lowering calls the
+runtime's `fz_op_rem_ff` export.
 
 **Runtime type tests** — owner `RuntimeTestAxis` (`src/runtime_type_predicate.rs`),
 one axis table with three lowerings that must each be taught, and the design we

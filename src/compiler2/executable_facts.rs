@@ -484,7 +484,7 @@ fn executable_dispatch(
         return None;
     }
     match world.lowered_body(function) {
-        LoweredBody::Extern { .. } => None,
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => None,
         LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
             world.entry_dispatch(function),
             reachability.clauses().to_vec(),

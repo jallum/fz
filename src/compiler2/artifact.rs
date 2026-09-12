@@ -1046,6 +1046,9 @@ impl BackendExecutable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendBody {
+    Intrinsic {
+        signature: super::body::LoweredIntrinsic,
+    },
     Extern {
         signature: LoweredExtern,
     },

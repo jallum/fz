@@ -893,6 +893,9 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
 
     let LoweredBody::Clauses { clauses, entries, .. } = &facts.body else {
         out.input_demands = match &facts.body {
+            LoweredBody::Intrinsic { signature } => {
+                vec![RuntimeDemand::whole(); signature.identity.descriptor().inputs.len()]
+            }
             LoweredBody::Extern { signature } => executable
                 .activation
                 .inputs(types)

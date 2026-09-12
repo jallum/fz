@@ -1,0 +1,8 @@
+#---
+# purpose: "a typed comparison domain fault remains observable when its result is discarded"
+# expect: abort
+#---
+fn main() do
+  Kernel.fz_op_lt_if(7, Kernel.fz_dbg_value(2))
+  :ok
+end

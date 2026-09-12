@@ -95,7 +95,7 @@ pub(crate) fn produce_materialized_executable_product(
             entries.dedup();
             (analysis.entry_reachability.clauses().to_vec(), entries)
         }
-        LoweredBody::Extern { .. } => (
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => (
             analysis.entry_reachability.clauses().to_vec(),
             analysis.reachable_entries.clone(),
         ),
@@ -142,7 +142,7 @@ pub(crate) fn produce_materialized_executable_product(
     .expect("product materialization should have complete call edges after waits");
     let retained_values = super::body::retained_value_ids(&body);
     analysis.value_types.retain(|value, _| retained_values.contains(value));
-    let effects = local_effects(&body, &call_edges);
+    let effects = local_effects(world, executable, &body, &call_edges);
     let struct_modules = reachable_struct_modules(
         world.types(),
         executable,
@@ -1394,7 +1394,7 @@ fn prune_lowered_body(
     reachable_entries: &[ControlEntryId],
 ) -> PrunedLoweredBody {
     match body {
-        LoweredBody::Extern { .. } => PrunedLoweredBody {
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => PrunedLoweredBody {
             body,
             original_entry_ids: Vec::new(),
         },
@@ -1658,15 +1658,36 @@ fn resolve_auto_variadic_marshal(
     ))
 }
 
-fn local_effects(body: &LoweredBody, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
+fn local_effects(
+    world: &World,
+    executable: &ExecutableKey,
+    body: &LoweredBody,
+    call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
+) -> EffectSummary {
     match body {
         LoweredBody::Extern { signature } => EffectSummary {
             reads_allocation_stats: signature.symbol == "fz_process_heap_alloc_stats",
-            scheduler_visible: matches!(signature.symbol.as_str(), "fz_send" | "fz_spawn" | "fz_spawn_opt"),
             observable: true,
             halts: signature.ret == crate::fz_ir::ExternTy::Never,
             ..EffectSummary::default()
         },
+        LoweredBody::Intrinsic { signature } => {
+            let descriptor = signature.identity.descriptor();
+            let inputs = world
+                .activation_inputs_joined(&executable.activation)
+                .unwrap_or_else(|| executable.activation.inputs(world.types()));
+            let domain_possible = descriptor.domain_fault_possible()
+                && inputs
+                    .iter()
+                    .zip(&signature.semantic_contract.params)
+                    .any(|(input, accepted)| !world.types().is_subtype(input, accepted));
+            EffectSummary {
+                scheduler_visible: descriptor.scheduler_visible(),
+                observable: descriptor.observable(domain_possible),
+                halts: domain_possible || descriptor.fault_behavior() != fz_runtime::intrinsic::FaultBehavior::None,
+                ..EffectSummary::default()
+            }
+        }
         LoweredBody::Clauses { clauses, entries, .. } => {
             let mut effects = EffectSummary::default();
             for clause in clauses {

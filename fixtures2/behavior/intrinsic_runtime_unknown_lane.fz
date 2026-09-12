@@ -1,0 +1,5 @@
+#---
+# purpose: "an intrinsic input whose extern result type is unknown reports a domain fault if the runtime lane is wrong"
+# expect: abort
+#---
+fn main(), do: dbg(Kernel.fz_op_sub_if(7, Kernel.fz_dbg_value(2)))

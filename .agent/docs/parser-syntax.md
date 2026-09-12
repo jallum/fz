@@ -10,6 +10,11 @@ than first building old `ast::Program` / `ast::Item` trees. Runtime bootstrap
 sources in `lib/*.fz` also enter compiler2 through this
 quoted-source path.
 
+Runtime primitive declarations use `intrinsic "identity" fn name(types) :: type`.
+The front door shares the native declaration grammar with `extern` while
+preserving the distinct quoted head. `NativeDeclaration` keeps that distinction
+on the function surface; only runtime-library source may lower an intrinsic.
+
 Keep this boundary crisp:
 
 - Add token-shape changes in `src/parser/lexer.rs` and `lexer_test.rs`.

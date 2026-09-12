@@ -227,7 +227,7 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
                 entry.item_roots.append(&mut pending_function_attrs);
                 entry.item_roots.push(quoted_item.root());
             }
-            "extern" => {
+            "extern" | "intrinsic" => {
                 flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
                 let mut item_roots = std::mem::take(&mut pending_function_attrs);
                 item_roots.push(quoted_item.root());
@@ -357,7 +357,7 @@ fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm
             span: surface_span(&source, sources)?,
             source,
         })),
-        "extern" => Ok(ScopeForm::Function(parse_function_form(source, sources)?)),
+        "extern" | "intrinsic" => Ok(ScopeForm::Function(parse_function_form(source, sources)?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, sources)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
             span: surface_span(&source, sources)?,
@@ -571,7 +571,7 @@ fn parse_function_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<
     let span = surface_span(&source, sources)?;
     let head = surface_head_name(&source, sources)?
         .ok_or_else(|| QuotedSourceError::new("expected atom-headed function form"))?;
-    if head == "extern" {
+    if matches!(head.as_str(), "extern" | "intrinsic") {
         let node = first_non_attr_node(&source, sources)?;
         let args = node.tail.list_items()?;
         if args.len() != 2 {

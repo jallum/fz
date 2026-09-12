@@ -1,0 +1,5 @@
+#---
+# purpose: "make_resource rejects an unknown destructor with the wrong arity before registering it"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_make_resource(42, Kernel.fz_dbg_value(fn() -> nil end))

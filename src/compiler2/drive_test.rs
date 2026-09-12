@@ -7409,7 +7409,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     assert_eq!(
         native_executable_body(&program, fz_spawn_id).param_reprs,
         vec![AbiValueRepr::ValueRef],
-        "fz_spawn/1 should preserve the boxed closure-ref lane at the extern seam",
+        "fz_spawn/1 should preserve the boxed closure-ref lane at the native seam",
     );
     let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
@@ -8587,7 +8587,7 @@ fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
     assert_eq!(
         display_inputs(inputs.last_for_function(root_id, fz_send_id)),
         vec!["pid".to_string(), "int".to_string()],
-        "Kernel.fz_send/2 param0 should stay pid after applying the extern contract"
+        "Kernel.fz_send/2 param0 should stay pid after applying the intrinsic contract"
     );
 }
 
@@ -9404,7 +9404,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
         })
         .flat_map(|executable| match &executable.body {
             BackendBody::Clauses { entries, .. } => entries.iter().collect::<Vec<_>>(),
-            BackendBody::Extern { .. } => Vec::new(),
+            BackendBody::Extern { .. } | BackendBody::Intrinsic { .. } => Vec::new(),
         })
         .find_map(|entry| match &entry.origin {
             BackendEntryOrigin::DeliveredResume { layout, .. }
@@ -10234,12 +10234,10 @@ fn main(), do: Weird.some_symbol(1)
 
 #[test]
 fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
-    // The `fz` ABI names symbols that BOTH doors also claim by name in their
-    // own lowerings, and the two claim sets are not the same. So a foreign
-    // declaration of one is a question the doors would answer differently:
-    // `extern "fz" fn fz_op_add_ii` once returned 5 under `run` and a process
-    // pointer plus two under `interp`. Refusing it in the shared front end is
-    // what makes every door refuse it identically.
+    // The process-taking `fz` ABI is a runtime-library capability, not a
+    // foreign declaration choice. Historically, name interception made this
+    // declaration answer differently across doors; shared rejection remains
+    // necessary after deleting those interceptions.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -10275,6 +10273,68 @@ fn main(), do: Weird.fz_op_add_ii(2, 3)
         message.contains("reserved for fz's own runtime library"),
         "the diagnostic should say why the ABI is not available here, got: {message}",
     );
+}
+
+#[test]
+fn compiler2_user_macro_span_metadata_cannot_grant_runtime_declaration_privilege() {
+    for (text, name, reason) in [
+        (
+            include_str!("../../fixtures2/behavior/intrinsic_forged_bootstrap_span.fz"),
+            "forged_add",
+            "intrinsic declarations are reserved to the runtime library",
+        ),
+        (
+            include_str!("../../fixtures2/behavior/intrinsic_forged_fz_abi_span.fz"),
+            "fz_dbg_value",
+            "reserved for fz's own runtime library",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        capture.install(&tel, &[]);
+        let functions = FunctionCapture::new();
+        functions.install(&tel);
+        let modules = ModuleCapture::new();
+        modules.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        let user_code = compiler.submit_code(CodeSubmission {
+            name: Some(format!("forged_{name}.fz")),
+            text: text.to_string(),
+        });
+        compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let outcome = compiler.drive();
+        let arity = if name == "forged_add" { 2 } else { 1 };
+        let function = function_id_in_module(&functions, &modules, "Forged", name, arity);
+        let (source, surface) = compiler.world().function_definition(function);
+        assert_eq!(
+            source.owner, user_code,
+            "macro items retain their owning submission identity"
+        );
+        assert!(!compiler.world().is_bootstrap(source.owner));
+        assert_eq!(
+            surface.name_span.source_version.as_u32(),
+            0,
+            "the diagnostic span keeps the deliberately misleading bootstrap version"
+        );
+        assert!(
+            matches!(outcome, DriveOutcome::Fatal { .. }),
+            "diagnostic spans cannot authorize native declarations: {outcome:?}",
+        );
+        assert!(
+            !compiler.world().has_fact(&FactKey::LoweredBody(function)),
+            "the rejected declaration must never publish an executable intrinsic or extern body",
+        );
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .expect("shared privilege diagnostic");
+        assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+        assert!(metadata_str(&diagnostic, "message").contains(reason));
+    }
 }
 
 #[test]
@@ -15261,7 +15321,43 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
 }
 
 #[test]
-fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
+fn compiler2_intrinsic_calls_enforce_exact_ordered_lanes_before_execution() {
+    for text in [
+        include_str!("../../fixtures2/behavior/intrinsic_wrong_numeric_lane.fz"),
+        include_str!("../../fixtures2/behavior/intrinsic_reversed_numeric_lanes.fz"),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        capture.install(&tel, &[]);
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some("intrinsic_wrong_lanes.fz".to_string()),
+            text: text.to_string(),
+        });
+        compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let outcome = compiler.drive();
+        assert!(
+            matches!(outcome, DriveOutcome::Fatal { .. }),
+            "known incompatible intrinsic lanes must diagnose before backend lowering: {outcome:?}",
+        );
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .expect("intrinsic lane diagnostic");
+        assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+        assert!(metadata_str(&diagnostic, "message").contains("fz_op_sub_if"));
+        assert!(dbg.lines().is_empty(), "no output can escape a rejected intrinsic call");
+    }
+}
+
+#[test]
+fn compiler2_kernel_operator_wrappers_retain_intrinsic_identity_outside_externs() {
     let tel = ConfiguredTelemetry::new();
     let bodies = LoweredBodyCapture::new();
     bodies.install(&tel);
@@ -15288,13 +15384,135 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
     );
 
     let add_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
-    let extern_ii = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ii", 2);
-    let extern_if = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_if", 2);
-    let extern_ff = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ff", 2);
+    let intrinsic_ii = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ii", 2);
+    let intrinsic_if = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_if", 2);
+    let intrinsic_ff = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ff", 2);
     let body = lowered_body(&bodies, add_id);
-    direct_call_in_body(body.clone(), extern_ii);
-    direct_call_in_body(body.clone(), extern_if);
-    direct_call_in_body(body, extern_ff);
+    direct_call_in_body(body.clone(), intrinsic_ii);
+    direct_call_in_body(body.clone(), intrinsic_if);
+    direct_call_in_body(body, intrinsic_ff);
+    for intrinsic in [intrinsic_ii, intrinsic_if, intrinsic_ff] {
+        assert!(
+            !matches!(lowered_body(&bodies, intrinsic), LoweredBody::Extern { .. }),
+            "an arithmetic intrinsic must never enter generic extern marshalling or symbol lookup",
+        );
+    }
+}
+
+#[test]
+fn compiler2_intrinsic_domain_effects_follow_observed_inputs() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("intrinsic_domain_effects.fz".to_string()),
+        text: "fn exact(), do: Kernel.fz_op_lt_if(1, 2.0)\nfn dynamic(), do: Kernel.fz_op_lt_if(1, Kernel.fz_dbg_value(2.0))\n".to_string(),
+    });
+    for (name, domain_possible) in [("exact", false), ("dynamic", true)] {
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: name.to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        demand_backend_product(&mut compiler, root);
+        assert_resolved(compiler.drive(), "intrinsic domain effects should settle");
+        let program = backend.last(root).program;
+        let comparison = program
+            .executables()
+            .iter()
+            .find(|executable| {
+                matches!(&executable.body, BackendBody::Intrinsic { signature }
+                if signature.identity == fz_runtime::intrinsic::Intrinsic::LtIF)
+            })
+            .expect("the root calls the exact typed comparison");
+        assert_eq!(comparison.abi.effects.observable, domain_possible, "{name}");
+        assert_eq!(comparison.abi.effects.halts, domain_possible, "{name}");
+        assert_eq!(
+            comparison.abi.param_reprs,
+            if domain_possible {
+                vec![AbiValueRepr::RawInt, AbiValueRepr::ValueRef]
+            } else {
+                vec![AbiValueRepr::RawInt, AbiValueRepr::RawF64]
+            },
+            "admission preserves the arriving lane: {name}"
+        );
+    }
+}
+
+#[test]
+fn compiler2_every_intrinsic_reaches_native_as_identity_without_extern_metadata() {
+    use fz_runtime::intrinsic::Intrinsic;
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("intrinsic_inventory.fz".to_string()),
+        text: format!(
+            "{}\nfn panic_entry(), do: Kernel.fz_panic(:failure)\n",
+            include_str!("../../fixtures2/behavior/typed_intrinsics.fz")
+        ),
+    });
+    let mut seen = HashSet::new();
+    for name in ["main", "panic_entry"] {
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: name.to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        settle_native_product(&mut compiler, root);
+        let program = compiler.retained_native_program(root);
+        for body in &program.bodies {
+            let function = program.module.fn_by_id(body.fn_id);
+            for block in &function.blocks {
+                for crate::fz_ir::Stmt::Let(_, prim) in &block.stmts {
+                    if let crate::fz_ir::Prim::Intrinsic(identity, _) = prim {
+                        seen.insert(*identity);
+                        assert!(
+                            body.extern_marshals.is_empty(),
+                            "intrinsic leaves never carry generic marshalling metadata"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            program
+                .module
+                .externs
+                .iter()
+                .all(|declaration| !declaration.symbol.starts_with("fz_op_")),
+            "intrinsic operators never become linker declarations"
+        );
+        let work = outputs.stops.borrow().len();
+        settle_native_product(&mut compiler, root);
+        assert!(
+            Rc::ptr_eq(&program, &compiler.retained_native_program(root)),
+            "unchanged intrinsic artifacts retain their allocation"
+        );
+        assert_eq!(
+            work,
+            outputs.stops.borrow().len(),
+            "unchanged intrinsic demand starts no semantic work"
+        );
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("unrelated_{name}.fz")),
+            text: format!("defmodule Unrelated{name} do\n fn idle(), do: :unused\nend\n"),
+        });
+        settle_native_product(&mut compiler, root);
+        assert!(
+            Rc::ptr_eq(&program, &compiler.retained_native_program(root)),
+            "unrelated source leaves intrinsic artifacts intact"
+        );
+    }
+    assert_eq!(
+        seen,
+        Intrinsic::ALL.iter().copied().collect(),
+        "the three-door fixture must exercise the entire closed intrinsic set"
+    );
 }
 
 #[test]
@@ -17677,7 +17895,9 @@ fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize,
 
 fn backend_direct_call(executable: &crate::compiler2::BackendExecutable, callee: FunctionId) -> &BackendTail {
     match &executable.body {
-        crate::compiler2::BackendBody::Extern { .. } => panic!("expected clause body with a direct call"),
+        crate::compiler2::BackendBody::Extern { .. } | BackendBody::Intrinsic { .. } => {
+            panic!("expected clause body with a direct call")
+        }
         crate::compiler2::BackendBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 if let Some(found) = backend_direct_call_in_entry(entries, clause.entry, callee) {
@@ -17897,7 +18117,7 @@ fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {
     match body {
-        LoweredBody::Extern { .. } => panic!("expected clause body with a direct call"),
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => panic!("expected clause body with a direct call"),
         LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in &clauses {
                 if let Some(found) = direct_call_in_entry(&entries, clause.entry, callee) {

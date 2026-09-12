@@ -15,6 +15,7 @@ pub mod extern_binary;
 pub mod extern_variadic;
 pub mod function_denotation;
 pub mod heap;
+pub mod intrinsic;
 pub mod ir_runtime;
 pub mod module_name;
 pub mod output;

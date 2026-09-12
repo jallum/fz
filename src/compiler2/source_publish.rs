@@ -424,7 +424,7 @@ pub(crate) fn record_function_type_refs(
             collect_spec_struct_obligations(world, tel, namespace, spec, owner, module, &mut struct_refs)?;
         }
     }
-    if let Some(extern_spec) = surface.extern_contract_decl() {
+    if let Some(extern_spec) = surface.native_contract_decl() {
         collect_spec_refs(world, tel, namespace, &extern_spec, &mut refs)?;
         collect_spec_struct_obligations(world, tel, namespace, &extern_spec, owner, module, &mut struct_refs)?;
     }

@@ -269,7 +269,7 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
         return true;
     }
     match world.lowered_body(function) {
-        LoweredBody::Extern { .. } => false,
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => false,
         LoweredBody::Clauses { clauses, entries, .. } => {
             let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
             entries.iter().any(|entry| {
@@ -1027,7 +1027,7 @@ fn strong_component(function: FunctionId, graph: &HashMap<FunctionId, Vec<Functi
 fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     let mut edges = Vec::new();
     match body {
-        LoweredBody::Extern { .. } => {}
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => {}
         LoweredBody::Clauses { clauses, entries, .. } => {
             for clause in clauses {
                 collect_step_edges(&clause.projections, &mut edges);

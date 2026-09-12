@@ -62,7 +62,7 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
 /// The `==` OPERATOR: numbers compare by value, so `1 == 1.0` is true, and so
 /// are `[1] == [1.0]` and `%{a: 1} == %{a: 1.0}`.
 ///
-/// One implementation, shared by the `fz_op_eq`/`fz_op_neq` externs and by
+/// One implementation, shared by the equality intrinsics and by
 /// `BinOp::Eq` -- which is what a GUARD lowers to. Two unboxed numbers skip the
 /// boxing that forming a ref would cost; everything else recurses through the
 /// runtime's widening comparator.

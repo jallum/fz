@@ -54,7 +54,7 @@ fn check_function_clauses(
     if surface.clauses.len() < 2 {
         return;
     }
-    if surface.extern_abi.is_some() || surface.clauses.iter().any(|clause| clause.guard.is_some()) {
+    if surface.declaration.is_some() || surface.clauses.iter().any(|clause| clause.guard.is_some()) {
         return;
     }
     let input_count = surface.arity();
@@ -264,10 +264,10 @@ mod tests {
             name_span: Span::DUMMY,
             clauses,
             is_macro: false,
-            extern_abi: None,
-            extern_param_tokens: Vec::new(),
-            extern_ret_tokens: TypeExprBody(Vec::new()),
-            extern_constraints: Vec::new(),
+            declaration: None,
+            native_param_tokens: Vec::new(),
+            native_ret_tokens: TypeExprBody(Vec::new()),
+            native_constraints: Vec::new(),
             variadic: false,
             attrs: Vec::new(),
             span: Span::DUMMY,

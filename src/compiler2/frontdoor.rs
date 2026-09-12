@@ -150,7 +150,8 @@ impl FrontDoorParser {
             Tok::Defstruct => self.parse_struct_item(module_path),
             Tok::Defprotocol => self.parse_protocol_item(module_path),
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
-            Tok::Extern => self.parse_extern_item(module_path),
+            Tok::Extern => self.parse_native_item(module_path, "extern"),
+            Tok::Ident(name) if name == "intrinsic" => self.parse_native_item(module_path, "intrinsic"),
             Tok::Fn | Tok::Fnp | Tok::Def | Tok::Defp | Tok::Defmacro => self.parse_function_item(module_path),
             Tok::Ident(_) => self.parse_item_macro_call(module_path),
             other => self.err(format!(
@@ -416,9 +417,9 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
-    fn parse_extern_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+    fn parse_native_item(&mut self, module_path: &[String], form: &str) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
-        self.expect(&Tok::Extern, "`extern`")?;
+        self.bump();
         let abi = match self.bump() {
             Tok::Binary(bytes) => String::from_utf8(bytes)
                 .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
@@ -516,7 +517,7 @@ impl FrontDoorParser {
         }
         self.builder
             .call(
-                "extern",
+                form,
                 &meta,
                 &[self.builder.utf8_binary(&abi)?, self.builder.map(&entries)?],
             )

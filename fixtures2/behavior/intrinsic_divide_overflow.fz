@@ -1,0 +1,7 @@
+#---
+# purpose: "intrinsic faults are preserved across all ordinary runtime doors"
+# expect: abort
+#---
+fn main() do
+  Kernel.fz_op_div_ii(-9223372036854775807 - 1, -1)
+end

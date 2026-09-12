@@ -26,6 +26,7 @@ Read:
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
+- [intrinsics](docs/intrinsics.md) — typed compiler/runtime operations, exact numeric lanes, declaration identity, effects, and the value-or-fault contract.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
 - [semantic authorities](docs/semantic-authorities.md) — who owns each semantic question (truthiness, equality, ordering, arithmetic, runtime type tests, bitstring matching, map key identity, binary representation, storage choice, foreign symbol lookup), which per-door fast paths are allowed beside it, and the divergences that came from a second answer.

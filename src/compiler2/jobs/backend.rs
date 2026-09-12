@@ -639,6 +639,9 @@ fn lower_backend_body(
     abi: &AbiReadyExecutable,
 ) -> Result<BackendBody, FatalError> {
     match &abi.materialized.body {
+        LoweredBody::Intrinsic { signature } => Ok(BackendBody::Intrinsic {
+            signature: signature.clone(),
+        }),
         LoweredBody::Extern { signature } => Ok(BackendBody::Extern {
             signature: signature.clone(),
         }),
@@ -1129,7 +1132,7 @@ fn collect_executable_atoms(
     atoms: &mut Vec<String>,
 ) {
     match &executable.body {
-        BackendBody::Extern { .. } => {}
+        BackendBody::Extern { .. } | BackendBody::Intrinsic { .. } => {}
         BackendBody::Clauses { clauses, entries, .. } => {
             if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);

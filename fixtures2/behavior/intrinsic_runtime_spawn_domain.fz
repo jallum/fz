@@ -1,0 +1,5 @@
+#---
+# purpose: "spawn rejects an unknown non-callable before invoking the scheduler"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_spawn(Kernel.fz_dbg_value(42))

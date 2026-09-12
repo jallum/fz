@@ -851,6 +851,7 @@ impl ProgramCanon<'_> {
     fn body(&mut self, body: &BackendBody) -> Vec<String> {
         let mut out = Out::default();
         match body {
+            BackendBody::Intrinsic { signature } => out.put(&format!("intrinsic {:?}", signature.identity)),
             BackendBody::Extern { signature } => self.lowered_extern(&mut out, signature),
             BackendBody::Clauses {
                 clauses,

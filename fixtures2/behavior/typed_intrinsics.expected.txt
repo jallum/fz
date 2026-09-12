@@ -1,0 +1,18 @@
+{-7, -7.5}
+{9, 9.5, 10.0}
+{5, 4.5, 5.5, 5.0}
+{14, 17.5, 18.75}
+{3, 3.5, 3.5, 3.75, 3.0}
+{1, 2.0, 1.5, 0.0}
+{false, false, false, false, false}
+{false, false, false, false, false}
+{true, true, true, true, true}
+{true, true, true, true, true}
+{true, false, false, true}
+{{2.5, 7}, :ordinary}
+{:sent, 42}
+42
+:spawned
+:spawned_opt
+true
+42

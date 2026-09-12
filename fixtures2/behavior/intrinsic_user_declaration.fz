@@ -1,0 +1,7 @@
+#---
+# purpose: "intrinsic declarations are reserved to the compiler-owned runtime library"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+intrinsic "add_ii" fn my_add(integer, integer) :: integer
+fn main(), do: my_add(1, 2)

@@ -8,7 +8,7 @@ use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::extern_contract::extern_semantic_contract;
+use crate::extern_contract::native_semantic_contract;
 
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
@@ -40,7 +40,7 @@ pub(super) fn derive_function_contract(
         .collect::<Vec<_>>();
     let specs = if !declared_specs.is_empty() {
         declared_specs
-    } else if let Some(spec) = extern_semantic_contract(&surface) {
+    } else if let Some(spec) = native_semantic_contract(&surface) {
         vec![spec]
     } else {
         Vec::new()
@@ -68,7 +68,7 @@ pub(super) fn derive_function_contract(
             waits.push(fact);
         }
     }
-    let check_head = surface.extern_abi.is_none() && !surface.clauses.is_empty();
+    let check_head = surface.declaration.is_none() && !surface.clauses.is_empty();
     if check_head {
         let fact = FactKey::EntryDispatch(function);
         if world.has_fact(&fact) {

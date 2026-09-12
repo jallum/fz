@@ -1,0 +1,9 @@
+#---
+# purpose: "an intrinsic's declared float input cannot accept an integer by implicit coercion"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+fn main() do
+  dbg(:must_not_execute)
+  dbg(Kernel.fz_op_sub_if(7, 2))
+end

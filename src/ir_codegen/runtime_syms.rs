@@ -25,11 +25,12 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
     // Single source of every runtime import's wire ABI. Every arg/return is a
     // pointer-width-or-narrower word; the signature is just the type list.
     // `decl_import` (JIT/AOT declaration) and `CodegenFn::call_named` (the
-    // by-name intrinsic call path) both consult this — one place to keep in
+    // runtime helper call path) both consult this — one place to keep in
     // step with the `extern "C"` bodies in ir_runtime.rs.
     let (params, rets): (&[ir::Type], &[ir::Type]) = match name {
-        // process intrinsics lowered by name (prim.rs)
+        // Runtime helpers used by typed process operations.
         "fz_panic" => (&[I64, I64], &[]),
+        "fz_intrinsic_fault" => (&[I64], &[]),
         "fz_send_ref" => (&[I64, I64, I64], &[I64]),
         "fz_self_raw" => (&[I64], &[I64]),
         "fz_make_ref_raw" => (&[], &[I64]),
@@ -111,6 +112,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_matcher_map_get_ref" => (&[I64, I64, I64], &[I64]),
         "fz_alloc_closure" => (&[I64, I32, I32, I32, I32, I64], &[I64]),
         "fz_closure_code_ref" => (&[I64], &[I64]),
+        "fz_closure_arity_ref" => (&[I64], &[I32]),
         "fz_closure_halt_kind_ref" => (&[I64], &[I32]),
         "fz_materialize_cont" => (&[I64, I64], &[I64]),
         "fz_closure_get_capture_ref" => (&[I64, I64], &[I64]),

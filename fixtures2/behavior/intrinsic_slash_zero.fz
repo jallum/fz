@@ -1,0 +1,5 @@
+#---
+# purpose: "integer-input float-result slash reports zero divisors on every door"
+# expect: abort
+#---
+fn main(), do: dbg(Kernel.fz_op_div_ii_to_float(1, 0))

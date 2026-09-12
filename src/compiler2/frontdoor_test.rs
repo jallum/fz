@@ -32,6 +32,27 @@ fn head_name(node: &super::QuotedAstNode) -> String {
     node.head.atom_name().expect("ast head atom")
 }
 
+#[test]
+fn compiler2_frontdoor_intrinsic_declaration_separates_identity_from_function_name() {
+    let root = parse_quoted_program(
+        "intrinsic.fz",
+        "intrinsic \"add_ii\" fn integer_sum(integer, integer) :: integer\n",
+        &ConfiguredTelemetry::new(),
+    )
+    .expect("intrinsic declarations have their own source form");
+    let items = root.cursor().list_items().expect("items");
+    let node = items[0].ast_node(&root.sources).expect("node cursor").expect("node");
+    assert_eq!(head_name(&node), "intrinsic");
+    let args = node.tail.list_items().expect("intrinsic arguments");
+    assert_eq!(args[0].utf8_binary_text().expect("identity"), "add_ii");
+    assert_eq!(
+        map_value(&args[1].map_entries().expect("details"), "name")
+            .utf8_binary_text()
+            .expect("function name"),
+        "integer_sum",
+    );
+}
+
 fn map_value<'a>(
     entries: &'a [(super::QuotedSourceCursor, super::QuotedSourceCursor)],
     key: &str,

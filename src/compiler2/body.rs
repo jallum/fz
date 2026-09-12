@@ -12,6 +12,7 @@ use crate::fz_ir::{ExternAbi, ExternTy};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
+pub use fz_runtime::intrinsic::Intrinsic;
 
 use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
@@ -84,6 +85,92 @@ pub struct LoweredExtern {
     pub semantic_contract: ResolvedSpecDecl<Ty>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoweredIntrinsic {
+    pub identity: Intrinsic,
+    pub semantic_contract: ResolvedSpecDecl<Ty>,
+}
+
+impl LoweredIntrinsic {
+    pub fn validate(
+        types: &mut super::Types,
+        identity: Intrinsic,
+        semantic_contract: ResolvedSpecDecl<Ty>,
+    ) -> Result<Self, &'static str> {
+        use fz_runtime::intrinsic::{Domain, Operation};
+        let descriptor = identity.descriptor();
+        let mut params = descriptor
+            .inputs
+            .iter()
+            .map(|lane| match lane {
+                Domain::Integer => types.int(),
+                Domain::Float => types.float(),
+                Domain::Any => types.any(),
+                Domain::Binary => types.str_t(),
+                Domain::Callable(arity) => {
+                    let any = types.any();
+                    types.arrow(&vec![any; *arity as usize], any)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut result = match descriptor.result {
+            None => types.none(),
+            Some(Domain::Integer) => types.int(),
+            Some(Domain::Float) => types.float(),
+            Some(Domain::Any) => types.any(),
+            Some(Domain::Binary) => types.str_t(),
+            Some(Domain::Callable(arity)) => {
+                let any = types.any();
+                types.arrow(&vec![any; arity as usize], any)
+            }
+        };
+        match descriptor.operation {
+            Operation::Compare(_) => result = types.bool(),
+            Operation::SelfPid | Operation::Spawn | Operation::SpawnOpt => {
+                result = types.opaque_of("pid");
+            }
+            Operation::MakeRef => result = types.opaque_of("ref"),
+            Operation::Send | Operation::MakeResource => {
+                if semantic_contract.constraints.len() != 1 {
+                    return Err("intrinsic requires one correlated type parameter");
+                }
+                let (variable, bound) = semantic_contract.constraints.iter().next().expect("one constraint");
+                let variable = types.type_var(*variable);
+                if descriptor.operation == Operation::Send {
+                    if *bound != types.any() {
+                        return Err("send parameter must range over every value");
+                    }
+                    params = vec![types.opaque_of("pid"), variable];
+                    result = variable;
+                } else {
+                    let integer = types.int();
+                    let pointer = types.cpointer();
+                    let payload = types.union(integer, pointer);
+                    if *bound != payload {
+                        return Err("resource payload must be integer or cpointer");
+                    }
+                    let nil = types.nil();
+                    params = vec![variable, types.arrow(&[variable], nil)];
+                    result = types.resource(variable);
+                }
+            }
+            Operation::Arithmetic(_) | Operation::Negate | Operation::Panic => {}
+        }
+        if !matches!(descriptor.operation, Operation::Send | Operation::MakeResource)
+            && !semantic_contract.constraints.is_empty()
+        {
+            return Err("intrinsic does not accept type parameters");
+        }
+        if params != semantic_contract.params || result != semantic_contract.result {
+            return Err("declared semantic signature does not match the intrinsic contract");
+        }
+        Ok(Self {
+            identity,
+            semantic_contract,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredBitSize {
     Literal(u32),
@@ -107,6 +194,9 @@ pub struct LoweredBitField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
+    Intrinsic {
+        signature: LoweredIntrinsic,
+    },
     Extern {
         signature: LoweredExtern,
     },

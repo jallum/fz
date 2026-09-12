@@ -60,18 +60,11 @@ runtime-crate export, which is `#[unsafe(no_mangle)]` and reachable through the
 staticlib link. There is no lowering function to write and no interpreter match
 arm to add.
 
-The JIT's addresses are a TABLE, not a run of calls, so the set can be read
-back. `every_declared_runtime_symbol_is_reachable_from_compiled_code` reads it
-and requires each declared symbol to be reachable one of the only two ways
-there are: registered with the JIT, or lowered in place by native codegen and
-never resolved at all — the arithmetic shims, whose full set is
-`native_codegen::ARITH_SHIMS`. The table exists because it had already drifted:
-`fz_bitstring_is_binary` was declared and never registered, and on macOS the
-JIT falls back to dlsym over the process image and finds the `no_mangle` export
-anyway. The whole six-target local gate was green while the same program died
-on Linux with `can't resolve symbol` (fz-5xp.58). A symbol missing from that
-table is a landmine that only goes off on one platform, so a test has to hold
-it rather than a convention.
+The JIT's addresses are a table, so tests can enumerate them.
+`every_declared_runtime_symbol_is_reachable_from_compiled_code` requires every
+owned extern symbol to have a registered native address. Intrinsics have a
+separate typed declaration and never enter this symbol inventory; see
+[`intrinsics`](intrinsics.md).
 
 There is no variadic form of the `fz` ABI: every variadic call goes through a
 fixed-arity C dispatcher, which has nowhere to put the implicit process
@@ -115,45 +108,28 @@ here — see the JIT symbol table above.
 
 ## The `fz` ABI is reserved to the runtime library
 
-A declaration outside the bootstrap may not name it. The reason is not
-etiquette: the symbols the `fz` ABI can reach are the ones both doors ALSO
-claim by name in their own lowerings, and those two claim sets are not equal.
-`fz_op_add_ii` has a native rung and no interpreter one, so a foreign
-`extern "fz" fn fz_op_add_ii` once answered `5` under `run` and a process
-pointer plus two under `interp`. `resolve_extern_abi` refuses it in the shared
-front end, which is the only place a refusal reaches every door identically.
+Only compiler-owned bootstrap code may declare the `fz` ABI, because it
+passes a running process and fz's internal value representation.
+The declaration's stored `FunctionSource.owner: SourceOwner` establishes that
+provenance;
+quoted span metadata never grants bootstrap privilege.
+`resolve_extern_abi` checks this boundary, rejects unknown ABIs and variadic
+`fz` declarations, and compares owned runtime symbols against
+`extern_contract.rs::RUNTIME_SYMBOLS`. The interpreter's address book checks
+the same declared convention before performing a native call.
 
-For the same reason the interpreter's symbol table records the convention each
-Rust function ACTUALLY has, and refuses a declaration that disagrees. An
-address alone is not enough to call something: reaching `fz_dbg_value` from an
-`extern "C"` declaration transmuted an `fn(*mut Process, u64)` to an
-`fn(u64)`, read the argument's ref word as the process pointer, and returned.
+These checks are demand-gated: an uncalled declaration is not lowered.
 
-Two more checks follow from the same idea. A variadic `extern "fz"` is refused,
-because a variadic call goes through a fixed-arity C dispatcher with nowhere to
-put the process. And `extern_contract.rs::RUNTIME_SYMBOLS`
-records the convention the runtime ACTUALLY provides each of its own symbols
-with, and a declaration that contradicts it is refused. `fz_dbg_value` is
-`fn(*mut Process, u64)`; declaring it `extern "C"` reached it as `fn(u64)`, and
-the same shape on `fz_process_heap_alloc_stats` segfaulted the JIT and AOT
-doors. `address_book_test` holds that table and the interpreter's address book
-together.
+Compiler/runtime operations use `intrinsic` declarations. The arithmetic and
+comparison families and seven process primitives carry an `Intrinsic`
+identity through lowering; their source declarations contain no foreign ABI.
+A same-spelled ordinary function keeps its own body. The generic extern path
+accepts only `LoweredExtern` and performs no intrinsic symbol interception.
 
-All four checks are DEMAND-GATED. An extern that is declared and never called
-is never lowered, so none fires — the declaration compiles silently.
-
-The migration is PARTIAL, deliberately. `kernel.fz` still declares `fz_panic`,
-`fz_self`, `fz_send`, `fz_spawn`, `fz_spawn_opt`, `fz_make_ref` and
-`fz_make_resource` as `extern "C"`. Only `fz_panic` names a real symbol; the
-other six name nothing at all, and are lowered to `fz_self_raw`,
-`fz_send_ref`, `fz_spawn_ref`, `fz_spawn_opt_ref`, `fz_make_ref_raw` and
-`fz_make_resource_ref`, each of which takes a process,
-and the four `fz_op_*_bb` comparisons declare `binary` params that never become
-`*const u8`. Those are intrinsics wearing extern syntax: their lowerings emit
-something other than a call, so both doors still claim them by name and the
-declared ABI is not consulted. `ExternAbi` is therefore a true fact for the
-three symbols above and a placeholder for those. fz-5xp.29 and fz-5xp.30 carry
-the third declaration form that would retire the difference.
+Some runtime functions implement intrinsic lowerings while remaining real
+exports. `fz_panic`, for example, receives `(*mut Process, u64)`, so its
+owned-symbol record has the `Fz` ABI even though the Kernel declaration is an
+intrinsic. Declaring that export as `extern "C"` is refused.
 
 ## The wire alphabet
 
@@ -201,10 +177,8 @@ What follows from the invariant:
 - `MAX_INTERP_EXTERN_ARGS` (4) is a ceiling the backend does not have, so a
   5-parameter extern is refused under `interp` and runs under `run`/`build`
   (fz-5xp.32). An `extern "fz"` spends one slot on the implicit process word.
-- A helper's Rust signature must be its declared wire types. The `fz_op_*`
-  arithmetic shims took `u64` and bit-punned floats, which was correct only
-  while the dispatcher bit-punned them too; fixing one half broke six fixtures
-  until the other half was fixed.
+- A helper's Rust signature must use its declared wire types. Arithmetic
+  intrinsics carry their own typed lane descriptor and bypass the C dispatcher.
 
 `behavior/extern_float_lanes` pins the bank assignments on all three doors,
 including both mixed orders — one alone cannot distinguish a correct table from
@@ -290,11 +264,11 @@ through the staticlib link.
 ## Resource typing
 
 `make_resource(payload, dtor)` is the `Kernel` wrapper around the
-`fz_make_resource` extern; both carry the same signature so the resource type
+`fz_make_resource` intrinsic; both carry the same signature so the resource type
 flows from the boundary:
 
 ```fz
-extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+intrinsic "make_resource" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 ```
 

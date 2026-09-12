@@ -1,0 +1,5 @@
+#---
+# purpose: "floating intrinsic overflow reports a fault before nonfinite values escape"
+# expect: abort
+#---
+fn main(), do: dbg(Kernel.fz_op_mul_ff(1.0e308, 2.0))

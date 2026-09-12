@@ -511,8 +511,27 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     match &executable.body {
+        BackendBody::Intrinsic { signature } => {
+            let value = super::intrinsic::call_intrinsic(
+                runtime,
+                types,
+                transport,
+                tel,
+                program,
+                module,
+                signature.identity,
+                &args,
+            )?;
+            continue_backend_value(
+                runtime,
+                transport,
+                program,
+                BackendBoundValue::Runtime(value),
+                continuations,
+            )
+        }
         BackendBody::Extern { signature } => {
-            let value = call_lowered_extern(runtime, types, transport, tel, program, module, signature, None, &args)?;
+            let value = call_lowered_extern(runtime, signature, None, &args)?;
             continue_backend_value(
                 runtime,
                 transport,
@@ -1894,15 +1913,14 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
         }
     };
     match &executable.body {
-        BackendBody::Extern { signature } => call_lowered_extern(
+        BackendBody::Intrinsic { signature } => super::intrinsic::call_intrinsic(
             runtime,
             types,
             transport,
             tel,
             program,
             module,
-            signature,
-            extern_marshals,
+            signature.identity,
             &call_args,
         )
         .and_then(|value| {
@@ -1914,6 +1932,16 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
                 continuations,
             )
         }),
+        BackendBody::Extern { signature } => call_lowered_extern(runtime, signature, extern_marshals, &call_args)
+            .and_then(|value| {
+                continue_backend_value(
+                    runtime,
+                    transport,
+                    program,
+                    BackendBoundValue::Runtime(value),
+                    continuations,
+                )
+            }),
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,

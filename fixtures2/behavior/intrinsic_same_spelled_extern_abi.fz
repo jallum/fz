@@ -1,0 +1,7 @@
+#---
+# purpose: "the real panic export requires the process ABI even when a foreign declaration shares the intrinsic wrapper name"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+extern "C" fn fz_panic(any) :: never
+fn main(), do: fz_panic(:bad_abi)

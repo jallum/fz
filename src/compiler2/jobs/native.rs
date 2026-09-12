@@ -248,7 +248,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         for (index, executable) in self.program.executables().iter().enumerate() {
             let lowered = (|| -> Result<(), FatalError> {
                 match &executable.body {
-                    BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
+                    BackendBody::Intrinsic { .. } | BackendBody::Extern { .. } => {
+                        self.lower_native_executable(index, executable)
+                    }
                     BackendBody::Clauses { clauses, entries, .. } => {
                         let mut entry_fns = EntryFns::default();
                         if executable.abi.materialized.entry_dispatch.is_some() {
@@ -733,19 +735,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
-    fn lower_extern_executable(
-        &mut self,
-        index: usize,
-        executable: &BackendExecutable,
-        signature: &LoweredExtern,
-    ) -> Result<(), FatalError> {
+    fn lower_native_executable(&mut self, index: usize, executable: &BackendExecutable) -> Result<(), FatalError> {
         let fn_id = self.executable_fns[index];
         let name = format!(
-            "{}__e{}",
+            "{}__e{index}",
             self.world
                 .function_ref(executable.key.activation.function)
-                .display_name(),
-            index
+                .display_name()
         );
         let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
         let mut ctx = NativeFnCtx::new(
@@ -762,42 +758,48 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let activation_inputs = executable.key.activation.inputs(self.world.types());
         let params = ctx.entry_params(activation_inputs.as_slice());
-        let mut extern_args = Vec::with_capacity(params.len());
-        for (arg_index, param) in params.iter().copied().enumerate() {
-            let arg = if arg_index < signature.params.len() {
-                ExternArg::fixed(param, signature.params[arg_index])
-            } else {
-                ExternArg::auto(param)
-            };
-            extern_args.push(arg);
-        }
-        let extern_id = *self
-            .extern_ids
-            .get(&index)
-            .expect("extern executable should have a declared ExternId");
-        let marshal_plan = self.extern_marshals.get(&index).cloned().unwrap_or_default();
-        let callsite = ctx.fresh_callsite();
-        let (value, stmt_idx) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
-        for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
-            ctx.extern_marshals.insert(
-                ExternMarshalSite {
-                    block: ctx.current_block,
-                    stmt_idx,
-                    arg_idx: arg_index,
-                },
-                marshal,
-            );
-        }
-        let result = if matches!(signature.ret, ExternTy::Unit | ExternTy::Never) {
-            let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
-            let _ = value;
-            nil
-        } else {
-            value
+        let result = match &executable.body {
+            BackendBody::Intrinsic { signature } => ctx.emit_let(Prim::Intrinsic(signature.identity, params)).0,
+            BackendBody::Extern { signature } => self.emit_extern_leaf(index, &mut ctx, signature, &params),
+            BackendBody::Clauses { .. } => unreachable!("native leaf executable"),
         };
         ctx.set_term(Term::Return(result));
         self.finish_native_fn(ctx);
         Ok(())
+    }
+
+    fn emit_extern_leaf(&self, index: usize, ctx: &mut NativeFnCtx, signature: &LoweredExtern, params: &[Var]) -> Var {
+        let extern_args = params
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, param)| {
+                signature
+                    .params
+                    .get(index)
+                    .map_or_else(|| ExternArg::auto(param), |ty| ExternArg::fixed(param, *ty))
+            })
+            .collect();
+        let extern_id = self.extern_ids[&index];
+        let callsite = ctx.fresh_callsite();
+        let (value, stmt_idx) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
+        if let Some(marshals) = self.extern_marshals.get(&index) {
+            for (arg_index, marshal) in marshals.iter().copied().enumerate() {
+                ctx.extern_marshals.insert(
+                    ExternMarshalSite {
+                        block: ctx.current_block,
+                        stmt_idx,
+                        arg_idx: arg_index,
+                    },
+                    marshal,
+                );
+            }
+        }
+        if matches!(signature.ret, ExternTy::Unit | ExternTy::Never) {
+            ctx.emit_let(Prim::Const(Const::Nil)).0
+        } else {
+            value
+        }
     }
 
     fn lower_clause_dispatch_executable(
@@ -4741,7 +4743,7 @@ fn collect_extern_marshals_for_call_target(
     {
         let signature = match &program.executables()[callee].body {
             BackendBody::Extern { signature } => signature,
-            BackendBody::Clauses { .. } => unreachable!(),
+            BackendBody::Clauses { .. } | BackendBody::Intrinsic { .. } => unreachable!(),
         };
         let marshals = extern_marshals.cloned().unwrap_or_else(|| signature.params.clone());
         match out.get(&callee) {

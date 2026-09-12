@@ -86,6 +86,13 @@ value." The compiler turns each call into the matching C-ABI invocation.
 <code>int</code>, and carries it as a raw integer payload with an
 <code>INT</code> kind so the rest of fz can work with it.</p>
 
+<p>Arithmetic and process operations such as <code>+</code>, <code>self()</code>,
+and <code>send(pid, message)</code> are compiler/runtime intrinsics. Use their
+ordinary Kernel functions. An extern declaration names a real native function;
+giving it the same name as an intrinsic does not give it that operation's
+behavior. The runtime library's <code>intrinsic</code> declaration form is
+reserved for its own implementation.</p>
+
 <h3>Arguments work the same way</h3>
 
 <pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">abs</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span></pre>

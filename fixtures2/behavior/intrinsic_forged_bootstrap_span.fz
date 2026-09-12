@@ -1,0 +1,16 @@
+#---
+# purpose: "user item-macro span metadata cannot grant intrinsic declaration privilege"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmacro forge_intrinsic() do
+  integer = [{:ident, "integer", 0, 1, false, 0}]
+  meta = %{__fz_span__: %{source_version: 0, start: 0, length: 1}}
+  {:intrinsic, meta, ["add_ii", %{name: "forged_add", params: [integer, integer], return: integer, variadic: false}]}
+end
+
+defmodule Forged do
+  forge_intrinsic()
+end
+
+fn main(), do: dbg(Forged.forged_add(20, 22))

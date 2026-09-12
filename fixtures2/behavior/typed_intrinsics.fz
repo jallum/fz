@@ -1,0 +1,32 @@
+#---
+# purpose: "typed intrinsic numeric lanes, comparison relations, and process primitives agree on every runtime door"
+#---
+defmodule SameSpelling do
+  fn fz_op_sub_if(a, b), do: {b, a}
+  fn fz_self(), do: :ordinary
+end
+
+fn main() do
+  dbg({Kernel.fz_op_neg_i(7), Kernel.fz_op_neg_f(7.5)})
+  dbg({Kernel.fz_op_add_ii(7, 2), Kernel.fz_op_add_if(7, 2.5), Kernel.fz_op_add_ff(7.5, 2.5)})
+  dbg({Kernel.fz_op_sub_ii(7, 2), Kernel.fz_op_sub_if(7, 2.5), Kernel.fz_op_sub_fi(7.5, 2), Kernel.fz_op_sub_ff(7.5, 2.5)})
+  dbg({Kernel.fz_op_mul_ii(7, 2), Kernel.fz_op_mul_if(7, 2.5), Kernel.fz_op_mul_ff(7.5, 2.5)})
+  dbg({Kernel.fz_op_div_ii(7, 2), Kernel.fz_op_div_ii_to_float(7, 2), Kernel.fz_op_div_if(7, 2.0), Kernel.fz_op_div_fi(7.5, 2), Kernel.fz_op_div_ff(7.5, 2.5)})
+  dbg({Kernel.fz_op_rem_ii(7, 2), Kernel.fz_op_rem_if(7, 2.5), Kernel.fz_op_rem_fi(7.5, 2), Kernel.fz_op_rem_ff(7.5, 2.5)})
+  dbg({Kernel.fz_op_lt_ii(2, 1), Kernel.fz_op_lt_if(2, 1.0), Kernel.fz_op_lt_fi(2.0, 1), Kernel.fz_op_lt_ff(2.0, 1.0), Kernel.fz_op_lt_bb("b", "a")})
+  dbg({Kernel.fz_op_lte_ii(2, 1), Kernel.fz_op_lte_if(2, 1.0), Kernel.fz_op_lte_fi(2.0, 1), Kernel.fz_op_lte_ff(2.0, 1.0), Kernel.fz_op_lte_bb("b", "a")})
+  dbg({Kernel.fz_op_gt_ii(2, 1), Kernel.fz_op_gt_if(2, 1.0), Kernel.fz_op_gt_fi(2.0, 1), Kernel.fz_op_gt_ff(2.0, 1.0), Kernel.fz_op_gt_bb("b", "a")})
+  dbg({Kernel.fz_op_gte_ii(2, 1), Kernel.fz_op_gte_if(2, 1.0), Kernel.fz_op_gte_fi(2.0, 1), Kernel.fz_op_gte_ff(2.0, 1.0), Kernel.fz_op_gte_bb("b", "a")})
+  dbg({Kernel.fz_op_eq({1}, {1.0}), Kernel.fz_op_neq({1}, {1.0}), Kernel.fz_op_identical({1}, {1.0}), Kernel.fz_op_not_identical({1}, {1.0})})
+  dbg({SameSpelling.fz_op_sub_if(7, 2.5), SameSpelling.fz_self()})
+  parent = Kernel.fz_self()
+  dbg(Kernel.fz_send(parent, {:sent, 42}))
+  receive do {:sent, n} -> dbg(n) end
+  Kernel.fz_spawn(fn() -> Kernel.fz_send(parent, :spawned) end)
+  receive do :spawned -> dbg(:spawned) end
+  Kernel.fz_spawn_opt(fn() -> Kernel.fz_send(parent, :spawned_opt) end, 4096)
+  receive do :spawned_opt -> dbg(:spawned_opt) end
+  dbg(Kernel.fz_make_ref() != Kernel.fz_make_ref())
+  resource = Kernel.fz_make_resource(42, fn(_value) -> nil end)
+  dbg(resource.value)
+end

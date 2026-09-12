@@ -266,7 +266,7 @@ pub(super) fn define_function(
     let surface =
         crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source, &source_map.borrow())
             .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
-    let declares_contract = surface.extern_abi.is_some()
+    let declares_contract = surface.declaration.is_some()
         || surface
             .attrs
             .iter()
@@ -625,7 +625,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         let head = node.head.atom_name().map_err(|error| {
             emit_internal_surface_error(self.telemetry, format!("function clause head read failed: {error}"))
         })?;
-        if head == "extern" {
+        if matches!(head.as_str(), "extern" | "intrinsic") {
             return Ok(ExpandedValue::Complete(cursor.root()));
         }
         if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {

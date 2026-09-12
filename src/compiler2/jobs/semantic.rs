@@ -162,6 +162,9 @@ pub(super) fn analyze_activation(
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
     match lowered_body {
+        LoweredBody::Intrinsic { ref signature } => {
+            return_evidence = Some(signature.semantic_contract.result);
+        }
         LoweredBody::Extern { ref signature } => {
             return_evidence = Some(signature.return_ty);
         }
@@ -1639,7 +1642,10 @@ fn apply_function_contract(
 /// owner is carried separately from the callsite's exact source-version span.
 fn function_contract_is_enforced(world: &World, function: FunctionId, caller_owner: SourceOwner) -> bool {
     let (_source, surface) = world.function_definition(function);
-    surface.extern_abi.is_none() && !world.is_bootstrap(caller_owner)
+    !matches!(
+        surface.declaration,
+        Some(crate::function_surface::NativeDeclaration::Extern(_))
+    ) && !world.is_bootstrap(caller_owner)
 }
 
 fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
@@ -1929,6 +1935,7 @@ fn call_target_summary(
 fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
     match world.lowered_body(function) {
         LoweredBody::Extern { signature } => Some(signature.params.len()),
+        LoweredBody::Intrinsic { signature } => Some(signature.identity.descriptor().inputs.len()),
         LoweredBody::Clauses { .. } => None,
     }
 }

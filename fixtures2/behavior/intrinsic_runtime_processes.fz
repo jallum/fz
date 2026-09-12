@@ -1,0 +1,14 @@
+#---
+# purpose: "process intrinsics admit unknown callable values with the required arity"
+#---
+fnp unknown(value), do: %{value: value}[:value]
+
+fn main() do
+  parent = Kernel.fz_self()
+  Kernel.fz_spawn(unknown(fn() -> Kernel.fz_send(parent, :spawned) end))
+  receive do :spawned -> nil end
+  Kernel.fz_spawn_opt(unknown(fn() -> Kernel.fz_send(parent, :spawned_opt) end), 4096)
+  receive do :spawned_opt -> nil end
+  resource = Kernel.fz_make_resource(42, unknown(fn(_value) -> nil end))
+  assert(resource.value == 42)
+end

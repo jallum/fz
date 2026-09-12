@@ -1,0 +1,5 @@
+#---
+# purpose: "the panic intrinsic reaches the existing ordinary failure boundary"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_panic(:intrinsic_panic)

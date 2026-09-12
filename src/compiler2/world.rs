@@ -1341,7 +1341,7 @@ impl World {
     pub(crate) fn function_declares_contract(&self, function: FunctionId) -> bool {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { surface, .. } => {
-                surface.extern_abi.is_some()
+                surface.declaration.is_some()
                     || surface
                         .attrs
                         .iter()

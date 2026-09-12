@@ -18,7 +18,7 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
+    explicit_extern_wire_hint, extern_symbol_from_name, native_semantic_contract, runtime_symbol_abi, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
@@ -249,7 +249,7 @@ pub(super) fn lower_function(
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
-    if surface.extern_abi.is_some() {
+    if surface.declaration.is_some() {
         for referenced in world.function_type_refs(function).iter().cloned() {
             let fact = FactKey::TypeDefined(referenced);
             if world.has_fact(&fact) {
@@ -1377,7 +1377,23 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
-        if self.surface.extern_abi.is_some() {
+        if let Some(crate::function_surface::NativeDeclaration::Intrinsic(name)) = &self.surface.declaration {
+            if !self.declared_by_runtime_library() {
+                return Err(
+                    self.extern_abi_error("intrinsic declarations are reserved to the runtime library".to_string())
+                );
+            }
+            if self.surface.variadic {
+                return Err(self.extern_abi_error("intrinsic declarations cannot be variadic".to_string()));
+            }
+            let identity = fz_runtime::intrinsic::Intrinsic::resolve(name)
+                .ok_or_else(|| self.extern_abi_error(format!("unknown intrinsic `{name}`")))?;
+            let contract = self.resolve_native_contract()?;
+            let signature = super::super::body::LoweredIntrinsic::validate(self.world.types_mut(), identity, contract)
+                .map_err(|error| self.extern_abi_error(format!("intrinsic `{identity:?}`: {error}")))?;
+            return Ok((LoweredBody::Intrinsic { signature }, Vec::new(), Vec::new()));
+        }
+        if self.surface.declaration.is_some() {
             let signature = self.resolve_extern_signature()?;
             return Ok((LoweredBody::Extern { signature }, Vec::new(), Vec::new()));
         }
@@ -1423,11 +1439,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ///    and for the same shape on `fz_process_heap_alloc_stats`, a segfault
     ///    under `run` and `build`.
     fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
-        let declared = self
-            .surface
-            .extern_abi
-            .as_deref()
-            .expect("extern signatures only resolve for extern fns");
+        let Some(crate::function_surface::NativeDeclaration::Extern(declared)) = &self.surface.declaration else {
+            return Err(self.extern_abi_error("generic extern lowering requires an extern declaration".to_string()));
+        };
         let Some(abi) = ExternAbi::parse(declared) else {
             return Err(self.extern_abi_error(format!(
                 "unknown extern ABI `{}` on `{}`; expected one of {}",
@@ -1485,42 +1499,17 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         // Checked first: it is the cheapest question, and a wrong answer makes
         // every later one moot.
         let abi = self.resolve_extern_abi()?;
-        let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
-            emit_job_diagnostic(
-                self.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("`{}` is not an extern declaration", self.surface.name),
-                    self.surface.name_span,
-                ),
-            )
-        })?;
-        let semantic_contract = self
-            .world
-            .resolve_spec_decl(self.namespace, &contract)
-            .map_err(|error| {
-                emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::RESOLVE_TYPE_ALIAS,
-                        format!(
-                            "compiler2 could not resolve extern contract for `{}`: {}",
-                            self.surface.name, error.msg
-                        ),
-                        error.span,
-                    ),
-                )
-            })?;
+        let semantic_contract = self.resolve_native_contract()?;
         let params = self
             .surface
-            .extern_param_tokens
+            .native_param_tokens
             .iter()
             .zip(semantic_contract.params.iter())
             .map(|(body, ty)| extern_wire_ty(self.world.types_mut(), body, ty, &semantic_contract.constraints))
             .collect();
         let ret = extern_wire_ty(
             self.world.types_mut(),
-            &self.surface.extern_ret_tokens,
+            &self.surface.native_ret_tokens,
             &semantic_contract.result,
             &semantic_contract.constraints,
         );
@@ -1533,6 +1522,36 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             return_ty: semantic_contract.result,
             semantic_contract,
         })
+    }
+
+    fn resolve_native_contract(
+        &mut self,
+    ) -> Result<crate::type_expr::ResolvedSpecDecl<super::super::types::Ty>, FatalError> {
+        let contract = native_semantic_contract(&self.surface).ok_or_else(|| {
+            emit_job_diagnostic(
+                self.telemetry,
+                Diagnostic::error(
+                    codes::LOWER_UNSUPPORTED,
+                    format!("`{}` is not a native declaration", self.surface.name),
+                    self.surface.name_span,
+                ),
+            )
+        })?;
+        self.world
+            .resolve_spec_decl(self.namespace, &contract)
+            .map_err(|error| {
+                emit_job_diagnostic(
+                    self.telemetry,
+                    Diagnostic::error(
+                        codes::RESOLVE_TYPE_ALIAS,
+                        format!(
+                            "compiler2 could not resolve native contract for `{}`: {}",
+                            self.surface.name, error.msg
+                        ),
+                        error.span,
+                    ),
+                )
+            })
     }
 
     fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {
@@ -2686,10 +2705,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 })
                 .collect(),
             is_macro: false,
-            extern_abi: None,
-            extern_param_tokens: Vec::new(),
-            extern_ret_tokens: crate::ast::TypeExprBody(Vec::new()),
-            extern_constraints: Vec::new(),
+            declaration: None,
+            native_param_tokens: Vec::new(),
+            native_ret_tokens: crate::ast::TypeExprBody(Vec::new()),
+            native_constraints: Vec::new(),
             variadic: false,
             attrs: Vec::new(),
             span,

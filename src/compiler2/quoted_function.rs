@@ -2,7 +2,7 @@ use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, Endian, Expr, FnClause,
     LambdaClause, MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
 };
-use crate::function_surface::FunctionSurface;
+use crate::function_surface::{FunctionSurface, NativeDeclaration};
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
@@ -56,13 +56,13 @@ pub(crate) fn derive_function_surface(
 
     let first = expect_ast_node(&forms[0], "function form", sources)?;
     let form_head = atom_name(&first.head)?;
-    if form_head == "extern" {
+    if matches!(form_head.as_str(), "extern" | "intrinsic") {
         if forms.len() != 1 {
             return Err(QuotedSourceError::new(
                 "grouped quoted extern source cannot contain multiple non-attribute forms",
             ));
         }
-        return decode_extern_fn(&first, attrs, sources);
+        return decode_native_fn(&first, attrs, &form_head, sources);
     }
 
     let is_macro = form_head == "defmacro";
@@ -126,10 +126,10 @@ pub(crate) fn derive_function_surface(
         name_span,
         clauses,
         is_macro,
-        extern_abi: None,
-        extern_param_tokens: Vec::new(),
-        extern_ret_tokens: TypeExprBody(Vec::new()),
-        extern_constraints: Vec::new(),
+        declaration: None,
+        native_param_tokens: Vec::new(),
+        native_ret_tokens: TypeExprBody(Vec::new()),
+        native_constraints: Vec::new(),
         variadic: false,
         attrs,
         span: group_span,
@@ -154,9 +154,10 @@ fn decode_attribute(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
     }
 }
 
-fn decode_extern_fn(
+fn decode_native_fn(
     node: &QuotedAstNode,
     attrs: Vec<Attribute>,
+    form: &str,
     sources: &SourceMap,
 ) -> Result<FunctionSurface, QuotedSourceError> {
     let args = node.tail.list_items()?;
@@ -172,13 +173,13 @@ fn decode_extern_fn(
     let constraints = optional_map_keyword_tokens(details, "when", sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
 
-    let extern_param_tokens = params
+    let native_param_tokens = params
         .into_iter()
         .map(strip_extern_param_name)
         .map(|result| result.map(TypeExprBody))
         .collect::<Result<Vec<_>, _>>()?;
-    let extern_ret_tokens = TypeExprBody(ret);
-    let extern_constraints = constraints
+    let native_ret_tokens = TypeExprBody(ret);
+    let native_constraints = constraints
         .into_iter()
         .map(|(name, body)| Ok((name, TypeExprBody(body))))
         .collect::<Result<Vec<_>, QuotedSourceError>>()?;
@@ -188,10 +189,14 @@ fn decode_extern_fn(
         name_span: span,
         clauses: Vec::new(),
         is_macro: false,
-        extern_abi: Some(abi),
-        extern_param_tokens,
-        extern_ret_tokens,
-        extern_constraints,
+        declaration: Some(if form == "intrinsic" {
+            NativeDeclaration::Intrinsic(abi)
+        } else {
+            NativeDeclaration::Extern(abi)
+        }),
+        native_param_tokens,
+        native_ret_tokens,
+        native_constraints,
         variadic,
         attrs,
         span,

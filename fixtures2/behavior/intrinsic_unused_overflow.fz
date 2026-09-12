@@ -1,0 +1,8 @@
+#---
+# purpose: "intrinsic faults are preserved across all ordinary runtime doors"
+# expect: abort
+#---
+fn main() do
+  Kernel.fz_op_add_ii(9223372036854775807, 1)
+  :unused
+end

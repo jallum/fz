@@ -1,0 +1,5 @@
+#---
+# purpose: "a typed binary comparison rejects an unknown integer before comparing values"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_op_lt_bb(Kernel.fz_dbg_value(1), "b")

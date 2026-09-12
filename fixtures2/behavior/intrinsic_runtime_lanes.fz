@@ -1,0 +1,11 @@
+#---
+# purpose: "dynamic intrinsic inputs retain exact scalar lanes and accept inline and shared binaries"
+#---
+fn main() do
+  subtract = &Kernel.fz_op_sub_if/2
+  assert(subtract.(7, Kernel.fz_dbg_value(2.5)) == 4.5)
+  assert(Kernel.fz_op_sub_ii(7, Kernel.fz_dbg_value(2)) == 5)
+  assert(Kernel.fz_op_lt_bb(Kernel.fz_dbg_value("a"), "b"))
+  assert(Kernel.fz_op_lt_bb(Kernel.fz_dbg_value("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "b"))
+  assert(Kernel.fz_op_eq(Kernel.fz_dbg_value({1}), {1.0}))
+end

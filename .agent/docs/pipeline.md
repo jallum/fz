@@ -918,6 +918,7 @@ caller owns target/profile ABI compatibility for an override.
 | callable entries | `NativeProgram.callable_boundaries` |
 | callable-boundary lookup | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
+| compiler/runtime operations | `Prim::Intrinsic` with the resolved `Intrinsic` descriptor |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
 

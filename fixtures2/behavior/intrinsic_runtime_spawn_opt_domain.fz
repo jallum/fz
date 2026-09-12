@@ -1,0 +1,5 @@
+#---
+# purpose: "spawn_opt rejects an unknown callable with the wrong arity before invoking the scheduler"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_spawn_opt(Kernel.fz_dbg_value(fn(_value) -> nil end), 4096)

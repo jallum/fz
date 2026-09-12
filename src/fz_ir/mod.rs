@@ -401,6 +401,7 @@ pub enum Prim {
     /// Publish an ownership-splitting edge; scalar lanes are unchanged.
     Share(Var),
     Extern(CallsiteIdent, ExternId, Vec<ExternArg>),
+    Intrinsic(fz_runtime::intrinsic::Intrinsic, Vec<Var>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -514,6 +515,7 @@ impl Prim {
             | Prim::IsListCons(a) => {
                 used.insert(*a);
             }
+            Prim::Intrinsic(_, args) => used.extend(args.iter().copied()),
             Prim::Extern(_, _, args) => {
                 for arg in args {
                     used.insert(arg.var);
@@ -1218,6 +1220,7 @@ impl fmt::Display for Prim {
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
             Prim::Share(value) => write!(f, "share({value})"),
+            Prim::Intrinsic(identity, args) => write!(f, "intrinsic {identity:?}({})", fmt_var_list(args)),
             Prim::Extern(_, e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }

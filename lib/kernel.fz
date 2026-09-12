@@ -19,64 +19,64 @@ defmodule Kernel do
   """
 
   extern "fz" fn fz_dbg_value(any) :: any
-  extern "C" fn fz_panic(any) :: never
-  extern "C" fn fz_spawn(() -> any) :: pid
-  extern "C" fn fz_spawn_opt(() -> any, any) :: pid
-  extern "C" fn fz_self() :: pid
-  extern "C" fn fz_send(pid, t) :: t when t: any
-  extern "C" fn fz_make_ref() :: ref
-  extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  intrinsic "panic" fn fz_panic(any) :: never
+  intrinsic "spawn" fn fz_spawn(() -> any) :: pid
+  intrinsic "spawn_opt" fn fz_spawn_opt(() -> any, integer) :: pid
+  intrinsic "self" fn fz_self() :: pid
+  intrinsic "send" fn fz_send(pid, t) :: t when t: any
+  intrinsic "make_ref" fn fz_make_ref() :: ref
+  intrinsic "make_resource" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
   extern "fz" fn fz_binary_concat(binary, binary) :: binary
-  extern "C" fn fz_op_neg_i(integer) :: integer
-  extern "C" fn fz_op_neg_f(float) :: float
-  extern "C" fn fz_op_add_ii(integer, integer) :: integer
-  extern "C" fn fz_op_add_if(integer, float) :: float
-  extern "C" fn fz_op_add_ff(float, float) :: float
-  extern "C" fn fz_op_sub_ii(integer, integer) :: integer
-  extern "C" fn fz_op_sub_if(integer, float) :: float
-  extern "C" fn fz_op_sub_fi(float, integer) :: float
-  extern "C" fn fz_op_sub_ff(float, float) :: float
-  extern "C" fn fz_op_mul_ii(integer, integer) :: integer
-  extern "C" fn fz_op_mul_if(integer, float) :: float
-  extern "C" fn fz_op_mul_ff(float, float) :: float
-  extern "C" fn fz_op_div_ii(integer, integer) :: integer
-  extern "C" fn fz_op_div_ii_to_float(integer, integer) :: float
-  extern "C" fn fz_op_div_if(integer, float) :: float
-  extern "C" fn fz_op_div_fi(float, integer) :: float
-  extern "C" fn fz_op_div_ff(float, float) :: float
-  extern "C" fn fz_op_rem_ii(integer, integer) :: integer
-  extern "C" fn fz_op_rem_if(integer, float) :: float
-  extern "C" fn fz_op_rem_fi(float, integer) :: float
-  extern "C" fn fz_op_rem_ff(float, float) :: float
+  intrinsic "neg_i" fn fz_op_neg_i(integer) :: integer
+  intrinsic "neg_f" fn fz_op_neg_f(float) :: float
+  intrinsic "add_ii" fn fz_op_add_ii(integer, integer) :: integer
+  intrinsic "add_if" fn fz_op_add_if(integer, float) :: float
+  intrinsic "add_ff" fn fz_op_add_ff(float, float) :: float
+  intrinsic "sub_ii" fn fz_op_sub_ii(integer, integer) :: integer
+  intrinsic "sub_if" fn fz_op_sub_if(integer, float) :: float
+  intrinsic "sub_fi" fn fz_op_sub_fi(float, integer) :: float
+  intrinsic "sub_ff" fn fz_op_sub_ff(float, float) :: float
+  intrinsic "mul_ii" fn fz_op_mul_ii(integer, integer) :: integer
+  intrinsic "mul_if" fn fz_op_mul_if(integer, float) :: float
+  intrinsic "mul_ff" fn fz_op_mul_ff(float, float) :: float
+  intrinsic "div_ii" fn fz_op_div_ii(integer, integer) :: integer
+  intrinsic "div_ii_to_float" fn fz_op_div_ii_to_float(integer, integer) :: float
+  intrinsic "div_if" fn fz_op_div_if(integer, float) :: float
+  intrinsic "div_fi" fn fz_op_div_fi(float, integer) :: float
+  intrinsic "div_ff" fn fz_op_div_ff(float, float) :: float
+  intrinsic "rem_ii" fn fz_op_rem_ii(integer, integer) :: integer
+  intrinsic "rem_if" fn fz_op_rem_if(integer, float) :: float
+  intrinsic "rem_fi" fn fz_op_rem_fi(float, integer) :: float
+  intrinsic "rem_ff" fn fz_op_rem_ff(float, float) :: float
   extern "C" fn fz_bitstring_byte_size(any) :: integer
   # The total term order over every value, which the cross-type clauses below
   # are written in terms of. Takes the process (the `fz` ABI) because atoms
   # order by name, not by the id they were interned with.
   extern "fz" fn fz_value_cmp_ref(any, any) :: integer
-  extern "C" fn fz_op_lt_ii(integer, integer) :: bool
-  extern "C" fn fz_op_lt_ff(float, float) :: bool
-  extern "C" fn fz_op_lt_bb(binary, binary) :: bool
-  extern "C" fn fz_op_lte_ii(integer, integer) :: bool
-  extern "C" fn fz_op_lte_ff(float, float) :: bool
-  extern "C" fn fz_op_lte_bb(binary, binary) :: bool
-  extern "C" fn fz_op_gt_ii(integer, integer) :: bool
-  extern "C" fn fz_op_gt_ff(float, float) :: bool
-  extern "C" fn fz_op_gt_bb(binary, binary) :: bool
-  extern "C" fn fz_op_gte_ii(integer, integer) :: bool
-  extern "C" fn fz_op_gte_ff(float, float) :: bool
-  extern "C" fn fz_op_gte_bb(binary, binary) :: bool
-  extern "C" fn fz_op_eq(any, any) :: bool
-  extern "C" fn fz_op_neq(any, any) :: bool
-  extern "C" fn fz_op_identical(any, any) :: bool
-  extern "C" fn fz_op_not_identical(any, any) :: bool
-  extern "C" fn fz_op_lt_if(integer, float) :: bool
-  extern "C" fn fz_op_lt_fi(float, integer) :: bool
-  extern "C" fn fz_op_lte_if(integer, float) :: bool
-  extern "C" fn fz_op_lte_fi(float, integer) :: bool
-  extern "C" fn fz_op_gt_if(integer, float) :: bool
-  extern "C" fn fz_op_gt_fi(float, integer) :: bool
-  extern "C" fn fz_op_gte_if(integer, float) :: bool
-  extern "C" fn fz_op_gte_fi(float, integer) :: bool
+  intrinsic "lt_ii" fn fz_op_lt_ii(integer, integer) :: bool
+  intrinsic "lt_ff" fn fz_op_lt_ff(float, float) :: bool
+  intrinsic "lt_bb" fn fz_op_lt_bb(binary, binary) :: bool
+  intrinsic "lte_ii" fn fz_op_lte_ii(integer, integer) :: bool
+  intrinsic "lte_ff" fn fz_op_lte_ff(float, float) :: bool
+  intrinsic "lte_bb" fn fz_op_lte_bb(binary, binary) :: bool
+  intrinsic "gt_ii" fn fz_op_gt_ii(integer, integer) :: bool
+  intrinsic "gt_ff" fn fz_op_gt_ff(float, float) :: bool
+  intrinsic "gt_bb" fn fz_op_gt_bb(binary, binary) :: bool
+  intrinsic "gte_ii" fn fz_op_gte_ii(integer, integer) :: bool
+  intrinsic "gte_ff" fn fz_op_gte_ff(float, float) :: bool
+  intrinsic "gte_bb" fn fz_op_gte_bb(binary, binary) :: bool
+  intrinsic "eq" fn fz_op_eq(any, any) :: bool
+  intrinsic "neq" fn fz_op_neq(any, any) :: bool
+  intrinsic "identical" fn fz_op_identical(any, any) :: bool
+  intrinsic "not_identical" fn fz_op_not_identical(any, any) :: bool
+  intrinsic "lt_if" fn fz_op_lt_if(integer, float) :: bool
+  intrinsic "lt_fi" fn fz_op_lt_fi(float, integer) :: bool
+  intrinsic "lte_if" fn fz_op_lte_if(integer, float) :: bool
+  intrinsic "lte_fi" fn fz_op_lte_fi(float, integer) :: bool
+  intrinsic "gt_if" fn fz_op_gt_if(integer, float) :: bool
+  intrinsic "gt_fi" fn fz_op_gt_fi(float, integer) :: bool
+  intrinsic "gte_if" fn fz_op_gte_if(integer, float) :: bool
+  intrinsic "gte_fi" fn fz_op_gte_fi(float, integer) :: bool
 
   @doc """
   Aborts the current process with `msg` as the reason.
@@ -193,8 +193,8 @@ defmodule Kernel do
       #=> 42
 
   """
-  @spec spawn(() -> any, keyword()) :: pid
-  fn spawn(fun, opts), do: fz_spawn_opt(fun, opts)
+  @spec spawn(() -> any, integer) :: pid
+  fn spawn(fun, min_heap_size), do: fz_spawn_opt(fun, min_heap_size)
 
   @doc """
   Returns the pid of the calling process.

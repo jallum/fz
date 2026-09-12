@@ -1,0 +1,5 @@
+#---
+# purpose: "checked intrinsic addition reports integer overflow before publishing a value"
+# expect: abort
+#---
+fn main(), do: dbg(Kernel.fz_op_add_ii(9223372036854775807, 1))

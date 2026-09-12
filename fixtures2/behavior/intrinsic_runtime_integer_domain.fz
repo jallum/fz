@@ -1,0 +1,5 @@
+#---
+# purpose: "an unknown float cannot enter an intrinsic integer lane"
+# expect: abort
+#---
+fn main(), do: Kernel.fz_op_sub_ii(7, Kernel.fz_dbg_value(2.5))

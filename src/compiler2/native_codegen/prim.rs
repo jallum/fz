@@ -930,92 +930,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 Ok(LowerOut::Strict(strict_bool(body.b, inv)))
             }
         },
+        Prim::Intrinsic(identity, args) => {
+            lower_intrinsic(body, t, value_types, var_env, runtime, *identity, args, dest_var)
+        }
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
-            let arg_vars: Vec<Var> = args.iter().map(|arg| arg.var).collect();
-            if decl.symbol == "fz_panic" && args.len() == 1 {
-                return lower_extern_fz_panic(body, var_env, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_send" && args.len() == 2 {
-                return lower_extern_fz_send(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(body);
-            }
-            if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(body);
-            }
-            if decl.symbol == "fz_spawn" && args.len() == 1 {
-                return lower_extern_fz_spawn(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                return lower_extern_fz_spawn_opt(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                return lower_extern_fz_make_resource(body, var_env, &arg_vars);
-            }
-            if let Some(op) = arith_shim_op(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, op, &arg_vars);
-            }
-            if decl.symbol == "fz_op_eq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Eq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Identical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::NotIdentical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_neq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Neq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_typed_cmp(body, var_env, runtime, op, kinds, &arg_vars, dest_var);
-            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,
@@ -2040,15 +1959,11 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
-// fz "process intrinsics": externs the front end exposes but the runtime
-// implements as BIFs that need the running process (and/or bespoke arg
-// marshaling). Each marshals its args, then routes through `body.call_named`
-// — the one declare→call path — and wraps the result per its ABI. The process,
-// when needed, is the pinned register (`process_arg`), prepended here rather
-// than appearing in the fz extern decl.
+// Runtime adapters for the typed process operations. The descriptor selects
+// an operation before this point; helper symbols only name native imports.
 
 /// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
-fn lower_extern_fz_panic<M: cranelift_module::Module>(
+fn lower_intrinsic_panic<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],
@@ -2061,55 +1976,6 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
-}
-
-/// The arithmetic shims native codegen LOWERS IN PLACE rather than calls.
-///
-/// They are declared in `kernel.fz` and listed in `RUNTIME_SYMBOLS`, but no
-/// door ever resolves their address on the native path: this table is where
-/// the call becomes a machine instruction instead. It is a table rather than
-/// five `matches!` arms so that the set is nameable — `extern_contract`'s
-/// coverage test reads it to tell a symbol that needs no JIT registration
-/// from one that is simply missing (fz-5xp.58).
-pub(crate) const ARITH_SHIMS: &[(&str, BinOp)] = &[
-    ("fz_op_add_ii", BinOp::Add),
-    ("fz_op_add_if", BinOp::Add),
-    ("fz_op_add_ff", BinOp::Add),
-    ("fz_op_sub_ii", BinOp::Sub),
-    ("fz_op_sub_if", BinOp::Sub),
-    ("fz_op_sub_fi", BinOp::Sub),
-    ("fz_op_sub_ff", BinOp::Sub),
-    ("fz_op_mul_ii", BinOp::Mul),
-    ("fz_op_mul_if", BinOp::Mul),
-    ("fz_op_mul_ff", BinOp::Mul),
-    ("fz_op_div_ii", BinOp::Div),
-    ("fz_op_div_if", BinOp::Div),
-    ("fz_op_div_fi", BinOp::Div),
-    ("fz_op_div_ff", BinOp::Div),
-    ("fz_op_rem_ii", BinOp::Mod),
-    ("fz_op_rem_if", BinOp::Mod),
-    ("fz_op_rem_fi", BinOp::Mod),
-    ("fz_op_rem_ff", BinOp::Mod),
-];
-
-pub(crate) fn arith_shim_op(symbol: &str) -> Option<BinOp> {
-    ARITH_SHIMS.iter().find(|(name, _)| *name == symbol).map(|(_, op)| *op)
-}
-
-fn lower_extern_fz_op_arith<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    op: BinOp,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
 }
 
 /// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects for an operand
@@ -2131,26 +1997,192 @@ enum CmpOperands {
     BinaryBinary,
 }
 
-fn typed_cmp_extern(symbol: &str) -> Option<(BinOp, CmpOperands)> {
-    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
-    let kinds = match suffix {
-        "ii" => CmpOperands::IntInt,
-        "ff" => CmpOperands::FloatFloat,
-        "if" => CmpOperands::IntFloat,
-        "fi" => CmpOperands::FloatInt,
-        "bb" => CmpOperands::BinaryBinary,
-        _ => return None,
+fn lower_intrinsic<M, T>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    identity: fz_runtime::intrinsic::Intrinsic,
+    args: &[Var],
+    dest_var: Var,
+) -> Result<LowerOut, CodegenError>
+where
+    M: cranelift_module::Module,
+    T: Types<Ty = Ty>,
+{
+    use fz_runtime::intrinsic::{Comparison, Domain, Operation};
+    let descriptor = identity.descriptor();
+    if args.len() != descriptor.inputs.len() {
+        return Err(CodegenError::new(format!(
+            "intrinsic {identity:?} has invalid argument count"
+        )));
+    }
+    admit_intrinsic_inputs(body, var_env, descriptor.inputs, args);
+    match descriptor.operation {
+        Operation::Arithmetic(_) | Operation::Negate => lower_numeric_intrinsic(body, var_env, identity, args),
+        Operation::Compare(operation) => {
+            let op = match operation {
+                Comparison::Equal => BinOp::Eq,
+                Comparison::NotEqual => BinOp::Neq,
+                Comparison::Identical => BinOp::Identical,
+                Comparison::NotIdentical => BinOp::NotIdentical,
+                Comparison::Less => BinOp::Lt,
+                Comparison::LessEqual => BinOp::Le,
+                Comparison::Greater => BinOp::Gt,
+                Comparison::GreaterEqual => BinOp::Ge,
+            };
+            if descriptor.inputs == [Domain::Any, Domain::Any] {
+                return lower_eq_binop(body, t, value_types, var_env, runtime, op, args[0], args[1], dest_var);
+            }
+            let operands = match descriptor.inputs {
+                [Domain::Integer, Domain::Integer] => CmpOperands::IntInt,
+                [Domain::Integer, Domain::Float] => CmpOperands::IntFloat,
+                [Domain::Float, Domain::Integer] => CmpOperands::FloatInt,
+                [Domain::Float, Domain::Float] => CmpOperands::FloatFloat,
+                [Domain::Binary, Domain::Binary] => CmpOperands::BinaryBinary,
+                _ => unreachable!("closed comparison descriptor"),
+            };
+            lower_typed_cmp(body, var_env, runtime, op, operands, args, dest_var)
+        }
+        Operation::Panic => lower_intrinsic_panic(body, var_env, args, dest_var),
+        Operation::SelfPid => lower_intrinsic_self(body),
+        Operation::Send => lower_intrinsic_send(body, var_env, args),
+        Operation::Spawn => lower_intrinsic_spawn(body, var_env, args),
+        Operation::SpawnOpt => lower_intrinsic_spawn_opt(body, var_env, args),
+        Operation::MakeRef => lower_intrinsic_make_ref(body),
+        Operation::MakeResource => lower_intrinsic_make_resource(body, var_env, args),
+    }
+}
+
+fn admit_intrinsic_inputs<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    lanes: &[fz_runtime::intrinsic::Domain],
+    args: &[Var],
+) {
+    for (lane, arg) in lanes.iter().zip(args) {
+        let Some(kinds) = lane.runtime_kinds() else {
+            continue;
+        };
+        let value = *var_env.get(&arg.0).expect("intrinsic input");
+        let mut admitted = body.b.ins().iconst(types::I8, 0);
+        for kind in kinds {
+            let matches = body.value_is_tag(value, *kind);
+            admitted = body.b.ins().bor(admitted, matches);
+        }
+        let failed = body.b.ins().icmp_imm(IntCC::Equal, admitted, 0);
+        intrinsic_fault_if(body, failed, fz_runtime::intrinsic::IntrinsicFault::Domain);
+        if let fz_runtime::intrinsic::Domain::Callable(arity) = lane {
+            let closure_ref = body.value_as_any_ref(value);
+            let call = body.call_named("fz_closure_arity_ref", &[closure_ref]);
+            let actual = body.b.inst_results(call)[0];
+            let failed = body.b.ins().icmp_imm(IntCC::NotEqual, actual, *arity as i64);
+            intrinsic_fault_if(body, failed, fz_runtime::intrinsic::IntrinsicFault::Domain);
+        }
+    }
+}
+
+fn intrinsic_fault_if<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    failed: ir::Value,
+    fault: fz_runtime::intrinsic::IntrinsicFault,
+) {
+    let failure = body.b.create_block();
+    let success = body.b.create_block();
+    body.b.ins().brif(failed, failure, &[], success, &[]);
+    body.b.switch_to_block(failure);
+    body.b.seal_block(failure);
+    let code = body.b.ins().iconst(types::I64, fault as i64);
+    body.call_named("fz_intrinsic_fault", &[code]);
+    body.b.ins().trap(ir::TrapCode::unwrap_user(1));
+    body.b.switch_to_block(success);
+    body.b.seal_block(success);
+}
+
+fn lower_numeric_intrinsic<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    identity: fz_runtime::intrinsic::Intrinsic,
+    args: &[Var],
+) -> Result<LowerOut, CodegenError> {
+    use fz_runtime::intrinsic::{Arithmetic, Domain, IntrinsicFault, Operation};
+    let descriptor = identity.descriptor();
+    if descriptor.result == Some(Domain::Integer) {
+        let left = body.as_raw_i64(var_env, args[0].0);
+        let (value, overflow) = match descriptor.operation {
+            Operation::Negate => {
+                let zero = body.b.ins().iconst(types::I64, 0);
+                body.b.ins().ssub_overflow(zero, left)
+            }
+            Operation::Arithmetic(operation) => {
+                let right = body.as_raw_i64(var_env, args[1].0);
+                match operation {
+                    Arithmetic::Add => body.b.ins().sadd_overflow(left, right),
+                    Arithmetic::Subtract => body.b.ins().ssub_overflow(left, right),
+                    Arithmetic::Multiply => body.b.ins().smul_overflow(left, right),
+                    Arithmetic::Divide | Arithmetic::Remainder => {
+                        let zero = body.b.ins().icmp_imm(IntCC::Equal, right, 0);
+                        intrinsic_fault_if(body, zero, IntrinsicFault::ZeroDivisor);
+                        let minimum = body.b.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
+                        let negative_one = body.b.ins().icmp_imm(IntCC::Equal, right, -1);
+                        let overflow = body.b.ins().band(minimum, negative_one);
+                        intrinsic_fault_if(body, overflow, IntrinsicFault::IntegerOverflow);
+                        let value = if operation == Arithmetic::Divide {
+                            body.b.ins().sdiv(left, right)
+                        } else {
+                            body.b.ins().srem(left, right)
+                        };
+                        return Ok(LowerOut::RawI64(value));
+                    }
+                }
+            }
+            _ => unreachable!("numeric intrinsic descriptor"),
+        };
+        intrinsic_fault_if(body, overflow, IntrinsicFault::IntegerOverflow);
+        return Ok(LowerOut::RawI64(value));
+    }
+    let operands = args
+        .iter()
+        .zip(descriptor.inputs)
+        .map(|(arg, lane)| match lane {
+            Domain::Integer => {
+                let integer = body.as_raw_i64(var_env, arg.0);
+                body.b.ins().fcvt_from_sint(types::F64, integer)
+            }
+            Domain::Float => body.as_raw_f64(var_env, arg.0),
+            Domain::Any | Domain::Binary | Domain::Callable(_) => unreachable!("numeric intrinsic descriptor"),
+        })
+        .collect::<Vec<_>>();
+    let left = operands[0];
+    let value = match descriptor.operation {
+        Operation::Negate => body.b.ins().fneg(left),
+        Operation::Arithmetic(operation) => {
+            let right = operands[1];
+            if matches!(operation, Arithmetic::Divide | Arithmetic::Remainder) {
+                let zero = body.b.ins().f64const(0.0);
+                let failed = body.b.ins().fcmp(FloatCC::Equal, right, zero);
+                intrinsic_fault_if(body, failed, IntrinsicFault::ZeroDivisor);
+            }
+            match operation {
+                Arithmetic::Add => body.b.ins().fadd(left, right),
+                Arithmetic::Subtract => body.b.ins().fsub(left, right),
+                Arithmetic::Multiply => body.b.ins().fmul(left, right),
+                Arithmetic::Divide => body.b.ins().fdiv(left, right),
+                Arithmetic::Remainder => {
+                    let call = body.call_named("fz_op_rem_ff", &[left, right]);
+                    body.b.inst_results(call)[0]
+                }
+            }
+        }
+        _ => unreachable!("numeric intrinsic descriptor"),
     };
-    let op = match op {
-        "eq" => BinOp::Eq,
-        "neq" => BinOp::Neq,
-        "lt" => BinOp::Lt,
-        "lte" => BinOp::Le,
-        "gt" => BinOp::Gt,
-        "gte" => BinOp::Ge,
-        _ => return None,
-    };
-    Some((op, kinds))
+    let magnitude = body.b.ins().fabs(value);
+    let max = body.b.ins().f64const(f64::MAX);
+    let finite = body.b.ins().fcmp(FloatCC::LessThanOrEqual, magnitude, max);
+    let failed = body.b.ins().icmp_imm(IntCC::Equal, finite, 0);
+    intrinsic_fault_if(body, failed, IntrinsicFault::NonfiniteFloat);
+    Ok(LowerOut::RawF64(value))
 }
 
 fn lower_typed_cmp<M: cranelift_module::Module>(
@@ -2247,7 +2279,7 @@ fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
 /// forwards to `fz_send_ref`.
-fn lower_extern_fz_send<M: cranelift_module::Module>(
+fn lower_intrinsic_send<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],
@@ -2263,7 +2295,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
 }
 
 /// `fz_self()`: the current process id from `fz_self_raw`.
-fn lower_extern_fz_self<M: cranelift_module::Module>(
+fn lower_intrinsic_self<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
     let process = body.process_arg();
@@ -2272,7 +2304,7 @@ fn lower_extern_fz_self<M: cranelift_module::Module>(
 }
 
 /// `fz_make_ref()`: a fresh opaque ref from `fz_make_ref_raw` (no process).
-fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
+fn lower_intrinsic_make_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
     let inst = body.call_named("fz_make_ref_raw", &[]);
@@ -2280,7 +2312,7 @@ fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
 }
 
 /// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
-fn lower_extern_fz_spawn<M: cranelift_module::Module>(
+fn lower_intrinsic_spawn<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],
@@ -2292,7 +2324,7 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
 }
 
 /// `fz_spawn_opt(closure, min_heap_size)`: `fz_spawn` plus a heap-size hint.
-fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
+fn lower_intrinsic_spawn_opt<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],
@@ -2305,7 +2337,7 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
 }
 
 /// `fz_make_resource(payload, dtor)`: raw payload bits + destructor closure ref.
-fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
+fn lower_intrinsic_make_resource<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],

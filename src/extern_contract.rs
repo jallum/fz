@@ -6,12 +6,10 @@ use crate::types::Types;
 
 /// The symbols fz itself owns, and the convention each is really provided with.
 ///
-/// "Owns" spans two providers, deliberately: some rows are exported by the
-/// runtime crate (`fz_binary_concat`, `fz_map_count`), and the `fz_op_*` rows
-/// are private shims inside `ir_interp/extern_call.rs` that exist only because
-/// native codegen answers those symbols by emitting arithmetic instead of a
-/// call. What unites them is not where the code lives but that fz decides how
-/// they are called, so a declaration claiming otherwise is a lie.
+/// These are real runtime exports. Intrinsic declarations have a separate
+/// typed identity and do not participate in foreign symbol lookup. A helper
+/// used by intrinsic lowering can still be a real export: `fz_panic` records
+/// its actual process-taking ABI here.
 ///
 /// It is provenance, not preference: `fz_dbg_value` is
 /// `fn(*mut Process, u64) -> u64` whatever a declaration says about it, so a
@@ -31,11 +29,11 @@ use crate::types::Types;
 /// means "fz makes no claim", which is the right default for a genuinely
 /// foreign symbol like `libc::close` and the wrong one for `fz_self_raw`.
 pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
-    // Allocating helpers reach the process heap, so they take the process.
-    // These are the `extern "fz"` declarations in the runtime library.
+    // Process-taking helpers, including the fatal intrinsic's actual export.
     ("fz_atom_to_binary", ExternAbi::Fz),
     ("fz_binary_concat", ExternAbi::Fz),
     ("fz_dbg_value", ExternAbi::Fz),
+    ("fz_panic", ExternAbi::Fz),
     ("fz_float_to_binary", ExternAbi::Fz),
     ("fz_integer_to_binary", ExternAbi::Fz),
     ("fz_process_heap_alloc_stats", ExternAbi::Fz),
@@ -62,26 +60,6 @@ pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
     ("fz_map_entry_key", ExternAbi::C),
     ("fz_map_entry_value", ExternAbi::C),
     ("fz_resource_test_print_dtor", ExternAbi::C),
-    ("fz_op_add_ii", ExternAbi::C),
-    ("fz_op_add_if", ExternAbi::C),
-    ("fz_op_add_ff", ExternAbi::C),
-    ("fz_op_sub_ii", ExternAbi::C),
-    ("fz_op_sub_if", ExternAbi::C),
-    ("fz_op_sub_fi", ExternAbi::C),
-    ("fz_op_sub_ff", ExternAbi::C),
-    ("fz_op_neg_i", ExternAbi::C),
-    ("fz_op_neg_f", ExternAbi::C),
-    ("fz_op_mul_ii", ExternAbi::C),
-    ("fz_op_mul_if", ExternAbi::C),
-    ("fz_op_mul_ff", ExternAbi::C),
-    ("fz_op_div_ii", ExternAbi::C),
-    ("fz_op_div_ii_to_float", ExternAbi::C),
-    ("fz_op_div_if", ExternAbi::C),
-    ("fz_op_div_fi", ExternAbi::C),
-    ("fz_op_div_ff", ExternAbi::C),
-    ("fz_op_rem_ii", ExternAbi::C),
-    ("fz_op_rem_if", ExternAbi::C),
-    ("fz_op_rem_fi", ExternAbi::C),
     ("fz_op_rem_ff", ExternAbi::C),
 ];
 
@@ -122,8 +100,8 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     }
 }
 
-pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
-    let mut contract = surface.extern_contract_decl()?;
+pub(crate) fn native_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
+    let mut contract = surface.native_contract_decl()?;
     contract.param_body_tokens = contract
         .param_body_tokens
         .iter()
@@ -199,48 +177,18 @@ fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
 #[cfg(test)]
 mod runtime_symbol_reachability_test {
     use super::RUNTIME_SYMBOLS;
-    use crate::compiler2::native_codegen::ARITH_SHIMS;
     use crate::ir_codegen::runtime_symbol_addrs;
 
-    /// fz-5xp.58 — a symbol fz DECLARES must be reachable when compiled code
-    /// calls it. There are exactly two ways for that to be true on the native
-    /// path: the JIT is handed its address, or native codegen lowers the call
-    /// in place and never asks for an address at all.
-    ///
-    /// Nothing checked it, and the JIT's symbol list had drifted:
-    /// `fz_bitstring_is_binary` was declared and never registered. On macOS the
-    /// JIT falls back to `dlsym` over the process image and finds the
-    /// `no_mangle` export anyway, so the whole six-target local gate was green
-    /// while `to_string` died on Linux with `can't resolve symbol`. Every
-    /// symbol missing from that list is a landmine that only goes off on one
-    /// platform, which is precisely the kind of thing a test has to hold.
     #[test]
     fn every_declared_runtime_symbol_is_reachable_from_compiled_code() {
-        let registered: Vec<&str> = runtime_symbol_addrs().into_iter().map(|(name, _)| name).collect();
-        let unreachable: Vec<&str> = RUNTIME_SYMBOLS
+        let registered: Vec<_> = runtime_symbol_addrs().into_iter().map(|(name, _)| name).collect();
+        let missing: Vec<_> = RUNTIME_SYMBOLS
             .iter()
-            .map(|(name, _)| *name)
-            .filter(|name| !registered.contains(name) && !ARITH_SHIMS.iter().any(|(shim, _)| shim == name))
+            .filter(|(name, _)| !registered.contains(name))
             .collect();
         assert!(
-            unreachable.is_empty(),
-            "declared in RUNTIME_SYMBOLS but neither registered with the JIT nor lowered in place \
-             by native codegen -- these resolve on macOS only by dlsym accident and fail on Linux: {:?}",
-            unreachable
+            missing.is_empty(),
+            "runtime extern symbols must have native addresses: {missing:?}"
         );
-    }
-
-    /// The escape hatch cannot become a dumping ground: a name is only allowed
-    /// to skip registration because codegen really does lower it, so every
-    /// entry in that table has to be a symbol fz declares.
-    #[test]
-    fn every_natively_lowered_shim_is_a_declared_symbol() {
-        let declared: Vec<&str> = RUNTIME_SYMBOLS.iter().map(|(name, _)| *name).collect();
-        let strays: Vec<&str> = ARITH_SHIMS
-            .iter()
-            .map(|(name, _)| *name)
-            .filter(|name| !declared.contains(name))
-            .collect();
-        assert!(strays.is_empty(), "lowered in place but never declared: {:?}", strays);
     }
 }

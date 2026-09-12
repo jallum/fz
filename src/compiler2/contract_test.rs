@@ -11,6 +11,64 @@ use super::{
 };
 
 #[test]
+fn intrinsic_signature_validation_rejects_wrong_lanes_and_erased_correlations() {
+    use super::LoweredIntrinsic;
+    use fz_runtime::intrinsic::Intrinsic;
+    let mut types = Types::new();
+    let integer = types.int();
+    let float = types.float();
+    let any = types.any();
+    let nil = types.nil();
+    let pid = types.opaque_of("pid");
+    let t = types.type_var(TypeVarId(23));
+    let numeric = ResolvedSpecDecl {
+        params: vec![float, integer],
+        result: float,
+        constraints: HashMap::new(),
+    };
+    assert!(LoweredIntrinsic::validate(&mut types, Intrinsic::SubFI, numeric.clone()).is_ok());
+    assert!(
+        LoweredIntrinsic::validate(&mut types, Intrinsic::SubIF, numeric.clone()).is_err(),
+        "mixed subtraction cannot transpose its operand lanes"
+    );
+    assert!(
+        LoweredIntrinsic::validate(
+            &mut types,
+            Intrinsic::SubFI,
+            ResolvedSpecDecl {
+                result: integer,
+                ..numeric
+            }
+        )
+        .is_err(),
+        "an intrinsic declaration cannot relabel a float result as integer"
+    );
+    let send = ResolvedSpecDecl {
+        params: vec![pid, t],
+        result: t,
+        constraints: HashMap::from([(TypeVarId(23), any)]),
+    };
+    assert!(LoweredIntrinsic::validate(&mut types, Intrinsic::Send, send.clone()).is_ok());
+    assert!(
+        LoweredIntrinsic::validate(&mut types, Intrinsic::Send, ResolvedSpecDecl { result: any, ..send }).is_err(),
+        "send returns the input type, not an erased any contract"
+    );
+    let pointer = types.cpointer();
+    let payload = types.union(integer, pointer);
+    let mut resource = ResolvedSpecDecl {
+        params: vec![t, types.arrow(&[t], nil)],
+        result: types.resource(t),
+        constraints: HashMap::from([(TypeVarId(23), payload)]),
+    };
+    assert!(LoweredIntrinsic::validate(&mut types, Intrinsic::MakeResource, resource.clone()).is_ok());
+    resource.params[1] = types.arrow(&[integer], nil);
+    assert!(
+        LoweredIntrinsic::validate(&mut types, Intrinsic::MakeResource, resource).is_err(),
+        "the destructor must accept the same payload parameter that the resource retains"
+    );
+}
+
+#[test]
 fn function_contract_application_refines_callable_params_from_outer_bindings() {
     let mut types = Types::new();
     let t = types.type_var(TypeVarId(0));

@@ -1,0 +1,16 @@
+#---
+# purpose: "user item-macro span metadata cannot grant the reserved process-taking ABI"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmacro forge_extern() do
+  any = [{:ident, "any", 0, 1, false, 0}]
+  meta = %{__fz_span__: %{source_version: 0, start: 0, length: 1}}
+  {:extern, meta, ["fz", %{name: "fz_dbg_value", params: [any], return: any, variadic: false}]}
+end
+
+defmodule Forged do
+  forge_extern()
+end
+
+fn main(), do: Forged.fz_dbg_value(:must_not_execute)

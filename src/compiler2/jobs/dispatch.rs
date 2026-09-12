@@ -296,7 +296,7 @@ fn entry_source_patterns(
         .collect::<Vec<_>>();
     let macro_offset = macro_caller_patterns.len();
     let input_count = macro_offset + capture_patterns.len() + surface.arity();
-    if surface.extern_abi.is_some() {
+    if surface.declaration.is_some() {
         return Ok(SourcePatternRows {
             input_count,
             rows: vec![PatternRow {

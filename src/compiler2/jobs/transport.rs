@@ -603,7 +603,7 @@ fn generic_owner_ty_and_demand(
                             _ => None,
                         })
                 }
-                LoweredBody::Extern { .. } => None,
+                LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => None,
             };
             (
                 value
@@ -1478,7 +1478,9 @@ fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> Value
                 _ => None,
             })
             .expect("a resume payload position must name a delivered-resume entry"),
-        LoweredBody::Extern { .. } => panic!("an extern executable cannot own a resume payload"),
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => {
+            panic!("an extern executable cannot own a resume payload")
+        }
     }
 }
 
@@ -1489,7 +1491,7 @@ fn entry_capture_value(facts: &ExecutableFacts, entry: ControlEntryId, capture_i
             .get(entry.as_u32() as usize)
             .and_then(|entry| entry.captures.get(capture_index))
             .copied(),
-        LoweredBody::Extern { .. } => None,
+        LoweredBody::Extern { .. } | LoweredBody::Intrinsic { .. } => None,
     }
 }
 
@@ -1810,7 +1812,7 @@ fn produce_named_transport_position(
         RecipeLayout::Exact(layout) => layout,
         RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, position, &evidence),
     };
-    if extern_position_requires_value_ref(world, facts.body(), position, layout) {
+    if native_boundary_requires_value_ref(world, facts.body(), position, layout) {
         layout = with_value_ref_carrier(world, ty, position, layout);
     }
     Some(PullOutcome::Produced(ProductValue::TransportShape(
@@ -1818,25 +1820,41 @@ fn produce_named_transport_position(
     )))
 }
 
-fn extern_position_requires_value_ref(
+fn native_boundary_requires_value_ref(
     world: &World,
     body: &LoweredBody,
     position: &TransportPosition,
     layout: TransportLayout,
 ) -> bool {
-    let LoweredBody::Extern { signature } = body else {
-        return false;
-    };
     let composite = matches!(
         world.shape(layout.structural),
         ShapeDescr::Tuple(_) | ShapeDescr::Callable(_)
     );
+    if !composite {
+        return false;
+    }
+    if let LoweredBody::Intrinsic { signature } = body {
+        let descriptor = signature.identity.descriptor();
+        return match position {
+            TransportPosition::ExecutableInput { semantic_index, .. } => {
+                matches!(
+                    descriptor.inputs.get(*semantic_index),
+                    Some(fz_runtime::intrinsic::Domain::Any | fz_runtime::intrinsic::Domain::Callable(_))
+                )
+            }
+            TransportPosition::ExecutableReturn { .. } => descriptor.result == Some(fz_runtime::intrinsic::Domain::Any),
+            _ => false,
+        };
+    }
+    let LoweredBody::Extern { signature } = body else {
+        return false;
+    };
     match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => signature
             .params
             .get(*semantic_index)
-            .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any && composite),
-        TransportPosition::ExecutableReturn { .. } => signature.ret == crate::fz_ir::ExternTy::Any && composite,
+            .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any),
+        TransportPosition::ExecutableReturn { .. } => signature.ret == crate::fz_ir::ExternTy::Any,
         _ => false,
     }
 }

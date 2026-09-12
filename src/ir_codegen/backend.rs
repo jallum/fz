@@ -124,6 +124,10 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ("fz_map_entry_value", ir_runtime::fz_map_entry_value as *const u8),
         ("fz_panic", fz_panic as *const u8),
         (
+            "fz_intrinsic_fault",
+            fz_runtime::intrinsic::fz_intrinsic_fault as *const u8,
+        ),
+        (
             "fz_dynamic_float_arith_unsupported",
             ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
         ),
@@ -206,9 +210,6 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ("fz_map_put_float", ir_runtime::fz_map_put_float as *const u8),
         ("fz_map_put_atom", ir_runtime::fz_map_put_atom as *const u8),
         ("fz_map_put_atom_ref", ir_runtime::fz_map_put_atom_ref as *const u8),
-        ("fz_op_div_ii_to_float", ir_runtime::fz_op_div_ii_to_float as *const u8),
-        ("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8),
-        ("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8),
         ("fz_op_rem_ff", ir_runtime::fz_op_rem_ff as *const u8),
         ("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8),
         ("fz_float_to_binary", ir_runtime::fz_float_to_binary as *const u8),
@@ -301,6 +302,7 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ),
         ("fz_alloc_closure", ir_runtime::fz_alloc_closure as *const u8),
         ("fz_closure_code_ref", ir_runtime::fz_closure_code_ref as *const u8),
+        ("fz_closure_arity_ref", ir_runtime::fz_closure_arity_ref as *const u8),
         ("fz_materialize_cont", ir_runtime::fz_materialize_cont as *const u8),
         (
             "fz_closure_halt_kind_ref",
