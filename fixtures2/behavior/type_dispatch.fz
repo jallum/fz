@@ -1,5 +1,5 @@
 #---
-# purpose: multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9)
+# purpose: multi-clause function dispatches on parameter type at runtime (fz-ty1.8/1.9)
 #---
 def check(x :: integer) do :is_int end
 def check(x) do :other end

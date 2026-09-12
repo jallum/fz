@@ -17,7 +17,7 @@ pub struct ScopeSurface {
 }
 
 pub(crate) fn is_function_definition_head(head: &str) -> bool {
-    matches!(head, "fn" | "fnp" | "def" | "defp" | "defmacro")
+    matches!(head, "def" | "defp" | "defmacro")
 }
 
 pub(crate) fn is_scope_definition_head(head: &str) -> bool {
@@ -142,7 +142,7 @@ type ImportFilterList = Vec<(String, usize)>;
 type ImportKeywordArgs = Vec<(String, ImportFilterList)>;
 
 /// Reads user surface: there is exactly one source read, and a def-head
-/// (`fn`/`fnp`/`def`/`defp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
+/// (`def`/`defp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
 /// later. Structure is never re-parsed from source here; it emerges from the
 /// expand -> `Fz.Compiler.define` -> define pipeline.
 pub fn read_scope_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
@@ -344,7 +344,7 @@ fn flush_function_groups(
 }
 
 /// Builds the typed [`ScopeForm`] for a recognized scope-definition head
-/// (`fn`/`fnp`/`def`/`defp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl`). This is the
+/// (`def`/`defp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl`). This is the
 /// canonical structural extraction of a def-head — the analogue of Elixir
 /// `store_definition`/module compile — invoked by the define pipeline and the
 /// bootstrap. It does not depend on any surface-read mode: it always extracts a
@@ -649,7 +649,7 @@ fn parse_function_form(
         name,
         arity,
         is_macro: head == "defmacro",
-        is_private: matches!(head.as_str(), "fnp" | "defp"),
+        is_private: head == "defp",
         variadic: false,
         span,
     })
@@ -718,7 +718,7 @@ pub(crate) fn validate_protocol_callback_clause(
     sources: &SourceMap,
 ) -> Result<(String, usize), QuotedSourceError> {
     let definition_head = node.head.atom_name()?;
-    if !matches!(definition_head.as_str(), "def" | "fn") {
+    if definition_head != "def" {
         return Err(QuotedSourceError::new(format!(
             "protocol callback must use `def`, got `{definition_head}`"
         )));
@@ -837,7 +837,7 @@ pub(crate) fn reserved_source_definition(
         return Ok(None);
     };
     Ok(match head.as_str() {
-        "fn" | "fnp" | "def" | "defp" | "defmacro" => {
+        "def" | "defp" | "defmacro" => {
             let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
                 name,
@@ -941,9 +941,7 @@ fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
     match crate::parser::lexer::source_word_token(name) {
         Some(Tok::Ident(_)) => true,
         Some(
-            Tok::Fn
-            | Tok::Fnp
-            | Tok::Defmacro
+            Tok::Defmacro
             | Tok::Defmodule
             | Tok::Defprotocol
             | Tok::Defimpl

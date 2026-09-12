@@ -31,13 +31,13 @@
 #
 #   * `File.wrap_fd(integer) :: t` — adopt an already-open fd as a resource.
 #   * `File.fd_of(t) :: integer` — in-module accessor.
-#   * `File.dtor(fd)` — fz fn body that calls `libc::close(fd)` and prints
+#   * `File.dtor(fd)` — fz function body that calls `libc::close(fd)` and prints
 #     `:dtor_closed`. Used via `&File.dtor/1` as the dtor closure.
 #
 # ## What the fixture proves
 #
 #   1. `File.wrap_fd/1` allocates a `Resource` whose dtor closure is
-#      `&File.dtor/1` — an in-module fn ref. The closure body runs as
+#      `&File.dtor/1` — an in-module function reference. The closure body runs as
 #      real fz code at task-exit drain (fz-4mk), proving that resource
 #      dtors are no longer restricted to thin wrappers around a single C
 #      extern; the wrapper can do real work and have side effects.

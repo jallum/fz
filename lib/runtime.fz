@@ -50,10 +50,6 @@ import Kernel, only: [
   to_string: 1
 ]
 
-defmacro fn(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
-
-defmacro fnp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
-
 defmacro def(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
 defmacro defp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))

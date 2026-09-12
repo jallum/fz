@@ -853,14 +853,8 @@ fn item_macro_not_defmacro(
     name: &str,
     span: Span,
 ) -> super::scheduler::FatalError {
-    emit_job_diagnostic(
-        tel,
-        Diagnostic::error(
-            codes::MACRO_NOT_A_DEFMACRO,
-            format!("item-level call `{name}(...)` is not a defmacro"),
-            span,
-        ),
-    )
+    let message = format!("item-level call `{name}(...)` is not a defmacro");
+    emit_job_diagnostic(tel, Diagnostic::error(codes::MACRO_NOT_A_DEFMACRO, message, span))
 }
 
 fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<String, QuotedSourceError> {

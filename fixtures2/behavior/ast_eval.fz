@@ -15,7 +15,7 @@
 # # ast_eval
 #
 # Classic Erlang/Elixir teaching shape: a tiny expression interpreter
-# defined by pattern-matching `fn` clauses over tagged tuples.
+# defined by pattern-matching function clauses over tagged tuples.
 #
 # ```fz
 # def eval({:num, n}), do: n
@@ -25,7 +25,7 @@
 #
 # First fixture to combine:
 #
-# - multi-clause `fn` dispatch on a tuple subject (resolved at runtime
+# - multi-clause function dispatch on a tuple subject (resolved at runtime
 #   via `Prim::TypeTest` reading `descr.tuples`, landed in fz-ul4.36),
 # - tuple construction (`Prim::MakeTuple`) and field projection
 #   (`Prim::TupleField`) on every execution path (interp arms landed

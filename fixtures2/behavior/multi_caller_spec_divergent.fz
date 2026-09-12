@@ -1,5 +1,5 @@
 #---
-# purpose: "fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn"
+# purpose: "fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order function"
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 67
 # budget.planner.worklist_pops: 8
@@ -15,7 +15,7 @@
 # # multi_caller_spec_divergent
 #
 # `route(f, n)` is invoked at two source sites with two distinct
-# closure literals: the named fn `id` and the inline lambda
+# closure literals: the named function `id` and the inline lambda
 # `fn(x) -> x * 2`. The planner mints two specs of `route` — one per
 # `f` — whose single inner `f.(n)` callsite dispatches to two
 # different targets.

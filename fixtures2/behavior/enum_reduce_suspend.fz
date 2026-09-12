@@ -22,7 +22,7 @@
 # - one protocol-control struct is allocated (`struct_allocs = 1`,
 #   `struct_bytes = 48`);
 # - the accumulator is never boxed (`scalar_box_allocs = 0`);
-# - the rendered function identity is `#fn<127/0>`.
+# - the rendered function identity is `#fn<125/0>`.
 #
 # Current contract, `interp`:
 #
@@ -33,7 +33,7 @@
 #   as native (`struct_allocs = 1`, `struct_bytes = 48`), because a tuple whose
 #   value layout does not carry `ValueRef` travels as its fields' lanes on both
 #   backends;
-# - the rendered function identity is `#fn<127/0>`. Its `/0` arity is a
+# - the rendered function identity is `#fn<125/0>`. Its `/0` arity is a
 #   property of the source (`fn () -> ... end` takes no arguments).
 def main() do
   xs = [1, 2, 3]

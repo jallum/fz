@@ -1,5 +1,5 @@
 #---
-# purpose: "smallest JIT round-trip — fn def + call + print"
+# purpose: "smallest JIT round-trip — function definition + call + print"
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.planner.worklist_pops: 3

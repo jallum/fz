@@ -151,7 +151,7 @@ impl FrontDoorParser {
             Tok::Defprotocol => self.parse_protocol_item(module_path),
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
             Tok::Extern => self.parse_extern_item(module_path),
-            Tok::Fn | Tok::Fnp | Tok::Defmacro => self.parse_function_item(module_path),
+            Tok::Defmacro => self.parse_defmacro_item(module_path),
             Tok::Ident(_) => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door does not yet parse {:?} at item position",
@@ -206,16 +206,11 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
-    fn parse_function_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+    fn parse_defmacro_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
-        let head_name = match self.bump() {
-            Tok::Fn => "fn",
-            Tok::Fnp => "fnp",
-            Tok::Defmacro => "defmacro",
-            other => unreachable!("guarded by parse_item: {:?}", other),
-        };
-        let (function_name, head) = self.parse_function_head(module_path)?;
-        let scope = vec![function_name];
+        self.expect(&Tok::Defmacro, "`defmacro`")?;
+        let (macro_name, head) = self.parse_defmacro_head(module_path)?;
+        let scope = vec![macro_name];
         let head_span = start.merge(self.prev_span());
         let head = self
             .with_trailing_do_suppressed(|parser| {
@@ -226,14 +221,13 @@ impl FrontDoorParser {
         let meta = self.meta(module_path, &scope, start.merge(self.prev_span()))?;
         let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
         self.builder
-            .call(head_name, &meta, &[head, kw])
+            .call("defmacro", &meta, &[head, kw])
             .map_err(FrontDoorError::from)
     }
 
     fn parse_protocol_body_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         match self.peek() {
             Tok::At => self.parse_attribute_item(module_path),
-            Tok::Fn => self.parse_protocol_callback_item(module_path),
             Tok::Ident(name) if name == "def" => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door expected protocol callback or attribute, got {:?}",
@@ -242,15 +236,6 @@ impl FrontDoorParser {
         }
     }
 
-    fn parse_protocol_callback_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
-        let start = self.cur_span();
-        self.expect(&Tok::Fn, "`fn`")?;
-        let (name, head) = self.parse_function_head(module_path)?;
-        let scope = vec![name];
-        let span = start.merge(self.prev_span());
-        let meta = self.meta(module_path, &scope, span)?;
-        self.builder.call("fn", &meta, &[head]).map_err(FrontDoorError::from)
-    }
     fn parse_item_macro_call(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let expr = self.parse_expr(module_path, &[])?;
         if !self.builder.root(expr.root)?.cursor().trusted_builder_ast_call()? {
@@ -418,9 +403,10 @@ impl FrontDoorParser {
                 .map_err(|error| self.error(format!("extern ABI string must be valid UTF-8: {error}")))?,
             other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
         };
-        match self.bump() {
-            Tok::Fn => {}
-            Tok::Ident(name) if name == "def" => {}
+        match self.peek() {
+            Tok::Ident(name) if name == "def" => {
+                self.bump();
+            }
             other => {
                 return Err(self.error(format!("expected `def` after extern ABI string, got {:?}", other)));
             }
@@ -515,86 +501,34 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
-    fn parse_function_head(&mut self, module_path: &[String]) -> Result<(String, AnyValueRef), FrontDoorError> {
+    fn parse_defmacro_head(&mut self, module_path: &[String]) -> Result<(String, AnyValueRef), FrontDoorError> {
         let start = self.cur_span();
-        if self.callable_name_token(self.peek()).is_some() && matches!(self.peek_at(1), Tok::LParen) {
-            let name = self.bump_callable_name().expect("guarded callable head name");
-            let scope = vec![name.clone()];
-            self.expect(&Tok::LParen, "`(`")?;
-            let params = self.parse_paren_call_args(&Tok::RParen, module_path, &scope)?;
-            self.expect(&Tok::RParen, "`)`")?;
-            let meta = self.meta(module_path, &scope, start.merge(self.prev_span()))?;
-            let head = self.builder.call(&name, &meta, &params)?;
-            return Ok((name, head));
-        }
+        let name = self.bump_macro_name()?;
+        let scope = vec![name.clone()];
+        self.expect(&Tok::LParen, "`(`")?;
+        let params = self.parse_paren_call_args(&Tok::RParen, module_path, &scope)?;
+        self.expect(&Tok::RParen, "`)`")?;
+        let meta = self.meta(module_path, &scope, start.merge(self.prev_span()))?;
+        let head = self.builder.call(&name, &meta, &params)?;
+        Ok((name, head))
+    }
 
-        let left = self.parse_operator_head_operand(module_path, true)?;
-        let op = self.operator_name(self.peek()).ok_or_else(|| {
-            self.error(format!(
-                "expected `name(` or an operator-headed function clause, got {:?}",
-                self.peek()
-            ))
-        })?;
+    fn bump_macro_name(&mut self) -> Result<String, FrontDoorError> {
+        let name = match self.peek() {
+            Tok::Ident(name) => name.clone(),
+            Tok::Defmacro => "defmacro".to_string(),
+            Tok::Defmodule => "defmodule".to_string(),
+            Tok::Defprotocol => "defprotocol".to_string(),
+            Tok::Defimpl => "defimpl".to_string(),
+            Tok::Defstruct => "defstruct".to_string(),
+            Tok::Alias => "alias".to_string(),
+            Tok::Import => "import".to_string(),
+            Tok::Require => "require".to_string(),
+            Tok::Extern => "extern".to_string(),
+            other => return Err(self.error(format!("expected macro name, got {other:?}"))),
+        };
         self.bump();
-        let right = self.parse_operator_head_operand(module_path, false)?;
-        let meta = self.meta(module_path, &[op.to_string()], start.merge(self.prev_span()))?;
-        let head = self.builder.call(op, &meta, &[left.root, right.root])?;
-        Ok((op.to_string(), head))
-    }
-
-    fn parse_operator_head_operand(
-        &mut self,
-        module_path: &[String],
-        stop_at_operator: bool,
-    ) -> Result<ParsedExpr, FrontDoorError> {
-        let mut operand = self.parse_bp(121, module_path, &[])?;
-        if self.emit_type_payloads && self.eat(&Tok::ColonColon) {
-            let rhs_tokens = self.collect_operator_head_type_tokens(stop_at_operator)?;
-            if rhs_tokens.is_empty() {
-                return self.err("expected type expression after `::`");
-            }
-            let rhs = token_payload::encode_tokens(&self.builder, &rhs_tokens)?;
-            let span = operand.span.merge(self.prev_span());
-            let meta = self.meta(module_path, &[], span)?;
-            operand = ParsedExpr::plain(self.builder.call("::", &meta, &[operand.root, rhs])?, span);
-        }
-        Ok(operand)
-    }
-
-    fn callable_name_token<'tok>(&self, tok: &'tok Tok) -> Option<&'tok str> {
-        match tok {
-            Tok::Ident(name) => Some(name.as_str()),
-            Tok::Fn => Some("fn"),
-            Tok::Fnp => Some("fnp"),
-            Tok::Defmacro => Some("defmacro"),
-            Tok::Defmodule => Some("defmodule"),
-            Tok::Defprotocol => Some("defprotocol"),
-            Tok::Defimpl => Some("defimpl"),
-            Tok::Defstruct => Some("defstruct"),
-            Tok::Alias => Some("alias"),
-            Tok::Import => Some("import"),
-            Tok::Require => Some("require"),
-            Tok::Extern => Some("extern"),
-            _ => None,
-        }
-    }
-
-    fn bump_callable_name(&mut self) -> Option<String> {
-        match self.bump() {
-            Tok::Ident(name) => Some(name),
-            Tok::Fn => Some("fn".to_string()),
-            Tok::Fnp => Some("fnp".to_string()),
-            Tok::Defmacro => Some("defmacro".to_string()),
-            Tok::Defmodule => Some("defmodule".to_string()),
-            Tok::Defprotocol => Some("defprotocol".to_string()),
-            Tok::Defimpl => Some("defimpl".to_string()),
-            Tok::Defstruct => Some("defstruct".to_string()),
-            Tok::Alias => Some("alias".to_string()),
-            Tok::Import => Some("import".to_string()),
-            Tok::Require => Some("require".to_string()),
-            Tok::Extern => Some("extern".to_string()),
-            _ => None,
-        }
+        Ok(name)
     }
 
     fn parse_function_body(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
@@ -1995,52 +1929,6 @@ impl FrontDoorParser {
                 if let Some((lbp, _, _)) = self.infix_bp(&tok)
                     && lbp < min_bp
                 {
-                    break;
-                }
-            }
-            match tok {
-                Tok::LParen => parens += 1,
-                Tok::RParen if parens > 0 => parens -= 1,
-                Tok::LBrack => brackets += 1,
-                Tok::RBrack if brackets > 0 => brackets -= 1,
-                Tok::LBrace => braces += 1,
-                Tok::RBrace if braces > 0 => braces -= 1,
-                Tok::LBitstr => bitstrings += 1,
-                Tok::RBitstr if bitstrings > 0 => bitstrings -= 1,
-                _ => {}
-            }
-            self.bump();
-        }
-        Ok(self.toks[start..self.pos].to_vec())
-    }
-
-    fn collect_operator_head_type_tokens(&mut self, stop_at_operator: bool) -> Result<Vec<Token>, FrontDoorError> {
-        let start = self.pos;
-        let mut parens = 0_u32;
-        let mut brackets = 0_u32;
-        let mut braces = 0_u32;
-        let mut bitstrings = 0_u32;
-        while !self.peek_is(&Tok::Eof) {
-            let tok = self.peek().clone();
-            let at_top_level = parens == 0 && brackets == 0 && braces == 0 && bitstrings == 0;
-            if at_top_level {
-                if matches!(
-                    tok,
-                    Tok::Comma
-                        | Tok::Newline
-                        | Tok::Eof
-                        | Tok::End
-                        | Tok::Do
-                        | Tok::When
-                        | Tok::RParen
-                        | Tok::RBrack
-                        | Tok::RBrace
-                        | Tok::RBitstr
-                        | Tok::Arrow
-                ) {
-                    break;
-                }
-                if stop_at_operator && self.operator_name(&tok).is_some() {
                     break;
                 }
             }

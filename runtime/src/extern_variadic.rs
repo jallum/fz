@@ -64,7 +64,7 @@ fn resolve_symbol_addr(name: *const c_char) -> usize {
 /// The standard C libraries, opened so their symbols can be searched.
 ///
 /// fz-5xp.59 — `RTLD_DEFAULT` searches what the process has ALREADY LOADED, and
-/// a declaration like `extern "C" fn libc::sqrt(float) :: float` names a symbol
+/// a declaration like `extern "C" def libc::sqrt(float) :: float` names a symbol
 /// nothing in the process referenced. On macOS that never shows: the C library
 /// and the math library are one thing (libSystem) and every process has it. On
 /// Linux libm is separate, so `sqrt` was simply not in the process to be found
