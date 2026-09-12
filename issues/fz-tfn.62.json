@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-5xp.27",
     "fz-5xp.30",
-    "fz-tfn.64"
+    "fz-tfn.64",
+    "fz-tfn.67"
   ],
   "blocks": [
     "fz-kdt.48",
@@ -21,5 +22,5 @@
   "status": "in_progress",
   "title": "Keep callable identity through quoted source; delete canonical-name re-resolution",
   "type": "bug",
-  "updated_at": "2026-09-12T15:39:32Z"
+  "updated_at": "2026-09-12T18:13:40Z"
 }
