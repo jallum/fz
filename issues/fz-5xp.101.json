@@ -16,11 +16,15 @@
     {
       "text": "Draft PR: https://github.com/jallum/fz/pull/137 (stacked on #136).",
       "timestamp": "2026-09-12T13:08:10Z"
+    },
+    {
+      "text": "Rebased onto current main at final SHA f6ff163a3 and resolved the quoted-source conflict by preserving the SourceMap authority while retaining the binary-literal BitType::Binary semantics. PR #137 now reports CLEAN and MERGEABLE; authoritative CI lint and test/coverage are green: https://github.com/jallum/fz/pull/137.",
+      "timestamp": "2026-09-12T18:16:25Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "A binary-literal bitstring segment shifts a following call result into the wrong carrier",
   "type": "bug",
-  "updated_at": "2026-09-12T13:08:10Z"
+  "updated_at": "2026-09-12T18:16:25Z"
 }
