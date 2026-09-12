@@ -17,11 +17,15 @@
     {
       "text": "Implemented clause-driven decision helpers across the specified Enum functions. The structural test was proven red before the rewrite and now pins that every remaining code-level if is a single one-line value choice. Elixir oracle and all 715 fixture-matrix legs pass; allocation goldens are unchanged (including enum_sort at 22 cells / 352 bytes native), and the sort recursion stays beside cons construction to preserve reuse. Compiler census changes account for the concrete helper specializations without blind escapes or unexplained work; the existing fz-f98.14.3 audit establishes this breadth is linear and dispatch-relevant. Full gates: compiler 2020 passed / 6 ignored, runtime 260 passed, CLI 30 passed, doctests, AOT, clippy -D warnings, fmt, and diff checks all green. Commit: 178805b59.",
       "timestamp": "2026-09-12T13:53:31Z"
+    },
+    {
+      "text": "Draft PR: https://github.com/jallum/fz/pull/138 (stacked on #137).",
+      "timestamp": "2026-09-12T13:56:59Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Enum: decide with clauses where the module already decides with clauses",
   "type": "task",
-  "updated_at": "2026-09-12T13:53:32Z"
+  "updated_at": "2026-09-12T13:56:59Z"
 }
