@@ -234,7 +234,7 @@ pub struct ExternMarshalSite {
     pub arg_idx: usize,
 }
 
-/// C ABI wire type for `extern "C" fn` declarations.
+/// C ABI wire type for FZ `extern "C" def` declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
     I64,
@@ -909,7 +909,7 @@ pub struct Module {
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
-    /// All `extern "C" fn` declarations. Stable: ExternId is a counter, not a vec index.
+    /// All FZ `extern "C" def` declarations. Stable: ExternId is a counter, not a vec index.
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,

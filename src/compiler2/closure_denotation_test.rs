@@ -72,10 +72,10 @@ fn first_class_closures_retain_complete_lexical_values_in_interp_and_jit() {
         compiler.submit_code(CodeSubmission {
             name: Some("closure_exact_environment.fz".into()),
             text: r#"
-fn first({value, _}), do: value
-fn make(pair), do: fn () -> first(pair) end
-fn hold(value), do: fn () -> value end
-fn main() do
+def first({value, _}), do: value
+def make(pair), do: fn () -> first(pair) end
+def hold(value), do: fn () -> value end
+def main() do
   send(self(), {make({self(), 11}), make({self(), 22}), hold({}), hold(make({self(), 33}))})
   0
 end
@@ -127,7 +127,7 @@ fn closure_denotation_survives_repeated_allocation_and_specialization_in_interp_
         compiler.submit_code(CodeSubmission {
             name: Some("closure_denotation_specialization.fz".into()),
             text:
-                "fn make(seed), do: fn () -> seed end\nfn main() do\n  send(self(), {make(self()), make(self()), make(:ok), fn () -> 42 end})\n  0\nend\n"
+                "def make(seed), do: fn () -> seed end\ndef main() do\n  send(self(), {make(self()), make(self()), make(:ok), fn () -> 42 end})\n  0\nend\n"
                     .into(),
         });
         let root = submit_root(&mut compiler, "main");
@@ -176,7 +176,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("closure_denotation_first_program.fz".into()),
-        text: "fn zeta(), do: {fn () -> 1 end}\n".into(),
+        text: "def zeta(), do: {fn () -> 1 end}\n".into(),
     });
     let first_root = submit_root(&mut compiler, "zeta");
     compiler.drive_root_backend_work_starts(first_root).unwrap();
@@ -201,7 +201,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("closure_denotation_second_program.fz".into()),
-        text: "fn alpha(), do: {fn () -> 2 end}\n".into(),
+        text: "def alpha(), do: {fn () -> 2 end}\n".into(),
     });
     let second_root = submit_root(&mut compiler, "alpha");
     compiler.drive_root_backend_work_starts(second_root).unwrap();

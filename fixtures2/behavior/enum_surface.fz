@@ -22,7 +22,7 @@
 # `group_by/2,3` builds each group by PREPENDING and then reverses once per key,
 # so the values come out in encounter order -- which is what Elixir promises and
 # what a naive append-per-element would get right only by accident, at O(n^2).
-fn main() do
+def main() do
   dbg(Enum.max([3, 1, 2]))
   dbg(Enum.min([3, 1, 2]))
   dbg(Enum.min_max([3, 1, 2]))

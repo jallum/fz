@@ -235,7 +235,7 @@ fn fn_without_spec_produces_no_validation_diagnostics() {
     });
     assert_resolved(
         compiler.drive(),
-        "fn without @spec should resolve cleanly with no diagnostics",
+        "definition without @spec should resolve cleanly with no diagnostics",
     );
     // TODO: assert validate_specs produces no diagnostics (no @spec means no validation target)
 }

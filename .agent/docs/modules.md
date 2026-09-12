@@ -122,8 +122,8 @@ declared later in the same scope:
    that each exact expectation was actually exported. Then define each reserved
    function and scope each child module onto the current head.
 
-A non-private function or macro becomes a `ModuleInterfaceCallable`; private
-(`defp`, plus transitional `fnp`) functions stay callable in-module but out of the interface. Non-global
+A non-private function or macro becomes a `ModuleInterfaceCallable`; `defp`
+functions stay callable in-module but out of the interface. Non-global
 modules that do not define `__info__/1` get a synthesized ordinary function
 source for their callable interface. The pass returns the finished namespace head
 plus the callable interface, which `define_module` freezes onto the module slot.

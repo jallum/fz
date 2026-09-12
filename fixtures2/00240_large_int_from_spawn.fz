@@ -1,7 +1,7 @@
-fn child(parent) do
+def child(parent) do
   send(parent, 4611686018427387904)
 end
-fn main() do
+def main() do
   me = self()
   spawn(fn () -> child(me) end)
   receive do

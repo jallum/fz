@@ -572,9 +572,9 @@ fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> 
 /// or is a PROJECTION of it:
 ///
 /// ```text
-/// fnp f({:done, acc}, _n), do: acc          -- projection: slot 0, field 1
-/// fnp f([], acc, _r), do: {:done, acc}      -- containment: slot 1
-/// fn  loop(0, junk), do: junk               -- identity:    slot 1
+/// defp f({:done, acc}, _n), do: acc          -- projection: slot 0, field 1
+/// defp f([], acc, _r), do: {:done, acc}      -- containment: slot 1
+/// def loop(0, junk), do: junk               -- identity:    slot 1
 /// ```
 ///
 /// Everything else is opaque and contributes nothing: a call result, a closure

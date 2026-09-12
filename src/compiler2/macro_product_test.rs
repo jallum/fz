@@ -23,7 +23,7 @@ fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_caller_scope.fz".into()),
-        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\nfn main() do\n assert(caller_function(), \"caller function\")\n caller_namespace()\nend\n".into(),
+        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\ndef main() do\n assert(caller_function(), \"caller function\")\n caller_namespace()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -70,7 +70,7 @@ fn pipe_rewrite_keeps_macro_invocation_identity_across_nested_product_waits() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_source_sugar.fz".into()),
-        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\nfn main(), do: 41 |> outer()\n".into(),
+        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\ndef main(), do: 41 |> outer()\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -113,7 +113,7 @@ fn capture_rewrite_keeps_nested_macro_invocation_identity_across_product_waits()
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_capture_rewrite.fz".into()),
-        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\nfn main() do\n fun = &(outer(&1))\n fun.(41)\nend\n".into(),
+        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\ndef main() do\n fun = &(outer(&1))\n fun.(41)\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -162,7 +162,7 @@ fn macro_expansion_cache_reuses_unchanged_calls_and_invalidates_changed_inputs()
     });
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_initial.fz".into()),
-        text: "require Helpers\nfn main(), do: Helpers.inc(40)\n".into(),
+        text: "require Helpers\ndef main(), do: Helpers.inc(40)\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -190,7 +190,7 @@ fn macro_expansion_cache_reuses_unchanged_calls_and_invalidates_changed_inputs()
 
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_changed_input.fz".into()),
-        text: "require Helpers\nfn main(), do: Helpers.inc(41)\n".into(),
+        text: "require Helpers\ndef main(), do: Helpers.inc(41)\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
     assert_eq!(
@@ -218,7 +218,7 @@ fn run_macro_program(text: String) -> Result<i64, String> {
 
 fn run_macro_with_span_metadata(span_entries: &str) -> Result<i64, String> {
     run_macro_program(format!(
-        "fn answer(), do: 42\ndefmacro forged() do\n  {{:answer, %{{__fz_span__: %{{{span_entries}}}}}, []}}\nend\nfn main(), do: forged()\n"
+        "def answer(), do: 42\ndefmacro forged() do\n  {{:answer, %{{__fz_span__: %{{{span_entries}}}}}, []}}\nend\ndef main(), do: forged()\n"
     ))
 }
 
@@ -248,7 +248,7 @@ defmacro forged() do
   {:cond, %{}, [[{:do, [clause]}]]}
 end
 
-fn main(), do: forged()
+def main(), do: forged()
 "#
             .into(),
         )
@@ -267,7 +267,7 @@ defmacro forged() do
   {callee, %{}, [20, 22]}
 end
 
-fn main(), do: forged()
+def main(), do: forged()
 "#
             .into(),
         )
@@ -288,12 +288,12 @@ fn source_less_item_macro_output_round_trips_without_fabricated_provenance() {
 defmacro make_answer() do
   generated = {:generated, %{}, nil}
   quoted = {:quote, %{}, [[{:do, generated}]]}
-  source = {:fn, %{}, [{:answer, %{}, []}, [{:do, quoted}]]}
+  source = {:def, %{}, [{:answer, %{}, []}, [{:do, quoted}]]}
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
 
 make_answer()
-fn main() do
+def main() do
   {_, meta, _} = answer()
   if meta == %{}, do: 42, else: 0
 end
@@ -326,7 +326,7 @@ fn macro_expansion_retains_definition_and_caller_source_versions_per_node() {
     });
     let caller_owner = compiler.submit_code(CodeSubmission {
         name: Some("caller.fz".into()),
-        text: "require Helpers\nfn main(), do: Helpers.inc(40 + 1)\n".into(),
+        text: "require Helpers\ndef main(), do: Helpers.inc(40 + 1)\n".into(),
     });
     let definition_version = compiler
         .world()
@@ -377,7 +377,7 @@ defmacro deferred(x) do
   {:fn, %{}, [{:"->", %{}, [[], x]}]}
 end
 
-fn main() do
+def main() do
   left = deferred(20)
   right = deferred(22)
   left.() + right.()
@@ -438,7 +438,7 @@ fn replacing_a_macro_with_an_ordinary_function_rejects_its_captured_macro_use() 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_before_replacement.fz".into()),
-        text: "defmacro answer() do\n quote do: 40 + 1\nend\nfn main(), do: answer()\n".into(),
+        text: "defmacro answer() do\n quote do: 40 + 1\nend\ndef main(), do: answer()\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -449,7 +449,7 @@ fn replacing_a_macro_with_an_ordinary_function_rejects_its_captured_macro_use() 
     assert_eq!(compiler.run_root_interp(root), Ok(41));
     let replacement = compiler.submit_code(CodeSubmission {
         name: Some("ordinary_replacement.fz".into()),
-        text: "fn answer(), do: 42\n".into(),
+        text: "def answer(), do: 42\n".into(),
     });
     assert!(compiler.run_root_interp(root).is_err());
     let events = diagnostics.events();
@@ -463,7 +463,7 @@ fn replacing_a_macro_with_an_ordinary_function_rejects_its_captured_macro_use() 
             .source_version(replacement)
             .expect("replacement source version")
     );
-    assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (0, 19));
+    assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (0, 21));
 }
 
 #[test]
@@ -474,7 +474,7 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
     let mut compiler = Compiler2::new(tel);
     let failed_code = compiler.submit_code(CodeSubmission {
         name: Some("macro_product_missing_remote.fz".into()),
-        text: "defmacro answer() do\n quote do: unquote(Missing.value())\nend\nfn main(), do: answer()\n".into(),
+        text: "defmacro answer() do\n quote do: unquote(Missing.value())\nend\ndef main(), do: answer()\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -546,7 +546,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_product_initial.fz".into()),
-        text: "fn offset(), do: 1\ndefmacro inc(x) do\n quote do: unquote(x) + unquote(offset())\nend\nfn main(), do: inc(40)\nfn control_offset(), do: 3\ndefmacro control_inc(x) do\n quote do: unquote(x) + unquote(control_offset())\nend\nfn control(), do: control_inc(40)\n".into(),
+        text: "def offset(), do: 1\ndefmacro inc(x) do\n quote do: unquote(x) + unquote(offset())\nend\ndef main(), do: inc(40)\ndef control_offset(), do: 3\ndefmacro control_inc(x) do\n quote do: unquote(x) + unquote(control_offset())\nend\ndef control(), do: control_inc(40)\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -606,7 +606,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
 
     compiler.submit_code(CodeSubmission {
         name: Some("macro_product_unrelated.fz".into()),
-        text: "fn unrelated(), do: 99\n".into(),
+        text: "def unrelated(), do: 99\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(41));
     assert!(
@@ -653,7 +653,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     evaluations.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: Some("macro_product_changed.fz".into()),
-        text: "fn offset(), do: 2\n".into(),
+        text: "def offset(), do: 2\n".into(),
     });
     assert_eq!(
         compiler.run_root_interp(root),

@@ -1115,7 +1115,7 @@ mod wait_frame_tests {
         for budget in [2, 4, 5] {
             let tel = ConfiguredTelemetry::new();
             let mut world = World::new();
-            let code = world.submit_code(None, "fn indexed_only() do\n 1\nend\n".to_owned());
+            let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
             let root = RootId::for_test(95);
             let root_key = ProductKey::RootBackendProduct(root);
             let arrow = world.types_mut().any();
@@ -1559,7 +1559,7 @@ mod wait_frame_tests {
         for remove_after_index in [false, true] {
             let tel = ConfiguredTelemetry::new();
             let mut world = World::new();
-            let code = world.submit_code(None, "fn indexed_only() do\n 1\nend\n".to_owned());
+            let code = world.submit_code(None, "def indexed_only() do\n 1\nend\n".to_owned());
             let root = world.submit_root(
                 None,
                 "undefined_wait_entry".to_owned(),

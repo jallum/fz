@@ -18,7 +18,7 @@
 # `x > 0` is true for every element, so it drops everything; `x < 2` stops
 # partway. Each closure therefore exercises a different stop point through the
 # same shared reducer surface.
-fn main() do
+def main() do
   xs = [1, 2, 3]
 
   dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))

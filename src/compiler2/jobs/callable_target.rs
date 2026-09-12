@@ -105,7 +105,7 @@ mod tests {
         let mut world = World::new();
         world.submit_code(
             Some("construction_target_exact.fz".to_string()),
-            "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+            "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let mut sessions = crate::compiler2::pull::ProductSessions::default();
@@ -168,7 +168,7 @@ mod tests {
         );
         world.submit_code(
             Some("construction_target_removal.fz".to_string()),
-            "fn main(), do: 0\n".to_string(),
+            "def main(), do: 0\n".to_string(),
         );
         let mut sessions = crate::compiler2::pull::ProductSessions::default();
         crate::compiler2::product_drive::drive_retained_root_backend_product(
@@ -218,7 +218,7 @@ mod tests {
         let mut world = World::new();
         world.submit_code(
             Some("construction_target_replacement.fz".to_string()),
-            "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+            "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let mut sessions = crate::compiler2::pull::ProductSessions::default();
@@ -337,7 +337,7 @@ mod tests {
         let mut world = World::new();
         world.submit_code(
             Some("construction_target_late_surface.fz".to_string()),
-            "fn main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
+            "def main() do\n  tag = 1\n  pair = fn (x) -> {tag, x} end\n  {pair.(1), pair}\nend\n".to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let mut sessions = crate::compiler2::pull::ProductSessions::default();

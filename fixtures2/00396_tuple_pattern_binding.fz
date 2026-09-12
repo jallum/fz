@@ -1,6 +1,6 @@
-fn pick({:ok, x}), do: x
-fn pick(:error), do: :error
+def pick({:ok, x}), do: x
+def pick(:error), do: :error
 
-fn main() do
+def main() do
   {pick({:ok, 1}), pick(:error)}
 end

@@ -5,7 +5,7 @@
 # `Enum.reduce/2` over a Map takes the first element as the seed and yields
 # `{3, :one}`, as Elixir does; `reduce/3` over the same Map yields `3`. Both
 # lines are exact on all three paths.
-fn main() do
+def main() do
   map = %{2 => :two, 1 => :one}
 
   dbg(Enum.reduce(map, fn ({k, _v}, {ak, av}) -> {ak + k, av} end))

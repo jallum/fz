@@ -72,13 +72,13 @@
 # [:false | :true] body (`fz_unbox_atom`, exit 134 on `run` and `build`).
 # `interp` survived on its dynamic tags, which is why this is a
 # three-path-parity fixture and not a stdout one.
-fn kind(xs :: [integer]), do: 1
-fn kind(xs :: [:ok | :err]), do: 2
+def kind(xs :: [integer]), do: 1
+def kind(xs :: [:ok | :err]), do: 2
 
-fn dnik(xs :: [:ok | :err]), do: 2
-fn dnik(xs :: [integer]), do: 1
+def dnik(xs :: [:ok | :err]), do: 2
+def dnik(xs :: [integer]), do: 1
 
-fn pick(n) do
+def pick(n) do
   if n > 0 do
     [n, n]
   else
@@ -86,7 +86,7 @@ fn pick(n) do
   end
 end
 
-fn main() do
+def main() do
   dbg(kind(pick(1)))
   dbg(kind(pick(0)))
   dbg(dnik(pick(1)))

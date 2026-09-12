@@ -1,1 +1,1 @@
-fn main(), do: missing + 1
+def main(), do: missing + 1

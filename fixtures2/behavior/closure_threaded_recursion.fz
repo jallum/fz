@@ -13,7 +13,7 @@
 # Self-application (`k.(k, ...)`) is the smallest program with that shape;
 # caller-supplied continuations and threaded callbacks have it too.
 
-fn step(k, n) do
+def step(k, n) do
   if n == 0 do
     0
   else
@@ -21,6 +21,6 @@ fn step(k, n) do
   end
 end
 
-fn main() do
+def main() do
   dbg(step(fn(kk, m) -> step(kk, m) end, 5))
 end

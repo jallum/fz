@@ -1,9 +1,9 @@
 #---
 # purpose: "parametric `id` exercised over int, atom, and bool"
 #---
-fn id(x), do: x
+def id(x), do: x
 
-fn main() do
+def main() do
   assert(id(42) == 42, "id on int")
   assert(id(:hello) == :hello, "id on atom")
   assert(id(true), "id on bool")

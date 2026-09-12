@@ -208,7 +208,7 @@ fn top_level_fn_callable_from_expression() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "top-level fn callable should resolve");
+    assert_resolved(compiler.drive(), "top-level function value should resolve");
     // TODO: JIT-execute and assert result == 42
 }
 
@@ -246,7 +246,10 @@ fn blocked_spawn_resumes_after_new_fn_and_send() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "blocked spawn resuming after new fn should resolve");
+    assert_resolved(
+        compiler.drive(),
+        "blocked spawn resuming after a new function should resolve",
+    );
     // TODO: JIT-execute and assert result == 7
 }
 
@@ -341,7 +344,7 @@ fn multi_clause_recursive_fn_evaluates() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "multi-clause recursive fn should resolve");
+    assert_resolved(compiler.drive(), "multi-clause recursive function should resolve");
     // TODO: JIT-execute and assert result == 720 (fact(6))
 }
 
@@ -398,7 +401,7 @@ fn script_main_calls_helper_fn() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "main calling helper fn should resolve");
+    assert_resolved(compiler.drive(), "main calling a helper function should resolve");
     // TODO: JIT-execute and assert main completes without error
 }
 
@@ -436,7 +439,7 @@ fn multiline_fn_body_arithmetic() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "multiline fn body arithmetic should resolve");
+    assert_resolved(compiler.drive(), "multiline function body arithmetic should resolve");
     // TODO: JIT-execute and assert main completes without error (double(21) == 42)
 }
 
@@ -455,7 +458,7 @@ fn top_level_spec_attaches_to_fn() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "top-level @spec with fn should resolve");
+    assert_resolved(compiler.drive(), "top-level @spec with a definition should resolve");
     // TODO: JIT-execute and assert main completes without error
 }
 
@@ -474,7 +477,7 @@ fn fn_at_different_arity_resolves() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "fn at different arity should resolve");
+    assert_resolved(compiler.drive(), "function at a different arity should resolve");
     // TODO: JIT-execute and assert result == 30 (f(10, 20))
 }
 
@@ -553,7 +556,7 @@ fn test_fn_convention_compiles() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "fn test_*() convention should resolve");
+    assert_resolved(compiler.drive(), "test_*() function convention should resolve");
     // TODO: JIT-execute and assert test_plain completes without error
 }
 

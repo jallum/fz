@@ -125,7 +125,7 @@ fn runtime_source_owner_is_stable_before_its_version_is_materialized() {
     let source_count = world.source_map().borrow().code_count();
 
     assert_eq!(world.source_version(owner), None);
-    let unrelated = world.submit_code(Some("unrelated.fz".into()), "fn unrelated(), do: 1\n".into());
+    let unrelated = world.submit_code(Some("unrelated.fz".into()), "def unrelated(), do: 1\n".into());
     assert!(world.source_version(unrelated).is_some());
     assert_eq!(world.runtime_module_owner(runtime_module), Some(owner));
     assert_eq!(world.source_version(owner), None);
@@ -141,11 +141,11 @@ fn compiler2_world_core_mutates_without_an_observer() {
     let mut world = World::new();
     let code = world.submit_code(
         Some("observer_free_world.fz".to_string()),
-        "fn main(), do: 0\n".to_string(),
+        "def main(), do: 0\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
 
-    assert_eq!(world.code_text(code).as_ref(), "fn main(), do: 0\n");
+    assert_eq!(world.code_text(code).as_ref(), "def main(), do: 0\n");
     assert_eq!(
         world.root_entry(root).function,
         world.reference_function(ModuleId::GLOBAL, "main", 0)
@@ -172,7 +172,7 @@ fn compiler2_telemetry_does_not_observe_world_when_no_handler_matches() {
     let mut world = World::new();
     world.submit_code(
         Some("unmatched_telemetry.fz".to_string()),
-        "fn main(), do: 0\n".to_string(),
+        "def main(), do: 0\n".to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
 
@@ -239,7 +239,7 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
     let mut world = World::new();
     world.submit_code(
         Some("post_mutation_world.fz".to_string()),
-        "fn main(), do: 0\n".to_string(),
+        "def main(), do: 0\n".to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
 
@@ -476,7 +476,7 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code = world.submit_code(Some("staged_source.fz".to_string()), "fn main(), do: 42\n".to_string());
+    let code = world.submit_code(Some("staged_source.fz".to_string()), "def main(), do: 42\n".to_string());
     assert!(
         matches!(
             super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
@@ -1351,7 +1351,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     // Take the submit-root ignition out of the agenda: this test isolates the
     // stall pass, so nothing may be ready when the drive starts.
     assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
-    world.submit_code(Some("stall.fz".to_string()), "fn echoval(a), do: a\n".to_string());
+    world.submit_code(Some("stall.fz".to_string()), "def echoval(a), do: a\n".to_string());
     let function = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
     // Settle echoval/1's own facts up front (outside the isolated stall pass
     // below): the activation frontier now demands full analysis for every
@@ -1428,7 +1428,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
     assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
     world.submit_code(
         Some("callee.fz".to_string()),
-        "fn echoval(a), do: a\n\nfn ask(a), do: echoval(a)\n".to_string(),
+        "def echoval(a), do: a\n\ndef ask(a), do: echoval(a)\n".to_string(),
     );
     let echoval = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
     let ask = world.reference_function(ModuleId::GLOBAL, "ask", 1);
@@ -1548,7 +1548,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     world.submit_code(
         Some("protocol.fz".to_string()),
-        "defprotocol Integerish do\n  fn id(value)\nend\n\nfn main(), do: Integerish.id(41)\n".to_string(),
+        "defprotocol Integerish do\n  def id(value)\nend\n\ndef main(), do: Integerish.id(41)\n".to_string(),
     );
     assert_eq!(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
@@ -1568,7 +1568,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
     // callers (a different file, indexed and scoped after the caller).
     world.submit_code(
         Some("impl.fz".to_string()),
-        "defimpl Integerish, for: Integer do\n  fn id(value), do: value + 1\nend\n".to_string(),
+        "defimpl Integerish, for: Integer do\n  def id(value), do: value + 1\nend\n".to_string(),
     );
     assert_eq!(
         super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
@@ -1597,7 +1597,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let mut sessions = super::pull::ProductSessions::default();
     let source_owner = world.submit_code(
         Some("global_fn.fz".to_string()),
-        "fn greet(name), do: name\n".to_string(),
+        "def greet(name), do: name\n".to_string(),
     );
     let function = world.reference_function(ModuleId::GLOBAL, "greet", 1);
 
@@ -1687,7 +1687,7 @@ fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() 
     );
     world.submit_code(
         Some("global_fn.fz".to_string()),
-        "fn greet(name), do: name\n".to_string(),
+        "def greet(name), do: name\n".to_string(),
     );
 
     super::drive_test::assert_resolved(

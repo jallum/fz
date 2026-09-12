@@ -5,11 +5,11 @@
 # `and` binds tighter than `or`; `not` is the tightest unary prefix. The same
 # operators are valid in `when` guards. The C-style spellings `&&` / `||` / `!`
 # are not operators in fz and are rejected at lex time.
-fn classify(n) when n > 0 and n < 10, do: :small
-fn classify(n) when n >= 10 or n < 0, do: :big_or_negative
-fn classify(_), do: :zero
+def classify(n) when n > 0 and n < 10, do: :small
+def classify(n) when n >= 10 or n < 0, do: :big_or_negative
+def classify(_), do: :zero
 
-fn main() do
+def main() do
   # Truth table for `and` / `or` / `not`.
   assert(true and true, "and: both true")
   refute(true and false, "and: one false")

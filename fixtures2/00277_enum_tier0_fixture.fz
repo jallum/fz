@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   xs = [1, 2, 3, 4]
   range = 1..7//2
   map = %{2 => :two, 1 => :one}

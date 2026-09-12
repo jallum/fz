@@ -32,9 +32,9 @@
 #
 # The semantic claim is just that the program returns the else-arm result
 # without the lowering panic.
-fn helper(), do: 7
+def helper(), do: 7
 
-fn main() do
+def main() do
   result = if 1 == 0 do
     helper() + 0
   else

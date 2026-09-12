@@ -69,7 +69,7 @@ fn module_qualifies_fn_names() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "module qualifies fn names");
+    assert_resolved(compiler.drive(), "module qualifies function names");
     // TODO: assert that the resolved function name is M.f (not bare f), and M.__info__/1 is also present
 }
 
@@ -88,7 +88,7 @@ fn top_level_fn_keeps_bare_name() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "top-level fn retains bare name");
+    assert_resolved(compiler.drive(), "top-level function retains its bare name");
     // TODO: assert that the function is registered as "helper" (not "M.helper" or similar)
 }
 
@@ -826,7 +826,7 @@ fn spec_name_mismatch_is_parse_error() {
     });
     assert!(
         matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
-        "@spec other vs fn add1 should fail during function surface decoding",
+        "@spec other vs def add1 should fail during function surface decoding",
     );
     assert_last_error(
         &capture,
@@ -1089,7 +1089,7 @@ fn malformed_type_alias_in_second_file_points_at_that_files_span() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("first.fz".to_string()),
-        text: "fn main(), do: 1\n".to_string(),
+        text: "def main(), do: 1\n".to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1272,7 +1272,7 @@ fn top_level_type_alias_is_program_attribute() {
     // TODO: assert program.attrs contains TypeAlias { name: "id" }
 }
 
-// Ported from src/frontend/resolve_test.rs: outer module's sibling call is not shadowed by inner module's same-named fn
+// Ported from src/frontend/resolve_test.rs: an outer sibling call is not shadowed by an inner function with the same name.
 #[test]
 fn outer_sibling_call_not_shadowed_by_inner_fn() {
     let tel = ConfiguredTelemetry::new();

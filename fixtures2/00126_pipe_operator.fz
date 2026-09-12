@@ -1,2 +1,2 @@
-fn add2(x), do: x + 2
-fn main(), do: 1 |> add2()
+def add2(x), do: x + 2
+def main(), do: 1 |> add2()

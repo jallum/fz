@@ -182,7 +182,7 @@ The inner closure is one of two things:
 
 - a spawned user closure, deep-copied from the sender's heap into the new task's
   heap (`spawn_closure`); or
-- a synthetic main-style entry. A `main` fn has a raw `(cont)` body, so
+- a synthetic main-style entry. A `main` function has a raw `(cont)` body, so
   `mint_main_inner` wraps the raw fn pointer in a raw-int capture (GC never treats
   it as a heap reference) behind the fixed `fz_main_trampoline` body, which reads
   the pointer and tail-calls `main(cont)`. The inner closure's `halt_kind` is set

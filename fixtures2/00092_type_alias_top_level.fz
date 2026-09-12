@@ -1,2 +1,2 @@
 @type id :: integer
-fn main(), do: nil
+def main(), do: nil

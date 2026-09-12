@@ -1,11 +1,11 @@
 #---
 # purpose: closure keys retain complete lexical environments across specialization and nested callable transport
 #---
-fn first({value, _}), do: value
-fn make(pair), do: fn () -> first(pair) end
-fn hold(value), do: fn (_) -> value end
+def first({value, _}), do: value
+def make(pair), do: fn () -> first(pair) end
+def hold(value), do: fn (_) -> value end
 
-fn main() do
+def main() do
   a = make({:same, 11})
   b = make({:same, 22})
   c = make({:same, 11})

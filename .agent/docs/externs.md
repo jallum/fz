@@ -264,7 +264,7 @@ what makes an ordinary wrapper come back correctly:
 
 ```fz
 @spec dbg(t) :: t when t: any
-fn dbg(x), do: fz_dbg_value(x)
+def dbg(x), do: fz_dbg_value(x)
 ```
 
 The body calls `extern "fz" def fz_dbg_value(any) :: any`, so the argument is

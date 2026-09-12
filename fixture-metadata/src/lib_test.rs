@@ -7,7 +7,7 @@ use std::path::Path;
 
 #[test]
 fn fixture_metadata_parser_ignores_sources_without_frontmatter() {
-    let parsed = parse_fixture_metadata("fn main(), do: 42\n").expect("plain source should parse");
+    let parsed = parse_fixture_metadata("def main(), do: 42\n").expect("plain source should parse");
     assert_eq!(
         parsed, None,
         "ordinary fixtures2 sources should not need any frontmatter"
@@ -32,7 +32,7 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
 # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
 # snapshot.call_edges: call_edges
 #---
-fn main(), do: 42
+def main(), do: 42
 "#,
     )
     .expect("frontmatter should parse");
@@ -89,7 +89,7 @@ fn fixture_metadata_participation_rules_are_explicit() {
 # purpose: runtime behaviour
 # expect: success
 #---
-fn main(), do: 42
+def main(), do: 42
 "#,
     )
     .expect("matrix-only frontmatter")
@@ -109,7 +109,7 @@ fn main(), do: 42
 # root: main/0
 # assert.metric.semantic.callsites: 1
 #---
-fn main(), do: 42
+def main(), do: 42
 "#,
     )
     .expect("contract-only frontmatter")

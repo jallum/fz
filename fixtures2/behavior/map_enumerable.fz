@@ -6,7 +6,7 @@
 # Exercises the source `defimpl Enumerable, for: Map` callback surface through
 # direct protocol calls. The oracle uses Elixir maps and `Enumerable.Map`, so the
 # checked output pins callback semantics and canonical map iteration order.
-fn main() do
+def main() do
   map = %{3 => :three, 1 => :one, 2 => :two}
   ints = %{2 => 20, 1 => 10}
 

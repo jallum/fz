@@ -7,8 +7,8 @@
 # Pins source-level `append/2` as an ordinary recursive function:
 #
 # ```fz
-# fn append([], ys), do: ys
-# fn append([h | t], ys), do: [h | append(t, ys)]
+# def append([], ys), do: ys
+# def append([h | t], ys), do: [h | append(t, ys)]
 # ```
 #
 # The program appends `[1, 2, 3]` to `[4, 5]`, prints the result, snapshots
@@ -25,10 +25,10 @@
 # This fixture is deliberately not an append BIF test. The accompanying dump
 # assertion proves that `append` remains a source function in the typed specs and
 # native CLIF.
-fn append([], ys), do: ys
-fn append([h | t], ys), do: [h | append(t, ys)]
+def append([], ys), do: ys
+def append([h | t], ys), do: [h | append(t, ys)]
 
-fn main() do
+def main() do
   out = append([1, 2, 3], [4, 5])
   dbg(out)
 

@@ -1019,7 +1019,7 @@ fn run_and_interp_stay_on_compiler2_telemetry() {
     write(
         &source_path,
         r#"
-fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 "#,
     )
     .expect("write Compiler2 run fixture");
@@ -1191,7 +1191,7 @@ fn build_accepts_repeated_dump_specs_with_extension_or_kind_override() {
     let activations_spec = format!("activations={}", activations_path.display());
     let fnir_spec = format!("fnir={}", fnir_path.display());
 
-    write(&source_path, "fn main(), do: 42\n").expect("write dump fixture");
+    write(&source_path, "def main(), do: 42\n").expect("write dump fixture");
 
     let out = run_fz2(&[
         OsStr::new("build"),
@@ -1267,7 +1267,7 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let source_path = unique_temp_path("fz2_build", ".fz");
     let out_bin = unique_temp_path("fz2_build", ".bin");
     let telemetry_path = unique_temp_path("fz2_build", ".jsonl");
-    write(&source_path, "fn main(), do: 0\n").expect("write Compiler2 build fixture");
+    write(&source_path, "def main(), do: 0\n").expect("write Compiler2 build fixture");
 
     let build = Command::new(FZ2_BIN)
         .current_dir(temp_dir())
@@ -1358,7 +1358,7 @@ fn run_reports_unrequired_remote_macro_during_source_production() {
         &source_path,
         r#"
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -1366,10 +1366,10 @@ defmodule Helpers do
 end
 
 defmodule App do
-  fn run(), do: Helpers.twice(21)
+  def run(), do: Helpers.twice(21)
 end
 
-fn main(), do: App.run()
+def main(), do: App.run()
 "#,
     )
     .expect("write missing require fixture");
@@ -1491,11 +1491,11 @@ fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
 /// instead of unifying fault-halt with normal completion (exit 0, silent).
 #[test]
 fn run_and_built_binary_report_runtime_dispatch_faults() {
-    let source = "fn pick(0), do: :first\n\
-                  fn pick(_), do: :third\n\n\
-                  fn handle(:first), do: 1\n\
-                  fn handle(:second), do: 2\n\n\
-                  fn main() do\n  dbg(1)\n  dbg(handle(pick(5)))\n  dbg(2)\nend\n";
+    let source = "def pick(0), do: :first\n\
+                  def pick(_), do: :third\n\n\
+                  def handle(:first), do: 1\n\
+                  def handle(:second), do: 2\n\n\
+                  def main() do\n  dbg(1)\n  dbg(handle(pick(5)))\n  dbg(2)\nend\n";
     let src_path = unique_temp_path("fz2_runtime_fault", ".fz");
     write(&src_path, source).expect("write runtime-fault source");
 
@@ -1580,7 +1580,7 @@ fn native_enum_take_positive_single_call_survives_reduction_yield() {
     let source_path = unique_temp_path("fz2_enum_take_positive_single", ".fz");
     write(
         &source_path,
-        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n",
+        "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n",
     )
     .unwrap_or_else(|error| panic!("write {}: {error}", source_path.display()));
 
@@ -1597,7 +1597,7 @@ fn native_enum_every_functions_reject_negative_intervals_consistently() {
         ("drop_every", "Enum.drop_every([1, 2, 3], -1)"),
     ] {
         let source_path = unique_temp_path(&format!("fz2_enum_{name}_negative"), ".fz");
-        write(&source_path, format!("fn main(), do: {expression}\n"))
+        write(&source_path, format!("def main(), do: {expression}\n"))
             .unwrap_or_else(|error| panic!("write {}: {error}", source_path.display()));
 
         let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
@@ -1740,7 +1740,7 @@ fn run_interp_and_build_execute_cond_source() {
     write(
         &source_path,
         r#"
-fn main() do
+def main() do
   cond do
     false -> dbg(:bad)
     2 + 2 == 4 -> dbg(:ok)

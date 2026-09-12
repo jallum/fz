@@ -20,7 +20,7 @@
 import Utf8, only: [valid?: 1]
 alias Utf8, as: U
 
-fn main() do
+def main() do
   good = <<104, 105>>           # "hi" as raw bytes
   bad  = <<0xff, 0xff>>         # invalid UTF-8 sequence
   dbg(valid?(good))

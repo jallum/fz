@@ -4,11 +4,11 @@
 #
 # Expected: main() : {int, :fallback}
 
-fn positive(n), do: n > 0
+def positive(n), do: n > 0
 
-fn pick({:ok, x}) when positive(x), do: x
-fn pick({:ok, _}), do: :fallback
+def pick({:ok, x}) when positive(x), do: x
+def pick({:ok, _}), do: :fallback
 
-fn main() do
+def main() do
   {pick({:ok, 1}), pick({:ok, 0})}
 end

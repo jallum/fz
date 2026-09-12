@@ -94,7 +94,7 @@ fn named_fn_ref_passed_as_value_no_heap_alloc() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "named fn ref no alloc should resolve");
+    assert_resolved(compiler.drive(), "named function ref without allocation should resolve");
     // TODO: JIT-execute and assert result == 41, closure_allocs == 0
 }
 

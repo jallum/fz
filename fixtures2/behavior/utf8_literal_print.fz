@@ -23,4 +23,4 @@
 # AOT path elided pending the AOT shim wiring for `fz_dbg_value` over
 # branded bitstrings — same as the other print-bearing fixtures in this
 # suite (see fz-xx8 follow-up).
-fn main(), do: dbg("hello")
+def main(), do: dbg("hello")

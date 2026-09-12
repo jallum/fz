@@ -809,14 +809,14 @@ fn derive_function_contract_carries_protocol_domain_obligation_through_transitiv
         name: Some("alias_protocol_domain_contract.fz".to_string()),
         text: concat!(
             "defprotocol Enumerable do\n",
-            "  fn reduce(enumerable, acc, reducer)\n",
+            "  def reduce(enumerable, acc, reducer)\n",
             "end\n",
             "\n",
             "defmodule M do\n",
             "  @type enum_int :: Enumerable.t(integer)\n",
             "  @type alias_enum_int :: enum_int\n",
             "  @spec f(alias_enum_int) :: integer\n",
-            "  fn f(_), do: 1\n",
+            "  def f(_), do: 1\n",
             "end\n",
         )
         .to_string(),

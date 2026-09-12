@@ -29,7 +29,7 @@
 # loses the distinction above 2^53: `9007199254740993 == 9007199254740992`
 # answered true, and the ordering of the same pair disagreed between doors.
 # Both values below are laundered through the mailbox so no door can fold them.
-fn main() do
+def main() do
   big = launder(9007199254740993)
   smaller = launder(9007199254740992)
   dbg({big == smaller, big != smaller, big > smaller, smaller < big})
@@ -82,19 +82,19 @@ fn main() do
   dbg({Enum.member?(%{1 => :a}, {1, :a}), Enum.member?(%{1 => :a}, {1.0, :a})})
 end
 
-fnp pinned_against(subject, pin) do
+defp pinned_against(subject, pin) do
   case subject do
     ^pin -> :same
     _other -> :different
   end
 end
 
-fnp pinned_self(value) do
+defp pinned_self(value) do
   ^value = value
   value
 end
 
-fnp pinned_origin_lists() do
+defp pinned_origin_lists() do
   first = [1, 2]
   second = [1, 2]
   ^first = second
@@ -107,11 +107,11 @@ fnp pinned_origin_lists() do
   {changed, second}
 end
 
-fnp literal(1), do: :int_one
-fnp literal(1.0), do: :float_one
-fnp literal(_other), do: :other
+defp literal(1), do: :int_one
+defp literal(1.0), do: :float_one
+defp literal(_other), do: :other
 
-fnp launder(value) do
+defp launder(value) do
   send(self(), value)
 
   receive do

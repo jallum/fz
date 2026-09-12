@@ -8,7 +8,7 @@
 # Exercises the fz-g58.15 lambda desugar surface. Capture shorthand becomes an
 # ordinary lambda, and guarded multi-clause anonymous functions dispatch through
 # the same pattern machinery as `case`.
-fn main() do
+def main() do
   add = &(&1 + &2)
   classify = fn
     0 -> :zero

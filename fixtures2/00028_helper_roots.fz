@@ -1,8 +1,8 @@
 
-fn positive(n), do: n > 0
-fn wanted(n) when positive(n), do: :yes
-fn wanted(_), do: :no
-fn other(n) when n > 0, do: :yes
-fn other(_), do: :no
-fn main(), do: wanted(1)
-fn other_main(), do: other(1)
+def positive(n), do: n > 0
+def wanted(n) when positive(n), do: :yes
+def wanted(_), do: :no
+def other(n) when n > 0, do: :yes
+def other(_), do: :no
+def main(), do: wanted(1)
+def other_main(), do: other(1)

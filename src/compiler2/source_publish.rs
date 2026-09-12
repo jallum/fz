@@ -1557,7 +1557,7 @@ fn module_info_function_clause(
     let head = builder.call("__info__", meta, &[param])?;
     let do_kw = builder.keyword("do", body)?;
     let kw = builder.list(&[do_kw])?;
-    builder.call("fn", meta, &[head, kw])
+    builder.call("def", meta, &[head, kw])
 }
 
 fn module_info_case(

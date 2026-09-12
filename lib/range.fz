@@ -45,7 +45,7 @@ defmodule Range do
 
   """
   @spec new(integer, integer, integer) :: t
-  fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+  def new(first, last, step), do: %Range{first: first, last: last, step: step}
 
   @doc """
   Implements the `Enumerable.reduce/3` callback for ranges.
@@ -55,13 +55,13 @@ defmodule Range do
   `Enum` function that folds over a range, by way of `Enum.to_list/1`.
   """
   @spec reduce(integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fn reduce(first, last, step, {:cont, :first}, reducer), do: reduce_start(first, last, step, first, :first, reducer)
-  fn reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
-  fn reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
-  fn reduce(first, last, step, {:suspend, acc}, reducer) do
+  def reduce(first, last, step, {:cont, :first}, reducer), do: reduce_start(first, last, step, first, :first, reducer)
+  def reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
+  def reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
+  def reduce(first, last, step, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, first, acc, reducer) end)}
   end
-  fn reduce(_first, _last, _step, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
+  def reduce(_first, _last, _step, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
 
   @doc """
   Implements the `Enumerable.reduce_while/3` callback for ranges.
@@ -71,7 +71,7 @@ defmodule Range do
   on it, such as `Enum.take_while/2`, `Enum.all?/1`, and `Enum.find/2`.
   """
   @spec reduce_while(integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fn reduce_while(first, last, step, acc, reducer), do: reduce_while_cont(first, last, step, first, acc, reducer)
+  def reduce_while(first, last, step, acc, reducer), do: reduce_while_cont(first, last, step, first, acc, reducer)
 
   @doc """
   Implements the `Enumerable.count/1` callback for ranges.
@@ -88,7 +88,7 @@ defmodule Range do
 
   """
   @spec count(integer, integer, integer) :: integer
-  fn count(first, last, step) do
+  def count(first, last, step) do
     if done?(last, step, first) do
       0
     else
@@ -121,7 +121,7 @@ defmodule Range do
   # A range holds integers, so nothing else is in it. Without the fallthrough
   # the arithmetic below reached a float and aborted the process on the native
   # doors: `Enum.member?(1..5, 3.0)` is false, not a crash.
-  fn member?(first, last, step, value :: integer) do
+  def member?(first, last, step, value :: integer) do
     if done?(last, step, first) do
       false
     else
@@ -133,7 +133,7 @@ defmodule Range do
     end
   end
 
-  fn member?(_first, _last, _step, _value), do: false
+  def member?(_first, _last, _step, _value), do: false
 
   @doc """
   Implements the slicing half of the `Enumerable.slice/1` callback for
@@ -151,12 +151,12 @@ defmodule Range do
 
   """
   @spec slice(integer, integer, integer, integer, integer, integer) :: [integer]
-  fn slice(first, last, step, start, amount, stride) do
+  def slice(first, last, step, start, amount, stride) do
     slice_from(last, step + stride - 1, first + (start * step), amount, [])
   end
 
   @spec reduce_start(integer, integer, integer, integer, b, (integer, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce_start(first, last, step, current, acc, reducer) do
+  defp reduce_start(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       {:done, acc}
     else
@@ -165,7 +165,7 @@ defmodule Range do
   end
 
   @spec reduce_cont(integer, integer, integer, integer, b | c, (integer, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce_cont(first, last, step, current, acc, reducer) do
+  defp reduce_cont(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       {:done, acc}
     else
@@ -174,15 +174,15 @@ defmodule Range do
   end
 
   @spec reduce_step(integer, integer, integer, integer, {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (integer, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fnp reduce_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_cont(first, last, step, current + step, acc, reducer)
-  fnp reduce_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
-  fnp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
+  defp reduce_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_cont(first, last, step, current + step, acc, reducer)
+  defp reduce_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
+  defp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, current + step, acc, reducer) end)}
   end
-  fnp reduce_step(_first, _last, _step, _current, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
+  defp reduce_step(_first, _last, _step, _current, _command, _reducer), do: panic("Enumerable.ReduceProtocolError")
 
   @spec reduce_while_cont(integer, integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fnp reduce_while_cont(first, last, step, current, acc, reducer) do
+  defp reduce_while_cont(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       acc
     else
@@ -191,12 +191,12 @@ defmodule Range do
   end
 
   @spec reduce_while_step(integer, integer, integer, integer, {:cont, b} | {:halt, c}, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fnp reduce_while_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_while_cont(first, last, step, current + step, acc, reducer)
-  fnp reduce_while_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: acc
+  defp reduce_while_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_while_cont(first, last, step, current + step, acc, reducer)
+  defp reduce_while_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: acc
 
   @spec slice_from(integer, integer, integer, integer, [integer]) :: [integer]
-  fnp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
-  fnp slice_from(last, step, current, amount, acc) do
+  defp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
+  defp slice_from(last, step, current, amount, acc) do
     if done?(last, step, current) do
       reverse(acc, [])
     else
@@ -205,14 +205,14 @@ defmodule Range do
   end
 
   @spec reverse([a], [b]) :: [a | b]
-  fnp reverse([], acc), do: acc
-  fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+  defp reverse([], acc), do: acc
+  defp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
   @spec done?(integer, integer, integer) :: bool
-  fnp done?(last, step, current) when step > 0, do: current > last
-  fnp done?(last, _step, current), do: current < last
+  defp done?(last, step, current) when step > 0, do: current > last
+  defp done?(last, _step, current), do: current < last
 
   @spec contains?(integer, integer, integer, integer) :: bool
-  fnp contains?(first, last, step, value) when step > 0, do: value >= first and value <= last
-  fnp contains?(first, last, _step, value), do: value <= first and value >= last
+  defp contains?(first, last, step, value) when step > 0, do: value >= first and value <= last
+  defp contains?(first, last, _step, value), do: value <= first and value >= last
 end

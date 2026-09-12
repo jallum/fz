@@ -47,7 +47,7 @@ fn def_and_defp_are_ordinary_identifiers() {
 // DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]
 fn tokens_carry_accurate_byte_spans() {
-    let src = "fn foo(x), do: x + 1";
+    let src = "def foo(x), do: x + 1";
     let toks = test_lexer(src)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
@@ -55,7 +55,7 @@ fn tokens_carry_accurate_byte_spans() {
     for t in &toks {
         let slice = &src[t.span.start as usize..t.span.end as usize];
         match &t.tok {
-            Tok::Fn => assert_eq!(slice, "fn"),
+            Tok::Ident(n) if n == "def" => assert_eq!(slice, "def"),
             Tok::Ident(n) if n == "foo" => assert_eq!(slice, "foo"),
             Tok::Ident(n) if n == "x" => assert_eq!(slice, "x"),
             Tok::Int(1) => assert_eq!(slice, "1"),
@@ -69,7 +69,7 @@ fn tokens_carry_accurate_byte_spans() {
 // DROP: SourceMap line-resolution, pure infrastructure
 #[test]
 fn locate_resolves_to_correct_line() {
-    let src = "fn a(), do: 1\nfn b(), do: 2\n";
+    let src = "def a(), do: 1\ndef b(), do: 2\n";
     let mut sm = SourceMap::new();
     let f = sm.add_code(Some("t.fz"), src);
     let toks = Lexer::with_source_version_and_name(src, f, "<test>")
@@ -82,19 +82,19 @@ fn locate_resolves_to_correct_line() {
         .expect("found b");
     let loc = sm.locate(b.span);
     assert_eq!(loc.line, 2);
-    assert_eq!(loc.col, 4);
+    assert_eq!(loc.col, 5);
 }
 
 // DROP: multi-file span bookkeeping, pure infrastructure
 #[test]
 fn multi_file_spans_keep_their_source_versions() {
     let mut sm = SourceMap::new();
-    let a = sm.add_code(Some("a.fz"), "fn foo()");
-    let b = sm.add_code(Some("b.fz"), "fn bar()");
-    let toks_a = Lexer::with_source_version_and_name("fn foo()", a, "<test>")
+    let a = sm.add_code(Some("a.fz"), "def foo()");
+    let b = sm.add_code(Some("b.fz"), "def bar()");
+    let toks_a = Lexer::with_source_version_and_name("def foo()", a, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let toks_b = Lexer::with_source_version_and_name("fn bar()", b, "<test>")
+    let toks_b = Lexer::with_source_version_and_name("def bar()", b, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
     let foo = toks_a
@@ -373,7 +373,7 @@ fn telemetry_emits_pass_span_and_token_count() {
         move |_, _, _, _, _, tokens| sink.set(Some(tokens.len())),
     );
 
-    let src = "fn foo(x), do: x + 1";
+    let src = "def foo(x), do: x + 1";
     let toks = test_lexer(src).tokenize(&tel).expect("lex");
     let expected_count = toks.len();
 
@@ -394,7 +394,7 @@ fn telemetry_user_event_inherits_span_id() {
     let cap = Capture::new();
     cap.install(&tel, &[]);
 
-    let _ = test_lexer("fn x() do, :ok end").tokenize(&tel).expect("lex");
+    let _ = test_lexer("def x() do, :ok end").tokenize(&tel).expect("lex");
 
     // Find the SpanStart and the tokens_built event; same span_id.
     let start = cap
@@ -411,7 +411,7 @@ fn telemetry_user_event_inherits_span_id() {
 #[test]
 fn null_telemetry_is_a_silent_no_op() {
     // Same call path; just verifies the null impl compiles + runs.
-    let toks = test_lexer("fn x(), do: :ok")
+    let toks = test_lexer("def x(), do: :ok")
         .tokenize(&crate::telemetry::sink::NullTelemetry)
         .expect("lex");
     assert!(!toks.is_empty());

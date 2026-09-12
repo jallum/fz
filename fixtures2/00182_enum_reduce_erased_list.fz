@@ -6,6 +6,6 @@
 # Expected: test([1,2,3]) : int ; main() : int
 
 @spec test([any]) :: integer
-fn test(list), do: Enum.reduce(list, 0, &Kernel.+/2)
+def test(list), do: Enum.reduce(list, 0, &Kernel.+/2)
 
-fn main(), do: test([1, 2, 3])
+def main(), do: test([1, 2, 3])

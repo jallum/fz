@@ -1,2 +1,2 @@
-fn f([]), do: 1
-fn main(), do: f(nil)
+def f([]), do: 1
+def main(), do: f(nil)

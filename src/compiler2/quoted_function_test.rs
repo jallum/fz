@@ -48,7 +48,7 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
     let body = builder.call("{}", &empty, &[call, reference]).unwrap();
     let head = builder.call("probe", &empty, &[]).unwrap();
     let keyword = builder.list(&[builder.keyword("do", body).unwrap()]).unwrap();
-    let function = builder.call("fn", &empty, &[head, keyword]).unwrap();
+    let function = builder.call("def", &empty, &[head, keyword]).unwrap();
     let source = builder.root(builder.list(&[function]).unwrap()).unwrap();
     assert!(
         derive_function_surface(&source, &crate::source::SourceMap::new()).is_err(),
@@ -83,7 +83,7 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
 fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
     let (root, sources) = grouped_function_root(
         "lambda_occurrences.fz",
-        "fn choose(0), do: {fn () -> fn () -> 1 end end, fn () -> 2 end}\nfn choose(1), do: fn () -> 3 end\n",
+        "def choose(0), do: {fn () -> fn () -> 1 end end, fn () -> 2 end}\ndef choose(1), do: fn () -> 3 end\n",
     );
     fn occurrences(surface: &crate::function_surface::FunctionSurface) -> [crate::ast::LambdaOccurrence; 4] {
         let Expr::Tuple(items) = &surface.clauses[0].body.node else {
@@ -135,7 +135,7 @@ fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
 fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_parser() {
     let source = r#"
 @spec pack(integer) :: binary
-fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
+def pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
 "#;
     let (root, sources) = grouped_function_root("pack.fz", source);
     let surface = derive_function_surface(&root, &sources).expect("derive function surface");
@@ -174,7 +174,7 @@ fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)
 fn compiler2_quoted_function_surface_derives_operator_specs_from_quoted_source() {
     let source = r#"
 @spec integer + integer :: integer
-fn left + right, do: left + right
+def left + right, do: left + right
 "#;
     let (root, sources) = grouped_function_root("plus.fz", source);
     let surface = derive_function_surface(&root, &sources).expect("derive function surface");
@@ -196,7 +196,7 @@ fn left + right, do: left + right
 #[test]
 fn compiler2_quoted_function_surface_derives_typed_operator_clause_annotations() {
     let source = r#"
-fn left :: integer + right :: float, do: left + right
+def (left :: integer) + (right :: float), do: left + right
 "#;
     let (root, sources) = grouped_function_root("typed_plus.fz", source);
     let surface = derive_function_surface(&root, &sources).expect("derive function surface");
@@ -215,7 +215,7 @@ fn left :: integer + right :: float, do: left + right
 #[test]
 fn compiler2_quoted_function_surface_derives_with_from_quoted_source() {
     let source = r#"
-fn pick(v) do
+def pick(v) do
   with {:ok, x} <- v do x else :err -> 0 end
 end
 "#;
@@ -238,7 +238,7 @@ end
 #[test]
 fn compiler2_quoted_function_surface_decodes_struct_literals_before_percent_operator() {
     let source = r#"
-fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+def new(first, last, step), do: %Range{first: first, last: last, step: step}
 "#;
     let (root, sources) = grouped_function_root("range.fz", source);
     let surface = derive_function_surface(&root, &sources).expect("derive function surface");
@@ -256,7 +256,7 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 #[test]
 fn source_less_ast_child_stays_source_less_under_a_spanned_parent() {
     let mut sources = crate::source::SourceMap::default();
-    let version = sources.add_code(Some("generated-child.fz"), "fn main(), do: generated\n");
+    let version = sources.add_code(Some("generated-child.fz"), "def main(), do: generated\n");
     let heap = std::rc::Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let parent_meta = QuotedSourceMetadata {
@@ -274,7 +274,7 @@ fn source_less_ast_child_stays_source_less_under_a_spanned_parent() {
     let do_entry = builder.keyword("do", body).expect("do entry");
     let options = builder.list(&[do_entry]).expect("function options");
     let function = builder
-        .call("fn", &parent_meta, &[head, options])
+        .call("def", &parent_meta, &[head, options])
         .expect("function form");
     let items = builder.list(&[function]).expect("function list");
     let root = builder.root(items).expect("quoted function root");
@@ -297,7 +297,7 @@ fn source_less_ast_child_stays_source_less_under_a_spanned_parent() {
 fn a_decoded_token_span_retains_its_exact_source_version() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = super::Compiler2::new(tel);
-    let source = "fn tmpl(), do: x :: integer\n";
+    let source = "def tmpl(), do: x :: integer\n";
     let owner = compiler.submit_code(super::CodeSubmission {
         name: Some("macro_file.fz".to_string()),
         text: source.to_string(),
@@ -337,7 +337,7 @@ fn a_decoded_token_span_retains_its_exact_source_version() {
 fn a_decoded_ast_node_meta_span_retains_its_exact_source_version() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = super::Compiler2::new(tel);
-    let source = "fn tmpl(), do: x :: integer\n";
+    let source = "def tmpl(), do: x :: integer\n";
     let owner = compiler.submit_code(super::CodeSubmission {
         name: Some("macro_file.fz".to_string()),
         text: source.to_string(),
@@ -371,7 +371,7 @@ fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
     // attribute already took a string token, so a heredoc that lexes to one
     // needs nothing further from it -- this pins that, text and all, so the
     // library can carry Elixir-shaped docs instead of one-line labels.
-    let source = "@doc \"\"\"\nAdds one.\n\n## Examples\n\n    bump(1) == 2\n\"\"\"\nfn bump(n), do: n + 1\n";
+    let source = "@doc \"\"\"\nAdds one.\n\n## Examples\n\n    bump(1) == 2\n\"\"\"\ndef bump(n), do: n + 1\n";
     let (root, sources) = grouped_function_root("bump.fz", source);
     let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 

@@ -11,7 +11,7 @@
 # was swallowed by the same rule:
 #
 #     defmodule Store do
-#       fn get(_map, _key), do: :from_store
+#       def get(_map, _key), do: :from_store
 #     end
 #     Store.get(%{a: 1}, :a)    # was 1 -- the body never ran, no diagnostic
 #
@@ -34,7 +34,7 @@
 # no `Access` module, so that is now an unresolved call with a diagnostic. It
 # used to "work" only because the sugar swallowed it, which is the bug this
 # fixture exists for. See the Access-module ticket.
-fn main() do
+def main() do
   m = %{a: 1, b: 2}
   dbg({m[:a], m[:b], m[:missing]})
 
@@ -51,28 +51,28 @@ defmodule Aliased do
   alias Store, as: Access
 
   @spec through_alias(any) :: any
-  fn through_alias(m), do: {Access.get(m, :a), Access.tag(1)}
+  def through_alias(m), do: {Access.get(m, :a), Access.tag(1)}
 end
 
 defmodule Aliased do
   alias Store, as: Access
 
   @spec through_alias(any) :: any
-  fn through_alias(m), do: {Access.get(m, :a), Access.tag(1)}
+  def through_alias(m), do: {Access.get(m, :a), Access.tag(1)}
 end
 
 defmodule Store do
   @spec get(any, any) :: any
-  fn get(_map, key), do: {:store_two, key}
+  def get(_map, key), do: {:store_two, key}
 
   @spec get(any, any, any) :: any
-  fn get(_map, key, default), do: {:store_three, key, default}
+  def get(_map, key, default), do: {:store_three, key, default}
 
   @spec tag(any) :: any
-  fn tag(x), do: {:store_tag, x}
+  def tag(x), do: {:store_tag, x}
 
   @spec describe(any) :: any
-  fn describe(map) do
+  def describe(map) do
     # the module's own get/2 from inside the module, beside a real index
     {get(map, :a), map[:a]}
   end

@@ -30,7 +30,7 @@
 #
 # `\#{` is an escape, so a literal `#{` can still be written, and `inspect`
 # escapes it back on the way out so the rendering round-trips as source.
-fn main() do
+def main() do
   x = 1
   name = "ada"
 

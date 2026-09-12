@@ -35,7 +35,7 @@
 #   backends;
 # - the rendered function identity is `#fn<127/0>`. Its `/0` arity is a
 #   property of the source (`fn () -> ... end` takes no arguments).
-fn main() do
+def main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
 

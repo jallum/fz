@@ -22,7 +22,7 @@ fn function_form(
     let head = builder.call(name, &meta(), &[]).expect("function head");
     let do_kw = builder.keyword("do", body).expect("do keyword");
     let kw = builder.list(&[do_kw]).expect("function keyword list");
-    builder.call("fn", &meta(), &[head, kw]).expect("function form")
+    builder.call("def", &meta(), &[head, kw]).expect("function form")
 }
 
 fn compiler_define_form(
@@ -263,8 +263,8 @@ fn compiler_service_define_preserves_long_doc_procbin_payloads() {
     let source = r#"
 @doc "Removes the first matching left-side item for each item in the right list."
 @spec subtract([a], [a]) :: [a]
-fn subtract(left, []), do: left
-fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+def subtract(left, []), do: left
+def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 "#;
     let tel = ConfiguredTelemetry::new();
 
@@ -380,7 +380,7 @@ fn source_publication_expands_item_macros_as_scope_fragments() {
         Some("item-macro.fz".to_string()),
         r#"
 defmacro make_answer() do
-  source = {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  source = {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
 
   quote do
     Fz.Compiler.define(
@@ -392,7 +392,7 @@ end
 
 make_answer()
 
-fn main(), do: answer()
+def main(), do: answer()
 "#
         .to_string(),
     );
@@ -442,12 +442,12 @@ fn source_publication_accepts_raw_compiler_fragments_from_item_macros() {
         Some("item-macro-raw-fragment.fz".to_string()),
         r#"
 defmacro make_answer() do
-  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
+  {:def, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
 end
 
 make_answer()
 
-fn main(), do: answer()
+def main(), do: answer()
 "#
         .to_string(),
     );
@@ -594,7 +594,7 @@ fn source_publication_defers_source_sugar_rewrite_until_function_demand() {
     let code = world.submit_code(
         Some("source-sugar.fz".to_string()),
         r#"
-fn main() do
+def main() do
   add = &(&1 + &2)
   classify = fn
     0 -> :zero

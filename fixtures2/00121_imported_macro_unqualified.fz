@@ -3,6 +3,6 @@ defmodule M do
 end
 defmodule User do
   import M, only: [bump: 1]
-  fn run(), do: bump(41)
+  def run(), do: bump(41)
 end
-fn main() do User.run() end
+def main() do User.run() end

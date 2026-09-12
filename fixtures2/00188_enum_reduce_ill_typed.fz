@@ -17,12 +17,12 @@
 # enum_reduce_named_ref_ok.fz.
 
 defmodule Main do
-  fn broken_reducer(entry, acc) do
+  def broken_reducer(entry, acc) do
     {:cont, acc + entry}
   end
 end
 
-fn main() do
+def main() do
   Enum.reduce([1, 2, 3], 0, &Main.broken_reducer/2)
   |> dbg()
 end

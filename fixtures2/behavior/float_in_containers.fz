@@ -21,7 +21,7 @@
 # Whole floats and fractional floats, at the top level and nested one and two
 # deep, in lists and tuples, mixed with integers so a shared renderer cannot
 # paper over the difference, plus `-0.0` whose sign is observable.
-fn main() do
+def main() do
   dbg(1.0)
   dbg([1.0, 2.0])
   dbg([1.5, 2.25])

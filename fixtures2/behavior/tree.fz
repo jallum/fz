@@ -8,8 +8,8 @@
 # patterns:
 #
 # ```fz
-# fn inc_tree(:empty), do: :empty
-# fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
+# def inc_tree(:empty), do: :empty
+# def inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
 # ```
 #
 # The input tree has three `{:node, left, value, right}` tuples. Native JIT/AOT
@@ -17,10 +17,10 @@
 # three rebuilt output nodes. The interpreter/REPL direct IR path now follows the
 # same scalar-box-free shape for this literal input. No list or map allocations
 # are needed in either path.
-fn inc_tree(:empty), do: :empty
-fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
+def inc_tree(:empty), do: :empty
+def inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
 
-fn main() do
+def main() do
   tree = {:node, {:node, :empty, 1, :empty}, 2, {:node, :empty, 3, :empty}}
   out = inc_tree(tree)
   dbg(out)

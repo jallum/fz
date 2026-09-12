@@ -21,10 +21,10 @@
 # exhaustive, so the fixture is diagnostic-free.
 defmodule M do
   @spec strings([binary]) :: integer
-  fn strings(_xs), do: 1
+  def strings(_xs), do: 1
 end
 
-fn main() do
+def main() do
   a = Enum.with_index([[1], [2]], fn (x, _i) -> x end)
   b = Enum.with_index([["s"], ["t"]], fn (x, _i) -> x end)
   dbg(a)

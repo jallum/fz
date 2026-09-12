@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   ref = make_ref()
   send(self(), {:reply, ref, 7})
   v = receive do

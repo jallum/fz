@@ -1,2 +1,2 @@
-fn id(x), do: x
-fn main(), do: id("hi")
+def id(x), do: x
+def main(), do: id("hi")

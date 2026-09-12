@@ -1,7 +1,7 @@
 defprotocol P do
-  fn each(x)
+  def each(x)
 end
 
 defimpl P, for: List do
-  fn other(x), do: x
+  def other(x), do: x
 end

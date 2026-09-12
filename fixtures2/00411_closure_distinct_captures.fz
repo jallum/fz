@@ -1,5 +1,5 @@
-fn add_to(x), do: fn (y) -> x + y end
-fn main() do
+def add_to(x), do: fn (y) -> x + y end
+def main() do
   f = add_to(7)
   g = add_to(3.5)
   dbg(f.(1))

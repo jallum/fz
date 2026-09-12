@@ -9,7 +9,7 @@
 # have to agree on which bank each argument and the return value use. Nothing
 # checked that agreement, and each door got it wrong differently:
 #
-#     extern "C" fn libc::sqrt(float) :: float
+#     extern "C" def libc::sqrt(float) :: float
 #     libc::sqrt(9.0)        # 3.0
 #
 #   interp -> 9.0    the argument was handed over as its bits in the INTEGER
@@ -41,14 +41,14 @@
 # These are real libc functions with exact binary results at these inputs, so
 # the expected output is not platform-sensitive: every value here is a small
 # power of two or an exact sum of them.
-extern "C" fn libc::sqrt(float) :: float
-extern "C" fn libc::pow(float, float) :: float
-extern "C" fn libc::ldexp(float, integer) :: float
-extern "C" fn libc::jn(integer, float) :: float
-extern "C" fn libc::atof(cstring) :: float
-extern "C" fn libc::abs(integer) :: integer
+extern "C" def libc::sqrt(float) :: float
+extern "C" def libc::pow(float, float) :: float
+extern "C" def libc::ldexp(float, integer) :: float
+extern "C" def libc::jn(integer, float) :: float
+extern "C" def libc::atof(cstring) :: float
+extern "C" def libc::abs(integer) :: integer
 
-fn main() do
+def main() do
   dbg(libc::sqrt(16.0))
   dbg(libc::pow(2.0, 10.0))
   dbg(libc::ldexp(1.5, 3))

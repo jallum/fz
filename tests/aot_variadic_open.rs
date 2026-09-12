@@ -54,9 +54,9 @@ fn aot_variadic_open_creates_file_with_mode_bits() {
     let flags = libc::O_CREAT | libc::O_EXCL | libc::O_RDWR;
     let src = format!(
         r#"
-extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-extern "C" fn libc::close(fd :: integer) :: integer
-fn main() do
+extern "C" def libc::open(path :: cstring, flags :: integer, ...) :: integer
+extern "C" def libc::close(fd :: integer) :: integer
+def main() do
   fd = libc::open("{}", {}, {} :: integer)
   libc::close(fd)
   nil

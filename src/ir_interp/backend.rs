@@ -3305,7 +3305,7 @@ mod tests {
         let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
         compiler.submit_code(CodeSubmission {
             name: Some("parked_projection.fz".into()),
-            text: "fn main() do\n receive do\n [_, h | t] -> [h | t]\n end\nend\n".into(),
+            text: "def main() do\n receive do\n [_, h | t] -> [h | t]\n end\nend\n".into(),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,

@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   xs = [1, 2]
   dbg(xs)
   stats = Process.heap_alloc_stats()

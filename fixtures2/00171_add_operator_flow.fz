@@ -3,10 +3,10 @@
 #
 # Expected: add : (number, number) -> number ; add(1, 2) : int
 
-fn add(a, b) do
+def add(a, b) do
   a + b
 end
 
-fn main() do
+def main() do
   dbg(add(1, 2))
 end

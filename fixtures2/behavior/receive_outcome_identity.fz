@@ -1,7 +1,7 @@
 #---
 # purpose: "Receive winning subjects retain the receiver-owned list cell without allocation"
 #---
-fn rebuild() do
+def rebuild() do
   receive do
     [head | tail] -> [head | tail]
   after
@@ -9,7 +9,7 @@ fn rebuild() do
   end
 end
 
-fn receive_fields(offset) do
+def receive_fields(offset) do
   receive do
     :empty -> offset
     {offset, [head | tail]} -> {offset, [head | tail]}
@@ -19,16 +19,16 @@ fn receive_fields(offset) do
   end
 end
 
-fn churn(0, acc), do: Enum.count(acc)
-fn churn(n, acc), do: churn(n - 1, [n | acc])
+def churn(0, acc), do: Enum.count(acc)
+def churn(n, acc), do: churn(n - 1, [n | acc])
 
-fn sender(parent) do
+def sender(parent) do
   receive do
     :go -> send(parent, [[90, 91, 92], 4, 5])
   end
 end
 
-fn receive_parked() do
+def receive_parked() do
   receive do
     [_, head | tail] -> if true do
       assert(churn(2000, []) == 2000)
@@ -42,7 +42,7 @@ fn receive_parked() do
   end
 end
 
-fn main() do
+def main() do
   send(self(), [1, 2])
   before = Process.heap_alloc_stats().list_cons_allocs
   value = rebuild()

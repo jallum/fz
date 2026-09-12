@@ -15,7 +15,7 @@
 # it), and a reducer holding a capture of its own (the mailbox callable is
 # itself a closure with a lane, not a bare function). The empty list is the
 # control: it never reaches a reducing step at all.
-fn main() do
+def main() do
   send(self(), fn (x, acc) -> acc + x end)
   sum = receive do f -> f end
   dbg(Enum.reduce([1, 2, 3], 0, sum))

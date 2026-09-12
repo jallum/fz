@@ -13,12 +13,12 @@
 # Nothing about the runtime library is involved, so a fix that leans on
 # `Enum.each`'s shape rather than on the seam's own return convention leaves
 # this program aborting in `fz_closure_get_capture_ref`.
-fn apply_discarding(f, x) do
+def apply_discarding(f, x) do
   f.(x)
   :ok
 end
 
-fn main() do
+def main() do
   double = fn (x) -> dbg(x * 2) end
   dbg(apply_discarding(double, 1))
 

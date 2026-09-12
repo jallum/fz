@@ -11,9 +11,9 @@
 # budget.planner.stmts: 22
 # budget.planner.dispatches: 20
 #---
-fn hot(n), do: n + 1
+def hot(n), do: n + 1
 
-fn main() do
+def main() do
   dbg(hot(0))
   dbg(hot(0))
   dbg(hot(0))

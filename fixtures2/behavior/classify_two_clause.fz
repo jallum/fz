@@ -1,10 +1,10 @@
 #---
 # purpose: "literal-vs-wildcard clause dispatch (`0` and `_`)"
 #---
-fn classify(0), do: :zero
-fn classify(_), do: :other
+def classify(0), do: :zero
+def classify(_), do: :other
 
-fn main() do
+def main() do
   assert(classify(0) == :zero, "literal clause 0 matches :zero")
   assert(classify(7) == :other, "wildcard clause matches :other")
 end

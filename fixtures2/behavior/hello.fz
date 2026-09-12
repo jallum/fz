@@ -11,7 +11,7 @@
 # budget.planner.stmts: 10
 # budget.planner.dispatches: 0
 #---
-fn main() do
+def main() do
   dbg(40 + 2)
   dbg(:ok)
   dbg(true)

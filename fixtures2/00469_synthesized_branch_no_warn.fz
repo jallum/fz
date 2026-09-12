@@ -1,6 +1,6 @@
-fn fst(0), do: :zero
-fn fst(_), do: :other
-fn main() do
+def fst(0), do: :zero
+def fst(_), do: :other
+def main() do
   {a, b} = {1, 2}
   fst(a + b)
 end

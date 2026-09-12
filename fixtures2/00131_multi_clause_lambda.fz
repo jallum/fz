@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   f = fn
 0 -> :zero
 n when n > 0 -> :pos

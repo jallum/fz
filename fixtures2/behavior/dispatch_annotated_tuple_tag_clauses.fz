@@ -16,13 +16,13 @@
 # what routes the call. Both clause orders print the same two lines, which is
 # the whole claim: annotation-based dispatch on tagged tuples means what it
 # says.
-fn tag(x :: {:cont, integer}), do: 1
-fn tag(x :: {:halt, integer}), do: 2
+def tag(x :: {:cont, integer}), do: 1
+def tag(x :: {:halt, integer}), do: 2
 
-fn gat(x :: {:halt, integer}), do: 2
-fn gat(x :: {:cont, integer}), do: 1
+def gat(x :: {:halt, integer}), do: 2
+def gat(x :: {:cont, integer}), do: 1
 
-fn pick(n) do
+def pick(n) do
   if n > 0 do
     {:cont, n}
   else
@@ -30,7 +30,7 @@ fn pick(n) do
   end
 end
 
-fn main() do
+def main() do
   dbg(tag(pick(1)))
   dbg(tag(pick(0)))
   dbg(gat(pick(1)))

@@ -1,4 +1,4 @@
-fn fact(0), do: 1
-fn fact(n), do: n * fact(n - 1)
+def fact(0), do: 1
+def fact(n), do: n * fact(n - 1)
 
-fn main(), do: fact(6)
+def main(), do: fact(6)

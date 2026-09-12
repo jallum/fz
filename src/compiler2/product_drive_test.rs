@@ -258,7 +258,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("native_product_cache.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -347,7 +347,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let before_unreachable_work = compiler.world().work_start_tally();
     compiler.submit_code(CodeSubmission {
         name: Some("native_product_unreachable.fz".to_string()),
-        text: "fn unused(), do: 99\n".to_string(),
+        text: "def unused(), do: 99\n".to_string(),
     });
     compiler.compile_root_jit(root).expect("native after unreachable edit");
     let unreachable_work = compiler.world().work_start_tally().delta_since(before_unreachable_work);
@@ -366,7 +366,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let before_reached_backend_work = compiler.world().work_start_tally();
     compiler.submit_code(CodeSubmission {
         name: Some("native_product_cache.fz".to_string()),
-        text: "fn main(), do: 8\n".to_string(),
+        text: "def main(), do: 8\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(8));
     let reached_backend_work = compiler
@@ -447,7 +447,7 @@ fn jit_and_aot_share_one_retained_native_product() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("shared_native_front_doors.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -507,10 +507,10 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_initial.fz".to_string()),
-        text: "fn leaf(x), do: 1\n\
-               fn other(), do: leaf(3)\n\
-               fn main(), do: leaf(2)\n\
-               fn unused(), do: 0\n"
+        text: "def leaf(x), do: 1\n\
+               def other(), do: leaf(3)\n\
+               def main(), do: leaf(2)\n\
+               def unused(), do: 0\n"
             .to_string(),
     });
     let main = compiler.submit_root(RootSubmission {
@@ -556,7 +556,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
 
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_irrelevant.fz".to_string()),
-        text: "fn unused(), do: 99\n".to_string(),
+        text: "def unused(), do: 99\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(main), Ok(1));
     assert!(
@@ -615,7 +615,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     product_settlements.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_relevant.fz".to_string()),
-        text: "fn leaf(x), do: x\n".to_string(),
+        text: "def leaf(x), do: x\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(other), Ok(3));
     assert_eq!(compiler.run_root_interp(main), Ok(2));
@@ -750,7 +750,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     product_settlements.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_equal.fz".to_string()),
-        text: "fn unused(), do: 99\n".to_string(),
+        text: "def unused(), do: 99\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(main), Ok(2));
     assert_eq!(compiler.run_root_interp(other), Ok(3));
@@ -781,7 +781,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
 
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_replacement.fz".to_string()),
-        text: "fn replacement(), do: 3\nfn main(), do: replacement()\n".to_string(),
+        text: "def replacement(), do: 3\ndef main(), do: replacement()\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(main), Ok(3));
     let inventory = compiler
@@ -912,7 +912,7 @@ fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_before_standalone_drive.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -926,7 +926,7 @@ fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_standalone_drive.fz".to_string()),
-        text: "fn unrelated(), do: 9\n".to_string(),
+        text: "def unrelated(), do: 9\n".to_string(),
     });
     assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
     let bare_drive_delta = compiler.world().work_start_tally().delta_since(before_drive);
@@ -957,7 +957,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_before_nested_standalone_drive.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -970,7 +970,7 @@ fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_before_nested_product.fz".to_string()),
-        text: "defmacro define_answer() do\n  {:fn, %{}, [{:answer, %{}, []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
+        text: "defmacro define_answer() do\n  {:def, %{}, [{:answer, %{}, []}, [{:do, 9}]]}\nend\ndefine_answer()\n"
             .to_string(),
     });
     let before_drive = compiler.world().work_start_tally();
@@ -1019,7 +1019,7 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_reconcile_failure.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1032,7 +1032,7 @@ fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
     let before_failure = compiler.world().work_start_tally();
     compiler.submit_code(CodeSubmission {
         name: Some("fatal_reconcile_edit.fz".to_string()),
-        text: "fn broken(\n".to_string(),
+        text: "def broken(\n".to_string(),
     });
     assert!(compiler.run_root_interp(root).is_err());
     let after_failure = compiler.world().work_start_tally();
@@ -1069,7 +1069,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_zero_timeout.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1083,7 +1083,7 @@ fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("retained_zero_timeout.fz".to_string()),
-        text: "fn main(), do: 8\n".to_string(),
+        text: "def main(), do: 8\n".to_string(),
     });
     compiler.set_drive_timeout(std::time::Duration::ZERO);
     assert!(compiler.run_root_interp(root).is_err());
@@ -1123,7 +1123,7 @@ fn an_unresolved_unrelated_root_does_not_poison_a_retained_root_hit() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_root_isolation.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1164,7 +1164,7 @@ fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("reachable_struct_schemas.fz".to_string()),
-        text: "fn main(), do: 7\n".to_string(),
+        text: "def main(), do: 7\n".to_string(),
     });
     let main = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1178,7 +1178,7 @@ fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_struct_root.fz".to_string()),
         text: "defmodule Spare do\n  defstruct [:value]\nend\n\
-               fn other() do\n  spare = %Spare{value: 9}\n  spare.value\nend\n"
+               def other() do\n  spare = %Spare{value: 9}\n  spare.value\nend\n"
             .to_string(),
     });
     let other = compiler.submit_root(RootSubmission {
@@ -1220,8 +1220,8 @@ fn a_newly_reached_callee_adds_its_exact_struct_schema() {
             "defmodule Added do\n",
             "  defstruct [:value]\n",
             "end\n",
-            "fn leaf(), do: 1\n",
-            "fn main(), do: leaf()\n",
+            "def leaf(), do: 1\n",
+            "def main(), do: leaf()\n",
         )
         .to_string(),
     });
@@ -1237,8 +1237,8 @@ fn a_newly_reached_callee_adds_its_exact_struct_schema() {
     compiler.submit_code(CodeSubmission {
         name: Some("schema_callee_replacement.fz".to_string()),
         text: concat!(
-            "fn replacement(), do: %Added{value: 2}\n",
-            "fn main() do\n",
+            "def replacement(), do: %Added{value: 2}\n",
+            "def main() do\n",
             "  added = replacement()\n",
             "  added.value\n",
             "end\n",
@@ -1269,7 +1269,7 @@ fn root_backend_schema_contributions_depend_on_exactly_their_struct_facts() {
             "defmodule Spare do\n",
             "  defstruct [:other]\n",
             "end\n",
-            "fn main(), do: %Needed{value: 3}.value\n",
+            "def main(), do: %Needed{value: 3}.value\n",
         )
         .to_string(),
     );
@@ -1313,16 +1313,16 @@ fn nested_structs_with_the_same_leaf_name_keep_distinct_runtime_schemas() {
             "defmodule A do\n",
             "  defmodule Item do\n",
             "    defstruct [:left]\n",
-            "    fn new(value), do: %Item{left: value}\n",
+            "    def new(value), do: %Item{left: value}\n",
             "  end\n",
             "end\n",
             "defmodule B do\n",
             "  defmodule Item do\n",
             "    defstruct [:right]\n",
-            "    fn new(value), do: %Item{right: value}\n",
+            "    def new(value), do: %Item{right: value}\n",
             "  end\n",
             "end\n",
-            "fn main() do\n",
+            "def main() do\n",
             "  a = A.Item.new(2)\n",
             "  b = B.Item.new(3)\n",
             "  a.left + b.right\n",
@@ -1364,9 +1364,9 @@ fn a_struct_used_only_by_pruned_control_does_not_enter_the_root_artifact() {
             "  defstruct [:value]\n",
             "  @type t :: %Spare{value: integer}\n",
             "end\n",
-            "fn choose(x :: integer), do: x + 6\n",
-            "fn choose(x :: Spare.t), do: x.value\n",
-            "fn main(), do: choose(1)\n",
+            "def choose(x :: integer), do: x + 6\n",
+            "def choose(x :: Spare.t), do: x.value\n",
+            "def main(), do: choose(1)\n",
         )
         .to_string(),
     });
@@ -1390,7 +1390,7 @@ fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mir
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("cross_door_backend.fz".to_string()),
-        text: "fn leaf(), do: 1\nfn main(), do: leaf()\n".to_string(),
+        text: "def leaf(), do: 1\ndef main(), do: leaf()\n".to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -1420,7 +1420,7 @@ fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mir
 
     compiler.submit_code(CodeSubmission {
         name: Some("cross_door_backend.fz".to_string()),
-        text: "fn leaf(), do: 2\n".to_string(),
+        text: "def leaf(), do: 2\n".to_string(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(2));
 
@@ -1440,7 +1440,7 @@ fn backend_and_native_front_doors_share_exact_content_without_a_world_native_mir
     let interp_native_generation = compiler.retained_product_generation(root, &native_key);
     compiler.submit_code(CodeSubmission {
         name: Some("cross_door_backend.fz".to_string()),
-        text: "fn leaf(), do: 3\n".to_string(),
+        text: "def leaf(), do: 3\n".to_string(),
     });
     compiler
         .drive_root_to_dump_stage(root, DumpStage::Native)
@@ -2247,7 +2247,7 @@ fn settled_products_depend_only_on_settled_products() {
     let mut world = World::new();
     world.submit_code(
         Some("settled_dependencies.fz".to_string()),
-        "fn main() do\n  dbg(Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end))\nend\n".to_string(),
+        "def main() do\n  dbg(Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
@@ -2290,15 +2290,15 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     let mut world = World::new();
     world.submit_code(
         Some("executable_fact_consumers.fz".to_string()),
-        "fn left(x), do: fn(y) -> x + y end\n\
-         fn right(x), do: fn(y) -> x * y end\n\
-         fn count(0), do: fn(x) -> x end\n\
-         fn count(n), do: count(n - 1)\n\
-         fn even(0), do: fn(x) -> x end\n\
-         fn even(n), do: odd(n - 1)\n\
-         fn odd(0), do: fn(x) -> x + 1 end\n\
-         fn odd(n), do: even(n - 1)\n\
-         fn main() do\n\
+        "def left(x), do: fn(y) -> x + y end\n\
+         def right(x), do: fn(y) -> x * y end\n\
+         def count(0), do: fn(x) -> x end\n\
+         def count(n), do: count(n - 1)\n\
+         def even(0), do: fn(x) -> x end\n\
+         def even(n), do: odd(n - 1)\n\
+         def odd(0), do: fn(x) -> x + 1 end\n\
+         def odd(n), do: even(n - 1)\n\
+         def main() do\n\
            l = left(1)\n\
            r = right(2)\n\
            c = count(3)\n\
@@ -2369,7 +2369,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     let mut world = World::new();
     world.submit_code(
         Some("equal_executable_facts.fz".to_string()),
-        "fn main(), do: 42\n".to_string(),
+        "def main(), do: 42\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_program, mut driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
@@ -2665,9 +2665,9 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
     let mut world = World::new();
     world.submit_code(
         Some("executable_fact_movement.fz".to_string()),
-        "fn add_one(x), do: x + 1\n\
-         fn main(), do: add_one(41)\n\
-         fn quiet(), do: :unchanged\n"
+        "def add_one(x), do: x + 1\n\
+         def main(), do: add_one(41)\n\
+         def quiet(), do: :unchanged\n"
             .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
@@ -2783,7 +2783,7 @@ fn runtime_demand_is_a_settled_world_fact_for_the_exact_executable() {
     let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_fact.fz".to_string()),
-        "fn main(), do: 42\n".to_string(),
+        "def main(), do: 42\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)

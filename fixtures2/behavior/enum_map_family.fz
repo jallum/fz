@@ -20,7 +20,7 @@
 # The semantic contract is output parity; performance regressions
 # belong to deterministic work counters. No path-specific override
 # is needed.
-fn main() do
+def main() do
   xs = [1, 2, 3, 4]
   words = ["a", "b", "c"]
 

@@ -11,7 +11,7 @@ fn separate_macro_expansions_keep_distinct_lambda_denotations() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_lambda_denotations.fz".into()),
-        text: "defmacro make(value) do\n  {:fn, %{}, [{:\"->\", %{}, [[], value]}]}\nend\n\nfn main() do\n  first = make(1)\n  second = make(2)\n  first.() * 10 + second.()\nend\n".into(),
+        text: "defmacro make(value) do\n  {:fn, %{}, [{:\"->\", %{}, [[], value]}]}\nend\n\ndef main() do\n  first = make(1)\n  second = make(2)\n  first.() * 10 + second.()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -80,7 +80,10 @@ fn macro_expansion_splices_regular_fn_call() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "macro splicing a regular fn call should resolve");
+    assert_resolved(
+        compiler.drive(),
+        "macro splicing a regular function call should resolve",
+    );
     // TODO: JIT-execute and assert result == 21
 }
 
@@ -259,7 +262,7 @@ fn item_macro_compiler_ast_splices_callable_fn() {
     });
     assert_resolved(
         compiler.drive(),
-        "item macro splicing a fn via compiler-shaped AST should resolve",
+        "item macro splicing a definition via compiler-shaped AST should resolve",
     );
     // TODO: JIT-execute and assert result == 42
 }
@@ -303,7 +306,7 @@ fn item_macro_in_module_qualifies_spliced_fn_names() {
     });
     assert_resolved(
         compiler.drive(),
-        "item macro inside defmodule qualifying fn names should resolve",
+        "item macro inside defmodule qualifying function names should resolve",
     );
     // TODO: JIT-execute and assert result == 314
 }

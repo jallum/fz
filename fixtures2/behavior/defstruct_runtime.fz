@@ -10,10 +10,10 @@
 defmodule Point do
   defstruct [:x, :y]
 
-  fn new(x, y), do: %Point{x: x, y: y}
+  def new(x, y), do: %Point{x: x, y: y}
 end
 
-fn main() do
+def main() do
   point = Point.new(3, 4)
   dbg(point.x)
   dbg(point.y)

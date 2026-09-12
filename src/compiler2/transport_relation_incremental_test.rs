@@ -29,7 +29,7 @@ struct Relations {
 
 #[test]
 fn recursive_callable_input_sources_settle_in_either_root_order() {
-    let source = "fn self_loop(f, 0), do: f.(2)\nfn self_loop(f, n), do: self_loop(f, n - 1)\nfn left(f, 0), do: f.(2)\nfn left(f, n), do: right(f, n - 1)\nfn right(f, 0), do: f.(2)\nfn right(f, n), do: left(f, n - 1)\nfn self_root(), do: self_loop(fn x -> x + 40 end, 3)\nfn mutual_root(), do: left(fn x -> x + 40 end, 3)\n";
+    let source = "def self_loop(f, 0), do: f.(2)\ndef self_loop(f, n), do: self_loop(f, n - 1)\ndef left(f, 0), do: f.(2)\ndef left(f, n), do: right(f, n - 1)\ndef right(f, 0), do: f.(2)\ndef right(f, n), do: left(f, n - 1)\ndef self_root(), do: self_loop(fn x -> x + 40 end, 3)\ndef mutual_root(), do: left(fn x -> x + 40 end, 3)\n";
     let mut canonical = HashMap::new();
     for order in [["self_root", "mutual_root"], ["mutual_root", "self_root"]] {
         let telemetry = ConfiguredTelemetry::new();
@@ -338,7 +338,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     compiler.set_output(output.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("generic_owner_transition.fz".into()),
-        text: "fn value(), do: 42\nfn main() do\n  dbg(value())\n  0\nend\n".into(),
+        text: "def value(), do: 42\ndef main() do\n  dbg(value())\n  0\nend\n".into(),
     });
     let root = root(&mut compiler, "main");
     assert_eq!(compiler.run_root_interp(root), Ok(0));
@@ -374,7 +374,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
         name: Some("introduce_generic_callable.fz".into()),
-        text: "fn value(), do: fn x -> x + 1 end\n".into(),
+        text: "def value(), do: fn x -> x + 1 end\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(0));
     let observed = relations.borrow();
@@ -400,7 +400,7 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
         name: Some("withdraw_generic_callable.fz".into()),
-        text: "fn value(), do: 42\n".into(),
+        text: "def value(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(0));
     let observed = relations.borrow();
@@ -428,7 +428,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("retained_transport_obligations.fz".into()),
-        text: "fn discard(_), do: 0\nfn forward(x), do: discard(x)\nfn inc(x), do: x + 1\nfn apply(fun), do: fun.(41)\nfn main(), do: forward(42) + apply(&inc/1)\n".into(),
+        text: "def discard(_), do: 0\ndef forward(x), do: discard(x)\ndef inc(x), do: x + 1\ndef apply(fun), do: fun.(41)\ndef main(), do: forward(42) + apply(&inc/1)\n".into(),
     });
     let root = root(&mut compiler, "main");
     assert_eq!(compiler.run_root_interp(root), Ok(42));
@@ -488,7 +488,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     let retained_generation = compiler.retained_product_generation(root, &retained_key).unwrap();
     let retained_shape = ProductKey::TransportShape(retained_owner.position.clone());
     let retained_shape_generation = compiler.retained_product_generation(root, &retained_shape).unwrap();
-    for edit in [None, Some("fn unrelated(), do: 99\n")] {
+    for edit in [None, Some("def unrelated(), do: 99\n")] {
         *relations.borrow_mut() = Relations::default();
         if let Some(text) = edit {
             compiler.submit_code(CodeSubmission {
@@ -510,7 +510,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
         name: Some("reached_transport_edit.fz".into()),
-        text: "fn discard(x), do: x\n".into(),
+        text: "def discard(x), do: x\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(84));
     assert!(!compiler.world().runtime_demand(&forward).unwrap().input_demands[0].is_ignore());
@@ -559,7 +559,7 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
         name: Some("withdraw_transport_input.fz".into()),
-        text: "fn discard(_), do: 0\n".into(),
+        text: "def discard(_), do: 0\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
     assert_absent(&compiler, &relations.borrow());
@@ -572,7 +572,7 @@ fn retained_callable_input_relations_ignore_unchanged_and_unrelated_requests() {
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("retained_callable_relations.fz".into()),
-        text: "defmodule Helpers do\nfn apply(fun), do: fun.(41)\nfn make_adder(a), do: fn x -> x + a end\nend\nfn main(), do: Helpers.apply(Helpers.make_adder(1))\nfn control(), do: Helpers.apply(Helpers.make_adder(2))\n".into(),
+        text: "defmodule Helpers do\ndef apply(fun), do: fun.(41)\ndef make_adder(a), do: fn x -> x + a end\nend\ndef main(), do: Helpers.apply(Helpers.make_adder(1))\ndef control(), do: Helpers.apply(Helpers.make_adder(2))\n".into(),
     });
     let main = root(&mut compiler, "main");
     let control = root(&mut compiler, "control");
@@ -603,7 +603,7 @@ fn retained_callable_input_relations_ignore_unchanged_and_unrelated_requests() {
     assert!(relations.borrow().changed.is_empty());
     compiler.submit_code(CodeSubmission {
         name: Some("unrelated_callable_relation_edit.fz".into()),
-        text: "fn unrelated(), do: 99\n".into(),
+        text: "def unrelated(), do: 99\n".into(),
     });
     assert_eq!(compiler.run_root_interp(main), Ok(42));
     assert_eq!(compiler.run_root_interp(control), Ok(43));
@@ -656,7 +656,7 @@ fn retained_callable_input_relations_ignore_unchanged_and_unrelated_requests() {
 
     compiler.submit_code(CodeSubmission {
         name: Some("reached_callable_relation_edit.fz".into()),
-        text: "alias Helpers\nfn main(), do: Helpers.apply(Helpers.make_adder(3))\n".into(),
+        text: "alias Helpers\ndef main(), do: Helpers.apply(Helpers.make_adder(3))\n".into(),
     });
     assert_eq!(compiler.run_root_interp(main), Ok(44));
     assert!(
@@ -696,7 +696,7 @@ fn adding_and_removing_a_caller_edge_updates_the_existing_input_slot() {
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("one_callable_edge.fz".into()),
-        text: "defmodule Helpers do\nfn apply(fun), do: fun.(41)\nfn make_adder(a), do: fn x -> x + a end\nend\nfn main(), do: Helpers.apply(Helpers.make_adder(1))\n".into(),
+        text: "defmodule Helpers do\ndef apply(fun), do: fun.(41)\ndef make_adder(a), do: fn x -> x + a end\nend\ndef main(), do: Helpers.apply(Helpers.make_adder(1))\n".into(),
     });
     let main = root(&mut compiler, "main");
     assert_eq!(compiler.run_root_interp(main), Ok(42));
@@ -710,13 +710,13 @@ fn adding_and_removing_a_caller_edge_updates_the_existing_input_slot() {
     assert_eq!(first[0].producer.activation.function, main_function);
     for (source, result, count, expected_revision) in [
         (
-            "alias Helpers\nfn main() do\n  a = Helpers.make_adder(1)\n  b = Helpers.make_adder(1)\n  Helpers.apply(a) + Helpers.apply(b)\nend\n",
+            "alias Helpers\ndef main() do\n  a = Helpers.make_adder(1)\n  b = Helpers.make_adder(1)\n  Helpers.apply(a) + Helpers.apply(b)\nend\n",
             84,
             2,
             revision + 1,
         ),
         (
-            "alias Helpers\nfn main(), do: Helpers.apply(Helpers.make_adder(1))\n",
+            "alias Helpers\ndef main(), do: Helpers.apply(Helpers.make_adder(1))\n",
             42,
             1,
             revision + 2,

@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   send(self(), 4611686018427387904)
   receive do
     x -> x

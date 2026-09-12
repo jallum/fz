@@ -5,9 +5,9 @@
 #
 # Expected: main() : {int, :error}
 
-fn pick({:ok, [h | _t]}), do: h
-fn pick(:error), do: :error
+def pick({:ok, [h | _t]}), do: h
+def pick(:error), do: :error
 
-fn main() do
+def main() do
   {pick({:ok, [1]}), pick(:error)}
 end

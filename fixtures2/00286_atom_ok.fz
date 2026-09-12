@@ -1,1 +1,1 @@
-fn main(), do: :ok
+def main(), do: :ok

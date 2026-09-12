@@ -10,7 +10,7 @@
 # through the static call graph -- which is true here (the lambda calls `step`)
 # and false for an ordinary `apply`-style callee.
 
-fn step(k, n) do
+def step(k, n) do
   if n == 0 do
     fn(z) -> z + 1 end
   else
@@ -18,7 +18,7 @@ fn step(k, n) do
   end
 end
 
-fn main() do
+def main() do
   f = step(fn(kk, m) -> step(kk, m) end, 3)
   dbg(f.(41))
 end

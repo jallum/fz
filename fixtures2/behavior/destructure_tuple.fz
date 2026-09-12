@@ -1,9 +1,9 @@
 #---
 # purpose: "irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs"
 #---
-fn pair(), do: {1, 2}
+def pair(), do: {1, 2}
 
-fn main() do
+def main() do
   {a, b} = pair()
   assert(a == 1, "first tuple element binds")
   assert(b == 2, "second tuple element binds")

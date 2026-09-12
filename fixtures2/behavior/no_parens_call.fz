@@ -9,10 +9,10 @@
 # `sum3 1, 2, 3` are parsed as `double(21)` and `sum3(1, 2, 3)`. `oracle.exs` is
 # the Elixir twin (top-level fns become `M.double`/`M.sum3`); both print the same
 # integers, so `expected.txt` is owned by the oracle.
-fn double(x), do: x * 2
-fn sum3(a, b, c), do: a + b + c
+def double(x), do: x * 2
+def sum3(a, b, c), do: a + b + c
 
-fn main() do
+def main() do
   x = double 21
   dbg(x)
   y = sum3 1, 2, 3

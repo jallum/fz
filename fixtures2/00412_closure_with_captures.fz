@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   k = 7
   f = fn (n) -> n + k end
   dbg(f.(3))

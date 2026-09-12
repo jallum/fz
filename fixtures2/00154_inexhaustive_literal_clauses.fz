@@ -1,3 +1,3 @@
-fn classify(0), do: :zero
-fn classify(1), do: :one
-fn main(), do: classify(7)
+def classify(0), do: :zero
+def classify(1), do: :one
+def main(), do: classify(7)

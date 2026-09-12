@@ -22,7 +22,7 @@
 #
 # ## Scope
 #
-# The epic sketch showed `extern "C" fn fd_open(path :: cstring, mode :: cstring)`
+# The epic sketch showed `extern "C" def fd_open(path :: cstring, mode :: cstring)`
 # and a `File.open(path, mode)` entry point. This fixture stays focused on
 # the *resource lifecycle*: fz code creates a temporary fd through libc,
 # wraps that raw integer fd, unlinks the path, and proves the dtor fires.
@@ -60,7 +60,7 @@
 # The dtor body is just:
 #
 # ```fz
-# fn dtor(fd) do
+# def dtor(fd) do
 #   libc::close(fd)
 #   dbg(:dtor_closed)
 # end
@@ -70,9 +70,9 @@
 # The `dbg(:dtor_closed)` is the witness that the dtor body fully
 # executed — under the old extracted-Prim::Extern path it would have
 # been silently dead code.
-extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
-extern "C" fn libc::close(integer) :: integer
-extern "C" fn libc::unlink(cstring) :: integer
+extern "C" def libc::creat(path :: cstring, mode :: integer) :: integer
+extern "C" def libc::close(integer) :: integer
+extern "C" def libc::unlink(cstring) :: integer
 
 defmodule File do
   @type t :: opaque resource(integer)
@@ -80,16 +80,16 @@ defmodule File do
   # Dtor body runs as fz code at task-exit (fz-4mk); we can call
   # libc::close directly and emit an observable side-effect so the test
   # can see the dtor fired.
-  fn dtor(fd) do
+  def dtor(fd) do
     libc::close(fd)
     dbg(:dtor_closed)
   end
 
-  fn wrap_fd(fd), do: make_resource(fd, &dtor/1)
-  fn fd_of(h), do: h.value
+  def wrap_fd(fd), do: make_resource(fd, &dtor/1)
+  def fd_of(h), do: h.value
 end
 
-fn main() do
+def main() do
   path = "/tmp/fz-file-resource-lifecycle"
   fd = libc::creat(path, 0o644)
   dbg(:opened)

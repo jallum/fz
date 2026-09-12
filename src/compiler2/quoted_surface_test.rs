@@ -270,7 +270,7 @@ fn compiler2_quoted_surface_reads_alias_as_keyword_value() {
 #[test]
 fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form() {
     let tel = ConfiguredTelemetry::new();
-    let source = "fn alpha(0), do: 0\nfn beta(x), do: x\nfn alpha(x), do: x\n";
+    let source = "def alpha(0), do: 0\ndef beta(x), do: x\ndef alpha(x), do: x\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);
@@ -368,7 +368,7 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
 #[test]
 fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source() {
     let tel = ConfiguredTelemetry::new();
-    let source = "@doc \"alpha\"\n@spec alpha(integer) :: integer\nfn alpha(x), do: x\n";
+    let source = "@doc \"alpha\"\n@spec alpha(integer) :: integer\ndef alpha(x), do: x\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);
@@ -406,12 +406,12 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
             assert_eq!(
                 items[2]
                     .trusted_ast_node()
-                    .expect("fn cursor")
-                    .expect("fn node")
+                    .expect("def cursor")
+                    .expect("def node")
                     .head
                     .atom_name()
-                    .expect("fn head"),
-                "fn"
+                    .expect("def head"),
+                "def"
             );
         }
         other => panic!("expected grouped alpha macro call in source mode, got {other:?}"),
@@ -456,12 +456,12 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
             assert_eq!(
                 items[2]
                     .trusted_ast_node()
-                    .expect("fn cursor")
-                    .expect("fn node")
+                    .expect("def cursor")
+                    .expect("def node")
                     .head
                     .atom_name()
-                    .expect("fn head"),
-                "fn"
+                    .expect("def head"),
+                "def"
             );
         }
         other => panic!("expected grouped alpha function, got {other:?}"),
@@ -475,8 +475,8 @@ fn compiler2_quoted_surface_keeps_long_doc_payloads_inside_nested_module_functio
 defmodule M do
   @doc "Removes the first matching left-side item for each item in the right list."
   @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
+  def subtract(left, []), do: left
+  def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
 "#;
     let mut code = CodeMap::new();
@@ -499,7 +499,7 @@ end
 #[test]
 fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source() {
     let tel = ConfiguredTelemetry::new();
-    let source = "defimpl String.Chars, for: Box do\n  @doc \"box\"\n  fn to_string(%Box{value: 0}), do: \"zero\"\n  fn to_string(%Box{value: value}), do: value\nend\n";
+    let source = "defimpl String.Chars, for: Box do\n  @doc \"box\"\n  def to_string(%Box{value: 0}), do: \"zero\"\n  def to_string(%Box{value: value}), do: value\nend\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);
@@ -561,7 +561,7 @@ fn compiler2_quoted_surface_rejects_a_trailing_dangling_spec() {
     // as a confusing unknown-export diagnostic. It is a source-surface
     // error, and it is reported here, where the dangling attr is visible.
     let tel = ConfiguredTelemetry::new();
-    let source = "fn alpha(x), do: x\n@spec beta(integer) :: integer\n";
+    let source = "def alpha(x), do: x\n@spec beta(integer) :: integer\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("dangling_tail.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);
@@ -577,7 +577,7 @@ fn compiler2_quoted_surface_rejects_a_trailing_dangling_spec() {
 #[test]
 fn compiler2_quoted_surface_rejects_a_spec_followed_by_a_non_function_form() {
     let tel = ConfiguredTelemetry::new();
-    let source = "@spec alpha(integer) :: integer\nalias Utf8, as: U\nfn alpha(x), do: x\n";
+    let source = "@spec alpha(integer) :: integer\nalias Utf8, as: U\ndef alpha(x), do: x\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("dangling_mid.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);
@@ -596,7 +596,7 @@ fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() 
         "@doc \"adds one\"\n",
         "@moduledoc \"m\"\n",
         "@spec alpha(integer) :: integer\n",
-        "fn alpha(x), do: x\n",
+        "def alpha(x), do: x\n",
     );
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("stacked.fz".to_string()), source.to_string());
@@ -616,7 +616,7 @@ fn compiler2_quoted_surface_carries_a_heredoc_moduledoc_whole() {
     // the one `@doc` takes, so it gets its own pin: a heredoc reaching the
     // scope surface with its paragraphs intact.
     let tel = ConfiguredTelemetry::new();
-    let source = "@moduledoc \"\"\"\nText handling.\n\nEverything here is bytes.\n\"\"\"\nfn a(), do: 1\n";
+    let source = "@moduledoc \"\"\"\nText handling.\n\nEverything here is bytes.\n\"\"\"\ndef a(), do: 1\n";
     let mut code = CodeMap::new();
     let source_owner = code.define(Some("mod_doc.fz".to_string()), source.to_string());
     let root = parse_code(&code, source_owner, &tel);

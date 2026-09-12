@@ -1,1 +1,1 @@
-fn main(), do: dbg({1, :ok, true})
+def main(), do: dbg({1, :ok, true})

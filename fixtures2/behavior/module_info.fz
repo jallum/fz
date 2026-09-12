@@ -2,15 +2,15 @@
 # purpose: "__info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths"
 #---
 defmodule Shapes do
-  fn area(r), do: r * r
-  fn perimeter(r), do: 4 * r
+  def area(r), do: r * r
+  def perimeter(r), do: 4 * r
 
   defmacro twice(x) do
     quote do: unquote(x) + unquote(x)
   end
 end
 
-fn main() do
+def main() do
   assert(Shapes.__info__(:functions) == [{:area, 1}, {:perimeter, 1}], "exported fns with arities")
   assert(Shapes.__info__(:macros) == [{:twice, 1}], "macros listed separately")
   assert(Shapes.__info__(:module) == :Shapes, "module name as an atom")

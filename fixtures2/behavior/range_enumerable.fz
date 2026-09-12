@@ -7,7 +7,7 @@
 # direct protocol calls. The oracle uses Elixir range literals and
 # `Enumerable.Range`, so the checked output pins callback semantics rather than
 # Range rendering alone.
-fn main() do
+def main() do
   r = Range.new(1, 10, 2)
   descending = Range.new(10, 1, -3)
   empty = Range.new(1, 10, -1)

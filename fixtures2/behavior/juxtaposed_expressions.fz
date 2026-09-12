@@ -3,7 +3,7 @@
 # expect: diagnostic
 # diagnostic.code: parse/expected-token
 #---
-fn main() do
+def main() do
   a = 1 2
   dbg(a)
 end

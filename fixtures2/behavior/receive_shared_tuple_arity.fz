@@ -16,7 +16,7 @@
 #
 # Selective receive whose clauses all inspect two-element tuples. This locks down
 # the shared tuple-schema matcher path used by receive matchers.
-fn main() do
+def main() do
   send(self(), {:b, 20})
   send(self(), {:a, 10})
 

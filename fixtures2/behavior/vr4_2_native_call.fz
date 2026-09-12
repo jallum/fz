@@ -39,10 +39,10 @@
 # native return into cont slot 1 before handing the cont frame ptr to
 # the trampoline. The matrix runs run / interp / build to prove the
 # behavior matches across the three paths.
-fn square(x) do
+def square(x) do
   x * x
 end
 
-fn main() do
+def main() do
   dbg(square(7))
 end

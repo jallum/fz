@@ -3,7 +3,7 @@
 #---
 #
 # Pins the retained-list non-tail-call shape before a predicate count.
-fn main() do
+def main() do
   xs = [1, 2, 3, 4]
 
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))

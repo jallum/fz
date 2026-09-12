@@ -1,5 +1,5 @@
-fn child(), do: send(1, 42)
-fn main() do
+def child(), do: send(1, 42)
+def main() do
   spawn(child)
   receive do x -> x end
 end

@@ -33,20 +33,20 @@
 # WHY IT WAS P1: without it no library function can take a slice of a binary
 # whose length it computed, so every string-building routine has to accumulate
 # one byte at a time.
-fnp take(bin, n) do
+defp take(bin, n) do
   case bin do
     <<s :: binary-size(n), rest :: binary>> -> {:ok, s, rest}
     _ -> :error
   end
 end
 
-fnp head_tail(<<s :: binary-size(3), rest :: binary>>), do: {:ok, s, rest}
-fnp head_tail(_b), do: :error
+defp head_tail(<<s :: binary-size(3), rest :: binary>>), do: {:ok, s, rest}
+defp head_tail(_b), do: :error
 
-fnp inner(<<n, s :: binary-size(n), rest :: binary>>), do: {:ok, s, rest}
-fnp inner(_b), do: :error
+defp inner(<<n, s :: binary-size(n), rest :: binary>>), do: {:ok, s, rest}
+defp inner(_b), do: :error
 
-fn main() do
+def main() do
   dbg(take("hello world", 5))
   dbg(take("hi", 5))
   dbg(head_tail("abcdef"))

@@ -8,8 +8,8 @@
 # accumulator stays in the raw integer lane. It also pins the `Enum.count/2`
 # shape where an outer function receives the predicate as a parameter and a nested
 # reducer closure captures that parameter.
-fn count_matching([], acc, _predicate), do: acc
-fn count_matching([head | tail], acc, predicate) do
+def count_matching([], acc, _predicate), do: acc
+def count_matching([head | tail], acc, predicate) do
   if predicate.(head) do
     count_matching(tail, acc + 1, predicate)
   else
@@ -17,16 +17,16 @@ fn count_matching([head | tail], acc, predicate) do
   end
 end
 
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+def reduce_plain([], acc, _reducer), do: acc
+def reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
 
-fn count_via_param(enumerable, fun) do
+def count_via_param(enumerable, fun) do
   reduce_plain(enumerable, 0, fn (entry, acc) ->
     if fun.(entry), do: acc + 1, else: acc
   end)
 end
 
-fn main() do
+def main() do
   predicate = fn x -> x > 2 end
   reducer = fn (entry, acc) ->
     if predicate.(entry), do: acc + 1, else: acc

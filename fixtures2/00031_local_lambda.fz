@@ -1,1 +1,1 @@
-fn main(), do: (fn (x) -> x + 1 end).(41)
+def main(), do: (fn (x) -> x + 1 end).(41)

@@ -1,5 +1,5 @@
 #---
-# purpose: "minimal call site — one fn definition, one call, no scaffolding"
+# purpose: "minimal call site — one def definition, one call, no scaffolding"
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.planner.worklist_pops: 3
@@ -11,5 +11,5 @@
 # budget.planner.stmts: 4
 # budget.planner.dispatches: 2
 #---
-fn cold(x), do: x * 3
-fn main(), do: dbg(cold(14))
+def cold(x), do: x * 3
+def main(), do: dbg(cold(14))

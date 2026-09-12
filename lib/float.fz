@@ -1,7 +1,7 @@
 defmodule Float do
   @moduledoc "Functions for working with floats."
 
-  extern "fz" fn fz_float_to_binary(float) :: binary
+  extern "fz" def fz_float_to_binary(float) :: binary
 
   # Not the rendering `dbg` uses. `inspect/1` writes a whole float below 1.0e16
   # out in full, as `1000000000000000.0`, where this gives whichever notation is
@@ -25,5 +25,5 @@ defmodule Float do
 
   """
   @spec to_string(float) :: binary
-  fn to_string(f), do: fz_float_to_binary(f)
+  def to_string(f), do: fz_float_to_binary(f)
 end

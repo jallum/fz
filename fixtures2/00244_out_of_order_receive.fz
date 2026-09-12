@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   me = self()
   send(me, {:a, 1})
   send(me, {:b, 2})

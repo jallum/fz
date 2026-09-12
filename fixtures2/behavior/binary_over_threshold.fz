@@ -9,8 +9,8 @@
 # ProcBin rather than an inline Bitstring. That is a storage decision. It was
 # also, silently, a semantic one:
 #
-#     fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-#     fnp walk(_b, n), do: n
+#     defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+#     defp walk(_b, n), do: n
 #
 #     64 bytes:  interp 64   run 64
 #     65 bytes:  interp 65   run 0     <-- matched nothing
@@ -24,16 +24,16 @@
 # hits a separate, older defect in the compiler-baked static shared binaries
 # (fz-5xp.60), which this fixture must not be entangled with. What is under test
 # is the representation split, and `<>` crosses it just as well.
-fnp first_byte(<<c, _rest :: binary>>), do: c
-fnp first_byte(_b), do: :no_match
+defp first_byte(<<c, _rest :: binary>>), do: c
+defp first_byte(_b), do: :no_match
 
-fnp prefixed(<<"aaa", rest :: binary>>), do: {:prefixed, walk(rest, 0)}
-fnp prefixed(_b), do: :no_match
+defp prefixed(<<"aaa", rest :: binary>>), do: {:prefixed, walk(rest, 0)}
+defp prefixed(_b), do: :no_match
 
-fnp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
-fnp walk(_b, n), do: n
+defp walk(<<_c, rest :: binary>>, n), do: walk(rest, n + 1)
+defp walk(_b, n), do: n
 
-fn main() do
+def main() do
   small = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   big = small <> small <> small
 

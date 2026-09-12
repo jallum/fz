@@ -58,7 +58,7 @@
 # Locks behavioral parity (interp / JIT / AOT all consume each message in
 # source order) for the adjacency-break shape the old peephole gave up on.
 # The shape oracle lives at `ir_lower::tests::receive_oracle_interleaved_tuples_share_via_matrix`.
-fn main() do
+def main() do
   send(self(), :ping)
   send(self(), {:warn, 7, 9})
   send(self(), {:msg, 42, 0})

@@ -1,7 +1,7 @@
 defmacro set_local() do
   quote do: t = 99
 end
-fn main() do
+def main() do
   t = 1
   set_local()
   t

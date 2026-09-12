@@ -2,7 +2,7 @@
 # purpose: "defmacro in one module, called from another via `import Helpers, only: [twice: 1]`"
 #---
 defmodule Helpers do
-  fn double(x), do: x * 2
+  def double(x), do: x * 2
 
   defmacro twice(x) do
     quote do: double(unquote(x))
@@ -12,12 +12,12 @@ end
 defmodule App do
   import Helpers, only: [twice: 1]
 
-  fn run(n) do
+  def run(n) do
     twice(n)
   end
 end
 
-fn main() do
+def main() do
   assert(App.run(21) == 42, "imported macro twice/1 expands to Helpers.double and runs")
   assert(Helpers.__info__(:macros) == [{:twice, 1}], "Helpers exposes the twice macro")
   assert(Helpers.__info__(:functions) == [{:double, 1}], "Helpers exports double/1 as a function")

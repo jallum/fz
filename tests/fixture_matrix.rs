@@ -23,7 +23,7 @@
 //!
 //!     #---
 //!     purpose: one-line statement of what this fixture proves
-//!     kind: run            # or `test`; defaults to run if `fn main` present
+//!     kind: run            # or `test`; defaults to run if `def main` is present
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
 //!     diagnostic.code: spec/violation  # for telemetry-backed diagnostic fixtures
 //!     defer: rationale     # optional whole-fixture deferral
@@ -180,6 +180,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
         (
+            "fixture_main_detection_follows_def_surface",
+            fixture_main_detection_follows_def_surface,
+        ),
+        (
             "behavior_fixtures_route_via_filename_not_paths_frontmatter",
             behavior_fixtures_route_via_filename_not_paths_frontmatter,
         ),
@@ -261,7 +265,7 @@ fn fixtures2_single_file_matrix_smoke() {
 #---\n\
 # purpose: single-file fixtures2 behavioural matrix smoke\n\
 #---\n\
-fn main() do\n\
+def main() do\n\
   dbg(1 + 1)\n\
 end\n",
     )
@@ -536,7 +540,14 @@ fn take_ascii_digits(bytes: &[u8], mut index: usize) -> usize {
 }
 
 fn has_main(src: &str) -> bool {
-    src.lines().any(|l| l.contains("fn main(") || l.contains("fn main "))
+    src.lines()
+        .any(|line| line.contains("def main(") || line.contains("def main "))
+}
+
+fn fixture_main_detection_follows_def_surface() {
+    assert!(has_main("def main(), do: :ok\n"));
+    assert!(has_main("def main do\n  :ok\nend\n"));
+    assert!(!has_main("fn main(), do: :ok\n"));
 }
 
 fn parse_header(fixture: &FixtureCase) -> Result<Header, String> {
@@ -1360,7 +1371,7 @@ fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
     let fixture = temp_dir().join(format!("fz_kind_test_hang_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture,
-        "#---\n# purpose: timeout probe\n# kind: test\n#---\ntest(:hangs, do: loop())\nfn loop(), do: loop()\n",
+        "#---\n# purpose: timeout probe\n# kind: test\n#---\ntest(:hangs, do: loop())\ndef loop(), do: loop()\n",
     )
     .expect("write kind:test timeout probe");
 
@@ -1407,7 +1418,7 @@ fn diagnostic_build_path_cleans_every_output() {
     let fixture_path = temp_dir().join(format!("fz_diagnostic_cleanup_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture_path,
-        "#---\n# purpose: diagnostic cleanup probe\n# expect: diagnostic\n# diagnostic.code: probe/unexpected\n#---\nfn main(), do: 0\n",
+        "#---\n# purpose: diagnostic cleanup probe\n# expect: diagnostic\n# diagnostic.code: probe/unexpected\n#---\ndef main(), do: 0\n",
     )
     .expect("write diagnostic cleanup fixture");
     let fixture = FixtureCase::new(fixture_path.clone());
@@ -1985,9 +1996,9 @@ fn oracle_goldens_match_elixir() {
 }
 
 // fz-fkv: the bulk `fixture_matrix()` test was replaced by per-pair
-// trials emitted from `fn main()`. Discovery, header parsing, and
-// per-pair compare all live in the helpers above; the trial wiring
-// is at the top of this file.
+// trials emitted by the custom Rust harness entry point. Discovery,
+// header parsing, and per-pair compare all live in the helpers above;
+// the trial wiring is at the top of this file.
 
 fn fixture_telemetry_reserves_its_path() {
     let telemetry = FixtureTempFile::new("telemetry.jsonl").expect("reserve telemetry");
@@ -2290,8 +2301,8 @@ fn runtime_private_helpers_declare_their_domains() {
     for path in paths {
         let source = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         for (line_index, line) in source.lines().enumerate() {
-            if line.trim_start().starts_with("fnp ") {
-                let signature = runtime_source_signature(line, "fnp ")
+            if line.trim_start().starts_with("defp ") {
+                let signature = runtime_source_signature(line, "defp ")
                     .unwrap_or_else(|| panic!("parse private runtime helper at {}:{}", path.display(), line_index + 1));
                 private.insert(format!("{}:{signature}", path.display()));
             }

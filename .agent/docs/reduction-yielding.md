@@ -129,8 +129,8 @@ yield path. The AOT shim runs the same steps inline rather than calling it.
 ## A tiny walkthrough
 
 ```text
-fn count(0, acc), do: acc
-fn count(n, acc), do: count(n - 1, acc + 1)
+def count(0, acc), do: acc
+def count(n, acc), do: count(n - 1, acc + 1)
 
 count(5000, 0) with reductions_per_quantum = 4000:
 

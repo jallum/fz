@@ -1,7 +1,7 @@
 defmodule Integer do
   @moduledoc "Functions for working with integers."
 
-  extern "fz" fn fz_integer_to_binary(integer) :: binary
+  extern "fz" def fz_integer_to_binary(integer) :: binary
 
   @doc """
   Returns the integer's textual representation as a binary.
@@ -16,5 +16,5 @@ defmodule Integer do
 
   """
   @spec to_string(integer) :: binary
-  fn to_string(i), do: fz_integer_to_binary(i)
+  def to_string(i), do: fz_integer_to_binary(i)
 end

@@ -10,7 +10,7 @@ Run from the repository root:
 
 The retained ignored test selects every direct child of `fixtures2/` and
 `fixtures2/behavior/` whose extension is `.fz` and whose source contains
-`fn main()`. It captures the closed native program immediately before and after
+`def main()`. It captures the closed native program immediately before and after
 sharing, compiles both, and prints totals plus every excluded and moving path.
 The selection is deliberately syntactic and deterministic: 510 candidates =
 474 resolved + 2 panics + 34 expected fatal/unresolved fixtures.

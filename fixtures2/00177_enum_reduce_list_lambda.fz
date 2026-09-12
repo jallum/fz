@@ -10,6 +10,6 @@
 #   Enumerable.List.reduce : {:done, int} | {:halted, int}
 #   Enum.reduce([1,2,3], 0, +) : int ; settles (no 4096).
 
-fn main() do
+def main() do
   dbg(Enum.reduce([1, 2, 3], 0, fn (x, a) -> x + a end))
 end

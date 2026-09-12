@@ -7,8 +7,8 @@
 #
 # `==` used to mean two different things depending on where it was written:
 #
-#     fnp same?(a, b) when a == b, do: :equal
-#     fnp same?(_a, _b), do: :different
+#     defp same?(a, b) when a == b, do: :equal
+#     defp same?(_a, _b), do: :different
 #
 #     same?(1, 1.0)   fz: :different    Elixir: :equal
 #     1 == 1.0        fz: true          Elixir: true
@@ -31,20 +31,20 @@
 #
 # Both halves are pinned below, because fixing the guard by widening everything
 # would be just as wrong as the bug.
-fnp same?(a, b) when a == b, do: :equal
-fnp same?(_a, _b), do: :different
+defp same?(a, b) when a == b, do: :equal
+defp same?(_a, _b), do: :different
 
-fnp differs?(a, b) when a != b, do: :differs
-fnp differs?(_a, _b), do: :same
+defp differs?(a, b) when a != b, do: :differs
+defp differs?(_a, _b), do: :same
 
-fnp pick(1), do: :matched_int
-fnp pick(1.0), do: :matched_float
-fnp pick(_x), do: :no_match
+defp pick(1), do: :matched_int
+defp pick(1.0), do: :matched_float
+defp pick(_x), do: :no_match
 
-fnp pinned(a, b) when a == b, do: :pinned_equal
-fnp pinned(_a, _b), do: :pinned_different
+defp pinned(a, b) when a == b, do: :pinned_equal
+defp pinned(_a, _b), do: :pinned_different
 
-fn main() do
+def main() do
   # the operator, in a guard
   dbg(same?(1, 1.0))
   dbg(same?(1, 1))

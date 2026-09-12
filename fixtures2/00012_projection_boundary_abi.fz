@@ -1,8 +1,8 @@
 
-fn tuple_first({value, _}), do: value
-fn map_first(map), do: map[:value]
+def tuple_first({value, _}), do: value
+def map_first(map), do: map[:value]
 
-fn main() do
+def main() do
   {
     tuple_first({2, :ok}),
     map_first(%{value: 3})

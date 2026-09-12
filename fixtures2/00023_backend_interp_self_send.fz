@@ -1,5 +1,5 @@
 
-fn main() do
+def main() do
   me = self()
   send(me, 42)
   me

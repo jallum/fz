@@ -18,9 +18,9 @@
 # defined by pattern-matching `fn` clauses over tagged tuples.
 #
 # ```fz
-# fn eval({:num, n}), do: n
-# fn eval({:add, a, b}), do: eval(a) + eval(b)
-# fn eval({:mul, a, b}), do: eval(a) * eval(b)
+# def eval({:num, n}), do: n
+# def eval({:add, a, b}), do: eval(a) + eval(b)
+# def eval({:mul, a, b}), do: eval(a) * eval(b)
 # ```
 #
 # First fixture to combine:
@@ -35,11 +35,11 @@
 #   inside each clause body),
 # - multiple sequential `dbg(eval(...))` calls in `main` — the
 #   original demo shape, unblocked once fz-i82 was fixed in PR #12.
-fn eval({:num, n}), do: n
-fn eval({:add, a, b}), do: eval(a) + eval(b)
-fn eval({:mul, a, b}), do: eval(a) * eval(b)
+def eval({:num, n}), do: n
+def eval({:add, a, b}), do: eval(a) + eval(b)
+def eval({:mul, a, b}), do: eval(a) * eval(b)
 
-fn main() do
+def main() do
   assert(eval({:num, 42}) == 42, "literal number node evaluates directly")
   assert(
     eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}) == 14,

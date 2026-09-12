@@ -6,7 +6,7 @@
 # Exercises the runtime BIF that will back the `<>` operator desugar. The small
 # case stays inline; the long case crosses the shared-binary threshold and
 # therefore returns through the ProcBin path.
-fn main() do
+def main() do
   small = Kernel.fz_binary_concat("foo", "bar")
   long_left = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   long = Kernel.fz_binary_concat(long_left, "bbbb")

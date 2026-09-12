@@ -238,7 +238,7 @@ fn build_command(
             return Err(CliError::failure("fz2 build failed with codegen diagnostics"));
         }
         if artifact.main_symbol.is_none() {
-            return Err(CliError::failure("fz2 build: no `main/0` fn found"));
+            return Err(CliError::failure("fz2 build: no `main/0` function found"));
         }
         aot_link::link_aot_artifact(&artifact, &output, compiler.telemetry())
             .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
@@ -308,12 +308,11 @@ fn plural_count(count: usize, singular: &str, plural: &str) -> String {
 /// registers it as a scoped prelude on the test root's own world — its own
 /// `SourceOwner`, scoped in over the runtime prelude — so the user's test file is
 /// submitted verbatim with its true on-disk spans intact. It expands to a
-/// plain `fn <name>(), do: <body>` through the same `Fz.Compiler.define` path
-/// every other definition takes, the identical shape `fn`/`defmodule` use in
-/// `runtime.fz`.
+/// canonical `def <name>(), do: <body>` AST through the same
+/// `Fz.Compiler.define` path every other definition takes.
 const TEST_MACRO_PRELUDE_SOURCE: &str = "\
 defmacro test(name_atom, [do: body]) do
-  source = {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}
+  source = {:def, %{}, [{name_atom, %{}, []}, [{:do, body}]]}
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
 ";
@@ -324,7 +323,7 @@ end
 const TEST_MACRO_PRELUDE_NAME: &str = "test:prelude.fz";
 
 /// Private per-test entry point that `test_command` spawns as a subprocess:
-/// submits exactly one test's fn (module-qualified when the test lives inside
+/// submits exactly one test function (module-qualified when it lives inside
 /// a `defmodule`) as a root and runs it — JIT by default, `--interp` to run it
 /// through the backend interpreter instead. The `test` item macro is supplied
 /// as a scoped prelude (its own `SourceOwner`), never spliced into the user source,
@@ -558,7 +557,7 @@ fn module_alias_name(
 }
 
 /// Given a call's trailing keyword-list argument, returns the `:do` entry's
-/// value root (the module/fn body), or `None` if there is no `do:` entry.
+/// value root (the module or function body), or `None` if there is no `do:` entry.
 fn do_keyword_body_root(
     owner: &super::source::QuotedSourceRoot,
     kwargs: &super::source::QuotedSourceCursor,
@@ -893,7 +892,7 @@ mod test_prelude_span_test {
             name: Some(TEST_MACRO_PRELUDE_NAME.to_string()),
             text: TEST_MACRO_PRELUDE_SOURCE.to_string(),
         });
-        let user_text = "fn helper(x), do: x\n\ntest(:my_test) do\n  assert(helper(1) == 1)\nend\n".to_string();
+        let user_text = "def helper(x), do: x\n\ntest(:my_test) do\n  assert(helper(1) == 1)\nend\n".to_string();
         let user_code = compiler.submit_code(CodeSubmission {
             name: Some("user_test.fz".to_string()),
             text: user_text.clone(),
@@ -957,7 +956,7 @@ mod requested_output_test {
         let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
         compiler.submit_code(CodeSubmission {
             name: Some("mixed_dumps.fz".to_string()),
-            text: "fn main(), do: 0\n".to_string(),
+            text: "def main(), do: 0\n".to_string(),
         });
         let root = compiler.submit_root(RootSubmission {
             module_name: None,

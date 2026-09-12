@@ -275,7 +275,7 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
 #[test]
 fn compiler2_frontdoor_encodes_type_ascriptions_as_token_payloads() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("typed.fz", "fn pack(x :: integer), do: x :: list(integer)\n", &tel)
+    let root = parse_quoted_program("typed.fz", "def pack(x :: integer), do: x :: list(integer)\n", &tel)
         .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
@@ -356,8 +356,8 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
         "defmacro"
     );
     assert_eq!(
-        head_name(&items[2].trusted_ast_node().expect("fn cursor").expect("fn node")),
-        "fn"
+        head_name(&items[2].trusted_ast_node().expect("def cursor").expect("def node")),
+        "def"
     );
 
     let macro_node = items[0].trusted_ast_node().expect("macro cursor").expect("macro node");
@@ -395,7 +395,7 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "guarded_clause.fz",
-        "fn positive(n), do: n > 0\nfn wanted(n) when positive(n), do: n\n",
+        "def positive(n), do: n > 0\ndef wanted(n) when positive(n), do: n\n",
         &tel,
     )
     .expect("quoted parse");
@@ -406,7 +406,7 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
         .trusted_ast_node()
         .expect("wanted cursor")
         .expect("wanted node");
-    assert_eq!(head_name(&wanted), "fn");
+    assert_eq!(head_name(&wanted), "def");
     let head = wanted.tail.list_items().expect("wanted args")[0]
         .trusted_ast_node()
         .expect("wanted head cursor")
@@ -819,11 +819,11 @@ fn compiler2_frontdoor_rejects_an_interpolating_doc_attribute_by_name() {
     for (label, source) in [
         (
             "moduledoc",
-            "defmodule M do\n  @moduledoc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+            "defmodule M do\n  @moduledoc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  def f(), do: 1\nend\n",
         ),
         (
             "doc",
-            "defmodule M do\n  @doc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  fn f(), do: 1\nend\n",
+            "defmodule M do\n  @doc \"\"\"\n  see \"a#{x}b\"\n  \"\"\"\n  def f(), do: 1\nend\n",
         ),
     ] {
         let tel = ConfiguredTelemetry::new();
@@ -918,7 +918,7 @@ fn compiler2_frontdoor_parses_multiline_call_args_and_newline_pipe() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "multiline-call.fz",
-        "fn main() do\n  finish(loop(\n    [1, 2, 3],\n    {:cont, 0},\n    fn (entry, inner) -> {:cont, entry + inner} end\n  ))\n  |> dbg()\nend\n",
+        "def main() do\n  finish(loop(\n    [1, 2, 3],\n    {:cont, 0},\n    fn (entry, inner) -> {:cont, entry + inner} end\n  ))\n  |> dbg()\nend\n",
         &tel,
     )
     .expect("multiline call args and newline pipe parse");
@@ -930,11 +930,11 @@ fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "assignment-newline.fz",
-        "fn main() do\n  x =\n    41\n  x + 1\nend\n",
+        "def main() do\n  x =\n    41\n  x + 1\nend\n",
         &tel,
     )
     .expect("assignment rhs after newline parse");
-    assert_quoted_mentions(&root, &["fn", "=", "+"]);
+    assert_quoted_mentions(&root, &["def", "=", "+"]);
 }
 
 // The four cases below pin the grammar-owned eol/eoe model: newline
@@ -952,7 +952,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_operator() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "operator-trailing-newline.fz",
-        "fn main() do\n  1 +\n    2\nend\n",
+        "def main() do\n  1 +\n    2\nend\n",
         &tel,
     )
     .expect("trailing operator newline parse");
@@ -975,7 +975,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "dot-trailing-newline.fz",
-        "fn main() do\n  cfg.\n    value\nend\n",
+        "def main() do\n  cfg.\n    value\nend\n",
         &tel,
     )
     .expect("trailing dot newline parse");
@@ -1006,7 +1006,7 @@ fn compiler2_frontdoor_continues_alias_path_across_newline_after_dot() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "alias-path-trailing-newline.fz",
-        "fn main() do\n  Foo.\n    Bar\nend\n",
+        "def main() do\n  Foo.\n    Bar\nend\n",
         &tel,
     )
     .expect("trailing dot newline in alias path parse");
@@ -1044,7 +1044,7 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "lowercase-field-after-dotted-newline.fz",
-        "fn main() do\n  Foo.\n    bar\nend\n",
+        "def main() do\n  Foo.\n    bar\nend\n",
         &tel,
     )
     .expect("lowercase field after dotted newline parse");
@@ -1094,7 +1094,7 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "capture-target-trailing-newline.fz",
-        "fn main() do\n  &Foo.\n    bar/1\nend\n",
+        "def main() do\n  &Foo.\n    bar/1\nend\n",
         &tel,
     )
     .expect("trailing dot newline in capture target parse");
@@ -1175,7 +1175,7 @@ fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
     // two statements (`eoe`-separated), not one: the block wraps them as
     // `__block__` with two independent children.
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("block-separation.fz", "fn main() do\n  a\n  b\nend\n", &tel)
+    let root = parse_quoted_program("block-separation.fz", "def main() do\n  a\n  b\nend\n", &tel)
         .expect("block separation parse");
     let body = fn_do_body(&root)
         .trusted_ast_node()
@@ -1204,7 +1204,7 @@ fn compiler2_frontdoor_rejects_a_second_expression_without_a_statement_separator
     let tel = ConfiguredTelemetry::new();
     let error = parse_quoted_program(
         "juxtaposed-expressions.fz",
-        "fn main() do\n  a = 1 2\n  dbg(a)\nend\n",
+        "def main() do\n  a = 1 2\n  dbg(a)\nend\n",
         &tel,
     )
     .expect_err("two expressions without a newline between them must be rejected");
@@ -1221,7 +1221,7 @@ fn compiler2_frontdoor_rejects_a_second_expression_without_a_statement_separator
     );
     assert_eq!(
         (error.span.start, error.span.end),
-        (21, 22),
+        (22, 23),
         "the diagnostic should underline the unexpected `2`, not the expression before it"
     );
 }
@@ -1231,7 +1231,7 @@ fn compiler2_frontdoor_keeps_a_newline_after_no_parens_keyword_arguments_as_the_
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "keyword-statement-separation.fz",
-        "fn main() do\n  echo x: 1\n  echo y: 2\nend\n",
+        "def main() do\n  echo x: 1\n  echo y: 2\nend\n",
         &tel,
     )
     .expect("a no-parens keyword call must leave its trailing newline for the block grammar");
@@ -1266,7 +1266,7 @@ fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "leading-operator-new-statement.fz",
-        "fn main() do\n  a\n  -b\nend\n",
+        "def main() do\n  a\n  -b\nend\n",
         &tel,
     )
     .expect("leading operator new-statement parse");
@@ -1318,7 +1318,7 @@ fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "leading-struct-new-statement.fz",
-        "fn main() do\n  a\n  %Foo{x: 1}\nend\n",
+        "def main() do\n  a\n  %Foo{x: 1}\nend\n",
         &tel,
     )
     .expect("leading struct-literal new-statement parse");
@@ -1379,7 +1379,7 @@ fn compiler2_frontdoor_parses_keyword_list_macro_heads() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "macro-heads.fz",
-        "defmacro test(name_atom, [do: body]) do\n  {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
+        "defmacro test(name_atom, [do: body]) do\n  {:def, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
         &tel,
     )
     .expect("keyword list macro heads parse");
@@ -1391,7 +1391,7 @@ fn compiler2_frontdoor_parses_with_expressions() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "with.fz",
-        "fn main(v) do\n  with {:ok, x} <- v do x else :err -> 0 end\nend\n",
+        "def main(v) do\n  with {:ok, x} <- v do x else :err -> 0 end\nend\n",
         &tel,
     )
     .expect("quoted with parse");
@@ -1406,7 +1406,7 @@ fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "cond_capture.fz",
-        "fn main() do\n  cond do\n    false -> &Kernel.+/2\n    true -> &+/2\n  end\nend\n",
+        "def main() do\n  cond do\n    false -> &Kernel.+/2\n    true -> &+/2\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1421,7 +1421,7 @@ fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "surface.fz",
-        "@moduledoc \"docs\"\n@type t :: integer\n@spec run(integer) :: integer\ndefstruct [name, age]\ndefprotocol Enumerable do\n  @doc \"reduce docs\"\n  fn reduce(xs, acc)\nend\ndefimpl Enumerable, for: List do\n  fn reduce(xs, acc), do: acc\nend\n",
+        "@moduledoc \"docs\"\n@type t :: integer\n@spec run(integer) :: integer\ndefstruct [name, age]\ndefprotocol Enumerable do\n  @doc \"reduce docs\"\n  def reduce(xs, acc)\nend\ndefimpl Enumerable, for: List do\n  def reduce(xs, acc), do: acc\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1439,7 +1439,7 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "shapes.fz",
-        "fn shapes(x :: integer, ref) do\n  literal = %{2 => x, a: 1}\n  updated = %{literal | a: 2, b: 3}\n  point = %Point{x: x, y: 1}\n  bytes = <<104, 105>>\n  case x do\n    %{name: n} -> n\n    {:ok, s} when s == \"hi\" -> s\n    [h | _] -> h\n    ^ref -> ref\n    <<len, payload::binary-size(len), rest::binary>> -> len\n  end\nend\n",
+        "def shapes(x :: integer, ref) do\n  literal = %{2 => x, a: 1}\n  updated = %{literal | a: 2, b: 3}\n  point = %Point{x: x, y: 1}\n  bytes = <<104, 105>>\n  case x do\n    %{name: n} -> n\n    {:ok, s} when s == \"hi\" -> s\n    [h | _] -> h\n    ^ref -> ref\n    <<len, payload::binary-size(len), rest::binary>> -> len\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1452,7 +1452,7 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
 #[test]
 fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", &tel).expect("quoted parse");
+    let root = parse_quoted_program("map_access.fz", "def main(), do: m[:a]\n", &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     let main = items[0].trusted_ast_node().expect("main cursor").expect("main node");
@@ -1531,7 +1531,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
-        "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\nfn run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
+        "extern \"C\" def libc::open(path :: cstring, flags :: integer, ...) :: integer\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1631,7 +1631,7 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "extern_call.fz",
-        "fn main(), do: libc::open(path, flags, mode :: integer)\n",
+        "def main(), do: libc::open(path, flags, mode :: integer)\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1666,9 +1666,9 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
 fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
     let root =
-        parse_quoted_program("operator_head.fz", "fn left + right, do: left + right\n", &tel).expect("quoted parse");
+        parse_quoted_program("operator_head.fz", "def left + right, do: left + right\n", &tel).expect("quoted parse");
     // Operator-headed function definitions should quote directly.
-    assert_quoted_mentions(&root, &["fn", "+"]);
+    assert_quoted_mentions(&root, &["def", "+"]);
 }
 
 #[test]
@@ -1676,7 +1676,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "extern_surface.fz",
-        "extern \"C\" fn fz_spawn(() -> any) :: pid\nextern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
+        "extern \"C\" def fz_spawn(() -> any) :: pid\nextern \"C\" def fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
         &tel,
     )
     .expect("quoted parse");

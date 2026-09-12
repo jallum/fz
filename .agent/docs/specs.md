@@ -116,7 +116,7 @@ Compiler2 owns the active contract path:
   domains they actually consume. Without a contract, a helper's inputs are
   `any`, so constructor-only clauses such as `[]` and `[head | tail]` are
   genuinely partial and correctly warn. The fixture matrix inventories every
-  `fnp name/arity` under `lib/` and requires a matching `@spec name/arity`,
+  `defp name/arity` under `lib/` and requires a matching `@spec name/arity`,
   while activated fixtures prove those declared domains remove the warnings
   without hiding genuine user fallthroughs.
 - Kernel arithmetic (`+ - * / %`) is fully specced in

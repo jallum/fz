@@ -22,7 +22,7 @@
 #
 # The goal program is on the matching side of that line: JSON object keys are
 # strings.
-fn main() do
+def main() do
   m = %{"b" => 2, "a" => 1, "c" => 3}
 
   dbg(Map.size(m))

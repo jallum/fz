@@ -4,11 +4,11 @@
 #
 # Expected: myreduce([1,2,3], 0, +) : number ; settles.
 
-fn finish(x) do
+def finish(x) do
   x
 end
 
-fn go(list, acc, f) do
+def go(list, acc, f) do
   case list do
     [] -> acc
     [h | t] -> go(t, f.(h, acc), f)
@@ -16,10 +16,10 @@ fn go(list, acc, f) do
   end
 end
 
-fn myreduce(list, acc, f) do
+def myreduce(list, acc, f) do
   finish(go(list, acc, f))
 end
 
-fn main() do
+def main() do
   dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
 end

@@ -1,7 +1,7 @@
-fn add_a(x, acc), do: acc + x
-fn add_b(x, acc), do: acc + x
+def add_a(x, acc), do: acc + x
+def add_b(x, acc), do: acc + x
 
-fn main() do
+def main() do
   reducer = case 0 == 0 do
     true -> add_a
     _ -> add_b

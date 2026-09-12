@@ -1,4 +1,4 @@
 defmodule User do
   import Utf8, only: [valid?: 1]
-  fn run(bytes), do: valid?(bytes)
+  def run(bytes), do: valid?(bytes)
 end

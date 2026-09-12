@@ -1,5 +1,5 @@
 
-fn build(acc, n) do
+def build(acc, n) do
   if n == 0 do
     acc
   else
@@ -8,4 +8,4 @@ fn build(acc, n) do
   end
 end
 
-fn main(), do: dbg(build([], 5))
+def main(), do: dbg(build([], 5))

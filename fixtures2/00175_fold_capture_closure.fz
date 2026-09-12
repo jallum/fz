@@ -7,7 +7,7 @@
 #
 # Expected: myreduce([1,2,3], 0, +) : number ; settles (no 4096).
 
-fn go(list, acc, f) do
+def go(list, acc, f) do
   case list do
     [] -> acc
     [h | t] -> go(t, f.(h, acc), f)
@@ -15,10 +15,10 @@ fn go(list, acc, f) do
   end
 end
 
-fn myreduce(list, acc, g) do
+def myreduce(list, acc, g) do
   go(list, acc, fn (entry, inner) -> g.(entry, inner) end)
 end
 
-fn main() do
+def main() do
   dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
 end

@@ -23,16 +23,16 @@
 # the prose above.
 defmodule M do
   @spec strings([binary]) :: integer
-  fn strings(_xs), do: 1
+  def strings(_xs), do: 1
 end
 
 defmodule G do
-  fnp walk({:stop, acc}, _n), do: acc
-  fnp walk({:go, acc}, 0), do: walk({:stop, acc}, 0)
-  fnp walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
+  defp walk({:stop, acc}, _n), do: acc
+  defp walk({:go, acc}, 0), do: walk({:stop, acc}, 0)
+  defp walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
 end
 
-fn main() do
+def main() do
   dbg(M.strings(G.walk({:go, ["x"]}, 2)))
   dbg(G.walk({:go, [9]}, 2))
 end

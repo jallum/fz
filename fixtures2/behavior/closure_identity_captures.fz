@@ -13,11 +13,11 @@
 # the caller has to hand that lambda's own capture record to the body it routes
 # to. `12` is `n + 1` twice over `10`; `210` is `n + 100` twice over `10`.
 defmodule Pipeline do
-  fn apply_twice(f, x), do: f.(f.(x))
-  fn run(f, x), do: apply_twice(f, x)
+  def apply_twice(f, x), do: f.(f.(x))
+  def run(f, x), do: apply_twice(f, x)
 end
 
-fn main() do
+def main() do
   a = 1
   b = 100
   dbg(Pipeline.run(fn (n) -> n + a end, 10))

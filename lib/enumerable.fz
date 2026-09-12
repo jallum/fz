@@ -18,7 +18,7 @@ defprotocol Enumerable do
   -- `map`, `filter`, `count`'s fallback, and so on -- ultimately reduces to.
   """
   @spec reduce(t(a), b, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
-  fn reduce(enumerable, acc, reducer)
+  def reduce(enumerable, acc, reducer)
 
   @doc """
   Reduces the enumerable, stopping as soon as `reducer` returns `{:halt, _}`.
@@ -26,7 +26,7 @@ defprotocol Enumerable do
   `Enum.reduce_while/3` calls this directly.
   """
   @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
-  fn reduce_while(enumerable, acc, reducer)
+  def reduce_while(enumerable, acc, reducer)
 
   @doc """
   Returns the number of elements, or reports that this enumerable cannot
@@ -36,7 +36,7 @@ defprotocol Enumerable do
   `{:error, _}`.
   """
   @spec count(t(a)) :: {:ok, integer} | {:error, any}
-  fn count(enumerable)
+  def count(enumerable)
 
   @doc """
   Reports whether `value` occurs in the enumerable, or that membership cannot
@@ -46,14 +46,14 @@ defprotocol Enumerable do
   `{:error, _}`.
   """
   @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
-  fn member?(enumerable, value)
+  def member?(enumerable, value)
 
   @doc """
   Returns the enumerable's size together with a slicing function, or reports
   that it cannot be sliced without a full traversal.
   """
   @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
-  fn slice(enumerable)
+  def slice(enumerable)
 end
 
 # Built-in implementations live with their protocol: a protocol call always
@@ -61,28 +61,28 @@ end
 # hoisted to its own `Enumerable.<Type>` module and demanded directly by a
 # matching receiver — no "scan the receiver type's own module" convention.
 defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
-  fn reduce_while(list, acc, reducer), do: List.reduce_while(list, acc, reducer)
-  fn count(list), do: {:ok, List.count(list)}
-  fn member?(list, value), do: {:ok, List.member?(list, value)}
-  fn slice(_list), do: {:error, :unsupported}
+  def reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+  def reduce_while(list, acc, reducer), do: List.reduce_while(list, acc, reducer)
+  def count(list), do: {:ok, List.count(list)}
+  def member?(list, value), do: {:ok, List.member?(list, value)}
+  def slice(_list), do: {:error, :unsupported}
 end
 
 defimpl Enumerable, for: Map do
-  fn reduce(map, acc, reducer), do: Map.reduce(map, acc, reducer)
-  fn reduce_while(map, acc, reducer), do: Map.reduce_while(map, acc, reducer)
-  fn count(map), do: {:ok, Map.count(map)}
-  fn member?(map, pair), do: {:ok, Map.member?(map, pair)}
-  fn slice(map), do: Map.slice(map)
+  def reduce(map, acc, reducer), do: Map.reduce(map, acc, reducer)
+  def reduce_while(map, acc, reducer), do: Map.reduce_while(map, acc, reducer)
+  def count(map), do: {:ok, Map.count(map)}
+  def member?(map, pair), do: {:ok, Map.member?(map, pair)}
+  def slice(map), do: Map.slice(map)
 end
 
 defimpl Enumerable, for: Range do
-  fn reduce(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce(first, last, step, acc, reducer)
-  fn reduce_while(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce_while(first, last, step, acc, reducer)
-  fn count(%Range{first: first, last: last, step: step}), do: {:ok, Range.count(first, last, step)}
-  fn member?(%Range{first: first, last: last, step: step}, value), do: {:ok, Range.member?(first, last, step, value)}
+  def reduce(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce(first, last, step, acc, reducer)
+  def reduce_while(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce_while(first, last, step, acc, reducer)
+  def count(%Range{first: first, last: last, step: step}), do: {:ok, Range.count(first, last, step)}
+  def member?(%Range{first: first, last: last, step: step}, value), do: {:ok, Range.member?(first, last, step, value)}
 
-  fn slice(%Range{first: first, last: last, step: step}) do
+  def slice(%Range{first: first, last: last, step: step}) do
     {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, last, step, start, amount, stride) end)}
   end
 end

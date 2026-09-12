@@ -1,11 +1,11 @@
 defprotocol Proof do
   @spec pick(t(a), a) :: a
-  fn pick(value, fallback)
+  def pick(value, fallback)
 end
 
 defmodule Box do
-  fn pick(value, _fallback), do: value
+  def pick(value, _fallback), do: value
   defimpl Proof, for: List do
-    fn pick(value, fallback), do: Box.pick(value, fallback)
+    def pick(value, fallback), do: Box.pick(value, fallback)
   end
 end

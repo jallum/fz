@@ -1,1 +1,1 @@
-fn positive(n), do: n >= 0
+def positive(n), do: n >= 0

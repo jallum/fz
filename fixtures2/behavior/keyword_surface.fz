@@ -26,7 +26,7 @@
 # element is a two-tuple with an atom key as `[a: 1]`, not `[{:a, 1}]`, and only
 # then. The decision is made from the VALUES, so `[{:a, 1}, {2, 3}]` still
 # prints as tuples.
-fn main() do
+def main() do
   kw = [{:a, 1}, {:b, 2}, {:a, 3}]
   dbg(Keyword.get(kw, :a))
   dbg(Keyword.get(kw, :z, :none))

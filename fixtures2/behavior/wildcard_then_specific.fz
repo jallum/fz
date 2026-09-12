@@ -1,17 +1,17 @@
 #---
 # purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause fn and case)"
 #---
-fn catch(_), do: :anything
-fn catch(0), do: :zero
+def catch(_), do: :anything
+def catch(0), do: :zero
 
-fn cmatch(v) do
+def cmatch(v) do
   case v do
     _ -> :anything
     0 -> :zero
   end
 end
 
-fn main() do
+def main() do
   assert(catch(0) == :anything, "fn: wildcard precedes specific, first-match-wins")
   assert(catch(7) == :anything, "fn: wildcard matches non-zero too")
   assert(cmatch(0) == :anything, "case: wildcard precedes specific, first-match-wins")

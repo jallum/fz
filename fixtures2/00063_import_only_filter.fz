@@ -1,9 +1,9 @@
 defmodule Math do
-  fn add(x, y), do: x + y
-  fn mul(x, y), do: x * y
+  def add(x, y), do: x + y
+  def mul(x, y), do: x * y
 end
 defmodule User do
   import Math, only: [add: 2]
-  fn r1(x, y), do: add(x, y)
-  fn r2(x, y), do: mul(x, y)
+  def r1(x, y), do: add(x, y)
+  def r2(x, y), do: mul(x, y)
 end

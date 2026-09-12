@@ -23,7 +23,7 @@
 # constant-time vs the literal without allocating a heap object for the
 # RHS. Interp mirrors the JIT semantics via `procbin::bitstring_bit_len`
 # and `bitstring_byte_ptr`.
-fn main() do
+def main() do
   send(self(), "hello")
   send(self(), "world")
   send(self(), :stop)

@@ -42,7 +42,7 @@
 # This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
 # a source-level merge sort that builds split/reverse/merge work lists, so it has
 # a different allocation contract from the list-consuming functions pinned here.
-fn main() do
+def main() do
   xs = [1, 2, 3, 4, 5]
 
   dbg(Enum.count(xs))

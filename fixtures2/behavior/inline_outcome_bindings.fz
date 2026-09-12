@@ -5,7 +5,7 @@ defmodule InlineBox do
   defstruct [:unused, :value]
 end
 
-fn unpack(value) do
+def unpack(value) do
   captured = 100
   case value do
     {:nested, [%{box: %InlineBox{value: captured}} | tail]} -> {captured, tail}
@@ -16,14 +16,14 @@ fn unpack(value) do
   end
 end
 
-fn framed(bytes) do
+def framed(bytes) do
   case bytes do
     <<len, payload :: binary-size(len), rest :: binary>> -> {len, payload, rest}
     _ -> :bad_frame
   end
 end
 
-fn recipes(bytes) do
+def recipes(bytes) do
   case bytes do
     <<x :: integer-size(8), 0>> -> x
     <<x :: binary-size(1), 1>> -> x
@@ -31,14 +31,14 @@ fn recipes(bytes) do
   end
 end
 
-fn aliased(value) do
+def aliased(value) do
   case value do
     whole = {:same, x, x} -> {whole, x}
     _ -> :different
   end
 end
 
-fn accepted(value) do
+def accepted(value) do
   with {:ok, %{key: [head | tail]}} <- value,
        <<len, payload :: binary-size(len)>> <- head do
     {len, payload, tail}
@@ -49,7 +49,7 @@ fn accepted(value) do
   end
 end
 
-fn main() do
+def main() do
   assert(unpack({:nested, [%{box: %InlineBox{unused: 9, value: 7}}, 8]}) == {7, [8]},
     "nested plan subjects bind the field and tail, shadowing the enclosing capture")
   assert(unpack({:pair, 4, 5}) == {4, 5}, "outcome bindings preserve source order")

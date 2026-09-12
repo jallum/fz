@@ -1,5 +1,5 @@
-fn double(x), do: x * 2
-fn apply2(f, x), do: f.(x)
-fn main() do
+def double(x), do: x * 2
+def apply2(f, x), do: f.(x)
+def main() do
   dbg(apply2(double, 21))
 end

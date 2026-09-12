@@ -23,7 +23,7 @@
 # tagged AnyValues for a given scalar kind compare by bit equality, so the
 # emit is a single icmp eq + bool_to_fz. No both_ptr tag dispatch, no
 # fz_value_eq call site.
-fn main() do
+def main() do
   dbg(1 == 2)
   dbg(1 == 1)
   dbg(:ok == :err)

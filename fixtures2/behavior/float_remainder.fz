@@ -28,7 +28,7 @@
 # interpreter has always answered. `:math.fmod(7.5, 2.0)` is 1.5 and
 # `:math.fmod(-7.5, 2.0)` is -1.5 in Elixir, which is where these values come
 # from.
-fn main() do
+def main() do
   dbg(7.5 % 2.0)
   dbg(7 % 2)
   dbg(7.5 % 2)

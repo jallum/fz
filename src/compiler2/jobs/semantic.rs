@@ -2177,9 +2177,9 @@ mod tests {
         world.submit_code(
             Some("correlated_callee_contributions.fz".to_string()),
             r#"
-fn sink(n, a, b), do: if n == 0, do: 0, else: sink(n - 1, a, b)
-fn relay(n, a, b), do: if n == 0, do: sink(n, a, b), else: relay(n - 1, a, b)
-fn main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
+def sink(n, a, b), do: if n == 0, do: 0, else: sink(n - 1, a, b)
+def relay(n, a, b), do: if n == 0, do: sink(n, a, b), else: relay(n - 1, a, b)
+def main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
 "#
             .to_string(),
         );
@@ -2236,19 +2236,19 @@ fn main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
         world.submit_code(
             Some("activation_contribution_owners.fz".to_string()),
             r#"
-fn sink(value), do: if value == :recur, do: sink(value), else: 0
-fn other(_value), do: 0
+def sink(value), do: if value == :recur, do: sink(value), else: 0
+def other(_value), do: 0
 
-fn first() do
+def first() do
   sink([1])
   sink([1])
   other([1])
   sink([:ok])
 end
 
-fn second(), do: sink([1])
+def second(), do: sink([1])
 
-fn main() do
+def main() do
   first()
   second()
 end

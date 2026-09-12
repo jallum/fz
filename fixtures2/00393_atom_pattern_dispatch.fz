@@ -1,6 +1,6 @@
-fn pick(:left), do: :one
-fn pick(:right), do: :two
+def pick(:left), do: :one
+def pick(:right), do: :two
 
-fn main() do
+def main() do
   {pick(:left), pick(:right)}
 end

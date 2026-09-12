@@ -6,14 +6,14 @@
 #
 # Expected: myreduce([1,2,3], 0, +) : number ; settles.
 
-fn finish(state) do
+def finish(state) do
   case state do
     {:done, acc} -> acc
     {:halted, acc} -> acc
   end
 end
 
-fn loop(list, state, f) do
+def loop(list, state, f) do
   case state do
     {:halt, acc} -> {:halted, acc}
     {:cont, acc} ->
@@ -24,10 +24,10 @@ fn loop(list, state, f) do
   end
 end
 
-fn myreduce(list, acc, f) do
+def myreduce(list, acc, f) do
   finish(loop(list, {:cont, acc}, fn (entry, inner) -> {:cont, f.(entry, inner)} end))
 end
 
-fn main() do
+def main() do
   dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
 end

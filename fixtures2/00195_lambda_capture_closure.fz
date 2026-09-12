@@ -1,2 +1,2 @@
-fn mk(x), do: fn(y) -> x + y end
-fn main(), do: mk(1)
+def mk(x), do: fn(y) -> x + y end
+def main(), do: mk(1)

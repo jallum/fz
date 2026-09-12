@@ -23,7 +23,7 @@
 #   now the EMPTY_LIST sentinel, not the nil atom-like value.
 #
 # If this fixture regresses, someone has re-conflated `nil` with `[]`.
-fn main() do
+def main() do
   dbg(nil)
   dbg([])
   dbg([1, 2, 3])

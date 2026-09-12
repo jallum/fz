@@ -1,1 +1,1 @@
-fn main(), do: assert(2)
+def main(), do: assert(2)

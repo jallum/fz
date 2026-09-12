@@ -1,4 +1,4 @@
-fn main() do
+def main() do
   good = <<104, 105>>
   bad = <<0xff, 0xff>>
   assert(Utf8.valid?(good))

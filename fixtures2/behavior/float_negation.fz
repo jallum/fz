@@ -27,10 +27,10 @@
 # Not covered, deliberately: negating an operand whose type is a union of
 # integer and float. That still aborts natively, because unary minus is the one
 # operator with no typed clause family in `Kernel` -- see fz-5xp.38.
-fnp negate_float(x :: float), do: -x
-fnp negate_any(x), do: -x
+defp negate_float(x :: float), do: -x
+defp negate_any(x), do: -x
 
-fn main() do
+def main() do
   dbg(-3.0)
   dbg(-3)
   y = 2.5

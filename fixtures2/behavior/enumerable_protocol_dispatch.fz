@@ -6,9 +6,9 @@
 # Exercises a closed-union `Enumerable.count/1` call whose receiver can be a
 # list, a `Range` struct, or a map. The mixed receiver forces protocol dispatch
 # to emit runtime type arms for all three impl targets.
-fn counted(value), do: Enumerable.count(value)
+def counted(value), do: Enumerable.count(value)
 
-fn main() do
+def main() do
   values = [[9, 8, 7], Range.new(1, 9, 2), %{1 => :one, 2 => :two}]
 
   result = case values do

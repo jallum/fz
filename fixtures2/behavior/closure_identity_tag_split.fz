@@ -16,11 +16,11 @@
 # backwards. `12 90 12 90` is each call running the lambda it was given;
 # `12 90 90 12` is the routing following the tag instead.
 defmodule P do
-  fn twice(f, x, _t), do: f.(f.(x))
-  fn run(f, x, t), do: twice(f, x, t)
+  def twice(f, x, _t), do: f.(f.(x))
+  def run(f, x, t), do: twice(f, x, t)
 end
 
-fn main() do
+def main() do
   dbg(P.run(fn (n) -> n + 1 end, 10, :a))
   dbg(P.run(fn (n) -> n * 3 end, 10, :b))
   dbg(P.run(fn (n) -> n + 1 end, 10, :b))

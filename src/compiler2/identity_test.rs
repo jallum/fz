@@ -126,7 +126,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let mut modules = ModuleMap::new();
     let mut functions = FunctionMap::new();
 
-    let source_owner = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
+    let source_owner = code.define(Some("math.fz".to_string()), "def add(x, y), do: x + y\n".to_string());
     let namespace = namespaces.prelude_head();
 
     let math_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["Math".into()]));
@@ -191,7 +191,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let add_ref = functions.reference(math_def, None, "add", 2);
     let add_def = add_ref;
     let add_ast = function_surface("Math.add");
-    let add_source = quoted_source("math.fz", "fn add(x, y), do: 42\n");
+    let add_source = quoted_source("math.fz", "def add(x, y), do: 42\n");
     let add_changed = functions.define(
         add_def,
         FunctionSource {
@@ -210,7 +210,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
         },
         add_ast.clone(),
     );
@@ -232,7 +232,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
         },
         add_ast,
     );
@@ -279,7 +279,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         matches!(code.get(source_owner), CodeState::Pending { .. }),
         "new code should remain pending until indexing runs"
     );
-    let code_source = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
+    let code_source = quoted_source("math.fz", "def add(x, y), do: x + y\n");
     let indexed_code_changed = code.index(
         source_owner,
         QuotedCodeSource {
@@ -312,10 +312,10 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
 #[test]
 fn compiler2_code_index_revisions_ignore_quoted_heap_identity_when_semantics_match() {
     let mut code = CodeMap::new();
-    let source_owner = code.define(Some("math.fz".to_string()), "fn add(x, y), do: x + y\n".to_string());
+    let source_owner = code.define(Some("math.fz".to_string()), "def add(x, y), do: x + y\n".to_string());
 
-    let first = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
-    let second = quoted_source("math.fz", "fn add(x, y), do: x + y\n");
+    let first = quoted_source("math.fz", "def add(x, y), do: x + y\n");
+    let second = quoted_source("math.fz", "def add(x, y), do: x + y\n");
     assert_ne!(
         first.key(),
         second.key(),
@@ -349,13 +349,13 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
     let mut functions = FunctionMap::new();
     let mut code = CodeMap::new();
     let namespaces = NamespaceStore::new();
-    let source_owner = code.define(Some("math.fz".to_string()), "fn add(x, y), do: 42\n".to_string());
+    let source_owner = code.define(Some("math.fz".to_string()), "def add(x, y), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
     let function = functions.reference(ModuleId::GLOBAL, None, "add", 2);
     let def_ast = function_surface("add");
-    let first = quoted_source("math.fz", "fn add(x, y), do: 42\n");
-    let second = quoted_source("math.fz", "fn add(x, y), do: 42\n");
-    let third = quoted_source("math.fz", "fn add(x, y), do: 43\n");
+    let first = quoted_source("math.fz", "def add(x, y), do: 42\n");
+    let second = quoted_source("math.fz", "def add(x, y), do: 42\n");
+    let third = quoted_source("math.fz", "def add(x, y), do: 43\n");
     assert_ne!(
         first.key(),
         second.key(),
@@ -380,7 +380,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
         },
         def_ast.clone(),
     );
@@ -402,7 +402,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(x, y), do: 42\n"),
+            source: quoted_source("math.fz", "def add(x, y), do: 42\n"),
         },
         def_ast.clone(),
     );
@@ -424,7 +424,7 @@ fn compiler2_function_definition_revisions_track_semantic_content_not_transport(
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(x, y), do: 43\n"),
+            source: quoted_source("math.fz", "def add(x, y), do: 43\n"),
         },
         def_ast,
     );
@@ -442,12 +442,12 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
     let mut functions = FunctionMap::new();
     let mut code = CodeMap::new();
     let namespaces = NamespaceStore::new();
-    let source_owner = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
+    let source_owner = code.define(Some("math.fz".to_string()), "def add(), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
     let function = functions.reference(ModuleId::GLOBAL, None, "add", 0);
     let surface = function_surface("add");
-    let first = quoted_source("math.fz", "fn add(), do: 42\n");
-    let second = quoted_source("math.fz", "fn add(), do: 42\n");
+    let first = quoted_source("math.fz", "def add(), do: 42\n");
+    let second = quoted_source("math.fz", "def add(), do: 42\n");
 
     let defined_changed = functions.define(
         function,
@@ -467,7 +467,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             capture_params: Vec::new(),
             required_remote_macros: Vec::new(),
             variadic: false,
-            source: quoted_source("math.fz", "fn add(), do: 42\n"),
+            source: quoted_source("math.fz", "def add(), do: 42\n"),
         },
         surface.clone(),
     );
@@ -500,7 +500,7 @@ fn compiler2_re_noting_a_defined_function_preserves_the_defined_state() {
             assert!(
                 source
                     .source
-                    .semantically_eq(&quoted_source("math.fz", "fn add(), do: 42\n"), Horizon::Full),
+                    .semantically_eq(&quoted_source("math.fz", "def add(), do: 42\n"), Horizon::Full),
                 "the noted source should still refresh to the incoming source content"
             );
         }
@@ -513,11 +513,11 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
     let mut functions = FunctionMap::new();
     let mut code = CodeMap::new();
     let namespaces = NamespaceStore::new();
-    let source_owner = code.define(Some("math.fz".to_string()), "fn add(), do: 42\n".to_string());
+    let source_owner = code.define(Some("math.fz".to_string()), "def add(), do: 42\n".to_string());
     let namespace = namespaces.prelude_head();
     let function = functions.reference(ModuleId::GLOBAL, None, "add", 0);
-    let first = quoted_source("math.fz", "fn add(), do: 42\n");
-    let second = quoted_source("math.fz", "fn add(), do: 43\n");
+    let first = quoted_source("math.fz", "def add(), do: 42\n");
+    let second = quoted_source("math.fz", "def add(), do: 43\n");
 
     assert!(
         functions.define(

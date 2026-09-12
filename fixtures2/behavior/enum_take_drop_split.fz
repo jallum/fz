@@ -11,7 +11,7 @@
 # `drop/2`, and `split/2`. The final `*_while` cases would panic if the
 # predicate kept running after the first falsy answer, so the fixture also
 # proves the protocol path stops exactly where it should.
-fn main() do
+def main() do
   xs = [1, 2, 3, 4, 5]
   range = 1..5
 

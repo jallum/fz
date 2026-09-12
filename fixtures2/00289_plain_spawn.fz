@@ -1,2 +1,2 @@
-fn child(), do: nil
-fn main() do spawn(child) end
+def child(), do: nil
+def main() do spawn(child) end

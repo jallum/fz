@@ -1,1 +1,1 @@
-fn main(), do: nil
+def main(), do: nil

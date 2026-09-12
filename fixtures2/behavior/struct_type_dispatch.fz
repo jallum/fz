@@ -6,10 +6,10 @@ defmodule Foo do
   @type t :: %Foo{value: integer}
 end
 
-fn pick(x :: Foo.t), do: 1
-fn pick(x), do: 2
+def pick(x :: Foo.t), do: 1
+def pick(x), do: 2
 
-fn main() do
+def main() do
   dbg(pick(%Foo{value: 7}))
   dbg(pick(%{value: 7}))
 end

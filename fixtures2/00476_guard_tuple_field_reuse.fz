@@ -1,5 +1,5 @@
-fn positive(n), do: n > 0
-fn classify(t) do
+def positive(n), do: n > 0
+def classify(t) do
   case t do
     {:ok, x} when positive(x) -> x + x
     _ -> 0

@@ -1,3 +1,3 @@
 
-fn a(n), do: b(n)
-fn b(n), do: a(n)
+def a(n), do: b(n)
+def b(n), do: a(n)

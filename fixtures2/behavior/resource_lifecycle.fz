@@ -55,14 +55,14 @@
 defmodule R do
   @type t :: opaque resource(integer)
 
-  fn unwrap(h), do: h.value
+  def unwrap(h), do: h.value
 end
 
-extern "C" fn fz_resource_test_print_dtor(integer) :: nil
+extern "C" def fz_resource_test_print_dtor(integer) :: nil
 
-fn dwrap(x), do: fz_resource_test_print_dtor(x)
+def dwrap(x), do: fz_resource_test_print_dtor(x)
 
-fn main() do
+def main() do
   a = make_resource(10, &dwrap/1)
   b = make_resource(20, &dwrap/1)
   c = make_resource(30, &dwrap/1)

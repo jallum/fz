@@ -1,7 +1,7 @@
-fn finish({:found, index}), do: index
-fn finish({:not_found, _index}), do: -1
+def finish({:found, index}), do: index
+def finish({:not_found, _index}), do: -1
 
-fn collapsed() do
+def collapsed() do
   Enum.reduce_while([1, 2, 3], {:not_found, 0}, fn (entry, {:not_found, index}) ->
     if entry == 2 do
       {:halt, {:found, index}}
@@ -11,6 +11,6 @@ fn collapsed() do
   end)
 end
 
-fn main() do
+def main() do
   dbg(finish(collapsed()))
 end

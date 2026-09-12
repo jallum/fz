@@ -1,18 +1,18 @@
 #---
 # purpose: "sequential calls returning tuple-pattern results (fz-i82 regression)"
 #---
-fn f(v) do
+def f(v) do
   case v do
     {:ok, x} -> x
     :err -> 0
   end
 end
 
-fn g(v) do
+def g(v) do
   with {:ok, x} <- v do x else :err -> 0 end
 end
 
-fn main() do
+def main() do
   assert(f({:ok, 7}) == 7, "case tuple-pattern arm returns the bound value")
   assert(f(:err) == 0, "case atom fallback returns 0")
   assert(f(:err) == 0, "sequential call: atom fallback again")

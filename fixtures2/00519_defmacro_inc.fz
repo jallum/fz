@@ -2,4 +2,4 @@ defmacro inc(x) do
   quote do: unquote(x) + 1
 end
 
-fn main(), do: inc(41)
+def main(), do: inc(41)

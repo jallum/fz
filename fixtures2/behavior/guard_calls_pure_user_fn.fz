@@ -1,10 +1,10 @@
 #---
 # purpose: "case guards call pure user fns — locks X1A β-reduction three-path parity"
 #---
-fn is_pos(n) do n > 0 end
-fn double(x) do x * 2 end
+def is_pos(n) do n > 0 end
+def double(x) do x * 2 end
 
-fn classify(n) do
+def classify(n) do
   case n do
     x when is_pos(x) -> :pos
     x when is_pos(double(x)) -> :zero_or_neg_doubled_pos
@@ -12,7 +12,7 @@ fn classify(n) do
   end
 end
 
-fn main() do
+def main() do
   assert(classify(5) == :pos, "guard calling a pure user fn fires")
   assert(classify(0) == :other, "0 falls through both guards")
   assert(classify(-3) == :other, "negative falls through both guards")
