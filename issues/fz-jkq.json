@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-12T21:04:09Z",
+  "description": "GitHub Actions derives the visible label for an unnamed multiline run step from its first comment. The coverage step currently displays stale fz-9i4.7 text rather than its purpose. Replace ticket-history comments with a stable step name, leaving the coverage command and threshold behavior unchanged. Prove formatting, strict clippy, and CI pass.",
+  "id": "fz-jkq",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "CI: name the coverage step without ticket history",
+  "type": "task",
+  "updated_at": "2026-09-12T21:04:09Z"
+}
