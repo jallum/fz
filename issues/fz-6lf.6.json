@@ -11,7 +11,7 @@
   "parent": "fz-6lf",
   "priority": 3,
   "status": "open",
-  "title": "[BUG] Memoize item-macro expansion across blocked scope retries",
+  "title": "Memoize item-macro expansion across blocked scope retries",
   "type": "bug",
-  "updated_at": "2026-09-12T15:37:43Z"
+  "updated_at": "2026-09-12T15:38:03Z"
 }
