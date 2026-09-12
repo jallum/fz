@@ -6,6 +6,8 @@
   "blocks": [
     "fz-5xp.83"
   ],
+  "closed_at": "2026-09-12T13:53:32Z",
+  "close_reason": "completed",
   "created": "2026-09-07T20:04:28Z",
   "description": "## The inconsistency\n\n`lib/enum.fz` holds 27 `if` expressions beside a set of helpers that make the same decisions by dispatch: `all_value_step/1`, `any_value_step/1`, `find_value_step/2`, `find_index_step/2`, `count_result/2`, `member_result/3` each take a value and answer with a clause per case. Half the module uses that idiom and half does not.\n\nThe worst of it is `drop_while/2` and `split_while/2`, where an `if` sits inside an `if` inside a closure inside a call -- four levels to express a two-way choice:\n\n```\nfn drop_while(enumerable, fun) do\n  drop_while_finish(\n    reduce_while(enumerable, {[], true}, fn (entry, {acc, dropping}) -\u003e\n      {:cont,\n       if dropping do\n         if fun.(entry), do: {acc, true}, else: {[entry | acc], false}\n       else\n         {[entry | acc], false}\n       end}\n    end)\n  )\nend\n```\n\nThe same shape appears in `take_every/2`, `drop_every/2`, `map_every_list/4`, `filter_list/2`, `merge_sort_lists/3`, `extreme_fold/3`, `extreme_by_fold/5`, `dedup_after/2`, `dedup_by_after/3`, `chunk_by_run/4` and `uniq_walk/3`.\n\n## What to do\n\nGive each of these a named helper that dispatches on the decided value, the way the existing step helpers do. `take_positive/2` is the clearest case: the helper it wants already exists as `take_positive_step/2` and is simply not called.\n\nThis is a body rewrite, not a behaviour change. Every function keeps its result.\n\n## Watch the goldens\n\nFour fixtures pin allocation counts and could move: `enum_builder_allocations`, `enum_list_allocations`, `enum_reduce_suspend`, `enum_sort`. A lower count is safe by construction -- a stricter floor. A raise is a finding and wants explaining before it is blessed.\n\n## Acceptance\n\n- No `if` nested inside another `if` anywhere in the module.\n- Each remaining `if` is a one-line choice between two values, or is gone.\n- Allocation goldens unchanged or lower, with any change explained.",
   "id": "fz-5xp.81",
@@ -18,8 +20,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum: decide with clauses where the module already decides with clauses",
   "type": "task",
-  "updated_at": "2026-09-12T13:53:31Z"
+  "updated_at": "2026-09-12T13:53:32Z"
 }
