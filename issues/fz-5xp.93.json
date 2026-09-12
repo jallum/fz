@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-5xp.82"
-  ],
+  "blocks": [],
   "created": "2026-09-07T22:05:29Z",
   "description": "## Goal\n\nDelete the unused Enumerable slicing scaffold rather than grow public `Enum.slice` surface. There is no public caller; the only direct protocol calls are scaffold fixtures.\n\n## Why deletion is correct\n\nThe old expansion commit `2f2855ce` adds 165 Enum lines and roughly 36 definitions to rescue dead code. Its `Enumerable.slice/1` result erases incompatible Map and Range callback shapes as `any`; Enum then reconstructs receiver-specific dispatch and impossible-state repairs, creating a second authority and overlapping fz-5xp.85. It also exposes the known composed-stride bug in the current Range callback, while its fixture omits the source-step plus slice-step case.\n\nDeletion removes work, unreachable maintenance surface, erased callback shape, protocol implementations, and two deterministic Range specialization rungs without losing a demanded capability.\n\n## Scope\n\nDelete `Enumerable.slice/1`, all list/map/range implementations, `Map.slice/1`, `Range.slice/6`, `Range.slice_from/5`, and now-unused `Range.reverse/2`; remove slice-only protocol fixtures/assertions and stale census prose; preserve any independent sparse-callable regression without claiming Map.slice is its production motivation. Re-measure deterministic work after deletion.\n\nUpdate fz-5xp.82 to omit slicing until a real demand exists. Keep fz-5xp.108 and fz-kdt.117; their reduced witnesses are independent.\n\n## Acceptance\n\n- No maintained source calls or declares `Enumerable.slice` / `Enum.slice` / `Map.slice` / `Range.slice`.\n- The deleted callback shape has no reconstruction, fallback, or compatibility residue.\n- Focused protocol/range/fixture tests, deterministic rung/work evidence, formatting, and strict checks prove the smaller result.\n- PR #139 is replaced by this deletion work; do not replay its expansion commit.",
   "id": "fz-5xp.93",
@@ -27,5 +25,5 @@
   "status": "open",
   "title": "Delete unused Enumerable slicing scaffold",
   "type": "task",
-  "updated_at": "2026-09-12T23:46:48Z"
+  "updated_at": "2026-09-12T23:47:21Z"
 }
