@@ -182,6 +182,8 @@ mod semantic_analysis_test;
 #[cfg(test)]
 mod source_publish_test;
 #[cfg(test)]
+mod source_sugar_test;
+#[cfg(test)]
 mod source_test;
 #[cfg(test)]
 mod telemetry_dump_test;

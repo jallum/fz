@@ -423,14 +423,14 @@ fn main(), do: answer()
         world.pending_function_source(main).is_some(),
         "later source forms should publish after item macro expansion updates the namespace",
     );
-    assert!(
+    assert_eq!(
         macro_expansions
             .all()
             .into_iter()
             .filter(|event| event.function == make_answer)
-            .count()
-            >= 1,
-        "item macro expansion should run through the ordinary macro executable path",
+            .count(),
+        1,
+        "one logical item-macro call should execute once even when its scope job blocks and retries",
     );
 }
 
@@ -569,9 +569,9 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         .iter()
         .filter(|event| event.function == inc || event.function == double)
         .count();
-    assert!(
-        body_macro_expanded >= 4,
-        "demand-time body expansion should emit macro invocation telemetry for the body-local macros",
+    assert_eq!(
+        body_macro_expanded, 4,
+        "each of the four body-local macro call sites should execute once across blocked retries",
     );
     let main_expanded = expanded_functions
         .borrow()

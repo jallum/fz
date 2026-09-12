@@ -471,6 +471,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         self.product_reads.push(product);
     }
 
+    fn macro_caller_scope(&self, scope: ScopeSnapshot) -> ScopeSnapshot {
+        scope.with_namespace(self.namespace)
+    }
+
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId> {
         match self.world.lookup_callable_namespace(scope.namespace(), name, arity) {
             Some(NamespaceSymbol::Macro(function)) if self.world.function_module(function) == self.current_module => {

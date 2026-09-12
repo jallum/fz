@@ -10,9 +10,13 @@ use crate::source::SourceMap;
 
 pub(crate) fn rewrite_source_sugar(
     owner: &QuotedSourceRoot,
+    source: AnyValueRef,
     node: &QuotedAstNode,
     sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    if let Some(rewritten) = owner.source_sugar_rewrite(source) {
+        return Ok(Some(rewritten));
+    }
     if !is_list_like(&node.tail) {
         return Ok(None);
     }
@@ -21,7 +25,7 @@ pub(crate) fn rewrite_source_sugar(
     }
     let head = node.head.atom_name()?;
     let args = node.tail.list_items()?;
-    match head.as_str() {
+    let rewritten = match head.as_str() {
         "|>" if args.len() == 2 => rewrite_pipe(owner, node, &args, sources),
         "&" if args.len() == 1 => rewrite_capture(owner, node, &args[0], sources),
         "-" if args.len() == 1 => rewrite_unary_minus(owner, node, &args[0]),
@@ -30,7 +34,11 @@ pub(crate) fn rewrite_source_sugar(
             rewrite_operator(owner, node, head.as_str(), &args, sources)
         }
         _ => Ok(None),
+    }?;
+    if let Some(rewritten) = rewritten {
+        owner.memoize_source_sugar_rewrite(source, rewritten);
     }
+    Ok(rewritten)
 }
 
 fn rewrite_pipe(

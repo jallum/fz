@@ -137,6 +137,11 @@ The shared recursive walk does three things:
    `rewrite_source_sugar(...)` runs before macro-call handling, so source-only
    sugars such as `|>`, capture shorthand, multi-clause lambda sugar, and
    operator sugar collapse into ordinary quoted forms before function decoding.
+   Each successful rewrite is memoized in its owning `QuotedSourceHeap` by the
+   original node identity. Retries therefore revisit the same rewritten root
+   and every synthesized descendant macro keeps one invocation identity (a
+   capture can synthesize several). The memo dies with the source heap; it is a
+   deterministic representation cache, not another source or product authority.
 
 2. Detect macro calls.
    `expand_ast_call(...)` treats `quote` as inert quoted data, resolves local
@@ -146,8 +151,13 @@ The shared recursive walk does three things:
 3. Run the macro and recurse on its result.
    `expand_macro_invocation(...)` reads `FunctionDefined(function)` and the
    hidden root's retained `RootBackendProduct(root)`, projects
-   `__CALLER__` from the current `ScopeSnapshot`, runs the macro, emits
-   telemetry, and then immediately re-enters expansion on the returned root.
+   `__CALLER__` from the source-visible caller scope, runs the macro, emits
+   telemetry, memoizes that immediate output by invocation identity, caller
+   scope, and retained backend-product identity, and then
+   immediately re-enters expansion on the returned root. A downstream wait can
+   therefore retry recursive expansion without replaying the macro. The cache
+   owns the quoted invocation/output roots but only a `Weak<BackendProgram>`;
+   retiring a macro product releases it and makes the next lookup miss.
 
 Expansion stops only when the returned tree contains no more source sugar and
 no more eligible macro calls.
@@ -174,8 +184,10 @@ is compiled once and executed many times, and the caller is unknown when the
 macro body is expanded. So it stays a runtime parameter — `lower_clause`
 prepends it, and `expand_macro_invocation` projects it from the call-site scope
 (`project_env_value(scope, Caller)`) and passes it as the macro's first
-argument. The def-head macros capture it as `Fz.Compiler.define(source,
-__CALLER__)`, the Elixir-aligned def-site env seam.
+argument. Function-body expansion strips its transient `__ENV__` splice from
+that source-visible scope, so retries cannot invent a new `__CALLER__.namespace`
+or a new macro-cache identity. The def-head macros capture `__CALLER__` as
+`Fz.Compiler.define(source, __CALLER__)`, the Elixir-aligned def-site env seam.
 
 ## How Remote Macros Stay Honest
 

@@ -11,6 +11,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::rc::{Rc, Weak};
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
@@ -99,6 +100,18 @@ struct WarningDiagnosticKey {
     primary: Span,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MacroInvocationKey {
+    function: FunctionId,
+    source: QuotedSourceRoot,
+    scope: ScopeSnapshot,
+}
+
+struct MemoizedMacroExpansion {
+    product: Weak<BackendProgram>,
+    output: QuotedSourceRoot,
+}
+
 impl WarningDiagnosticKey {
     fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
         Self {
@@ -151,6 +164,7 @@ pub struct World {
     incoming_input_contributions: ContributionMap<InputSlot, Job, IncomingInputSources>,
     roots: RootMap,
     macro_roots: HashMap<FunctionId, RootId>,
+    macro_expansions: HashMap<MacroInvocationKey, MemoizedMacroExpansion>,
     namespaces: NamespaceStore,
     types: Types,
     transport: TransportStore,
@@ -287,6 +301,7 @@ impl World {
             incoming_input_contributions: ContributionMap::new(),
             roots: RootMap::new(),
             macro_roots: HashMap::new(),
+            macro_expansions: HashMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             transport: TransportStore::new(),
@@ -995,6 +1010,58 @@ impl World {
         });
         self.macro_roots.insert(function, root);
         root
+    }
+
+    pub(crate) fn memoized_macro_expansion(
+        &self,
+        function: FunctionId,
+        source: &QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        product: &Rc<BackendProgram>,
+    ) -> Option<QuotedSourceRoot> {
+        let entry = self.macro_expansions.get(&MacroInvocationKey {
+            function,
+            source: source.clone(),
+            scope,
+        })?;
+        let retained_product = entry.product.upgrade()?;
+        Rc::ptr_eq(&retained_product, product).then(|| entry.output.clone())
+    }
+
+    pub(crate) fn memoize_macro_expansion(
+        &mut self,
+        function: FunctionId,
+        source: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        product: &Rc<BackendProgram>,
+        output: QuotedSourceRoot,
+    ) {
+        self.macro_expansions.insert(
+            MacroInvocationKey {
+                function,
+                source,
+                scope,
+            },
+            MemoizedMacroExpansion {
+                product: Rc::downgrade(product),
+                output,
+            },
+        );
+    }
+
+    pub(crate) fn retire_macro_expansions_for_root(&mut self, root: RootId) {
+        let function = self.root_entry(root).function;
+        if self.macro_roots.get(&function) == Some(&root) {
+            self.macro_expansions.retain(|key, _| key.function != function);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn macro_expansion_count(&self, function: FunctionId) -> usize {
+        self.macro_expansions
+            .keys()
+            .filter(|key| key.function == function)
+            .count()
     }
 
     pub fn reference_module(&mut self, name: ModuleName) -> ModuleId {

@@ -7,7 +7,198 @@ use crate::exec::runtime::ProcessExitCapture;
 use crate::telemetry::ConfiguredTelemetry;
 
 use super::pull::{ProductKey, ProductRequestId, PullOutcome};
-use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, ModuleId, RootSubmission, World};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, ModuleId, QuotedSourceRoot, RootSubmission, World};
+
+#[test]
+fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = crate::telemetry::Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let expansions = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&expansions);
+    tel.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_caller_scope.fz".into()),
+        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\nfn main() do\n assert(caller_function(), \"caller function\")\n caller_namespace()\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let caller_function = compiler
+        .world_mut()
+        .reference_function(ModuleId::GLOBAL, "caller_function", 0);
+    let caller_namespace = compiler
+        .world_mut()
+        .reference_function(ModuleId::GLOBAL, "caller_namespace", 0);
+
+    let result = compiler.run_root_interp(root);
+    let main = compiler.root_function(root);
+    let source_namespace = compiler
+        .world()
+        .function_scope(main)
+        .expect("main should have an authoritative definition scope")
+        .namespace()
+        .as_u32() as i64;
+    assert_eq!(result, Ok(source_namespace), "{:?}", diagnostics.events());
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|function| **function == caller_function || **function == caller_namespace)
+            .count(),
+        2,
+        "each caller-reflecting macro should execute once despite body-expansion retries"
+    );
+}
+
+#[test]
+fn pipe_rewrite_keeps_macro_invocation_identity_across_nested_product_waits() {
+    let tel = ConfiguredTelemetry::new();
+    let expansions = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&expansions);
+    tel.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_source_sugar.fz".into()),
+        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\nfn main(), do: 41 |> outer()\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outer = compiler.world_mut().reference_function(ModuleId::GLOBAL, "outer", 1);
+    let inner = compiler.world_mut().reference_function(ModuleId::GLOBAL, "inner", 1);
+
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|function| **function == outer)
+            .count(),
+        1,
+        "rewriting the pipe again on retry must not create a new outer invocation"
+    );
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|function| **function == inner)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn capture_rewrite_keeps_nested_macro_invocation_identity_across_product_waits() {
+    let tel = ConfiguredTelemetry::new();
+    let expansions = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&expansions);
+    tel.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_capture_rewrite.fz".into()),
+        text: "defmacro outer(x) do\n quote do: inner(unquote(x))\nend\ndefmacro inner(x) do\n quote do: unquote(x) + 1\nend\nfn main() do\n fun = &(outer(&1))\n fun.(41)\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outer = compiler.world_mut().reference_function(ModuleId::GLOBAL, "outer", 1);
+    let inner = compiler.world_mut().reference_function(ModuleId::GLOBAL, "inner", 1);
+
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|function| **function == outer)
+            .count(),
+        1,
+        "retrying capture desugaring must reuse its synthesized outer invocation"
+    );
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|function| **function == inner)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn macro_expansion_cache_reuses_unchanged_calls_and_invalidates_changed_inputs() {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = crate::telemetry::Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let expansions = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&expansions);
+    tel.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_provider.fz".into()),
+        text: "defmodule Helpers do\n defmacro inc(x) do\n  quote do: unquote(x) + 1\n end\nend\n".into(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_initial.fz".into()),
+        text: "require Helpers\nfn main(), do: Helpers.inc(40)\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let helpers = compiler
+        .world_mut()
+        .reference_module(crate::modules::identity::ModuleName::parse_dotted("Helpers").unwrap());
+    let inc = compiler.world_mut().reference_function(helpers, "inc", 1);
+
+    assert_eq!(compiler.run_root_interp(root), Ok(41));
+    assert_eq!(
+        expansions.borrow().iter().filter(|function| **function == inc).count(),
+        1
+    );
+
+    assert_eq!(compiler.run_root_interp(root), Ok(41));
+    assert_eq!(
+        expansions.borrow().iter().filter(|function| **function == inc).count(),
+        1,
+        "an unchanged call and macro product must reuse the immediate expansion"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_cache_changed_input.fz".into()),
+        text: "require Helpers\nfn main(), do: Helpers.inc(41)\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    assert_eq!(
+        expansions.borrow().iter().filter(|function| **function == inc).count(),
+        2,
+        "a new quoted invocation must execute independently"
+    );
+}
 
 fn run_macro_program(text: String) -> Result<i64, String> {
     let tel = ConfiguredTelemetry::new();
@@ -336,6 +527,7 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     diagnostics.install(&tel, &["fz", "diag"]);
     let jobs = Rc::new(RefCell::new(Vec::<Job>::new()));
     let evaluations = Rc::new(RefCell::new(Vec::<ProductKey>::new()));
+    let expansions = Rc::new(RefCell::new(Vec::new()));
     let observed = Rc::clone(&jobs);
     tel.attach_raw_event2::<World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
@@ -345,6 +537,11 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
         &["fz", "compiler2", "pull", "product", "evaluated"],
         move |_, _, _, key, _, _| observed.borrow_mut().push(key.clone()),
+    );
+    let observed = Rc::clone(&expansions);
+    tel.attach_raw_event3::<World, super::FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -361,6 +558,14 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     let main = compiler.root_function(root);
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "inc", 1);
     let macro_root = compiler.world_mut().macro_root(function);
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        1
+    );
     let content = ProductKey::RootBackendProduct(macro_root);
     let generation = compiler.retained_product_generation(macro_root, &content);
     assert_eq!(generation, Some(1));
@@ -390,6 +595,14 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         "unchanged macro calls reuse the settled root without compiler evaluation"
     );
     assert!(jobs.borrow().is_empty());
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        1
+    );
 
     compiler.submit_code(CodeSubmission {
         name: Some("macro_product_unrelated.fz".into()),
@@ -401,6 +614,14 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         "unrelated source cannot dirty the macro root"
     );
     assert!(!jobs.borrow().contains(&source_consumer));
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        1
+    );
 
     jobs.borrow_mut().clear();
     evaluations.borrow_mut().clear();
@@ -418,6 +639,15 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         !jobs.borrow().contains(&source_consumer),
         "equal backend reproduction must restore source finality without executing its consumer"
     );
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        1,
+        "reproducing equal retained content must preserve the macro expansion"
+    );
 
     jobs.borrow_mut().clear();
     evaluations.borrow_mut().clear();
@@ -433,6 +663,15 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     assert_eq!(compiler.retained_product_generation(macro_root, &content), Some(2));
     assert_eq!(jobs.borrow().iter().filter(|job| **job == source_consumer).count(), 1);
     assert!(evaluations.borrow().contains(&content));
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        2,
+        "changed retained macro content must execute the invocation once more"
+    );
     assert!(!jobs.borrow().contains(&control_consumer));
     assert!(!evaluations.borrow().contains(&control_content));
     assert_eq!(
@@ -452,7 +691,13 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
     let retained = compiler.retained_backend_program(macro_root);
     let released = Rc::downgrade(&retained);
     drop(retained);
+    assert_eq!(compiler.world().macro_expansion_count(function), 1);
     assert!(compiler.retire_root_products(macro_root));
+    assert_eq!(
+        compiler.world().macro_expansion_count(function),
+        0,
+        "retiring the macro root must release its cached quoted outputs"
+    );
     assert!(
         released.upgrade().is_none(),
         "no World mirror may keep a retired macro backend alive"
@@ -461,5 +706,14 @@ fn macro_content_movement_reexecutes_only_source_consumers_of_changed_content() 
         compiler.run_root_interp(root),
         Ok(42),
         "retiring a consumed macro product withdraws its dependency and a later request reproduces it"
+    );
+    assert_eq!(
+        expansions
+            .borrow()
+            .iter()
+            .filter(|expanded| **expanded == function)
+            .count(),
+        3,
+        "reprovisioning a retired macro backend must execute the invocation against the new product"
     );
 }
