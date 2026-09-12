@@ -1,0 +1,17 @@
+#---
+# purpose: "nested and condition-only selection skips unselected divergence and preserves omitted else"
+#---
+fnp forbidden(), do: panic(:unselected_rhs)
+fn main() do
+  assert((nil and forbidden()) == nil)
+  assert((true or forbidden()) == true)
+  assert((false and forbidden()) == false)
+  assert((7 or forbidden()) == 7)
+  assert((false or nil or {42}) == {42})
+  assert((true and 7 and [42]) == [42])
+  assert((if false or [1], do: :yes, else: :no) == :yes)
+  assert((if nil and forbidden(), do: :yes, else: :no) == :no)
+  assert((if true and [1], do: :yes, else: :no) == :yes)
+  assert((if 7 or forbidden(), do: :yes, else: :no) == :yes)
+  assert((if false, do: forbidden()) == nil)
+end

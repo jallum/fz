@@ -1,0 +1,20 @@
+#---
+# purpose: "selected guard values join without replacing entry bindings with branch-local SSA values"
+#---
+fnp selected(value) when (value or 99) == value and (value or (1 / 0)) == value, do: :selected
+fnp selected(_), do: :other
+fn main() do
+  assert(selected(7) == :selected)
+  assert(selected(false) == :other)
+  result = case 7 do
+    value when (value or 99) == value and (value or (1 / 0)) == value -> :selected
+    _ -> :other
+  end
+  assert(result == :selected)
+  send(self(), 7)
+  received = receive do
+    value when (value or 99) == value and (value or (1 / 0)) == value -> :selected
+    _ -> :other
+  end
+  assert(received == :selected)
+end

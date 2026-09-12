@@ -75,7 +75,7 @@ Control flow and pattern steps refine the environment instead of producing a new
 value:
 
 ```text
-If              clone `values` into each branch, type both, union the results
+Dispatch        refine input values per reachable ordered outcome, union results
 AssertLiteral   values[source] := source ∩ literal       (narrow on a match arm)
 AssertTuple     values[source] := source ∩ tuple(any×N)
 AssertEmptyList values[source] := source ∩ []
@@ -84,8 +84,10 @@ TupleField      values[value]  := tuple_field_type(source, index)
 SplitList       values[head] := elem(source); values[tail] := list(elem(source))
 ```
 
-`If` clones the value map per branch so a narrowing in one arm does not leak into
-the other, then unions the arm results — the same shape `union` gives any branch.
+Source `if`, `and`, and `or` use ordered dispatch over `false | nil` and its
+remaining domain. Each reachable outcome receives its own refined value map;
+an impossible arm contributes no type or callsite. Missing condition evidence
+waits rather than becoming a truthiness guess.
 The clause-level dispatch already proved the head shape, so clause params bind
 without assertions; the `Assert*` steps narrow only where an inner `=` match or
 guard demands it.

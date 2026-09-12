@@ -42,6 +42,7 @@ pub(crate) struct ExecutableFacts {
 pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) body: &'a LoweredBody,
     pub(crate) reachable_clauses: &'a [u32],
+    pub(crate) reachable_entries: &'a [ControlEntryId],
     pub(crate) value_types: &'a HashMap<ValueId, Ty>,
     pub(crate) entry_dispatch_inputs: &'a HashSet<usize>,
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
@@ -127,6 +128,7 @@ impl ExecutableFacts {
         RuntimeDemandFacts {
             body: &self.body,
             reachable_clauses: self.analysis.entry_reachability.clauses(),
+            reachable_entries: &self.analysis.reachable_entries,
             value_types: &self.analysis.value_types,
             entry_dispatch_inputs: &self.entry_dispatch_inputs,
             callsites: &self.callsites,
@@ -229,9 +231,10 @@ pub(crate) fn project_executable_facts(
         })
         .collect();
     complete_settled_call_result_types(world, &body, &callsites, &mut analysis);
-    let delivered_value_joins = delivered_value_joins(&body);
-    let callsite_return_origins = collect_callsite_return_origins(&body);
-    let value_origins = collect_value_origins(&body, &callsite_return_origins);
+    let reachable = Some(analysis.reachable_entries.as_slice());
+    let delivered_value_joins = delivered_value_joins(&body, reachable);
+    let callsite_return_origins = collect_callsite_return_origins(&body, reachable);
+    let value_origins = collect_value_origins(&body, &callsite_return_origins, reachable);
     let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
         .keys()
         .filter_map(|&value| {
@@ -307,7 +310,6 @@ fn complete_settled_call_result_types(
                 (*value, *callsite)
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => continue,
@@ -566,12 +568,6 @@ fn collect_entry_callsite_needs(
                 tuple_demands.insert(*value, arity);
             }
         }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
-            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
-        }
         LoweredTail::Dispatch { dispatch, .. } => {
             for edge in &dispatch.outcomes {
                 let _ = collect_entry_callsite_needs(entries, edge.target, outgoing_need, out);
@@ -674,12 +670,18 @@ fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite:
     }
 }
 
-pub(crate) fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<CallSiteId, TransportOrigin> {
+pub(crate) fn collect_callsite_return_origins(
+    body: &LoweredBody,
+    reachable: Option<&[ControlEntryId]>,
+) -> HashMap<CallSiteId, TransportOrigin> {
     let mut origins = HashMap::new();
     let LoweredBody::Clauses { entries, .. } = body else {
         return origins;
     };
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        if reachable.is_some_and(|reachable| !reachable.contains(&ControlEntryId::from_u32(index as u32))) {
+            continue;
+        }
         match entry.tail {
             LoweredTail::DirectCall { callsite, .. } => {
                 origins.insert(callsite, TransportOrigin::CallsiteReturn(callsite));
@@ -744,12 +746,16 @@ fn local_callable_origin_from<'a>(
 pub(crate) fn collect_value_origins(
     body: &LoweredBody,
     callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
+    reachable: Option<&[ControlEntryId]>,
 ) -> HashMap<ValueId, TransportOrigin> {
     let mut origins = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return origins;
     };
     for clause in clauses {
+        if reachable.is_some_and(|reachable| !reachable.contains(&clause.entry)) {
+            continue;
+        }
         for step in &clause.projections {
             for (value, origin) in step_transport_origins(step) {
                 origins.insert(value, origin);
@@ -760,12 +766,18 @@ pub(crate) fn collect_value_origins(
         }
     }
     for (owner, entry) in entries.iter().enumerate() {
+        if reachable.is_some_and(|reachable| !reachable.contains(&ControlEntryId::from_u32(owner as u32))) {
+            continue;
+        }
         for step in &entry.steps {
             for (value, origin) in step_transport_origins(step) {
                 origins.insert(value, origin);
             }
         }
         for edge in entry.tail.outcome_edges() {
+            if reachable.is_some_and(|reachable| !reachable.contains(&edge.target)) {
+                continue;
+            }
             for argument in &edge.arguments {
                 origins.insert(
                     argument.parameter,
@@ -789,7 +801,7 @@ pub(crate) fn collect_value_origins(
             _ => {}
         }
     }
-    for join in delivered_value_joins(body).into_values() {
+    for join in delivered_value_joins(body, reachable).into_values() {
         let mut sources = join
             .sources
             .into_iter()
@@ -911,9 +923,6 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
                 dest: ControlDestination::Deliver(target),
                 ..
             } => pending.push(*target),
-            LoweredTail::If {
-                then_entry, else_entry, ..
-            } => pending.extend([*then_entry, *else_entry]),
             LoweredTail::Dispatch { dispatch, .. } => {
                 pending.extend(dispatch.outcomes.iter().map(|edge| edge.target));
                 pending.push(dispatch.miss_entry);

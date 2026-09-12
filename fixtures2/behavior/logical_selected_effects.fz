@@ -1,0 +1,29 @@
+#---
+# purpose: "logical selection executes each selected output effect once and skips unselected effects"
+#---
+fn mailbox() do
+  false and send(self(), :unselected_and)
+  true or send(self(), :unselected_or)
+  true and send(self(), :selected_and)
+  false or send(self(), :selected_or)
+  first = receive do message -> message end
+  second = receive do message -> message end
+  assert({first, second} == {:selected_and, :selected_or})
+  empty = receive do _ -> false after 0 -> true end
+  assert(empty)
+end
+fn main() do
+  dbg(false) and dbg(:unselected_and)
+  dbg(true) or dbg(:unselected_or)
+  nil and dbg(:unselected_nil)
+  7 or dbg(:unselected_integer)
+  dbg(true) and dbg(:selected_and)
+  dbg(false) or dbg(:selected_or)
+  left = false
+  if left, do: dbg(:unselected_if), else: left
+  xs = [1, 2]
+  dbg(true and xs)
+  dbg(false or xs)
+  mailbox()
+  0
+end

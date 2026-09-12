@@ -534,11 +534,12 @@ fn compiler2_coalesced_closure_target_keeps_its_capture_slot() {
     world.submit_code(
         Some("coalesced_closure_capture.fz".to_string()),
         r#"
-fn main() do
-  cap = if true, do: 1, else: "s"
+fn captured(n) do
+  cap = if n == 0, do: 1, else: "s"
   f = fn () -> cap end
   f.()
 end
+fn main(), do: captured(0)
 "#
         .to_string(),
     );

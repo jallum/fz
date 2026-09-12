@@ -759,15 +759,6 @@ fn lower_backend_tail(
                     .transpose()?,
             }
         }
-        LoweredTail::If {
-            cond,
-            then_entry,
-            else_entry,
-        } => BackendTail::If {
-            cond: *cond,
-            then_entry: *then_entry,
-            else_entry: *else_entry,
-        },
         LoweredTail::Dispatch {
             inputs,
             bindings,
@@ -1182,10 +1173,7 @@ fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<
         BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
         BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
         BackendTail::Halt { atom } => push_atom(seen, atoms, atom),
-        BackendTail::Value { .. }
-        | BackendTail::DirectCall { .. }
-        | BackendTail::ClosureCall { .. }
-        | BackendTail::If { .. } => {}
+        BackendTail::Value { .. } | BackendTail::DirectCall { .. } | BackendTail::ClosureCall { .. } => {}
     }
 }
 

@@ -29,6 +29,260 @@ use std::rc::Rc;
 type OutputFacts = Vec<(FactKey, bool)>;
 
 #[test]
+fn compiler2_conditional_callable_origin_and_demand_exclude_dead_arms() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("conditional_callable_origin.fz".into()),
+        text: "fn main() do\n offset = 40\n callback = if false, do: fn(value) -> value end, else: fn(value) -> value + offset end\n callback.(2)\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let backend = compiler.retained_backend_program(root);
+    let main = backend
+        .executables()
+        .iter()
+        .find(|executable| executable.key.activation.function == compiler.root_function(root))
+        .unwrap();
+    let facts = compiler.world().executable_facts(&main.key).unwrap();
+    let demand = compiler.world().runtime_demand(&main.key).unwrap();
+    let LoweredBody::Clauses { entries, .. } = facts.body() else {
+        panic!("source body")
+    };
+    let mut live_lambda = None;
+    let mut dead_lambdas = Vec::new();
+    let mut callee = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let reachable = facts
+            .analysis()
+            .reachable_entries
+            .contains(&super::ControlEntryId::from_u32(index as u32));
+        if let LoweredTail::Dispatch { dispatch, .. } = &entry.tail {
+            assert!(
+                !facts.analysis().reachable_entries.contains(&dispatch.miss_entry),
+                "an exhaustive conditional never activates its structural miss"
+            );
+            let miss = &entries[dispatch.miss_entry.as_u32() as usize];
+            assert!(
+                matches!(miss.tail, LoweredTail::Halt { .. }),
+                "the mandatory structural miss is inert"
+            );
+            for step in &miss.steps {
+                let LoweredStep::Const { value, .. } = step else {
+                    panic!("the structural miss can contain only its unused block-result constant")
+                };
+                assert!(
+                    !demand.value_demands.contains_key(value),
+                    "the impossible miss demands no value"
+                );
+                assert!(
+                    facts.value_origin(*value).is_none(),
+                    "the impossible miss publishes no origin"
+                );
+            }
+        }
+        for step in &entry.steps {
+            if let LoweredStep::Lambda {
+                value,
+                function,
+                captures,
+            } = step
+            {
+                if reachable {
+                    live_lambda = Some((*function, captures.clone()));
+                } else {
+                    dead_lambdas.push((*value, *function));
+                }
+            }
+        }
+        if let LoweredTail::ClosureCall { callee: value, .. } = entry.tail {
+            callee = Some(value);
+        }
+    }
+    let (function, captures) = live_lambda.expect("selected captured lambda");
+    assert_eq!(captures.len(), 1, "the original lexical capture survives selection");
+    let origin = facts
+        .callable_origin(callee.expect("selected invocation"))
+        .expect("dead alternatives cannot erase a selected callable's origin");
+    assert_eq!(
+        (origin.function, origin.captures.as_ref()),
+        (function, captures.as_slice())
+    );
+    assert!(
+        !dead_lambdas.is_empty(),
+        "the structural body retains the unselected source arm"
+    );
+    for (value, function) in dead_lambdas {
+        assert!(
+            !demand.value_demands.contains_key(&value),
+            "a proven dead construction has no executable-local demand"
+        );
+        assert!(
+            facts.value_origin(value).is_none(),
+            "a proven dead construction has no executable-local origin"
+        );
+        assert!(
+            !backend
+                .executables()
+                .iter()
+                .any(|executable| executable.key.activation.function == function),
+            "an unselected callable creates no executable product"
+        );
+    }
+}
+
+#[test]
+fn compiler2_logical_selection_preserves_list_ownership() {
+    for op in ["and", "or"] {
+        let flag = if op == "and" { "true" } else { "false" };
+        let source = format!(
+            "fn rebuild(flag, xs) do\n  selected = flag {op} xs\n  [h | _] = xs\n  changed = [h | [9]]\n  {{selected, changed}}\nend\nfn main() do\n  if rebuild({flag}, [1, 2]) == {{[1, 2], [1, 9]}}, do: 42, else: 0\nend\n"
+        );
+        assert_list_retention_ownership(
+            &format!("logical_{op}_retains_selected_source"),
+            &source,
+            "rebuild",
+            2,
+            crate::fz_ir::ListRewritePermission::RetainOnly,
+            None,
+        );
+    }
+}
+
+#[test]
+fn compiler2_logical_selection_forwards_operand_origins_and_input_demand() {
+    use super::executable_facts::TransportOrigin;
+    use super::keying::DispatchDemand;
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("logical_selection_origins.fz".into()),
+        text: "fn select_and(a, b), do: a and b\nfn select_or(a, b), do: a or b\nfn main() do\n  xs = [42]\n  {select_and(true, xs), select_or(false, xs), select_and(nil, xs), select_or(xs, nil)}\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.compile_root_jit(root).expect("selected operand program");
+    let program = compiler.retained_backend_program(root);
+    for name in ["select_and", "select_or"] {
+        let function = function_id(&functions, name, 2);
+        assert_eq!(
+            compiler
+                .world()
+                .input_demand(function)
+                .expect("selection demand")
+                .returned,
+            [DispatchDemand::Whole, DispatchDemand::Whole],
+            "either original operand can flow into the return"
+        );
+        let mut input_origins = HashSet::new();
+        for executable in program
+            .executables()
+            .iter()
+            .filter(|executable| executable.key.activation.function == function)
+        {
+            let facts = compiler
+                .world()
+                .executable_facts(&executable.key)
+                .expect("selection facts");
+            let mut origins = facts.return_origins().iter().collect::<Vec<_>>();
+            while let Some(origin) = origins.pop() {
+                match origin {
+                    TransportOrigin::ExecutableInput(input) => {
+                        input_origins.insert(*input);
+                    }
+                    TransportOrigin::LocalValue(value) => {
+                        origins.push(facts.value_origin(*value).expect("forwarded value origin"))
+                    }
+                    TransportOrigin::Join(alternatives) => origins.extend(alternatives.iter()),
+                    other => panic!("selection must preserve input origin: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(
+            input_origins,
+            HashSet::from([0, 1]),
+            "both selected input origins survive specialization"
+        );
+    }
+}
+
+#[test]
+fn compiler2_logical_selection_artifact_is_deterministic_and_reused_without_work() {
+    let mut canonical = None;
+    for _ in 0..2 {
+        let tel = ConfiguredTelemetry::new();
+        let evaluations = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&evaluations);
+        tel.attach_raw_event3::<ProductKey, super::pull::ProductRequestId, super::pull::PullOutcome, _>(
+            &["fz", "compiler2", "pull", "product", "evaluated"],
+            move |_, _, _, _, _, _| observed.set(observed.get() + 1),
+        );
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("logical_selected_callable.fz".into()),
+            text: include_str!("../../fixtures2/behavior/logical_selected_callable.fz").into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.compile_root_jit(root).expect("cold selected operand artifact");
+        let native = compiler.retained_native_program(root);
+        let backend = compiler.retained_backend_program(root);
+        let rendered = super::canon::canon_backend_program(compiler.world(), &backend);
+        if let Some(expected) = &canonical {
+            assert_eq!(
+                &rendered, expected,
+                "independent compiles publish the same selected-operand artifact"
+            );
+        } else {
+            canonical = Some(rendered);
+        }
+        evaluations.set(0);
+        let before = compiler.world().work_start_tally();
+        compiler
+            .compile_root_jit(root)
+            .expect("unchanged selected operand artifact");
+        assert_eq!(compiler.world().work_start_tally(), before);
+        assert_eq!(evaluations.get(), 0);
+        assert!(Rc::ptr_eq(&native, &compiler.retained_native_program(root)));
+        compiler.submit_code(CodeSubmission {
+            name: Some("logical_unrelated.fz".into()),
+            text: "fn unrelated(), do: :unused\n".into(),
+        });
+        compiler
+            .compile_root_jit(root)
+            .expect("unrelated edit preserves selected operand artifact");
+        assert_eq!(
+            evaluations.get(),
+            0,
+            "unrelated edits evaluate no requested-root product"
+        );
+        assert_eq!(
+            compiler.world().work_start_tally().delta_since(before),
+            super::WorkStartTally {
+                ignition: 2,
+                ..super::WorkStartTally::default()
+            }
+        );
+        assert!(Rc::ptr_eq(&native, &compiler.retained_native_program(root)));
+        assert!(Rc::ptr_eq(&backend, &compiler.retained_backend_program(root)));
+    }
+}
+
+#[test]
 fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
     let tel = ConfiguredTelemetry::new();
@@ -49,7 +303,7 @@ fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
     assert_resolved(compiler.drive(), "pinned constraint body");
 
     let body = lowered_body(&bodies, function);
-    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
+    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body, None), None);
     let LoweredBody::Clauses { entries, .. } = &body else {
         panic!("clause body")
     };
@@ -535,7 +789,7 @@ fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
     let dispatch = entries
         .iter()
         .find_map(|entry| match &entry.tail {
-            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            LoweredTail::Dispatch { dispatch, .. } if dispatch.plan.outcomes.len() == 3 => Some(dispatch),
             _ => None,
         })
         .expect("main dispatches bitstring recipes");
@@ -660,7 +914,7 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
             .world()
             .executable_facts(&executable.key)
             .expect("executable facts");
-        let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body()));
+        let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body(), None), None);
         let LoweredBody::Clauses { entries, .. } = facts.body() else {
             continue;
         };
@@ -11590,8 +11844,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// Enum's named decision helpers contribute 52 clause-head plans. All 52 are
 /// unreadable structural/guard questions, so the readable denominator remains
 /// 8 and both escape populations remain unchanged.
+/// fz-tfn.67: source conditionals share ordered dispatch. Their 131 readable
+/// false/nil tests join the `case` class; pruning impossible conditional arms
+/// removes nine unreadable entry plans. Neither escape population changes.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 211, 203), ("receive", 2, 0)];
+    &[("case", 134, 3), ("entry", 202, 194), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -12068,20 +12325,23 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// their list inputs take the list-specific path, so they continue to exercise
 /// both arm and wrapper permutations without paying for the generic reducer
 /// wrappers that path bypasses.
+/// Source conditionals now ask the same `Region::Type` false/nil question as
+/// other ordered plans, so those executed tests join this observation count;
+/// they add no construction-member escape.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 82, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 82, 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 12, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 82, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 316, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 316, 0),
+    ("fixtures2/00183_enum_take_list_range.fz", "", 92, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 92, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 13, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 92, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 365, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 365, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 12, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 316, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 316, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 316, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 316, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 82, 0),
-    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 365, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 365, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 365, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 365, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 92, 0),
+    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 7, 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
@@ -17918,10 +18178,11 @@ fn backend_direct_call_in_entry(
             target: CallEdge::Direct(target),
             ..
         } if local_call_target(&target.callee).activation.function == callee => Some(&entry.tail),
-        BackendTail::If {
-            then_entry, else_entry, ..
-        } => backend_direct_call_in_entry(entries, *then_entry, callee)
-            .or_else(|| backend_direct_call_in_entry(entries, *else_entry, callee)),
+        BackendTail::Dispatch { dispatch, .. } => dispatch
+            .outcomes
+            .iter()
+            .find_map(|edge| backend_direct_call_in_entry(entries, edge.target, callee))
+            .or_else(|| backend_direct_call_in_entry(entries, dispatch.miss_entry, callee)),
         _ => None,
     }
 }
@@ -18144,10 +18405,11 @@ fn direct_call_in_entry(
             callee: function,
             ..
         } if *function == callee => Some((*callsite, *value)),
-        crate::compiler2::LoweredTail::If {
-            then_entry, else_entry, ..
-        } => direct_call_in_entry(entries, *then_entry, callee)
-            .or_else(|| direct_call_in_entry(entries, *else_entry, callee)),
+        crate::compiler2::LoweredTail::Dispatch { dispatch, .. } => dispatch
+            .outcomes
+            .iter()
+            .find_map(|edge| direct_call_in_entry(entries, edge.target, callee))
+            .or_else(|| direct_call_in_entry(entries, dispatch.miss_entry, callee)),
         _ => None,
     }
 }
@@ -18159,9 +18421,11 @@ fn direct_callee_in_entry(
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
         crate::compiler2::LoweredTail::DirectCall { callee: function, .. } => Some(*function),
-        crate::compiler2::LoweredTail::If {
-            then_entry, else_entry, ..
-        } => direct_callee_in_entry(entries, *then_entry).or_else(|| direct_callee_in_entry(entries, *else_entry)),
+        crate::compiler2::LoweredTail::Dispatch { dispatch, .. } => dispatch
+            .outcomes
+            .iter()
+            .find_map(|edge| direct_callee_in_entry(entries, edge.target))
+            .or_else(|| direct_callee_in_entry(entries, dispatch.miss_entry)),
         _ => None,
     }
 }
@@ -18359,7 +18623,7 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
         Some("count.fz".to_string()),
         concat!(
             "fn count(0), do: 0\n",
-            "fn count(n), do: count(n - 1)\n",
+            "fn count(n), do: if count(n - 1), do: 0, else: 0\n",
             "fn main(), do: count(3)\n",
         )
         .to_string(),
@@ -18393,7 +18657,7 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
     // (return_ty None) — the honest snapshot the engine now records.
     assert!(
         callsites.all().iter().any(|record| record.summary.return_ty.is_none()),
-        "some round must record absent return evidence",
+        "the recursive condition must wait for absent return evidence",
     );
 
     // The two lies are gone. Every function in this program returns, so the
@@ -18433,7 +18697,11 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
         Some("forever.fz".to_string()),
-        concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
+        concat!(
+            "fn forever(), do: forever()\n",
+            "fn main(), do: if forever(), do: 1, else: 2\n",
+        )
+        .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
     drive_world_backend_product(&mut world, &tel, &mut sessions, root);
@@ -18905,15 +19173,15 @@ fn compiler2_dispatch_reachability_preserves_correlated_tuple_inputs() {
     let (direct, direct_return) = semantic_reachability_for_source(
         "correlated_tuple_dispatch.fz",
         r#"
-fn choose() do
-  if true, do: {:a, :x}, else: {:b, :y}
+fn choose(n) do
+  if n == 0, do: {:a, :x}, else: {:b, :y}
 end
 
 fn classify({:a, :x}), do: :left
 fn classify({:b, :y}), do: :right
 fn classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+fn main(), do: classify(choose(0))
 "#,
         "classify",
         1,
@@ -18931,15 +19199,15 @@ fn main(), do: classify(choose())
     let projected = reachable_clauses_for_source(
         "projected_tuple_dispatch.fz",
         r#"
-fn choose() do
-  if true, do: {:a, [true]}, else: {:b, [false]}
+fn choose(n) do
+  if n == 0, do: {:a, [true]}, else: {:b, [false]}
 end
 
 fn classify({:a, [true | _tail]}), do: :left
 fn classify({:b, [false | _tail]}), do: :right
 fn classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+fn main(), do: classify(choose(0))
 "#,
         "classify",
         1,
@@ -18953,15 +19221,15 @@ fn main(), do: classify(choose())
     let nested = reachable_clauses_for_source(
         "nested_tuple_dispatch.fz",
         r#"
-fn choose() do
-  if true, do: {:outer, {:a, :x}}, else: {:outer, {:b, :y}}
+fn choose(n) do
+  if n == 0, do: {:outer, {:a, :x}}, else: {:outer, {:b, :y}}
 end
 
 fn classify({:outer, {:a, :x}}), do: :left
 fn classify({:outer, {:b, :y}}), do: :right
 fn classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+fn main(), do: classify(choose(0))
 "#,
         "classify",
         1,
@@ -18975,15 +19243,15 @@ fn main(), do: classify(choose())
     let list_of_tuples = reachable_clauses_for_source(
         "list_of_tuples_dispatch.fz",
         r#"
-fn choose() do
-  if true, do: [{:a, :x}], else: [{:b, :y}]
+fn choose(n) do
+  if n == 0, do: [{:a, :x}], else: [{:b, :y}]
 end
 
 fn classify([{:a, :x} | _tail]), do: :left
 fn classify([{:b, :y} | _tail]), do: :right
 fn classify(_), do: :fallback
 
-fn main(), do: classify(choose())
+fn main(), do: classify(choose(0))
 "#,
         "classify",
         1,

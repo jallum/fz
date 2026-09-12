@@ -43,8 +43,6 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
         BinOp::Ge => float_cmp!(>=),
-        BinOp::And => Ok(if !a.is_truthy() { a } else { b }),
-        BinOp::Or => Ok(if a.is_truthy() { a } else { b }),
     }
 }
 

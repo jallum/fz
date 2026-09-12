@@ -764,7 +764,7 @@ fn input_positions(body: &LoweredBody, input_count: usize) -> HashMap<ValueId, V
     let LoweredBody::Clauses { clauses, .. } = body else {
         return HashMap::new();
     };
-    let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+    let origins = collect_value_origins(body, &collect_callsite_return_origins(body, None), None);
     let mut positions = HashMap::<ValueId, Vec<(usize, Vec<DemandPathStep>)>>::new();
     for clause in clauses {
         for (slot, value) in clause.params.iter().copied().enumerate().take(input_count) {
@@ -905,7 +905,7 @@ fn returned_values(
             _ => {}
         }
     }
-    for join in super::super::body::delivered_value_joins(body).into_values() {
+    for join in super::super::body::delivered_value_joins(body, None).into_values() {
         let sources = join
             .sources
             .iter()
@@ -1085,7 +1085,6 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         LoweredTail::DirectCall { callee: function, .. } => edges.push(StaticEdge::Direct(*function)),
         LoweredTail::Value { .. }
         | LoweredTail::ClosureCall { .. }
-        | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}

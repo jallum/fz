@@ -1491,17 +1491,14 @@ fn emit_short_circuit_guard(
     let done_b = b.create_block();
     b.append_block_param(done_b, types::I64);
 
-    let true_value = bool_const_value(b, true);
-    let false_value = bool_const_value(b, false);
-    let true_ref = emit_receive_value_ref(b, ctx, true_value)?;
-    let false_ref = emit_receive_value_ref(b, ctx, false_value)?;
+    let lhs_ref = emit_receive_value_ref(b, ctx, lhs_value)?;
     match op {
         PatternGuardBinOp::And => b
             .ins()
-            .brif(lhs_truthy, rhs_b, &[], done_b, &[ir::BlockArg::Value(false_ref)]),
+            .brif(lhs_truthy, rhs_b, &[], done_b, &[ir::BlockArg::Value(lhs_ref)]),
         PatternGuardBinOp::Or => b
             .ins()
-            .brif(lhs_truthy, done_b, &[ir::BlockArg::Value(true_ref)], rhs_b, &[]),
+            .brif(lhs_truthy, done_b, &[ir::BlockArg::Value(lhs_ref)], rhs_b, &[]),
         _ => unreachable!("non-short-circuit guard op"),
     };
 
@@ -1509,9 +1506,7 @@ fn emit_short_circuit_guard(
     b.seal_block(rhs_b);
     let mut rhs_state = state.clone();
     let rhs_value = emit_dispatch_guard_expr(b, ctx, rhs, &mut rhs_state)?;
-    let rhs_truthy = emit_truthy_cmp(b, ctx, rhs_value)?;
-    let rhs_bool = emit_bool_value_from_truthy(b, rhs_truthy, false);
-    let rhs_ref = emit_receive_value_ref(b, ctx, rhs_bool)?;
+    let rhs_ref = emit_receive_value_ref(b, ctx, rhs_value)?;
     b.ins().jump(done_b, &[ir::BlockArg::Value(rhs_ref)]);
 
     b.switch_to_block(done_b);

@@ -576,7 +576,6 @@ fn required_resume_transport_positions(
                 Some((*callsite, dest))
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => None,
@@ -655,7 +654,6 @@ fn required_local_backend_transport_positions(
                 value, callsite, args, ..
             } => (*callsite, args, *value),
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => continue,
@@ -807,7 +805,6 @@ fn required_call_edge_transport_positions(
                 );
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => {}
@@ -946,7 +943,6 @@ fn materialize_call_edges(
                 }
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => {}
@@ -1457,12 +1453,6 @@ fn collect_reachable_entries(
                 collect_reachable_entries(entries, *target, reachable_entries, order, out);
             }
         }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_reachable_entries(entries, *then_entry, reachable_entries, order, out);
-            collect_reachable_entries(entries, *else_entry, reachable_entries, order, out);
-        }
         LoweredTail::Dispatch { dispatch, .. } => {
             for edge in &dispatch.outcomes {
                 collect_reachable_entries(entries, edge.target, reachable_entries, order, out);
@@ -1511,12 +1501,6 @@ fn reindex_entries(
                 if let super::super::body::ControlDestination::Deliver(target) = dest {
                     *target = ids[target];
                 }
-            }
-            LoweredTail::If {
-                then_entry, else_entry, ..
-            } => {
-                *then_entry = ids[then_entry];
-                *else_entry = ids[else_entry];
             }
             LoweredTail::Dispatch { dispatch, .. } => {
                 for edge in &mut dispatch.outcomes {
@@ -1740,7 +1724,6 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
             }
         }
         LoweredTail::Value { .. }
-        | LoweredTail::If { .. }
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}

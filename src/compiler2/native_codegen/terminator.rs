@@ -9,7 +9,6 @@ use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
-use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::AnyValue;
 use fz_runtime::heap::Schema;
@@ -380,7 +379,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<(), CodegenError> {
     match &blk.terminator {
-        Term::Goto(target, args) => emit_goto(body.b, var_env, block_map, target, args),
+        Term::Goto(target, args) => emit_goto(body, env, var_env, block_map, caller_fn_id, target, args),
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
@@ -505,19 +504,38 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     }
 }
 
-fn emit_goto(
-    b: &mut FunctionBuilder<'_>,
+fn emit_goto<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     block_map: &HashMap<u32, ir::Block>,
+    function: FnId,
     target: &BlockId,
     args: &[Var],
 ) -> Result<(), CodegenError> {
-    let tgt = *block_map.get(&target.0).unwrap();
-    let arg_vals: Vec<BlockArg> = args
-        .iter()
-        .map(|v| BlockArg::Value(var_env.get(&v.0).expect("unbound goto arg").value()))
-        .collect();
-    b.ins().jump(tgt, &arg_vals);
+    let tgt = *block_map.get(&target.0).ok_or_else(|| {
+        CodegenError::new(format!(
+            "function {function:?} jumps to an unknown successor {target:?}"
+        ))
+    })?;
+    let params = &env.module.fn_by_id(function).block(*target).params;
+    if params.len() != args.len() {
+        return Err(CodegenError::new("goto arguments do not match successor parameters"));
+    }
+    let mut values = Vec::with_capacity(args.len());
+    for (param, arg) in params.iter().zip(args) {
+        let repr = env
+            .active_native_body()
+            .block_param_reprs
+            .get(param)
+            .copied()
+            .map(arg_repr_from_compiler2)
+            .unwrap_or(ArgRepr::ValueRef);
+        let binding = *var_env.get(&arg.0).expect("unbound goto arg");
+        body.push_binding_as_abi_arg(&mut values, binding, repr);
+    }
+    let args = values.into_iter().map(BlockArg::Value).collect::<Vec<_>>();
+    body.b.ins().jump(tgt, &args);
     Ok(())
 }
 

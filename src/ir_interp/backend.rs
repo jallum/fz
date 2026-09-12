@@ -862,31 +862,38 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     }
     let transition = match &entry.tail {
         BackendTail::Value { value, dest } => {
-            // Zero-lane return contracts need no environment read. This is ABI
-            // width, not semantic absence; decoding retains tuple/callable shape.
-            let returns_no_lanes =
-                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.publishes_no_lanes();
-            let result = if returns_no_lanes && !env.contains_key(value) {
-                decode_transport_layout(
-                    transport,
-                    &[],
-                    TransportLayout {
-                        structural: executable.abi.return_layout.layout.structural,
-                        carrier: executable.abi.return_layout.layout.carrier,
-                    },
-                    &mut 0,
-                )?
-            } else {
-                env_get_value(&env, *value)?
-            };
             match dest {
                 ControlDestination::Return => {
+                    // Zero-lane returns retain tuple/callable shape without an environment read.
+                    let result = if executable.abi.return_layout.layout.publishes_no_lanes() && !env.contains_key(value)
+                    {
+                        decode_transport_layout(
+                            transport,
+                            &[],
+                            TransportLayout {
+                                structural: executable.abi.return_layout.layout.structural,
+                                carrier: executable.abi.return_layout.layout.carrier,
+                            },
+                            &mut 0,
+                        )?
+                    } else {
+                        env_get_value(&env, *value)?
+                    };
                     continue_backend_value(runtime, transport, program, result, continuations)
                 }
                 ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
                     entry: *target,
-                    env: delivered_env(runtime, transport, program, entries, &env, *target, Some(result), &[])?,
+                    env: delivered_env(
+                        runtime,
+                        transport,
+                        program,
+                        entries,
+                        &env,
+                        *target,
+                        env.get(value).cloned(),
+                        &[],
+                    )?,
                     continuations,
                 })),
             }
@@ -1127,23 +1134,6 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
                 executable: executable_target,
                 args: call_args,
-                continuations,
-            }))
-        }
-        BackendTail::If {
-            cond,
-            then_entry,
-            else_entry,
-        } => {
-            let target = if env_get(transport, runtime.cur_proc(), &env, *cond)?.is_truthy() {
-                *then_entry
-            } else {
-                *else_entry
-            };
-            Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
-                executable: executable.clone(),
-                entry: target,
-                env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
                 continuations,
             }))
         }
@@ -3307,8 +3297,6 @@ fn backend_binop(op: crate::ast::BinOp) -> Result<IrBinOp, String> {
         crate::ast::BinOp::LtEq => IrBinOp::Le,
         crate::ast::BinOp::Gt => IrBinOp::Gt,
         crate::ast::BinOp::GtEq => IrBinOp::Ge,
-        crate::ast::BinOp::And => IrBinOp::And,
-        crate::ast::BinOp::Or => IrBinOp::Or,
         other => return Err(format!("backend interpreter does not support binary op {:?}", other)),
     })
 }

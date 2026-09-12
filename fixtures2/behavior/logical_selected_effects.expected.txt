@@ -1,0 +1,8 @@
+false
+true
+true
+:selected_and
+false
+:selected_or
+[1, 2]
+[1, 2]

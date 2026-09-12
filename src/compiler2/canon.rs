@@ -1229,18 +1229,6 @@ impl ProgramCanon<'_> {
                 }
                 out.exit();
             }
-            BackendTail::If {
-                cond,
-                then_entry,
-                else_entry,
-            } => {
-                let cond = self.names.value(*cond);
-                out.put(&format!(
-                    "tail if {cond} then=e{} else=e{}",
-                    then_entry.as_u32(),
-                    else_entry.as_u32()
-                ));
-            }
             BackendTail::Dispatch {
                 inputs,
                 bindings,

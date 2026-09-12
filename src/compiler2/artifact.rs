@@ -1296,11 +1296,6 @@ pub enum BackendTail {
         dest: ControlDestination,
         return_flow: Option<BackendReturnFlow>,
     },
-    If {
-        cond: ValueId,
-        then_entry: ControlEntryId,
-        else_entry: ControlEntryId,
-    },
     Dispatch {
         inputs: Vec<ValueId>,
         bindings: DispatchBindings,

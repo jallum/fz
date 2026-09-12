@@ -1674,38 +1674,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     }
                 }
             }
-            BackendTail::If {
-                cond,
-                then_entry,
-                else_entry,
-            } => {
-                let cond = self.env_runtime_var(ctx, executable, env, *cond);
-                let then_b = ctx.builder.block(vec![]);
-                let else_b = ctx.builder.block(vec![]);
-                ctx.set_term(Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    origin: BranchOrigin::User,
-                });
-                ctx.current_block = then_b;
-                let then_args = self.entry_capture_args(ctx, executable, entries, *then_entry, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *then_entry)),
-                    args: then_args,
-                    is_back_edge: false,
-                });
-                ctx.current_block = else_b;
-                let else_args = self.entry_capture_args(ctx, executable, entries, *else_entry, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *else_entry)),
-                    args: else_args,
-                    is_back_edge: false,
-                });
-                Ok(())
-            }
             BackendTail::Dispatch {
                 inputs,
                 bindings,
@@ -3141,6 +3109,34 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             PatternGuardExpr::Binary { op, lhs, rhs } => {
                 let lhs = self.lower_guard_expr(ctx, plan, state, lhs)?;
+                if matches!(
+                    op,
+                    crate::dispatch_matrix::pattern::PatternGuardBinOp::And
+                        | crate::dispatch_matrix::pattern::PatternGuardBinOp::Or
+                ) {
+                    let rhs_block = ctx.builder.block(vec![]);
+                    let selected_block = ctx.builder.block(vec![]);
+                    let result = ctx.builder.fresh_var();
+                    let done = ctx.builder.block(vec![result]);
+                    let (then_b, else_b) = if *op == crate::dispatch_matrix::pattern::PatternGuardBinOp::And {
+                        (rhs_block, selected_block)
+                    } else {
+                        (selected_block, rhs_block)
+                    };
+                    ctx.set_term(Term::If {
+                        cond: lhs,
+                        then_b,
+                        else_b,
+                        origin: BranchOrigin::ClauseDispatch,
+                    });
+                    ctx.current_block = selected_block;
+                    ctx.set_term(Term::Goto(done, vec![lhs]));
+                    ctx.current_block = rhs_block;
+                    let rhs = self.lower_guard_expr(ctx, plan, &mut state.clone(), rhs)?;
+                    ctx.set_term(Term::Goto(done, vec![rhs]));
+                    ctx.current_block = done;
+                    return Ok(result);
+                }
                 let rhs = self.lower_guard_expr(ctx, plan, state, rhs)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
                 var
@@ -4865,8 +4861,6 @@ fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
         crate::ast::BinOp::LtEq => IrBinOp::Le,
         crate::ast::BinOp::Gt => IrBinOp::Gt,
         crate::ast::BinOp::GtEq => IrBinOp::Ge,
-        crate::ast::BinOp::And => IrBinOp::And,
-        crate::ast::BinOp::Or => IrBinOp::Or,
         other => panic!("unsupported backend binop in native lowering: {other:?}"),
     }
 }
@@ -4884,8 +4878,10 @@ fn lower_guard_binop(op: crate::dispatch_matrix::pattern::PatternGuardBinOp) -> 
         crate::dispatch_matrix::pattern::PatternGuardBinOp::LtEq => IrBinOp::Le,
         crate::dispatch_matrix::pattern::PatternGuardBinOp::Gt => IrBinOp::Gt,
         crate::dispatch_matrix::pattern::PatternGuardBinOp::GtEq => IrBinOp::Ge,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::And => IrBinOp::And,
-        crate::dispatch_matrix::pattern::PatternGuardBinOp::Or => IrBinOp::Or,
+        crate::dispatch_matrix::pattern::PatternGuardBinOp::And
+        | crate::dispatch_matrix::pattern::PatternGuardBinOp::Or => {
+            unreachable!("logical guards lower to control flow")
+        }
     }
 }
 

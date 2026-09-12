@@ -1,7 +1,8 @@
 # Pattern Matching
 
 Pattern matching has one decision model shared by function clauses, `case`,
-`with else`, receive probes, and guard-compatible helper dispatch.
+`with else`, ordinary conditionals, lazy logical operators, receive probes,
+and guard-compatible helper dispatch.
 `SourcePatternRows` is row data over source patterns; `DispatchMatrix` owns the
 questions, ordering, branch evidence, and executable `DispatchGraph`.
 
@@ -102,6 +103,12 @@ receive wakeup behavior, and guard result interpretation belong to the producer.
 
 ## Lowering Sites
 
+- `if`, `and`, and `or` share a two-row constructor: a wildcard constrained
+  to `false | nil`, then an unrestricted wildcard. Both rows inspect the same
+  once-evaluated condition value. Their blocks are lowered once, and the mandatory
+  miss is an inert Halt. A proven exhaustive plan does not semantically activate
+  its miss. The reachability calculator narrows that original value
+  separately in each arm; Return/DeliveredResume joins forward selected values.
 - Multi-clause functions build one subject per parameter and route successful
   outcomes to `fn_clause_N` continuation functions. Exhaustion halts with
   `:function_clause`.
@@ -124,6 +131,11 @@ value-origin machinery borrow the owning body's plan and dispatch inputs;
 keying, tuple/callable transport, and execution do not reconstruct bindings by
 position or source spelling. Execution transfers the actual successful state;
 native miss paths keep the pre-test state.
+
+Executable-local value origins, delivered joins, and runtime demand read
+`ActivationAnalysis::reachable_entries`. An impossible arm contributes no
+callable origin or capture demand. Function-level `InputDemand` still walks
+the structural body because its input contract covers all specializations.
 
 Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the

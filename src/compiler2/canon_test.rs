@@ -569,8 +569,16 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            // Exact caller rows retain four specializations hidden by blended evidence.
-            170,
+            // fz-tfn.67: precise cont-only and halt-only int reducer domains key
+            // apart from mixed domains: cont needs list/callback inputs, halt
+            // drops them. Six reduce_while_step keys become eight non-equivalent
+            // keys; dbg/foreign keys narrow one-for-one. Against 6ee0b86f4, the
+            // CLI interp census falls 4883 -> 4840 product evaluations and
+            // 3122 -> 3098 retained products; runtime-demand body walks stay 600.
+            // Native functions rise 498 -> 502 (two entry/body pairs), wrappers
+            // stay 32, and output stays unchanged. The equivalence check below
+            // forbids duplicate domains, not genuinely different ABIs.
+            172,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",

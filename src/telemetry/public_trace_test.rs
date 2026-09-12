@@ -1322,7 +1322,13 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
-const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (172, 32), (225, 31)];
+// Predicate search retains two more exact cont-only/halt-only reducer domains;
+// backend_inventory_width_stays_pinned_on_the_target_fixtures proves the width
+// and rejects equivalent keys. The baseline/candidate CLI census loses 24 retained
+// products and 43 product evaluations; native functions rise by four, while
+// wrappers and runtime-demand body walks stay flat. This five-request population
+// also includes the two leaf functions added by target_edit_sequence.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (174, 32), (225, 31)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -2090,7 +2096,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retractions flat): the two new activations bring their edges.
         // fz-kdt.183: 215 -> 219 distinct (248 -> 252 first appearances,
         // retractions flat): the four new activations bring their edges.
-        callsites: lifecycle(219, 252, 33),
+        // Ordered conditional reachability removes two impossible call edges.
+        callsites: lifecycle(217, 250, 33),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2117,7 +2124,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `List.reduce_while_cont/3` input ascent land before one queued
         // analysis runs. The one run now observes both content movements;
         // every other formula-family count and the final artifacts stay flat.
-        analyze_evaluations: 545,
+        // Two impossible conditional call edges require no activation analysis.
+        analyze_evaluations: 543,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2139,7 +2147,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Macro readiness is a retained content dependency.
         // Exact caller rows reduce semantic work without weakening the
         // retained claim or final executable population.
-        total_evaluations: 1459,
+        total_evaluations: 1457,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",

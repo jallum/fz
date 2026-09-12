@@ -150,12 +150,17 @@ truthful bottom payload type without manufacturing `any` or pretending its
 unreachable body can execute.
 
 A delivered entry can join several call results and local values. Its value
-origin retains every contributor, while each callsite keeps its own return
+origin retains every reachable contributor, while each callsite keeps its own return
 transport identity. The entry's analyzed value type and joined transport layout
 include every live branch: a nonreturning call contributes the empty type, so
 it cannot replace a sibling's `nil` payload with absence. Requiring the joined
 `Value` transport position checks that its analyzed type exists; missing
 evidence is distinct from an explicit empty type.
+
+Executable-local origin and runtime-demand walks consume the existing
+`ActivationAnalysis::reachable_entries`; they do not decide branch truthiness.
+Structural function-level `InputDemand` remains independent of one activation's
+selected outcomes.
 
 The ARGUMENT decides which specialization a closure call reaches, and nothing
 narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that

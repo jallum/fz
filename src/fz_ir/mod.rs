@@ -383,8 +383,6 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
-    And,
-    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1182,8 +1180,6 @@ impl fmt::Display for BinOp {
             BinOp::Le => "<=",
             BinOp::Gt => ">",
             BinOp::Ge => ">=",
-            BinOp::And => "and",
-            BinOp::Or => "or",
         };
         f.write_str(s)
     }

@@ -59,6 +59,22 @@ for a known-Atom operand and answer a constant `1` for a known Int or Float;
 those are sound because a number is never false, but the Atom arm is a
 restatement and would have to move with the rule.
 
+**Operand selection** — ordinary `if`, `and`, and `or` use one ordered
+`PatternDispatchPlan`: a `false | nil` type test selects the falsey arm;
+an unrestricted wildcard selects the remaining truthy domain. The condition
+is evaluated once. Logical right operands stay inside their selected arm,
+and the selected original value crosses existing control joins with its type,
+transport origin, callable captures, and list ownership. `ActivationAnalysis`
+owns executable reachability; local demand and origins exclude dead entries.
+Backend `BinOp` has no logical-value variants.
+Pattern guards use the same selection rule in local and receive dispatch:
+the selected guard value can feed another expression before final truthiness
+decides whether the guard succeeds. Native `Goto` emission coerces each edge's
+arguments to successor parameter representations without rebinding source
+variables; a box created on one edge cannot escape into a sibling block.
+Interpreter delivery lets the successor layout decide whether an omitted
+source binding is valid, before attempting to read it.
+
 **Equality — two questions, and the IR names both.** `TermComparator::compare`
 (`runtime/src/term.rs`) owns comparison over borrowed immutable values, Node,
 and SchemaRegistry. `NumericMode` selects the semantic question:

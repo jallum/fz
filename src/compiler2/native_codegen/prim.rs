@@ -914,7 +914,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     lower_cmp_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
-                BinOp::And | BinOp::Or => lower_bool_binop(body, var_env, *op, *a, *bv, dest_var),
             }
         }
         Prim::UnOp(op, x) => match op {
@@ -1931,32 +1930,6 @@ where
     body.b.seal_block(join_blk);
     let result = body.b.block_params(join_blk)[0];
     Ok(LowerOut::Strict(strict_bool(body.b, result)))
-}
-
-/// Lower a `Prim::BinOp` short-circuit-free boolean op (And/Or).
-/// Both operands are coerced to truthy i8s and combined with
-/// `band`/`bor`.
-fn lower_bool_binop<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    op: BinOp,
-    a: Var,
-    bv: Var,
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let av = *var_env.get(&a.0).expect("bool lhs");
-    let bvv = *var_env.get(&bv.0).expect("bool rhs");
-    let at = body.value_truthy(av);
-    let bt = body.value_truthy(bvv);
-    let combined = match op {
-        BinOp::And => body.b.ins().band(at, bt),
-        BinOp::Or => body.b.ins().bor(at, bt),
-        _ => unreachable!(),
-    };
-    if body.cache.if_only_conds.contains(&dest_var.0) {
-        return Ok(LowerOut::Condition(combined));
-    }
-    Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
 // Runtime adapters for the typed process operations. The descriptor selects

@@ -345,8 +345,8 @@ where
         PatternGuardExpr::Binary { op, lhs, rhs } => {
             let l = eval_dispatch_guard(runtime, module, plan, lhs, inputs, pinned, state, type_match)?;
             let short = match op {
-                PatternGuardBinOp::And if l.is_false() || l.is_nil() => Some(interp_bool_value(false)),
-                PatternGuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(interp_bool_value(true)),
+                PatternGuardBinOp::And if !l.is_truthy() => Some(l),
+                PatternGuardBinOp::Or if l.is_truthy() => Some(l),
                 _ => None,
             };
             if let Some(v) = short {
@@ -376,7 +376,7 @@ where
                 PatternGuardBinOp::LtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? <= 0),
                 PatternGuardBinOp::Gt => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? > 0),
                 PatternGuardBinOp::GtEq => interp_bool_value(guard_cmp(runtime.cur_proc(), l, r)? >= 0),
-                PatternGuardBinOp::And | PatternGuardBinOp::Or => interp_bool_value(!(r.is_false() || r.is_nil())),
+                PatternGuardBinOp::And | PatternGuardBinOp::Or => r,
             }
         }
         PatternGuardExpr::Dispatch {

@@ -209,8 +209,8 @@ fn compiler2_transport_resume_positions_preserve_every_delivering_callsite() {
                 Some(format!("resume_callsite_{case}_{door}.fz")),
                 format!(
                     "fn left(), do: {left}\nfn right(), do: {right}\n\
-                     fn choose(flag) do\n value = if flag, do: {invoke_left}, else: {invoke_right}\n\
-                     dbg(value)\n value\nend\nfn main() do\n choose(true)\n choose(false)\nend\n"
+                     fn choose(flag) do\n value = if flag == 0, do: {invoke_left}, else: {invoke_right}\n\
+                     dbg(value)\n value\nend\nfn main() do\n choose(0)\n choose(1)\nend\n"
                 ),
             );
             let root = world.submit_root(None, "main".into(), 0, ExecutableNeed::Value);
@@ -353,7 +353,7 @@ fn compiler2_transport_resume_endpoints_retain_independent_product_causality() {
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("resume_endpoint_causality.fz".into()),
-        text: "fn left(), do: 1\nfn right(), do: 2\nfn choose(flag) do\n value = if flag, do: left(), else: right()\n {value}\nend\nfn main() do\n dbg(choose(true))\n dbg(choose(false))\n 0\nend\n".into(),
+        text: "fn left(), do: 1\nfn right(), do: 2\nfn choose(flag) do\n value = if flag == 0, do: left(), else: right()\n {value}\nend\nfn main() do\n dbg(choose(0))\n dbg(choose(1))\n 0\nend\n".into(),
     });
     let choose = compiler
         .world_mut()
@@ -377,17 +377,23 @@ fn compiler2_transport_resume_endpoints_retain_independent_product_causality() {
     let super::LoweredBody::Clauses { entries, .. } = &owner.abi.materialized.body else {
         panic!("choose clauses")
     };
-    let left_call = entries
+    let (left_call, joined_entry) = entries
         .iter()
         .find_map(|entry| match &entry.tail {
-            super::LoweredTail::DirectCall { callee, callsite, .. } if *callee == left => Some(*callsite),
+            super::LoweredTail::DirectCall {
+                callee,
+                callsite,
+                dest: super::body::ControlDestination::Deliver(target),
+                ..
+            } if *callee == left => Some((*callsite, *target)),
             _ => None,
         })
         .expect("left incoming callsite");
-    let joined_value = entries
-        .iter()
-        .find_map(|entry| entry.origin.input_value())
+    let joined_value = entries[joined_entry.as_u32() as usize]
+        .origin
+        .input_value()
         .expect("shared if join");
+    let original_join = owner.abi.materialized.original_entry_ids[joined_entry.as_u32() as usize];
     let join_position = TransportPosition::Value {
         executable: owner.abi.transport.executable.clone(),
         value: joined_value,
@@ -397,6 +403,9 @@ fn compiler2_transport_resume_endpoints_retain_independent_product_causality() {
         .transport
         .resume_positions
         .iter()
+        .filter(
+            |position| matches!(position, TransportPosition::ResumePayload { entry, .. } if *entry == original_join),
+        )
         .cloned()
         .chain(std::iter::once(join_position.clone()))
         .collect::<Vec<_>>();
@@ -3074,7 +3083,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     }
 
     let body = world.lowered_body(main_executable.activation.function);
-    let joined_value = delivered_value_joins(&body)
+    let joined_value = delivered_value_joins(&body, None)
         .values()
         .find_map(|join| {
             let producer_functions = join
@@ -4075,10 +4084,11 @@ fn compiler2_transport_plan_keeps_a_continuation_captured_first_class_callable_b
 fn maplist([], _f), do: []
 fn maplist([h | t], f), do: [f.(h) | maplist(t, f)]
 
-fn main() do
-  g = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
+fn mapped(n) do
+  g = if n == 0, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
   maplist([1, 2], g)
 end
+fn main(), do: mapped(0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
@@ -4293,7 +4303,7 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
 fn compiler2_callable_construction_capture_carriers_reach_backend_wrappers() {
     let source = r#"
 fn make(n) do
-  if true do
+  if n == 41 do
     fn x -> n + x end
   else
     fn x -> n - x end
@@ -5016,7 +5026,7 @@ fn compiler2_unused_lexical_capture_is_retained_without_expanding_the_member_abi
 fn discard(_), do: 0
 
 fn make(n) do
-  if true do
+  if n == 41 do
     fn (x) -> if discard(n) == 0, do: x, else: x end
   else
     fn (x) -> if discard(n) == 0, do: x, else: x end
@@ -6000,7 +6010,6 @@ fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, ca
                 }
             }
             BackendTail::Value { .. }
-            | BackendTail::If { .. }
             | BackendTail::Dispatch { .. }
             | BackendTail::Receive(_)
             | BackendTail::Halt { .. } => {}

@@ -1,0 +1,30 @@
+#---
+# purpose: "ordered conditionals preserve captured callable identity and exact invocation results"
+#---
+fnp condition(value), do: value == 0
+fn mixed(offset) do
+  positive = fn(value) -> value + offset end
+  negative = fn(value) -> value - offset end
+  selected = if condition(1), do: positive, else: negative
+  assert(selected.(82) == 42)
+  assert(selected === negative)
+  other = if condition(0), do: positive, else: negative
+  assert(other.(2) == 42)
+  assert(other === positive)
+  scalar = if condition(0), do: 7, else: [1, 2]
+  list = if condition(1), do: 7, else: [1, 2]
+  assert((scalar or {42}) == 7)
+  assert((list and {42}) == {42})
+  assert(list == [1, 2])
+end
+fn main() do
+  offset = 40
+  ordinary = if false, do: false, else: fn(value) -> value + offset end
+  assert(ordinary.(2) == 42)
+  assert(ordinary === ordinary)
+  logical = nil or fn(value) -> value + offset end
+  assert(logical.(2) == 42)
+  assert((true and logical) === logical)
+  assert((logical or panic(:unselected)) === logical)
+  mixed(offset)
+end

@@ -919,13 +919,9 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
         };
     };
 
-    // Live-demand propagation is the authoritative "what must be
-    // Codegen lowers every structural clause regardless of
-    // the settled entry reachability, so a clause the type-level reachability
-    // analysis under-approximates as dead (e.g. a recursive base case whose
-    // list slot is over-narrowed) can still reach native lowering and crash
-    // when its return value was never marked live. Widen the walked clause
-    // set by the trivial delta `trivial_value_clause_ids` identifies.
+    // Codegen can still lower a structural trivial base clause before recursive
+    // list evidence settles its reachability. This clause-level safeguard is
+    // separate from conditional outcome reachability within a live clause.
     let mut walked_clauses = facts.reachable_clauses.to_vec();
     walked_clauses.extend(trivial_value_clause_ids(facts.body, facts.reachable_clauses));
     for clause_id in walked_clauses {
@@ -1046,6 +1042,9 @@ fn collect_entry_external_demands(
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
 ) -> HashMap<ValueId, RuntimeDemand> {
+    if !facts.reachable_entries.contains(&entry_id) {
+        return HashMap::new();
+    }
     let entry = &entries[entry_id.as_u32() as usize];
     let mut live = collect_entry_live_demands(
         types,
@@ -1211,43 +1210,6 @@ fn collect_entry_live_demands(
             for (arg, demand) in args.iter().zip(arg_demands) {
                 note_live_demand(out, &mut live, arg.value, demand);
             }
-        }
-        LoweredTail::If {
-            cond,
-            then_entry,
-            else_entry,
-        } => {
-            note_live_demand(out, &mut live, *cond, RuntimeDemand::whole());
-            merge_live_demands(
-                &mut live,
-                collect_entry_external_demands(
-                    types,
-                    executable,
-                    entries,
-                    *then_entry,
-                    outgoing_demand.clone(),
-                    facts,
-                    demands,
-                    out,
-                    call_return_demands,
-                    callable_flows,
-                ),
-            );
-            merge_live_demands(
-                &mut live,
-                collect_entry_external_demands(
-                    types,
-                    executable,
-                    entries,
-                    *else_entry,
-                    outgoing_demand,
-                    facts,
-                    demands,
-                    out,
-                    call_return_demands,
-                    callable_flows,
-                ),
-            );
         }
         LoweredTail::Dispatch {
             inputs,
@@ -2723,8 +2685,8 @@ mod tests {
             generated: Vec::new(),
         };
 
-        let callsite_origins = collect_callsite_return_origins(&body);
-        let value_origins = collect_value_origins(&body, &callsite_origins);
+        let callsite_origins = collect_callsite_return_origins(&body, None);
+        let value_origins = collect_value_origins(&body, &callsite_origins, None);
 
         assert_eq!(
             value_origins.get(&direct_value),

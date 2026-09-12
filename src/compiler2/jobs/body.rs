@@ -14,7 +14,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
+    PatternBodyId, PatternDispatchError, PatternRow, PatternSubjectRef, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
@@ -164,12 +164,6 @@ enum ExprStep {
         value: ValueId,
         base: ValueId,
         field: String,
-    },
-    If {
-        value: ValueId,
-        cond: ValueId,
-        then_block: ExprBlock,
-        else_block: ExprBlock,
     },
     Dispatch {
         value: ValueId,
@@ -1809,6 +1803,20 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             }
             Expr::BinOp(op, left, right) => {
                 let left = self.lower_expr(left, env, steps)?;
+                if matches!(op, crate::ast::BinOp::And | crate::ast::BinOp::Or) {
+                    let selected_left = ExprBlock {
+                        span: expr.span,
+                        steps: Vec::new(),
+                        result: left,
+                    };
+                    let selected_right = self.lower_expr_as_block(right, env.clone())?;
+                    let (then_block, else_block) = if *op == crate::ast::BinOp::And {
+                        (selected_right, selected_left)
+                    } else {
+                        (selected_left, selected_right)
+                    };
+                    return self.lower_conditional(expr.span, left, then_block, else_block, steps);
+                }
                 let right = self.lower_expr(right, env, steps)?;
                 if let Some(name) = direct_operator_name(*op) {
                     let value = self.fresh_value();
@@ -1880,14 +1888,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         result,
                     }
                 };
-                let value = self.fresh_value();
-                steps.push(ExprStep::If {
-                    value,
-                    cond,
-                    then_block,
-                    else_block,
-                });
-                Ok(value)
+                self.lower_conditional(expr.span, cond, then_block, else_block, steps)
             }
             Expr::Case(Some(subject), clauses) => self.lower_case(expr.span, subject, clauses, env, steps),
             Expr::Case(None, _) => Err(emit_job_diagnostic(
@@ -2215,6 +2216,58 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     ),
                 )
             })
+    }
+
+    fn lower_conditional(
+        &mut self,
+        span: Span,
+        condition: ValueId,
+        truthy: ExprBlock,
+        falsey: ExprBlock,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let false_ty = self.world.types_mut().bool_lit(false);
+        let nil_ty = self.world.types_mut().nil();
+        let falsey_ty = self.world.types_mut().union(false_ty, nil_ty);
+        let plan = pattern_dispatch_from_source(SourcePatternRows {
+            input_count: 1,
+            rows: [Some(falsey_ty), None]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| PatternRow {
+                    patterns: vec![Spanned::new(Pattern::Wildcard, span)],
+                    preconditions: ty.into_iter().map(|ty| (PatternSubjectRef::Input(0), ty)).collect(),
+                    guard: None,
+                    body_id: index as u32,
+                })
+                .collect(),
+        })
+        .map_err(|error| emit_local_dispatch_error(self.telemetry, "conditional", span, error))?;
+        let arm_blocks = plan
+            .outcomes
+            .iter()
+            .zip([falsey, truthy])
+            .map(|(outcome, block)| ExprOutcome {
+                outcome: outcome.outcome,
+                arguments: Box::default(),
+                block,
+            })
+            .collect();
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![condition],
+            bindings: DispatchBindings {
+                pinned: Vec::new(),
+                prepared: Vec::new(),
+            },
+            dispatch: Box::new(ExprDispatch {
+                plan,
+                arm_blocks,
+                miss_block: self.halt_block(span, "compiler2_unreachable_control"),
+            }),
+        });
+        Ok(value)
     }
 
     fn lower_case(
@@ -2780,7 +2833,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     ) {
         use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
         use crate::fz_ir::{ListRetention, ListRewritePermission};
-        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        let origins = collect_value_origins(body, &collect_callsite_return_origins(body, None), None);
         let LoweredBody::Clauses { entries, .. } = body else {
             unreachable!()
         };
@@ -2892,7 +2945,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             entry.physical_captures = retained.into_iter().filter(|value| !captures.contains(value)).collect();
             entry.captures = captures;
         }
-        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        let origins = collect_value_origins(body, &collect_callsite_return_origins(body, None), None);
         construct_call_ownership(body, &origins);
         construct_tuple_ownership(body, &origins);
         for (entry, step, _, _) in sources {
@@ -3013,54 +3066,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                             callee: *callee,
                             args: args.clone(),
                             dest: tail_dest,
-                        },
-                    );
-                }
-                ExprStep::If {
-                    value,
-                    cond,
-                    then_block,
-                    else_block,
-                } => {
-                    let branch_dest = if index + 1 == block.steps.len() && *value == block.result {
-                        dest
-                    } else {
-                        let resume = self.plan_block(
-                            ExprBlock {
-                                span: block.span,
-                                steps: block.steps[index + 1..].to_vec(),
-                                result: block.result,
-                            },
-                            ControlEntryOrigin::DeliveredResume { value: *value },
-                            dest,
-                            Vec::new(),
-                            Vec::new(),
-                            entries,
-                        );
-                        ControlDestination::Deliver(resume)
-                    };
-                    let then_entry = self.plan_block(
-                        then_block.clone(),
-                        ControlEntryOrigin::Branch,
-                        branch_dest.clone(),
-                        Vec::new(),
-                        Vec::new(),
-                        entries,
-                    );
-                    let else_entry = self.plan_block(
-                        else_block.clone(),
-                        ControlEntryOrigin::Branch,
-                        branch_dest,
-                        Vec::new(),
-                        Vec::new(),
-                        entries,
-                    );
-                    return (
-                        lowered,
-                        LoweredTail::If {
-                            cond: *cond,
-                            then_entry,
-                            else_entry,
                         },
                     );
                 }
@@ -3667,7 +3672,6 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
         ExprStep::AssertBitstringDone { reader } => LoweredStep::AssertBitstringDone { reader: *reader },
         ExprStep::DirectCall { .. }
         | ExprStep::ClosureCall { .. }
-        | ExprStep::If { .. }
         | ExprStep::Dispatch { .. }
         | ExprStep::Receive(_)
         | ExprStep::Halt { .. } => {
@@ -4014,12 +4018,10 @@ fn value_may_retain_source(
             Some(
                 LoweredStep::Const { .. }
                 | LoweredStep::FunctionRef { .. }
+                | LoweredStep::BinaryOp { .. }
                 | LoweredStep::UnaryOp { .. }
                 | LoweredStep::Bitstring { .. },
             ) => false,
-            Some(LoweredStep::BinaryOp { op, .. }) if !matches!(op, crate::ast::BinOp::And | crate::ast::BinOp::Or) => {
-                false
-            }
             Some(step) => {
                 let mut operands = HashSet::new();
                 collect_used_values(std::slice::from_ref(step), &mut operands);
@@ -4391,9 +4393,6 @@ fn collect_tail_used_values(tail: &LoweredTail, out: &mut HashSet<ValueId>) {
                 out.insert(arg.value);
             }
         }
-        LoweredTail::If { cond, .. } => {
-            out.insert(*cond);
-        }
         LoweredTail::Dispatch { inputs, bindings, .. } => {
             out.extend(inputs.iter().copied());
             out.extend(bindings.pinned.iter().copied());
@@ -4532,9 +4531,6 @@ fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
             ControlDestination::Return => Vec::new(),
             ControlDestination::Deliver(entry) => vec![entry],
         },
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => vec![then_entry, else_entry],
         LoweredTail::Dispatch { dispatch, .. } => {
             let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
             children.push(dispatch.miss_entry);

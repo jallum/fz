@@ -757,39 +757,6 @@ fn analyze_tail(
                 waits,
             )
         }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            let then_ty = analyze_branch(
-                world,
-                tel,
-                entries,
-                *then_entry,
-                values,
-                &[],
-                reachable_entries,
-                value_types,
-                calls,
-                activation,
-                reads,
-                waits,
-            )?;
-            let else_ty = analyze_branch(
-                world,
-                tel,
-                entries,
-                *else_entry,
-                values,
-                &[],
-                reachable_entries,
-                value_types,
-                calls,
-                activation,
-                reads,
-                waits,
-            )?;
-            Ok(join_evidence(world, then_ty, else_ty))
-        }
         LoweredTail::Dispatch { inputs, dispatch, .. } => {
             let Some(input_tys) = inputs
                 .iter()
@@ -838,21 +805,24 @@ fn analyze_tail(
                 )?;
                 merged = join_evidence(world, merged, arm_ty);
             }
-            let miss_ty = analyze_branch(
-                world,
-                tel,
-                entries,
-                dispatch.miss_entry,
-                values,
-                &[],
-                reachable_entries,
-                value_types,
-                calls,
-                activation,
-                reads,
-                waits,
-            )?;
-            Ok(join_evidence(world, merged, miss_ty))
+            if reachability.fail_reachable {
+                let miss_ty = analyze_branch(
+                    world,
+                    tel,
+                    entries,
+                    dispatch.miss_entry,
+                    values,
+                    &[],
+                    reachable_entries,
+                    value_types,
+                    calls,
+                    activation,
+                    reads,
+                    waits,
+                )?;
+                merged = join_evidence(world, merged, miss_ty);
+            }
+            Ok(merged)
         }
         LoweredTail::Receive(receive) => {
             // Mailbox messages are a runtime boundary: `any` is earned here.
@@ -2110,7 +2080,8 @@ fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFie
 
 fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {
     match op {
-        BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => world.types_mut().bool(),
+        BinOp::In | BinOp::NotIn => world.types_mut().bool(),
+        BinOp::And | BinOp::Or => panic!("lowering should route {op:?} through control flow"),
         BinOp::Pipe
         | BinOp::Cons
         | BinOp::ListConcat

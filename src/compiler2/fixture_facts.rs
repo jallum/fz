@@ -174,7 +174,6 @@ fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKin
                 out.insert(callsite, CallsiteDispatchKind::Closure);
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => {}

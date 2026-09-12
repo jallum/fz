@@ -256,18 +256,27 @@ impl ControlEntryOrigin {
     }
 }
 
-pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryId, DeliveredValueJoin> {
+pub(crate) fn delivered_value_joins(
+    body: &LoweredBody,
+    reachable: Option<&[ControlEntryId]>,
+) -> HashMap<ControlEntryId, DeliveredValueJoin> {
     let LoweredBody::Clauses { entries, .. } = body else {
         return HashMap::new();
     };
     let mut delivered_values = HashMap::new();
     for (entry_index, entry) in entries.iter().enumerate() {
+        if reachable.is_some_and(|reachable| !reachable.contains(&ControlEntryId::from_u32(entry_index as u32))) {
+            continue;
+        }
         if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
             delivered_values.insert(ControlEntryId::from_u32(entry_index as u32), value);
         }
     }
     let mut sources = HashMap::<ControlEntryId, Vec<DeliveredValueSource>>::new();
-    for entry in entries {
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if reachable.is_some_and(|reachable| !reachable.contains(&ControlEntryId::from_u32(entry_index as u32))) {
+            continue;
+        }
         collect_tail_deliveries(&entry.tail, &delivered_values, &mut sources);
     }
     sources
@@ -476,11 +485,6 @@ pub enum LoweredTail {
         args: Vec<CallArg>,
         dest: ControlDestination,
     },
-    If {
-        cond: ValueId,
-        then_entry: ControlEntryId,
-        else_entry: ControlEntryId,
-    },
     Dispatch {
         inputs: Vec<ValueId>,
         bindings: DispatchBindings,
@@ -549,7 +553,6 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
                 out.insert(*callsite, CallInputMode::Closure);
             }
             LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
             | LoweredTail::Halt { .. } => {}

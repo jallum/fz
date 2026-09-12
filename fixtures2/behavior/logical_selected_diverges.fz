@@ -1,0 +1,5 @@
+#---
+# purpose: "a selected diverging right operand preserves the ordinary failure boundary"
+# expect: abort
+#---
+fn main(), do: true and panic(:selected_rhs)

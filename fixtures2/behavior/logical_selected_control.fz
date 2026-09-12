@@ -1,0 +1,23 @@
+#---
+# purpose: "lazy operand selection preserves scalar, container, and shared-list identity"
+#---
+fnp select_and(a, b), do: a and b
+fnp select_or(a, b), do: a or b
+fnp changed(xs) do
+  selected = false or xs
+  [head | _] = xs
+  rebuilt = [head | [9]]
+  {selected, rebuilt}
+end
+fn main() do
+  assert(select_and(false, 42) == false)
+  assert(select_and(nil, 42) == nil)
+  assert(select_or(false, 42) == 42)
+  assert(select_or(nil, 4.5) == 4.5)
+  assert(select_and(7, :selected) == :selected)
+  assert(select_or(0, :unused) == 0)
+  assert(select_or(2.5, {1, 2}) == 2.5)
+  assert(select_and(true, {1, 2}) == {1, 2})
+  assert(select_or(false, %{answer: 42})[:answer] == 42)
+  assert(changed([1, 2]) == {[1, 2], [1, 9]})
+end
