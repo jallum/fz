@@ -9,9 +9,15 @@
   "id": "fz-6lf.5",
   "labels": [],
   "parent": "fz-6lf",
+  "comments": [
+    {
+      "text": "Implemented by preserving arity-2 tuple literals as raw quoted tuples in QuoteLowerer while retaining the existing {} AST encoding for arities 0, 1, and 3+. Added adjacent exact-shape coverage for arities 0/1/2/3 and an end-to-end generated-definition regression proving keyword tuples survive quote. Documented the quote boundary. Fresh holistic review found the test-placement gap; moved coverage to jobs/body_test.rs and the re-review reported no remaining findings. Verification: cargo test --lib (2025 passed, 6 ignored), cargo test --doc, cargo clippy --all-targets --all-features -- -D warnings, cargo fmt --check, git diff --check.",
+      "timestamp": "2026-09-12T15:22:47Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Preserve literal two-tuples while quoting generated source",
   "type": "bug",
-  "updated_at": "2026-09-12T15:09:30Z"
+  "updated_at": "2026-09-12T15:22:47Z"
 }
