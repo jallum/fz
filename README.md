@@ -14,9 +14,9 @@ whole-program compiler with types can do with them.
 
 What that means in practice: fz reads like Elixir, runs the actor model
 you already know, and compiles — through a set-theoretic type system, a
-Cranelift JIT, and an AOT path — to native code. One IR powers four
-execution modes (AOT executable, JIT, interpreter, REPL), and a fixture
-matrix forces them to agree.
+Cranelift JIT, and an AOT path — to native code. One IR powers three
+execution modes (AOT executable, JIT, interpreter) -- and soon a REPL, 
+and a fixture matrix forces them to agree.
 
 ```elixir
 def add(a, b), do: a + b
