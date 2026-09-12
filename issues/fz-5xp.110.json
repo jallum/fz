@@ -15,11 +15,15 @@
     {
       "text": "Landed as 8398e6cfe. The fixture now destructures the suspended result into {:suspended, acc}, records the allocation boundary before any observation-created tuple can contaminate it, and invokes the returned zero-arity continuation to prove {:done, 6}. Removed the allocator-order #fn golden and 42 lines of stale/historical commentary. Native retains one 48-byte closure; interp retains its existing two closures/64 bytes; neither path boxes the accumulator. Verified target 3/3, full fixture matrix 724/724, compiler lib 2020 passed/6 ignored, runtime 260/260, CLI 30/30, doctests, AOT variadic open, clippy -D warnings, fmt, diff check, no generated actuals, and an explicit tactical-prose/function-ID scan.",
       "timestamp": "2026-09-12T15:31:03Z"
+    },
+    {
+      "text": "Final rebased SHA b3204097c is published as draft PR #147: https://github.com/jallum/fz/pull/147. Its immediate support PR #139 was CLEAN, MERGEABLE, and fully green before submission. Final local gates: target 3/3, fixture matrix 754/754, compiler library 2060 passed/5 ignored, runtime 269/269, CLI 30/30, doctests, AOT variadic integration, strict Clippy, formatting, and diff hygiene.",
+      "timestamp": "2026-09-12T18:16:42Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Enum suspend fixture pins a nonsemantic function ID",
   "type": "bug",
-  "updated_at": "2026-09-12T15:31:04Z"
+  "updated_at": "2026-09-12T18:16:42Z"
 }
