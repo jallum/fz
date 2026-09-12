@@ -136,7 +136,17 @@ offsets nor a rendered type name participates in clause selection. Interpreter,
 local native dispatch, and receive dispatch consume this shared plan and use
 the existing named-field accessors.
 
-**Bitstring matching** — one runtime implementation, `fz_bs_read_field_bits`,
+**Bitstring field source semantics** — owned by the final quoted-source decoder in
+`compiler2/quoted_function.rs`. A raw field has the language's integer default,
+but quoted source represents an unsuffixed string field as the raw binary value:
+there is no `:: binary` node downstream can consult. The decoder therefore
+reifies that one source shape as `BitType::Binary`. Construction leaves its
+size absent so the writer consumes the whole source binary; matching adds the
+literal's byte length so a following field has a boundary. Backend lowering and
+the three runtime doors consume that spec and never reinterpret a value's
+carrier from the surrounding fields.
+
+Bitstring matching has one runtime implementation, `fz_bs_read_field_bits`,
 reached from every door. But the CLAUSE HEAD is lowered twice — once into a
 dispatch region to select the clause, once into body steps to bind — so each
 field is read twice: fz-5xp.56.

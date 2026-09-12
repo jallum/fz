@@ -171,6 +171,20 @@ fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)
 }
 
 #[test]
+fn compiler2_unsuffixed_binary_expression_field_owns_a_binary_spec() {
+    let (root, sources) = grouped_function_root("binary_field.fz", "fn pack(x), do: <<\"x\", x>>\n");
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
+
+    let Expr::Bitstring(fields) = &surface.clauses[0].body.node else {
+        panic!("expected bitstring body");
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].spec.ty, BitType::Binary);
+    assert!(fields[0].spec.size.is_none());
+    assert_eq!(fields[1].spec.ty, BitType::Integer);
+}
+
+#[test]
 fn compiler2_quoted_function_surface_derives_operator_specs_from_quoted_source() {
     let source = r#"
 @spec integer + integer :: integer
