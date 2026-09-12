@@ -13,7 +13,7 @@
 # ```
 #
 # Filtering `[1, 5, 2, 8, 3]` with limit `4` should allocate the five input
-# literal cons cells and three kept output cons cells. No tuple/struct or map
+# literal cons cells; retained cells supply the output without new cons cells. No tuple/struct or map
 # objects are needed for the value path.
 fn filter_lt([], _), do: []
 fn filter_lt([h | t], limit) when h < limit, do: [h | filter_lt(t, limit)]

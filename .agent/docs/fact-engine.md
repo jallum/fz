@@ -23,18 +23,17 @@ and artifact emission.
   `publishers` claiming the fact, the `dirty_publishers` queued to re-run, the
   `unfinal_publishers` whose own reads can still move, and a `revision`
   counter (1 on a replacing fact's appearance, 0 on a cumulative fact claimed
-  at bottom). A publisher is a `Publisher<J>` — one job's one derivation — not a
-  job. Slots hold no values — typed values live in `World` stores; the
-  fact gates their visibility. Derived states: **present** (any publisher),
+  at bottom). Each publisher is the job that owns the claim. Slots hold no
+  values — typed values live in `World` stores; the fact gates their visibility.
+  Derived states: **present** (any publisher),
   **retracted** (none — the slot drops), **locally settled** (present and no
   claimant dirty), **quiet** (no claimant dirty and none unfinal — an absent
   fact is quiet), and **settled** (present and quiet). See *Content,
   cleanliness and finality* below.
-- **`DependencyIndex`** — six exact-keyed maps: `reads`↔`subscribers` and
-  `outputs` keyed by publisher, `waits`↔`waiters` keyed by job, and each job's
-  `derivations` roster. Waking a fact's interested jobs is an O(1) lookup, not
-  a scan.
-- **`Scheduler`** — owns the agenda, facts, and deps, and exposes `complete`.
+- **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
+  `waits`↔`waiters`, and `outputs`. Each job owns its reads, waits, and claims.
+  Waking a fact's interested jobs is an O(1) lookup, not a scan.
+- **`Scheduler`** — owns the agenda, facts, and deps, and applies job completions.
 - **`ExecutionContext::drive`** — split-borrows semantic state and telemetry,
   then pops a job, runs it, applies its effects, and repeats.
 
@@ -46,15 +45,14 @@ Every job returns `JobEffects`:
 reads       facts it used        -> "wake me when these change"   (subscriber)
 waits       facts it needed but  -> "wake me when these appear"   (waiter; also
             could not read yet       counts as unresolved work)
-outputs     (FactKey, FactValue) -> facts this job OWNS this run
-derivations further answers the same run reached independently, each with
-            its own reads/outputs/changed
+outputs     FactKey             -> facts this job OWNS this run
+changed     FactKey             -> stored content that actually moved
 ```
 
-The flat `reads`/`outputs` are the job's WHOLE-BODY answer (`DerivationId::SOLE`);
-`waits` are the job's, because a job blocks whole. `derivations` is empty for
-every job today, which means one answer per job. See *The publisher is a
-derivation* below.
+Each job publishes one answer. Its co-outputs share the reads that justify
+that answer; its waits determine whether the run concluded.
+`World` combines fact and product dependencies into one `CompletionEffects`
+before applying the answer to the scheduler.
 
 A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
@@ -107,18 +105,16 @@ fact appears.
 
 ## Waiting extends, concluding replaces
 
-A completion's meaning bifurcates per derivation, on whether the run reached it
-(`Scheduler::complete`). A job with no waits reached every answer it reports:
+A completion's meaning depends on whether its run concluded
+(`Scheduler::complete_ordered_with_external`):
 
-- **Concluded** replaces: that derivation's reads swap subscriptions, its
-  output list replaces its claims, and retraction-by-omission is available and
-  final for every publisher whose silence is knowledge (see below). Facts
-  shrink as their owners stop deriving them — redefinition needs no special
-  path. A concluding job's UNREPORTED derivations are withdrawn the same way.
-- **Unreached** extends: reads union into the standing subscriptions, listed
+- **Concluded** replaces: the job's reads swap subscriptions, its output list
+  replaces its claims, and retraction-by-omission is final wherever silence is
+  knowledge (see below). Facts shrink as their owners stop deriving them.
+- **Waiting** extends: reads union into the standing subscriptions, listed
   outputs union into the standing claims, prior activation-input contributions
-  stand, and every claim that derivation holds is marked dirty — an unreached
-  answer's facts are never settled. Pausing is not recanting; a transient wait
+  stand, and every claim the job holds is marked dirty — a waiting job's
+  facts are never settled. Pausing is not recanting; a transient wait
   cannot destroy still-valid published work.
 
 ### One block per prerequisite set
@@ -200,60 +196,26 @@ is withdrawn only by that caller's own rebase, so preserving one publisher's
 standing claim never resurrects another's: the fact retracts exactly when the
 last publisher with an unrefuted claim lets go.
 
-## The publisher is a derivation
+## The publisher is the job
 
-A job runs whole, but it does not necessarily reach ONE answer. The ledger's
-publisher identity is therefore `(Job, DerivationId)`, not `Job`: `reads`,
-`subscribers`, `outputs`, `dirty_publishers`, `unfinal_publishers` and
-`unfinal_reads` are all keyed by it. A job that does not name derivations
-publishes everything under `DerivationId::SOLE`, which is exactly the old
-behavior.
+The agenda, dependency edges, fact claims, rebase flag, and finality state all
+use the same job identity. A job evaluates one answer over one read set, and
+every co-output shares that answer's cleanliness and finality. A changed read
+dirties all of the job's claims; a ground shift also marks the job rebased.
+Source-publisher jobs follow this rule with typed `SourceOwner` keys; exact
+text provenance stays in `SourceVersion` spans rather than becoming a second
+publisher identity. See
+[`quoted-source`](quoted-source.md#source-identity-and-provenance).
 
-Why the granularity was the lie: dirtiness and finality are statements about
-what a claim was DERIVED FROM. With the job as publisher, one woken read
-dirties every claim the body holds and unfinalises everything downstream of any
-of them — so a fact whose own inputs are quiet reads as provisional because a
-sibling answer's inputs moved. Measured on `00420_enum_take_drop_split`
-(debug, this tree): `ActivationInputs` facts move 1.47x each (near
-write-once) and almost never settle before the drain -- 30 of their 34
-settlements arrive only after the first quiesce.
-
-The two identities stay apart on purpose:
-
-- the AGENDA, the `rebased` set and `waits`/`waiters` are keyed by the JOB,
-  because a job blocks and runs whole, and a wait carries no derivation
-  attribution to give it;
-- a wake's cause names a derivation, so an ASCENT dirties only the derivation
-  that read the moved fact. A GROUND SHIFT dirties every derivation of the
-  woken job: rebasing selects replace-over-join for the job's next conclusion,
-  and that flag is job-wide, so rebase vetoes all scoping;
-- one cause wakes a job once, however many of its derivations read the fact.
-  The `Wake` record's identity is still the job, because the job is what
-  evaluates.
-
-Completion bifurcates per derivation on whether the run REACHED it, which is
-"waiting extends, concluding replaces" lifted one level down. A concluded
-derivation replaces (its reads swap subscriptions, its unlisted keys retract,
-its claims are clean); an unreached one extends (reads union, nothing retracts,
-claims stay dirty). A job that returns no waits concluded every derivation it
-reports, and the derivations it does NOT report are withdrawn whole — its
-silence about an answer it used to give is knowledge, exactly as its silence
-about a key is. A BLOCKED job may have reached some answers before the block:
-those are clean, and the ones it never reached stay dirty. That is the main
-traffic — most completions block.
-
-`is_locally_settled` and drain arbitration inspect the exact derivations
-claiming the requested key, not every answer of their jobs. Certifying one
-clean derivation certifies its own co-outputs because they share its reads;
-a dirty sibling derivation and another publisher's claims remain untouched.
-Per-output dirty bits sitting beside per-JOB unfinality do not compose,
-because the two halves of `is_settled`
-would then be scoped to different things.
+Each fact use wakes a subscribed job once. Distinct causes retain distinct
+`Wake` records, including coalesced attempts to enqueue an already pending
+job. The records attribute the work to the job and exact read or wait that
+caused it.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
 
-One job may own more than one fact when the two are the same derivation's
-answers. `Job::DeriveCallGraphComponent` walks the `StaticCallees` edge facts
+One job may own more than one fact when both follow from its answer.
+`Job::DeriveCallGraphComponent` walks the `StaticCallees` edge facts
 once and publishes both `CallGraphComponent(f)` -- the smallest `FunctionId`
 mutually reachable with `f`, so "are these two functions mutually reachable"
 is an equality of two fact reads rather than a traversal at the asking site --
@@ -294,7 +256,10 @@ reached with no ground under it retracts nothing it never refuted.
 `FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
 and `ActivationInputs` hold monotone joins maintained by their `World` stores
 (content only grows between ground shifts); every other fact's content
-overwrites. The scheduler classifies every content change:
+overwrites. The fact table classifies each publication transition while it
+still knows whether a publisher updated, rebased, or withdrew. `FactChange`
+carries that closed `ContentMovement` to the scheduler; the scheduler routes
+the movement and never reconstructs its direction from revisions or key shape:
 
 - **Ascent** — a first appearance carrying content, or growth of a cumulative
   fact from an unshifted publisher. Readers re-run and join. A cumulative
@@ -303,18 +268,21 @@ overwrites. The scheduler classifies every content change:
   chaotic iteration: monotone transfers over finite chains converge to the
   unique least fixpoint on any fair schedule, so wake order is performance,
   never correctness.
-- **Ground shift** — a retraction, a replacing fact's content change, or any
-  change concluded by a rebased publisher. Each reader's claims go unsettled,
-  the reader is flagged **rebased** and re-enqueued. A rebased job's next
-  conclusion replaces its cumulative store values instead of joining (the
-  only narrowing path) and its changes propagate as shifts in turn; equal
-  recomputation propagates nothing, so the shift cone is exactly the set of
-  jobs whose recomputed outputs actually differ — narrowing keeps today's
-  minimal-rerun incrementality.
+- **Ground shift** — a retraction, a replacing fact's content change, any
+  change concluded by a rebased publisher, or a changed contribution
+  withdrawal even when another publisher keeps the cumulative fact present.
+  Each reader's claims go unsettled, the reader is flagged **rebased** and
+  re-enqueued. A rebased job's next conclusion replaces its cumulative store
+  values instead of joining (the only narrowing path) and its changes
+  propagate as shifts in turn; an equal withdrawal or recomputation reports
+  no content movement, so the shift cone is exactly the set of jobs whose
+  recomputed outputs actually differ — narrowing keeps today's minimal-rerun
+  incrementality.
 
 The revision is a change token, not a content hash: stores report `changed`
-only on real content movement (equal joins are quiet), and subscribers wake on
-`old_revision != new_revision`.
+only on real content movement (equal joins and equal withdrawals are quiet),
+and `ContentMovement` determines whether subscribers ascend or rebase. The
+revision pair records that content moved; it cannot say in which direction.
 
 ## Content, cleanliness and finality are three questions
 
@@ -336,20 +304,17 @@ sweep, a group inventory, an epoch object, or a root scan. The reader state and
 claim state share one publisher identity:
 
     read_finality[publisher]        Pending(count) or Quiescent(count), tracking
-                                    that derivation's actual unquiet read uses
+                                    that job's actual unquiet read uses
     slot.unfinal_publishers         publishers whose reader state is Pending
 
-An absent reader entry means zero unquiet reads. Replacing a derivation's reads
+An absent reader entry means zero unquiet reads. Replacing a job's reads
 recounts them and removes any old quiescence certificate. Exact quiet edges
 decrement the count; an unquiet edge increments it and revokes certification.
-A change in effective finality reaches every output of that derivation — not
-sibling derivations that read other ground. A fact whose quiet state flips
-propagates on.
+A change in effective finality reaches every output of that job. A fact whose
+quiet state flips propagates on.
 
-`Scheduler::unfinal_reads(job)` sums pending counts across a job's derivations
-for readiness-ordered selection; quiescent-certified counts contribute zero.
-The ledger itself always acts per derivation. Every wave is sign-uniform — a
-fact that just went unquiet can only make readers unquiet — so each node flips
+Every wave is sign-uniform — a fact that just went unquiet can only make readers
+unquiet — so each node flips
 at most once and the walk is exactly the affected cone.
 
 Reading an ABSENT fact makes no reader unfinal. Nobody is deriving it, so
@@ -398,7 +363,7 @@ its existing output frontier.
 Other publishers of a shared output still control their own claims. Ordinary
 quiet propagation carries the resulting readiness edges to readers.
 
-A derivation's co-outputs are one conclusion over the same reads, not separate
+A job's co-outputs are one conclusion over the same reads, not separate
 arbitration requests. Certifying the publisher's finality state together with
 its claims ensures that a later
 quiet-to-unquiet input edge revokes certification and unfinalizes all of them
@@ -433,13 +398,13 @@ mutation boundary:
       -> DependencyIndex::outputs          keeps order
       -> mark_dirty                        iterates in that order
       -> pending_changes                   drained in that order
-      -> DependencyIndex                   typed Publisher/Job order
+      -> DependencyIndex                   typed job order
       -> job order                         -> intern order -> Ty ids
 
 `OrderedSet` still preserves source emission and membership, but insertion
 order is not semantic identity. `DependencyIndex` orders subscriber, waiter,
-reader, and unresolved-job waves with the World's typed Job/Publisher
-relations. `ContributionMap` likewise orders every touched/next key wave before
+reader, and unresolved-job waves with the World's typed job relation.
+`ContributionMap` likewise orders every touched/next key wave before
 joins can allocate. Losing owner order at any mutation boundary is sufficient
 to move the first divergence downstream.
 
@@ -462,7 +427,7 @@ Activation-bearing identities have one owner-supplied total order.
 `Types::cmp_activation_ty`. That operation reuses the type store's structural
 walk in activation mode: callable arguments, return, then literal; list
 emptiness and addressed variable paths remain explicit, and named literals use
-immutable owner-registered callable labels. It therefore distinguishes lattice
+immutable owner-registered typed callable identities. It therefore distinguishes lattice
 forms that display intentionally merges, including possibly-empty and
 non-empty lists, without allocating or parsing presentation text.
 `Job`, `FactKey`, `FactUse`, callsites, executables, completion reports,
@@ -470,7 +435,7 @@ settled-wait drains, terminal unresolved inventories, product fact waits, and
 activation dump/fixture inventories all delegate to that relation. `FactKey` has no
 raw `Ord`: only the owning `World` can interpret its World-local type handles.
 The generic scheduler and dependency index accept one semantic context whose
-`SemanticOrd` implementations own fact, job, and publisher order; neither
+`SemanticOrd` implementations own fact and job order; neither
 accepts per-domain callbacks or falls back to type ids or hash iteration. Existing presentation
 orders remain intact: diagnostics retain their variant-name order, readiness
 is a tie-break after fact identity, and settled-wait draining uses that same
@@ -479,7 +444,7 @@ structural comparison.
 
 The type store memoizes `ActivationArrow` verdicts by a normalized `(low Ty,
 high Ty)` pair; asking in the reverse direction reuses the inverse. Descriptors
-and structural addresses are immutable after interning, and callable labels
+and structural addresses are immutable after interning, and callable identities
 must be registered before comparison and cannot be renamed, so the entry lives
 for the owning `Types`/`World` lifetime with no invalidation path. Hit/miss
 counters exist only in tests. ClauseOrder's private storage-canonical relation
@@ -492,12 +457,11 @@ group DNF clauses and must not determine activation order.
 while let Some(job) = agenda.pop():
     effects = run(job)              # may return Err -> fatal
     step    = complete(job, effects)
-        per derivation:
-          unreached?  extend reads/claims, dirty that derivation's claims
-          else        replace its reads/claims (retraction final)
-        replace the job's waits; withdraw unreported derivations on conclusion
+        waiting?  extend reads/claims, dirty every owned claim
+        else      replace reads/claims (retraction final)
+        replace the job's waits
         classify each change: ascent -> wake; shift -> rebase + wake
-        enqueue dependents (ascent scopes the dirt; shift dirties the job)
+        enqueue dependents and dirty their claims
 ```
 
 When the agenda drains, standing demands expand before the drive ends: every

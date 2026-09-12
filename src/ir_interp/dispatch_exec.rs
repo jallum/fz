@@ -2,16 +2,14 @@ use std::collections::HashMap;
 use std::slice::from_raw_parts;
 
 use super::*;
-use crate::dispatch_matrix::pattern::{
-    PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, prepared_key_name,
-};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp};
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
 use crate::fz_ir::Module;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, AnyValueRef, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
     fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -19,11 +17,16 @@ use fz_runtime::ir_runtime::{
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
 
+pub(super) type DispatchValues = crate::compiler2::DispatchBindings<AnyValue>;
+
 #[derive(Default, Clone)]
 pub(super) struct DispatchExecState {
     values: HashMap<SubjectId, AnyValue>,
-    bitstring_fields: HashMap<(SubjectId, u32), AnyValue>,
-    direct_bindings: HashMap<String, AnyValue>,
+}
+
+pub(super) struct DispatchMatch {
+    pub(super) outcome: crate::dispatch_matrix::OutcomeId,
+    pub(super) state: DispatchExecState,
 }
 
 pub(super) fn execute_dispatch_inputs<TypeHandle, F>(
@@ -31,10 +34,10 @@ pub(super) fn execute_dispatch_inputs<TypeHandle, F>(
     module: &Module,
     plan: &PatternDispatchPlan<TypeHandle>,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
     type_match: &mut F,
-) -> Option<(u32, Vec<(String, AnyValue)>)>
+) -> Option<DispatchMatch>
 where
     F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
 {
@@ -56,25 +59,19 @@ pub(super) fn execute_dispatch_node<TypeHandle, F>(
     plan: &PatternDispatchPlan<TypeHandle>,
     node_id: GraphNodeId,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
     type_match: &mut F,
-) -> Option<(u32, Vec<(String, AnyValue)>)>
+) -> Option<DispatchMatch>
 where
     F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
 {
     match plan.graph.node(node_id)? {
         DispatchNode::Fail => None,
-        DispatchNode::Outcome { outcome, .. } => {
-            let outcome = plan.outcome(*outcome)?;
-            let mut out = Vec::with_capacity(outcome.bindings.len());
-            for binding in &outcome.bindings {
-                let value =
-                    resolve_dispatch_subject(runtime.cur_proc(), module, plan, binding.source, inputs, pinned, state)?;
-                out.push((binding.name.clone(), value));
-            }
-            Some((outcome.body_id, out))
-        }
+        DispatchNode::Outcome { outcome, .. } => Some(DispatchMatch {
+            outcome: *outcome,
+            state: state.clone(),
+        }),
         DispatchNode::Test {
             predicate,
             on_match,
@@ -128,33 +125,20 @@ fn apply_edge_evidence<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     evidence: &EdgeEvidence<TypeHandle>,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
 ) -> bool {
     for projection in &evidence.projections {
-        if state.values.contains_key(&projection.result) {
+        if state.values.contains_key(projection) {
             continue;
         }
 
-        if let ProjectionKind::BitstringField(index) = projection.kind
-            && let Some(value) = state.bitstring_fields.get(&(projection.source, index)).copied()
-        {
-            state.values.insert(projection.result, value);
-            continue;
-        }
-
-        let Some(value) = resolve_dispatch_subject(
-            runtime.cur_proc(),
-            module,
-            plan,
-            projection.result,
-            inputs,
-            pinned,
-            state,
-        ) else {
+        let Some(value) =
+            resolve_dispatch_subject(runtime.cur_proc(), module, plan, *projection, inputs, pinned, state)
+        else {
             return false;
         };
-        state.values.insert(projection.result, value);
+        state.values.insert(*projection, value);
     }
     true
 }
@@ -178,7 +162,7 @@ pub(super) fn resolve_dispatch_subject<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
 ) -> Option<AnyValue> {
     if let Some(value) = state.values.get(&subject).copied() {
@@ -200,6 +184,13 @@ pub(super) fn resolve_dispatch_subject<TypeHandle>(
                 .ok()
                 .and_then(|ref_word| interp_value_from_ref_word(ref_word, "dispatch tuple field").ok())
             }
+            ProjectionKind::StructField(field) => {
+                let parent = resolve_dispatch_subject(proc, module, plan, projection.source, inputs, pinned, state)?;
+                let parent = parent.as_ref_word(proc).ok()?;
+                let parent = AnyValueRef::from_raw_word(parent).ok()?;
+                let value = unsafe { &*proc }.heap.read_struct_named_field_ref(parent, field).ok()?;
+                interp_value_from_ref_word(value.raw_word(), "dispatch struct field").ok()
+            }
             ProjectionKind::ListHead => {
                 let parent = resolve_dispatch_subject(proc, module, plan, projection.source, inputs, pinned, state)?;
                 interp_list_head(proc, parent).ok()
@@ -212,28 +203,10 @@ pub(super) fn resolve_dispatch_subject<TypeHandle>(
                 let map = resolve_dispatch_subject(proc, module, plan, projection.source, inputs, pinned, state)?;
                 dispatch_map_lookup(proc, plan, module, map, key, pinned)
             }
-            ProjectionKind::BitstringField(index) => state
-                .values
-                .get(&subject)
-                .copied()
-                .or_else(|| state.bitstring_fields.get(&(projection.source, *index)).copied()),
+            ProjectionKind::BitstringField(_) => None,
         },
     };
     cache_dispatch_subject(subject, value, state)
-}
-
-fn apply_direct_bitstring_bindings<TypeHandle>(
-    plan: &PatternDispatchPlan<TypeHandle>,
-    field_subject: SubjectId,
-    value: AnyValue,
-    state: &mut DispatchExecState,
-) {
-    state.values.insert(field_subject, value);
-    if let Some(names) = plan.bitstring_direct_bindings.get(&field_subject) {
-        for name in names {
-            state.direct_bindings.insert(name.clone(), value);
-        }
-    }
 }
 
 fn dispatch_region_hit<TypeHandle, F>(
@@ -244,7 +217,7 @@ fn dispatch_region_hit<TypeHandle, F>(
     region: &Region<TypeHandle>,
     evidence: &EdgeEvidence<TypeHandle>,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
     type_match: &mut F,
 ) -> bool
@@ -270,7 +243,7 @@ where
             else {
                 return false;
             };
-            load_pinned_dispatch_value(plan, *pin_id, inputs, pinned)
+            load_pinned_dispatch_value(*pin_id, pinned)
                 .is_some_and(|want| interp_value_eq(runtime.cur_proc(), want, value).unwrap_or(false))
         }
         Region::TupleArity(arity) => {
@@ -303,11 +276,12 @@ where
             let Some(value) = dispatch_map_lookup(runtime.cur_proc(), plan, module, map, key, pinned) else {
                 return false;
             };
-            for projection in &evidence.projections {
-                if projection.source == subject
+            for result in &evidence.projections {
+                if let SubjectSource::Projection(projection) = plan.subject(*result)
+                    && projection.source == subject
                     && matches!(&projection.kind, ProjectionKind::MapValue { key: projection_key } if projection_key == key)
                 {
-                    state.values.insert(projection.result, value);
+                    state.values.insert(*result, value);
                 }
             }
             true
@@ -318,9 +292,10 @@ where
             else {
                 return false;
             };
-            value.value(runtime.cur_proc()).ok().is_some_and(|value| {
-                dispatch_read_bitstring(runtime.cur_proc(), plan, subject, value, shape, inputs, pinned, state)
-            })
+            value
+                .value(runtime.cur_proc())
+                .ok()
+                .is_some_and(|value| dispatch_read_bitstring(runtime.cur_proc(), plan, value, shape, pinned, state))
         }
         Region::Guard(guard) => plan
             .guards
@@ -343,7 +318,7 @@ pub(super) fn eval_dispatch_guard<TypeHandle, F>(
     plan: &PatternDispatchPlan<TypeHandle>,
     expr: &PatternGuardExpr<TypeHandle>,
     inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
     type_match: &mut F,
 ) -> Option<AnyValue>
@@ -355,7 +330,7 @@ where
         PatternGuardExpr::Subject(subject) => {
             resolve_dispatch_subject(runtime.cur_proc(), module, plan, *subject, inputs, pinned, state)?
         }
-        PatternGuardExpr::Pinned(pinned_id) => load_pinned_dispatch_value(plan, *pinned_id, inputs, pinned)?,
+        PatternGuardExpr::Pinned(pinned_id) => load_pinned_dispatch_value(*pinned_id, pinned)?,
         PatternGuardExpr::Unary { op, expr } => {
             let v = eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match)?;
             match op {
@@ -406,22 +381,36 @@ where
         }
         PatternGuardExpr::Dispatch {
             inputs: dispatch_inputs,
+            bindings,
             dispatch,
         } => {
             let values = dispatch_inputs
                 .iter()
                 .map(|input| eval_dispatch_guard(runtime, module, plan, input, inputs, pinned, state, type_match))
                 .collect::<Option<Vec<_>>>()?;
+            let child_bindings = DispatchValues {
+                pinned: bindings
+                    .pinned
+                    .iter()
+                    .map(|id| values.get(id.0 as usize).copied())
+                    .collect::<Option<Vec<_>>>()?,
+                prepared: bindings
+                    .prepared
+                    .iter()
+                    .map(|id| pinned.prepared.get(id.0 as usize).copied())
+                    .collect::<Option<Vec<_>>>()?,
+            };
             let mut dispatch_state = DispatchExecState::default();
-            let (body_id, _) = execute_dispatch_inputs(
+            let mut matched = execute_dispatch_inputs(
                 runtime,
                 module,
                 &dispatch.plan,
                 &values,
-                pinned,
+                &child_bindings,
                 &mut dispatch_state,
                 type_match,
             )?;
+            let body_id = dispatch.plan.outcome(matched.outcome)?.body_id;
             let body = dispatch.bodies.get(body_id as usize)?;
             eval_dispatch_guard(
                 runtime,
@@ -429,25 +418,16 @@ where
                 &dispatch.plan,
                 body,
                 &values,
-                pinned,
-                &mut dispatch_state,
+                &child_bindings,
+                &mut matched.state,
                 type_match,
             )?
         }
     })
 }
 
-fn load_pinned_dispatch_value<TypeHandle>(
-    plan: &PatternDispatchPlan<TypeHandle>,
-    pinned: PinnedValueId,
-    inputs: &[AnyValue],
-    pinned_values: &HashMap<String, AnyValue>,
-) -> Option<AnyValue> {
-    let p = plan.pinned.get(pinned.0 as usize)?;
-    if let Some(input) = p.input {
-        return inputs.get(input as usize).copied();
-    }
-    pinned_values.get(&p.name).copied()
+fn load_pinned_dispatch_value(pinned: PinnedValueId, pinned_values: &DispatchValues) -> Option<AnyValue> {
+    pinned_values.pinned.get(pinned.0 as usize).copied()
 }
 
 pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &GroundValue) -> Option<AnyValue> {
@@ -530,7 +510,7 @@ pub(super) fn dispatch_map_lookup<TypeHandle>(
     module: &Module,
     map: AnyValue,
     key: &GroundValue,
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
 ) -> Option<AnyValue> {
     if !map.value(proc).ok().is_some_and(is_map_value) {
         return None;
@@ -554,7 +534,7 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     module: &Module,
     key: &GroundValue,
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
 ) -> Option<AnyValue> {
     use crate::ground_value::DispatchShape;
     match key
@@ -571,10 +551,8 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
         DispatchShape::Utf8Binary(_) => plan
-            .prepared_keys
-            .iter()
-            .position(|prepared| prepared == key)
-            .and_then(|index| pinned.get(&prepared_key_name(index)).copied()),
+            .prepared_key_id(key)
+            .and_then(|id| pinned.prepared.get(id.0 as usize).copied()),
     }
 }
 
@@ -582,11 +560,9 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
 pub(super) fn dispatch_read_bitstring<TypeHandle>(
     proc: *mut Process,
     plan: &PatternDispatchPlan<TypeHandle>,
-    subject: SubjectId,
     value: RuntimeAnyValue,
     shape: &BitstringShape,
-    inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &mut DispatchExecState,
 ) -> bool {
     let Some(value_bits) = value.heap_object_word() else {
@@ -599,8 +575,10 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
         return false;
     }
     let mut reader = fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
-    for (index, field) in shape.fields.iter().enumerate() {
-        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, plan, inputs, pinned, state) else {
+    for field_subject in &shape.fields {
+        let extraction = plan.bitstring_extraction(*field_subject);
+        let field = &extraction.spec;
+        let Some((size_present, size_value)) = dispatch_bit_size_value(&field.size, pinned, state) else {
             return false;
         };
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring dispatch reader") else {
@@ -615,7 +593,7 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
             field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
             dispatch_endian_tag(field.endian),
             field.signed as u32,
-            (index + 1 == shape.fields.len()) as u32,
+            extraction.is_last as u32,
         );
         let result = fz_bs_read_field_ref(proc, reader_ref, field_spec, size_value);
         let Ok(ok) = interp_struct_field_from_tagged_bits(proc, result, 0, "bitstring dispatch ok") else {
@@ -632,11 +610,7 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
         else {
             return false;
         };
-        let index = index as u32;
-        state.bitstring_fields.insert((subject, index), extracted);
-        if let Some(field_subject) = bitstring_field_subject(plan, subject, index) {
-            apply_direct_bitstring_bindings(plan, field_subject, extracted, state);
-        }
+        state.values.insert(*field_subject, extracted);
         let Ok(next_reader_ref) = next_reader.as_ref_word(proc) else {
             return false;
         };
@@ -654,26 +628,9 @@ pub(super) fn dispatch_read_bitstring<TypeHandle>(
     bit_len.as_i64() == pos.as_i64()
 }
 
-fn bitstring_field_subject<TypeHandle>(
-    plan: &PatternDispatchPlan<TypeHandle>,
-    source: SubjectId,
-    index: u32,
-) -> Option<SubjectId> {
-    plan.matrix.subjects.iter().find_map(|subject| match &subject.source {
-        SubjectSource::Projection(projection)
-            if projection.source == source && projection.kind == ProjectionKind::BitstringField(index) =>
-        {
-            Some(subject.id)
-        }
-        _ => None,
-    })
-}
-
-pub(super) fn dispatch_bit_size_value<TypeHandle>(
+pub(super) fn dispatch_bit_size_value(
     size: &Option<BitstringFieldSize>,
-    plan: &PatternDispatchPlan<TypeHandle>,
-    inputs: &[AnyValue],
-    pinned: &HashMap<String, AnyValue>,
+    pinned: &DispatchValues,
     state: &DispatchExecState,
 ) -> Option<(u32, u32)> {
     match size {
@@ -688,7 +645,7 @@ pub(super) fn dispatch_bit_size_value<TypeHandle>(
         // bound before the `case`. It arrives as a PIN, which is the same
         // mechanism `Pattern::Pinned` uses, because it is the same question: a
         // name the pattern USES but does not BIND (fz-5xp.54).
-        Some(BitstringFieldSize::Pinned(pin_id)) => load_pinned_dispatch_value(plan, *pin_id, inputs, pinned)
+        Some(BitstringFieldSize::Pinned(pin_id)) => load_pinned_dispatch_value(*pin_id, pinned)
             .and_then(|value| value.as_i64())
             .map(|n| (1, n as u32)),
     }

@@ -5,7 +5,7 @@ use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::modules::identity::ModuleName;
-use crate::source::Span;
+use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::drive::{FactKey, JobEffects, ProductAddress};
@@ -13,7 +13,7 @@ use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_surface::{
-    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface, span_from_meta,
+    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -88,7 +88,8 @@ pub(crate) trait QuotedExpansionCtx {
             ));
         }
 
-        if let Some(node) = cursor.ast_node().map_err(|error| {
+        let source_map = self.world().source_map();
+        if let Some(node) = cursor.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted expansion read failed: {error}"))
         })? {
             if node
@@ -104,12 +105,17 @@ pub(crate) trait QuotedExpansionCtx {
             {
                 return Ok(ExpandedValue::Complete(cursor.root()));
             }
-            if let Some(name) = splice_candidate_name(&node)
-                && let Some(NamespaceSymbol::Splice(snippet)) = self.world().lookup_namespace(scope.namespace(), &name)
+            if let Some(name) = splice_candidate_name(&node).map_err(|error| {
+                emit_internal_surface_error(
+                    self.telemetry(),
+                    format!("quoted splice candidate read failed: {error}"),
+                )
+            })? && let Some(NamespaceSymbol::Splice(snippet)) =
+                self.world().lookup_namespace(scope.namespace(), &name)
             {
                 return Ok(ExpandedValue::Complete(snippet.root()));
             }
-            if let Some(rewritten) = rewrite_source_sugar(owner, &node).map_err(|error| {
+            if let Some(rewritten) = rewrite_source_sugar(owner, &node, &source_map.borrow()).map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
             })? {
                 return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
@@ -173,7 +179,8 @@ pub(crate) trait QuotedExpansionCtx {
         let args = node.tail.list_items().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
         })?;
-        if is_compiler_define_call(node, &args).map_err(|error| {
+        let source_map = self.world().source_map();
+        if is_compiler_define_call(node, &args, &source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(
                 self.telemetry(),
                 format!("quoted compiler-service detection failed: {error}"),
@@ -186,9 +193,12 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(result));
         }
 
-        let Ok(head) = node.head.atom_name() else {
+        if node.head.root().tag() != ValueKind::ATOM {
             return Ok(None);
-        };
+        }
+        let head = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
+        })?;
         if head == "quote" {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
@@ -226,19 +236,17 @@ pub(crate) trait QuotedExpansionCtx {
         depth: usize,
         args: &[QuotedSourceCursor],
     ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
-        let Some(head_node) = node.head.ast_node().map_err(|error| {
+        let source_map = self.world().source_map();
+        let Some(head_node) = node.head.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote call read failed: {error}"))
         })?
         else {
             return Ok(None);
         };
-        let call_span = span_from_meta(&node.meta).map_err(|error| {
-            emit_internal_surface_error(
-                self.telemetry(),
-                format!("quoted remote call span read failed: {error}"),
-            )
-        })?;
-        if head_node.head.atom_name().as_deref() != Ok(".") {
+        let call_span = node.span.unwrap_or(Span::DUMMY);
+        if !is_remote_dot_callee(&head_node).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted remote callee read failed: {error}"))
+        })? {
             return Ok(None);
         }
         let target = head_node.tail.list_items().map_err(|error| {
@@ -248,7 +256,7 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(None);
         };
         let denotation = module_cursor
-            .ast_node()
+            .ast_node(&source_map.borrow())
             .and_then(|node| node.map(|node| node.meta.module_denotation()).transpose())
             .map_err(|error| {
                 emit_internal_surface_error(
@@ -259,9 +267,11 @@ pub(crate) trait QuotedExpansionCtx {
             .flatten();
         let module_path = match &denotation {
             Some(module) => module.display_segments().cloned().collect(),
-            None => match alias_path(module_cursor) {
-                Ok(path) => path,
-                Err(_) => return Ok(None),
+            None => match alias_path(module_cursor, &source_map.borrow()).map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted remote module read failed: {error}"))
+            })? {
+                Some(path) => path,
+                None => return Ok(None),
             },
         };
         let function_name = function_cursor.atom_name().map_err(|error| {
@@ -506,14 +516,17 @@ pub(crate) trait QuotedExpansionCtx {
     }
 }
 
-pub(crate) fn alias_path(cursor: &QuotedSourceCursor) -> Result<Vec<String>, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
-        return Err(QuotedSourceError::new("expected quoted module alias"));
+pub(crate) fn alias_path(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<Vec<String>>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return Ok(None);
     };
-    if node.head.atom_name()? != "__aliases__" {
-        return Err(QuotedSourceError::new("expected quoted module alias"));
+    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "__aliases__" {
+        return Ok(None);
     }
-    node.tail.list_atom_names()
+    node.tail.list_atom_names().map(Some)
 }
 
 pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
@@ -525,9 +538,12 @@ pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
 /// `__` and whose tail is the variable context, not a call's argument list. The
 /// `__` gate keeps this off the hot path for ordinary variables; a name that is
 /// not actually bound to a [`NamespaceSymbol::Splice`] is left untouched.
-fn splice_candidate_name(node: &QuotedAstNode) -> Option<String> {
-    let name = node.head.atom_name().ok()?;
-    (name.starts_with("__") && !is_list_like(&node.tail)).then_some(name)
+fn splice_candidate_name(node: &QuotedAstNode) -> Result<Option<String>, QuotedSourceError> {
+    if node.head.root().tag() != ValueKind::ATOM {
+        return Ok(None);
+    }
+    let name = node.head.atom_name()?;
+    Ok((name.starts_with("__") && !is_list_like(&node.tail)).then_some(name))
 }
 
 pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
@@ -565,7 +581,13 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
         ExpandedValue::Complete(root) => item_macro_fragment_root(ctx.telemetry(), &owner.subroot(root))?,
         ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
     };
-    let surface = read_compiler_fragment_root(ctx.telemetry(), &expanded, "item macro expanded source")?;
+    let source_map = ctx.world().source_map();
+    let surface = read_compiler_fragment_root(
+        ctx.telemetry(),
+        &expanded,
+        "item macro expanded source",
+        &source_map.borrow(),
+    )?;
     if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
         return Err(emit_job_diagnostic(
             ctx.telemetry(),
@@ -604,14 +626,25 @@ fn item_macro_invocation(
     scope: ScopeSnapshot,
     span: Span,
 ) -> Result<ItemMacroInvocation, super::scheduler::FatalError> {
+    let source_map = world.source_map();
     let cursor = owner.cursor();
     if let Some(node) = cursor
-        .ast_node()
+        .ast_node(&source_map.borrow())
         .map_err(|error| emit_internal_surface_error(tel, format!("item macro source read failed: {error}")))?
     {
-        if let Ok(head) = node.head.atom_name()
-            && is_scope_definition_head(&head)
-        {
+        if node.head.root().tag() == ValueKind::ATOM {
+            let head = node
+                .head
+                .atom_name()
+                .map_err(|error| emit_internal_surface_error(tel, format!("item macro head read failed: {error}")))?;
+            if !is_scope_definition_head(&head) {
+                return Ok(ItemMacroInvocation {
+                    function: None,
+                    args: Vec::new(),
+                    display_name: head,
+                    node: Some(node),
+                });
+            }
             let args = node
                 .tail
                 .list_items()
@@ -640,7 +673,9 @@ fn item_macro_invocation(
         return Ok(ItemMacroInvocation {
             function: None,
             args: Vec::new(),
-            display_name: item_macro_display_name(&node),
+            display_name: item_macro_display_name(&node, &source_map.borrow()).map_err(|error| {
+                emit_internal_surface_error(tel, format!("item macro display name read failed: {error}"))
+            })?,
             node: Some(node),
         });
     }
@@ -650,15 +685,18 @@ fn item_macro_invocation(
         .map_err(|error| emit_internal_surface_error(tel, format!("grouped item macro read failed: {error}")))?;
     let mut display_name = "item".to_string();
     for item in items {
-        let Some(node) = item.ast_node().map_err(|error| {
+        let Some(node) = item.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(tel, format!("grouped item macro item read failed: {error}"))
         })?
         else {
             return Err(item_macro_not_defmacro(tel, "item", span));
         };
-        let Ok(head) = node.head.atom_name() else {
+        if node.head.root().tag() != ValueKind::ATOM {
             return Err(item_macro_not_defmacro(tel, "item", span));
-        };
+        }
+        let head = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(tel, format!("grouped item macro head read failed: {error}"))
+        })?;
         if head.starts_with('@') {
             continue;
         }
@@ -692,15 +730,17 @@ pub(crate) fn read_compiler_fragment_root(
     tel: &impl crate::telemetry::Telemetry,
     root: &QuotedSourceRoot,
     context: &str,
+    sources: &crate::source::SourceMap,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
-    read_surface_root_with(tel, root, context, read_compiler_fragment_surface)
+    read_surface_root_with(tel, root, context, sources, read_compiler_fragment_surface)
 }
 
 fn read_surface_root_with(
     tel: &impl crate::telemetry::Telemetry,
     root: &QuotedSourceRoot,
     context: &str,
-    read: fn(&QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError>,
+    sources: &crate::source::SourceMap,
+    read: fn(&QuotedSourceRoot, &crate::source::SourceMap) -> Result<ScopeSurface, QuotedSourceError>,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
     let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
         root.clone()
@@ -708,7 +748,7 @@ fn read_surface_root_with(
         root.interned_list_subroot(&[root.root()])
             .map_err(|error| emit_internal_surface_error(tel, format!("{context} wrapper failed: {error}")))?
     };
-    read(&source).map_err(|error| emit_internal_surface_error(tel, format!("{context} read failed: {error}")))
+    read(&source, sources).map_err(|error| emit_internal_surface_error(tel, format!("{context} read failed: {error}")))
 }
 
 pub(crate) fn emit_macro_expanded(
@@ -736,12 +776,17 @@ pub(crate) fn emit_surface_read_error(
     context: &str,
     error: &super::source::QuotedSourceError,
 ) -> super::scheduler::FatalError {
+    emit_job_diagnostic(tel, surface_read_diagnostic(context, error))
+}
+
+pub(crate) fn surface_read_diagnostic(context: &str, error: &QuotedSourceError) -> Diagnostic {
     match error.user_code() {
-        Some(code) => emit_job_diagnostic(
-            tel,
-            Diagnostic::error(code, error.to_string(), error.span().unwrap_or(Span::DUMMY)),
+        Some(code) => Diagnostic::error(code, error.to_string(), error.span().unwrap_or(Span::DUMMY)),
+        None => Diagnostic::error(
+            codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+            format!("{context}: {error}"),
+            Span::DUMMY,
         ),
-        None => emit_internal_surface_error(tel, format!("{context}: {error}")),
     }
 }
 
@@ -791,33 +836,36 @@ fn item_macro_not_defmacro(
     )
 }
 
-fn item_macro_display_name(node: &QuotedAstNode) -> String {
-    if let Ok(function) = node.head.atom_name() {
-        return function;
+fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<String, QuotedSourceError> {
+    if node.head.root().tag() == ValueKind::ATOM {
+        return node.head.atom_name();
     }
-    let Ok(Some(head_node)) = node.head.ast_node() else {
-        return "item".to_string();
+    let Some(head_node) = node.head.ast_node(sources)? else {
+        return Ok("item".to_string());
     };
-    let Ok(parts) = head_node.tail.list_items() else {
-        return "item".to_string();
-    };
+    let parts = head_node.tail.list_items()?;
     let [module, function] = parts.as_slice() else {
-        return "item".to_string();
+        return Ok("item".to_string());
     };
-    if head_node.head.atom_name().as_deref() == Ok(".")
-        && let Ok(path) = alias_path(module)
-        && let Ok(function) = function.atom_name()
+    if head_node.head.root().tag() == ValueKind::ATOM
+        && head_node.head.atom_name()? == "."
+        && let Some(path) = alias_path(module, sources)?
+        && function.root().tag() == ValueKind::ATOM
     {
-        return format!("{}.{}", path.join("."), function);
+        return Ok(format!("{}.{}", path.join("."), function.atom_name()?));
     }
-    "item".to_string()
+    Ok("item".to_string())
 }
 
-fn is_compiler_define_call(node: &QuotedAstNode, args: &[QuotedSourceCursor]) -> Result<bool, QuotedSourceError> {
+fn is_compiler_define_call(
+    node: &QuotedAstNode,
+    args: &[QuotedSourceCursor],
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
     if args.len() != 2 {
         return Ok(false);
     }
-    let Some(callee) = node.head.ast_node()? else {
+    let Some(callee) = node.head.ast_node(sources)? else {
         return Ok(false);
     };
     if callee.head.atom_name()? != "." {
@@ -827,8 +875,49 @@ fn is_compiler_define_call(node: &QuotedAstNode, args: &[QuotedSourceCursor]) ->
     let [module_cursor, function_cursor] = target.as_slice() else {
         return Ok(false);
     };
-    Ok(alias_path(module_cursor)
-        .map(|path| path == ["Fz".to_string(), "Compiler".to_string()])
-        .unwrap_or(false)
-        && function_cursor.atom_name().as_deref() == Ok("define"))
+    if !alias_path(module_cursor, sources)?.is_some_and(|path| path == ["Fz".to_string(), "Compiler".to_string()])
+        || function_cursor.root().tag() != ValueKind::ATOM
+    {
+        return Ok(false);
+    }
+    Ok(function_cursor.atom_name()? == "define")
+}
+
+fn is_remote_dot_callee(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+    if node.head.root().tag() != ValueKind::ATOM {
+        return Ok(false);
+    }
+    Ok(node.head.atom_name()? == ".")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use fz_runtime::any_value::{AnyValueRef, ValueKind};
+
+    use super::is_remote_dot_callee;
+    use crate::compiler2::{QuotedSourceHeap, QuotedSourceMetadata};
+    use crate::source::SourceMap;
+
+    #[test]
+    fn remote_callee_probe_propagates_an_invalid_atom_payload() {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let builder = heap.builder();
+        let unknown_atom_id = u64::MAX;
+        let unknown_atom = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &unknown_atom_id)
+            .expect("stack scalar is a valid temporary atom carrier");
+        let encoded = builder
+            .ast_node(unknown_atom, &QuotedSourceMetadata::default(), builder.empty_list())
+            .expect("builder copies the scalar into its owned heap");
+        let root = builder.root(encoded).expect("quoted source root");
+        let node = root
+            .cursor()
+            .ast_node(&SourceMap::new())
+            .expect("structural read")
+            .expect("AST node");
+
+        let error = is_remote_dot_callee(&node).expect_err("remote callee probe must propagate invalid atom");
+        assert!(error.to_string().contains("unknown atom id"), "{error}");
+    }
 }

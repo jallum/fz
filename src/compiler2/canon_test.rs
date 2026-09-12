@@ -239,7 +239,7 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
         "BoundaryId(",
         "FunctionId(",
         "ModuleId(",
-        "CodeId(",
+        "SourceOwner(",
         "FnId(",
         "SubjectId(",
         "OutcomeId(",
@@ -253,8 +253,8 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
         !rendered.lines().any(|line| line.trim_start().starts_with("revision ")),
         "the canonical form must not carry synthetic artifact revisions"
     );
-    // A generated lambda's NAME mints its owner's raw id; `function_label` has
-    // to resolve that away rather than pass it through.
+    // Generated labels follow typed owner-and-occurrence origin. Their display
+    // names are never parsed into identity.
     assert!(
         !rendered.contains("#lambda:"),
         "a generated lambda label must resolve its owner instead of carrying the owner's raw id"
@@ -264,6 +264,94 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
         "the canonical form should still describe the program: {}",
         &rendered[..rendered.len().min(400)]
     );
+}
+
+#[test]
+fn generated_function_labels_follow_typed_origin_not_function_allocation() {
+    fn compile_label(unrelated_functions: usize) -> String {
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        for index in 0..unrelated_functions {
+            compiler
+                .world_mut()
+                .reference_function(super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+        }
+        compiler.submit_code(CodeSubmission {
+            name: Some("generated_label.fz".into()),
+            text: "fn main(), do: (fn (x) -> x + 1 end).(41)\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42));
+
+        let main = compiler.root_function(root);
+        let super::LoweredBody::Clauses { generated, .. } = compiler.world().lowered_body(main) else {
+            panic!("source function must lower to clauses");
+        };
+        let generated = generated.first().copied().expect("source lambda identity");
+        let super::identity::FunctionOrigin::Generated { owner, occurrence } =
+            &compiler.world().function_ref(generated).origin
+        else {
+            panic!("generated function typed origin");
+        };
+        assert!(std::sync::Arc::ptr_eq(
+            owner,
+            &compiler.world().function_ref(main).denotation
+        ));
+        let expected = format!(
+            "{}#lambda@{}/1",
+            function_label(compiler.world(), main),
+            occurrence.as_u32()
+        );
+        let label = function_label(compiler.world(), generated);
+        assert_eq!(label, expected);
+        label
+    }
+
+    assert_eq!(compile_label(0), compile_label(7));
+}
+
+#[test]
+fn same_range_generated_peers_order_independently_of_function_allocation() {
+    fn compile(unrelated_functions: usize) -> String {
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        for index in 0..unrelated_functions {
+            compiler
+                .world_mut()
+                .reference_function(super::ModuleId::GLOBAL, format!("unrelated_{index}"), 0);
+        }
+        compiler.submit_code(CodeSubmission {
+            name: Some("generated_peers.fz".into()),
+            text: r#"
+defmacro deferred(x) do
+  {:fn, %{}, [{:"->", %{}, [[], x]}]}
+end
+fn main() do
+  left = deferred(20)
+  right = deferred(22)
+  left.() + right.()
+end
+"#
+            .into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler
+            .drive_root_to_dump_stage(root, DumpStage::Backend)
+            .expect("same-range generated peers reach a backend program");
+        canon_backend_program(compiler.world(), &compiler.retained_backend_program(root))
+    }
+
+    let baseline = compile(0);
+    assert!(baseline.contains("#lambda@1/0"), "peer identity must survive rendering");
+    assert_eq!(baseline, compile(7));
 }
 
 /// Every closure literal has a typed origin shared by the function interner.
@@ -481,7 +569,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            166,
+            // Exact caller rows retain four specializations hidden by blended evidence.
+            170,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",

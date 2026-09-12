@@ -3,11 +3,17 @@
 //! These slots hold compiler-owned `dispatch_matrix::pattern` artifacts keyed
 //! by function id. They are facts, not work queues: identity lives in the
 //! owning map, and each slot only tracks lifecycle state plus revision.
+//! SourcePatternResolver supplies the shared producer with World-owned struct
+//! identity and the caller's guard-helper resolution.
 
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
+use crate::ast::{CallableName, ModuleTarget};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternResolver, SourcePatternError};
+use crate::source::Span;
 
-use super::identity::FunctionId;
+use super::identity::{FunctionId, ModuleId};
+use super::namespace::Namespace;
 use super::types::Ty;
+use super::world::World;
 
 #[derive(Debug, Clone)]
 enum DispatchState<T> {
@@ -68,5 +74,33 @@ impl<T: PartialEq> DispatchState<T> {
             (DispatchState::Defined(left), DispatchState::Defined(right)) => left == right,
             _ => false,
         }
+    }
+}
+
+pub(crate) struct SourcePatternResolver<'a, F> {
+    pub(crate) world: &'a mut World,
+    pub(crate) namespace: Namespace,
+    pub(crate) owner: ModuleId,
+    pub(crate) guard: F,
+}
+
+impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
+where
+    F: FnMut(&mut World, &CallableName, usize) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError>,
+{
+    fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
+        let module_id = self
+            .world
+            .resolve_module_target(self.owner, self.namespace, module)
+            .ok_or_else(|| SourcePatternError::UnresolvedStruct(module.clone()))?;
+        Ok(self.world.struct_value_ty(module_id, &[], &[]))
+    }
+
+    fn guard_call(
+        &mut self,
+        name: &CallableName,
+        arity: usize,
+    ) -> Result<Option<PatternGuardDispatch<Ty>>, SourcePatternError> {
+        (self.guard)(self.world, name, arity)
     }
 }

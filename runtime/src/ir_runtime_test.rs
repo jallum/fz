@@ -385,6 +385,43 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
 }
 
 #[test]
+fn list_retention_ref_normalizes_dynamic_head_once() {
+    with_process(|process| {
+        let source = process.heap.alloc_list_cons_slot(AnyValue::int(42), EMPTY_LIST_BITS);
+        let source_ref = list_ref_from_bits(source);
+        let head_ref = fz_list_head_ref(source_ref.raw_word());
+        let tail_ref = fz_list_tail_ref(source_ref.raw_word());
+        process
+            .heap
+            .mark_published_ref_aliased(source_ref)
+            .expect("share source");
+        let result = fz_list_reuse_or_cons_ref(process, source_ref.raw_word(), head_ref, tail_ref, 0);
+        assert_eq!(
+            result,
+            source_ref.raw_word(),
+            "unchanged shared cell survives a dynamic head"
+        );
+        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (1, 1));
+        let other = process.heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST_BITS);
+        let changed_head = fz_list_head_ref(list_ref_from_bits(other).raw_word());
+        let result = fz_list_reuse_or_cons_ref(process, source_ref.raw_word(), changed_head, tail_ref, 1);
+        assert_ne!(result, source_ref.raw_word(), "shared changed source allocates");
+        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (2, 1));
+        for permission in [0, 1] {
+            let source = process.heap.alloc_list_cons_slot(AnyValue::int(42), EMPTY_LIST_BITS);
+            let source = list_ref_from_bits(source).raw_word();
+            let result = fz_list_reuse_or_cons_ref(process, source, changed_head, tail_ref, permission);
+            assert_eq!(
+                result == source,
+                permission == 1,
+                "only explicit permission rewrites an unshared changed cell"
+            );
+        }
+        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (4, 2));
+    });
+}
+
+#[test]
 fn list_reuse_or_cons_parts_updates_process_counters() {
     with_process(|process| {
         let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
@@ -396,11 +433,12 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
             7,
             ValueKind::ATOM.tag() as u64,
             list_ref_from_bits(new_tail).raw_word(),
+            1,
         );
 
         assert_eq!(reused_word, list_ref_from_bits(source).raw_word());
-        assert_eq!(process.reusable_cons_attempts, 1);
-        assert_eq!(process.reusable_cons_reused, 1);
+        assert_eq!(process.list_retention_attempts, 1);
+        assert_eq!(process.list_retention_hits, 1);
 
         let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST_BITS);
         let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(4), EMPTY_LIST_BITS);
@@ -416,10 +454,11 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
             11,
             ValueKind::INT.tag() as u64,
             list_ref_from_bits(new_tail).raw_word(),
+            1,
         );
 
         assert_ne!(fallback_word, source_ref.raw_word());
-        assert_eq!(process.reusable_cons_attempts, 2);
-        assert_eq!(process.reusable_cons_reused, 1);
+        assert_eq!(process.list_retention_attempts, 2);
+        assert_eq!(process.list_retention_hits, 1);
     });
 }

@@ -84,6 +84,20 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 }
 
 #[test]
+fn edge_evidence_reveals_only_existing_projected_subjects() {
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
+    let source = builder.add_input_subject();
+    let outcome = builder.add_outcome(OutcomeMultiplicity::Unique);
+    for subject in [source, SubjectId(99)] {
+        let evidence = EdgeEvidence::empty().with_projection(subject);
+        assert!(
+            builder.add_arm_questions(Vec::new(), evidence, outcome).is_err(),
+            "revealed subjects must already denote a projection in the owning plan"
+        );
+    }
+}
+
+#[test]
 fn edge_evidence_keeps_proofs_and_projections_branch_local() {
     let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let list = builder.add_input_subject();
@@ -97,11 +111,7 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
             predicate: predicate.clone(),
             sense: ProofSense::Holds,
         }],
-        projections: vec![EdgeProjection {
-            source: list,
-            kind: ProjectionKind::ListHead,
-            result: head,
-        }],
+        projections: vec![head],
     };
 
     let arm = builder
@@ -129,7 +139,7 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
 
     assert_eq!(
         question.predicate,
-        RegionPredicate::new(map, Region::MapKeyPresent { key: key.clone() })
+        RegionPredicate::new(map, Region::MapKeyPresent { key })
     );
     assert_eq!(
         question.match_evidence.proofs,
@@ -138,14 +148,7 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
             sense: ProofSense::Holds,
         }]
     );
-    assert_eq!(
-        question.match_evidence.projections,
-        vec![EdgeProjection {
-            source: map,
-            kind: ProjectionKind::MapValue { key },
-            result: value,
-        }]
-    );
+    assert_eq!(question.match_evidence.projections, vec![value]);
     assert_eq!(
         question.miss_evidence,
         EdgeEvidence::from_proof(question.predicate.clone(), ProofSense::DoesNotHold)
@@ -210,21 +213,7 @@ fn list_shape_questions_preserve_empty_cons_and_non_list_distinctions() {
         empty.miss_evidence,
         EdgeEvidence::from_proof(empty.predicate.clone(), ProofSense::DoesNotHold)
     );
-    assert_eq!(
-        cons.match_evidence.projections,
-        vec![
-            EdgeProjection {
-                source: list,
-                kind: ProjectionKind::ListHead,
-                result: head,
-            },
-            EdgeProjection {
-                source: list,
-                kind: ProjectionKind::ListTail,
-                result: tail,
-            },
-        ]
-    );
+    assert_eq!(cons.match_evidence.projections, vec![head, tail]);
     assert_eq!(
         cons.miss_evidence,
         EdgeEvidence::from_proof(cons.predicate.clone(), ProofSense::DoesNotHold)
@@ -515,15 +504,8 @@ fn compile_places_projection_only_on_proven_edge() {
         panic!("expected map presence root");
     };
 
-    assert_eq!(predicate.region, Region::MapKeyPresent { key: key.clone() });
-    assert_eq!(
-        on_match.evidence.projections,
-        vec![EdgeProjection {
-            source: map,
-            kind: ProjectionKind::MapValue { key },
-            result: value,
-        }]
-    );
+    assert_eq!(predicate.region, Region::MapKeyPresent { key });
+    assert_eq!(on_match.evidence.projections, vec![value]);
     assert!(on_miss.evidence.projections.is_empty());
     assert!(matches!(
         compiled.graph.node(on_match.target),
@@ -801,7 +783,10 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
             )
         })
         .expect("map-key-present question");
-    assert!(map_key_question.match_evidence.projections.iter().any(|projection| {
+    assert!(map_key_question.match_evidence.projections.iter().any(|subject| {
+        let SubjectSource::Projection(projection) = plan.subject(*subject) else {
+            return false;
+        };
         matches!(
             projection.kind,
             ProjectionKind::MapValue {
@@ -856,12 +841,22 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         })
         .expect("bitstring region");
 
-    assert_eq!(bitstring.fields[0].kind, BitstringFieldKind::Integer);
-    assert_eq!(bitstring.fields[0].size, Some(BitstringFieldSize::Literal(8)));
-    assert_eq!(bitstring.fields[0].endian, BitstringEndian::Little);
-    assert!(bitstring.fields[0].signed);
-    assert_eq!(bitstring.fields[0].unit, Some(1));
-    let Some(BitstringFieldSize::Binding(size_subject)) = bitstring.fields[1].size else {
+    assert_eq!(
+        plan.bitstring_extraction(bitstring.fields[0]).spec.kind,
+        BitstringFieldKind::Integer
+    );
+    assert_eq!(
+        plan.bitstring_extraction(bitstring.fields[0]).spec.size,
+        Some(BitstringFieldSize::Literal(8))
+    );
+    assert_eq!(
+        plan.bitstring_extraction(bitstring.fields[0]).spec.endian,
+        BitstringEndian::Little
+    );
+    assert!(plan.bitstring_extraction(bitstring.fields[0]).spec.signed);
+    assert_eq!(plan.bitstring_extraction(bitstring.fields[0]).spec.unit, Some(1));
+    let Some(BitstringFieldSize::Binding(size_subject)) = plan.bitstring_extraction(bitstring.fields[1]).spec.size
+    else {
         panic!("expected dynamic size binding");
     };
 
@@ -875,7 +870,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
     assert!(matches!(
         plan.matrix.subjects[n.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
-            kind: ProjectionKind::BitstringField(0),
+            kind: ProjectionKind::BitstringField(BitstringExtraction { previous: None, .. }),
             ..
         })
     ));
@@ -950,16 +945,22 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
         })
         .expect("bitstring region");
     assert_eq!(bitstring.fields.len(), 2);
-    assert_eq!(bitstring.fields[0].size, Some(BitstringFieldSize::Literal(8)));
+    assert_eq!(
+        plan.bitstring_extraction(bitstring.fields[0]).spec.size,
+        Some(BitstringFieldSize::Literal(8))
+    );
     let direct_names = plan
-        .bitstring_direct_bindings
-        .values()
-        .flatten()
-        .cloned()
+        .outcomes
+        .iter()
+        .flat_map(|outcome| &outcome.bindings)
+        .map(|binding| binding.name.clone())
         .collect::<Vec<_>>();
     assert!(direct_names.contains(&"n".to_string()));
     assert!(direct_names.contains(&"payload".to_string()));
-    assert!(matches!(bitstring.fields[1].size, Some(BitstringFieldSize::Binding(_))));
+    assert!(matches!(
+        plan.bitstring_extraction(bitstring.fields[1]).spec.size,
+        Some(BitstringFieldSize::Binding(_))
+    ));
 }
 
 #[test]

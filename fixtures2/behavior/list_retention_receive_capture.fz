@@ -1,0 +1,17 @@
+#---
+# purpose: "Receiver-local physical list sources survive the shared receive capture ABI"
+#---
+fn retain(xs) do
+  [h | t] = xs
+  receive do
+    :go -> [h | t]
+    :skip -> []
+  after
+    1000 -> []
+  end
+end
+
+fn main() do
+  send(self(), :go)
+  dbg(retain([1, 2]))
+end

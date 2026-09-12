@@ -229,18 +229,15 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4103, 11, 21, 401),
-        "separating retained closure values from member execution demand removes 57 applies; scope, module, and executable-fact work remain exact"
+        (4081, 11, 21, 401),
+        "exact caller rows and retained closure values reduce applications while scope, module, and executable-fact work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        // fz-5xp.6 removes twelve more wakes via `Range.count`'s `div/2`.
-        // fz-5xp.87 adds one content wake and five blocked-waiter starts for
-        // the six newly active private-helper contract derivations.
-        1458,
-        "fz-kdt.182 removed twenty changed-revision wakes for redundant list-union executable identities, fz-5xp.2 removes eleven more with the reduce-and-reverse activations Enum.to_list/1 no longer mints for a list, and fz-5xp.87 adds the one content wake used by its six private-helper contract derivations; macro waits and product wakes remain exact",
+        1430,
+        "exact caller rows reduce non-demand changed-revision starts while macro waits and product wakes remain exact",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
@@ -265,8 +262,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 255, 0, 0, 0),
-        "fz-kdt.182 removed nine absorbed analyses and fz-5xp.2 removes four more, while the retained root and callee analyses keep one shared frontier with no unsanctioned or scanning path -- the last three columns stay zero",
+        (2, 261, 0, 0, 0),
+        "exact caller rows expose six more activations on the shared root/callee frontier; unsanctioned and scanning paths stay absent",
     );
 
     let world = compiler.world();

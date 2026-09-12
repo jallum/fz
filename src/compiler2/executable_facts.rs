@@ -66,9 +66,13 @@ pub(crate) enum TransportOrigin {
     },
     Join(Box<[TransportOrigin]>),
     TupleValue(Box<[ValueId]>),
-    TupleField {
+    Projection {
         source: ValueId,
-        index: usize,
+        kind: crate::dispatch_matrix::ProjectionKind,
+    },
+    OutcomeSubject {
+        owner: ControlEntryId,
+        subject: crate::dispatch_matrix::SubjectId,
     },
     CallableValue(LocalCallableProducer),
 }
@@ -229,10 +233,9 @@ pub(crate) fn project_executable_facts(
     let callsite_return_origins = collect_callsite_return_origins(&body);
     let value_origins = collect_value_origins(&body, &callsite_return_origins);
     let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
-        .iter()
-        .filter_map(|(&value, origin)| match origin {
-            TransportOrigin::CallableValue(producer) => Some((value, producer.clone())),
-            _ => None,
+        .keys()
+        .filter_map(|&value| {
+            local_callable_origin(&body, &value_origins, value, &[]).map(|producer| (value, producer.clone()))
         })
         .collect();
     let return_origins = collect_return_origins(&body, &analysis);
@@ -570,14 +573,14 @@ fn collect_entry_callsite_needs(
             let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
         }
         LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_callsite_needs(entries, *arm_entry, outgoing_need, out);
+            for edge in &dispatch.outcomes {
+                let _ = collect_entry_callsite_needs(entries, edge.target, outgoing_need, out);
             }
             let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
         }
         LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                let _ = collect_entry_callsite_needs(entries, clause.entry, outgoing_need, out);
+            for clause in &receive.outcomes {
+                let _ = collect_entry_callsite_needs(entries, clause.target, outgoing_need, out);
             }
             if let Some(after) = &receive.after {
                 let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out);
@@ -690,6 +693,54 @@ pub(crate) fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<Cal
     origins
 }
 
+fn local_callable_origin<'a>(
+    body: &LoweredBody,
+    origins: &'a HashMap<ValueId, TransportOrigin>,
+    value: ValueId,
+    path: &[&crate::dispatch_matrix::ProjectionKind],
+) -> Option<&'a LocalCallableProducer> {
+    local_callable_origin_from(body, origins, origins.get(&value)?, path)
+}
+
+fn local_callable_origin_from<'a>(
+    body: &LoweredBody,
+    origins: &'a HashMap<ValueId, TransportOrigin>,
+    origin: &'a TransportOrigin,
+    path: &[&crate::dispatch_matrix::ProjectionKind],
+) -> Option<&'a LocalCallableProducer> {
+    use crate::dispatch_matrix::ProjectionKind;
+    match origin {
+        TransportOrigin::CallableValue(producer) if path.is_empty() => Some(producer),
+        TransportOrigin::LocalValue(value) => local_callable_origin(body, origins, *value, path),
+        TransportOrigin::Projection { source, kind } => {
+            let path = std::iter::once(kind).chain(path.iter().copied()).collect::<Vec<_>>();
+            local_callable_origin(body, origins, *source, &path)
+        }
+        TransportOrigin::OutcomeSubject { owner, subject } => {
+            let (source, mut prefix) = body.dispatch_subject_origin(*owner, *subject);
+            prefix.extend(path.iter().copied());
+            match source {
+                super::body::SubjectOriginRoot::Value(source) => local_callable_origin(body, origins, source, &prefix),
+                super::body::SubjectOriginRoot::MailboxMessage(_) => None,
+            }
+        }
+        TransportOrigin::TupleValue(items) => {
+            let (ProjectionKind::TupleField(index), tail) = path.split_first()? else {
+                return None;
+            };
+            local_callable_origin(body, origins, *items.get(*index as usize)?, tail)
+        }
+        TransportOrigin::Join(alternatives) => {
+            let mut producers = alternatives
+                .iter()
+                .map(|origin| local_callable_origin_from(body, origins, origin, path));
+            let first = producers.next()??;
+            producers.all(|producer| producer == Some(first)).then_some(first)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn collect_value_origins(
     body: &LoweredBody,
     callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
@@ -700,7 +751,7 @@ pub(crate) fn collect_value_origins(
     };
     for clause in clauses {
         for step in &clause.projections {
-            if let Some((value, origin)) = step_transport_origin(step) {
+            for (value, origin) in step_transport_origins(step) {
                 origins.insert(value, origin);
             }
         }
@@ -708,10 +759,21 @@ pub(crate) fn collect_value_origins(
             origins.insert(value, TransportOrigin::ExecutableInput(semantic_index));
         }
     }
-    for entry in entries {
+    for (owner, entry) in entries.iter().enumerate() {
         for step in &entry.steps {
-            if let Some((value, origin)) = step_transport_origin(step) {
+            for (value, origin) in step_transport_origins(step) {
                 origins.insert(value, origin);
+            }
+        }
+        for edge in entry.tail.outcome_edges() {
+            for argument in &edge.arguments {
+                origins.insert(
+                    argument.parameter,
+                    TransportOrigin::OutcomeSubject {
+                        owner: ControlEntryId::from_u32(owner as u32),
+                        subject: argument.subject,
+                    },
+                );
             }
         }
         match entry.tail {
@@ -755,38 +817,50 @@ pub(crate) fn collect_value_origins(
     origins
 }
 
-fn step_transport_origin(step: &LoweredStep) -> Option<(ValueId, TransportOrigin)> {
-    match step {
-        LoweredStep::Tuple { value, items } => {
-            Some((*value, TransportOrigin::TupleValue(items.clone().into_boxed_slice())))
-        }
-        LoweredStep::TupleField { value, source, index } => Some((
+fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)> {
+    use crate::dispatch_matrix::ProjectionKind;
+    let projection = |value, source, kind| (value, TransportOrigin::Projection { source, kind });
+    let origin = match step {
+        LoweredStep::Tuple { value, items } => (
             *value,
-            TransportOrigin::TupleField {
-                source: *source,
-                index: *index,
-            },
-        )),
-        LoweredStep::FunctionRef { value, function } => Some((
+            TransportOrigin::TupleValue(items.iter().map(|item| item.value).collect()),
+        ),
+        LoweredStep::TupleField { value, source, index } => {
+            projection(*value, *source, ProjectionKind::TupleField(*index as u32))
+        }
+        LoweredStep::FieldAccess { value, base, field } => {
+            projection(*value, *base, ProjectionKind::StructField(field.clone()))
+        }
+        LoweredStep::RequireMapValue { value, source, key } => {
+            projection(*value, *source, ProjectionKind::MapValue { key: key.clone() })
+        }
+        LoweredStep::SplitList { source, head, tail } => {
+            return vec![
+                projection(*head, *source, ProjectionKind::ListHead),
+                projection(*tail, *source, ProjectionKind::ListTail),
+            ];
+        }
+        LoweredStep::FunctionRef { value, function } => (
             *value,
             TransportOrigin::CallableValue(LocalCallableProducer {
                 function: *function,
                 captures: Box::default(),
             }),
-        )),
+        ),
         LoweredStep::Lambda {
             value,
             function,
             captures,
-        } => Some((
+        } => (
             *value,
             TransportOrigin::CallableValue(LocalCallableProducer {
                 function: *function,
                 captures: captures.clone().into_boxed_slice(),
             }),
-        )),
-        _ => None,
-    }
+        ),
+        _ => return Vec::new(),
+    };
+    vec![origin]
 }
 
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {
@@ -841,11 +915,11 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
                 then_entry, else_entry, ..
             } => pending.extend([*then_entry, *else_entry]),
             LoweredTail::Dispatch { dispatch, .. } => {
-                pending.extend(dispatch.arm_entries.iter().copied());
+                pending.extend(dispatch.outcomes.iter().map(|edge| edge.target));
                 pending.push(dispatch.miss_entry);
             }
             LoweredTail::Receive(receive) => {
-                pending.extend(receive.clauses.iter().map(|clause| clause.entry));
+                pending.extend(receive.outcomes.iter().map(|edge| edge.target));
                 pending.extend(receive.after.iter().map(|after| after.entry));
                 if let ControlDestination::Deliver(target) = receive.dest {
                     pending.push(target);

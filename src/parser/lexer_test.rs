@@ -1,11 +1,17 @@
 use super::*;
-use crate::source::{Id, SourceMap};
+use crate::source::SourceMap;
+
+fn test_lexer(src: &str) -> Lexer<'_> {
+    let mut sources = SourceMap::new();
+    let version = sources.add_code(Some("<test>"), src);
+    Lexer::with_source_version_and_name(src, version, "<test>")
+}
 
 // DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]
 fn tokens_carry_accurate_byte_spans() {
     let src = "fn foo(x), do: x + 1";
-    let toks = Lexer::with_source_name(src, "<test>")
+    let toks = test_lexer(src)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     // Every non-Eof token's span text matches the lexeme we expect.
@@ -29,7 +35,7 @@ fn locate_resolves_to_correct_line() {
     let src = "fn a(), do: 1\nfn b(), do: 2\n";
     let mut sm = SourceMap::new();
     let f = sm.add_code(Some("t.fz"), src);
-    let toks = Lexer::with_code_id_and_source_name(src, f, "<test>")
+    let toks = Lexer::with_source_version_and_name(src, f, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     // Find the `b` ident; verify it locates to line 2.
@@ -44,14 +50,14 @@ fn locate_resolves_to_correct_line() {
 
 // DROP: multi-file span bookkeeping, pure infrastructure
 #[test]
-fn multi_file_spans_keep_their_code_id() {
+fn multi_file_spans_keep_their_source_versions() {
     let mut sm = SourceMap::new();
     let a = sm.add_code(Some("a.fz"), "fn foo()");
     let b = sm.add_code(Some("b.fz"), "fn bar()");
-    let toks_a = Lexer::with_code_id_and_source_name("fn foo()", a, "<test>")
+    let toks_a = Lexer::with_source_version_and_name("fn foo()", a, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let toks_b = Lexer::with_code_id_and_source_name("fn bar()", b, "<test>")
+    let toks_b = Lexer::with_source_version_and_name("fn bar()", b, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
     let foo = toks_a
@@ -62,14 +68,14 @@ fn multi_file_spans_keep_their_code_id() {
         .iter()
         .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "bar"))
         .unwrap();
-    assert_eq!(foo.span.code_id, a);
-    assert_eq!(bar.span.code_id, b);
+    assert_eq!(foo.span.source_version, a);
+    assert_eq!(bar.span.source_version, b);
     assert_eq!(
-        &sm.code(foo.span.code_id).bytes[foo.span.start as usize..foo.span.end as usize],
+        &sm.code(foo.span.source_version).bytes[foo.span.start as usize..foo.span.end as usize],
         "foo"
     );
     assert_eq!(
-        &sm.code(bar.span.code_id).bytes[bar.span.start as usize..bar.span.end as usize],
+        &sm.code(bar.span.source_version).bytes[bar.span.start as usize..bar.span.end as usize],
         "bar"
     );
 }
@@ -79,7 +85,7 @@ fn multi_file_spans_keep_their_code_id() {
 // DROP: token payload encoding, lexer infrastructure
 #[test]
 fn binary_literal_carries_raw_bytes() {
-    let toks = Lexer::with_source_name(r#""hi""#, "<test>")
+    let toks = test_lexer(r#""hi""#)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -95,7 +101,7 @@ fn binary_literal_preserves_non_ascii_utf8_bytes() {
     // pushing each byte as a `char` via `c as char`, which
     // re-encoded into UTF-8 multi-byte garbage. Post-L1 the bytes
     // pass through unchanged.
-    let toks = Lexer::with_source_name(r#""héllo""#, "<test>")
+    let toks = test_lexer(r#""héllo""#)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -107,7 +113,7 @@ fn binary_literal_preserves_non_ascii_utf8_bytes() {
 // DROP: escape-sequence decoding in lexer, infrastructure
 #[test]
 fn binary_literal_handles_canonical_escapes() {
-    let toks = Lexer::with_source_name(r#""a\nb\tc\\d\"e""#, "<test>")
+    let toks = test_lexer(r#""a\nb\tc\\d\"e""#)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -119,7 +125,7 @@ fn binary_literal_handles_canonical_escapes() {
 // DROP: lexer error on bad escape, infrastructure
 #[test]
 fn binary_literal_rejects_unknown_escape() {
-    let err = Lexer::with_source_name(r#""bad\q""#, "<test>")
+    let err = test_lexer(r#""bad\q""#)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect_err("unknown escape must fail");
     assert!(err.msg.contains("unknown escape"), "msg={}", err.msg);
@@ -145,7 +151,7 @@ fn str_tokens_are_invariantly_utf8() {
         r#""a\nb\tc\\d\"e""#, // all canonical escapes
     ];
     for src in inputs {
-        let toks = Lexer::with_source_name(src, "<test>")
+        let toks = test_lexer(src)
             .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
             .expect("lex");
         match &toks[0].tok {
@@ -161,7 +167,7 @@ fn str_tokens_are_invariantly_utf8() {
 
 /// Collect the non-Eof token kinds for a source, for compact assertions.
 fn toks_of(src: &str) -> Vec<Tok> {
-    Lexer::with_source_name(src, "<test>")
+    test_lexer(src)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex")
         .into_iter()
@@ -243,7 +249,7 @@ fn id(s: &str) -> Tok {
 
 /// (tok, space_before) for each non-Eof token.
 fn spacing_of(src: &str) -> Vec<(Tok, bool)> {
-    Lexer::with_source_name(src, "<test>")
+    test_lexer(src)
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex")
         .into_iter()
@@ -303,12 +309,14 @@ fn adjacency_visible_for_call_and_access_heads() {
 #[test]
 fn lex_error_carries_span_at_offending_byte() {
     let src = "fn `";
-    let err = Lexer::with_source_name(src, "<test>")
+    let mut sources = SourceMap::new();
+    let version = sources.add_code(Some("<test>"), src);
+    let err = Lexer::with_source_version_and_name(src, version, "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect_err("should fail");
     // Backtick is at offset 3; err span points at it (or just after).
     assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
-    assert_eq!(err.span.code_id, Id(0));
+    assert_eq!(err.span.source_version, version);
 }
 
 // -- Telemetry integration (fz-ndf.8) --
@@ -323,13 +331,13 @@ fn telemetry_emits_pass_span_and_token_count() {
     cap.install(&tel, &[]);
     let observed = std::rc::Rc::new(std::cell::Cell::new(None));
     let sink = std::rc::Rc::clone(&observed);
-    tel.attach_raw_event3::<crate::source::Id, Option<std::rc::Rc<str>>, Vec<Token>, _>(
+    tel.attach_raw_event3::<crate::source::SourceVersion, Option<std::rc::Rc<str>>, Vec<Token>, _>(
         &["fz", "lexer", "tokens_built"],
         move |_, _, _, _, _, tokens| sink.set(Some(tokens.len())),
     );
 
     let src = "fn foo(x), do: x + 1";
-    let toks = Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
+    let toks = test_lexer(src).tokenize(&tel).expect("lex");
     let expected_count = toks.len();
 
     // Span lifecycle: SpanStart + SpanStop bracketing the user event.
@@ -349,9 +357,7 @@ fn telemetry_user_event_inherits_span_id() {
     let cap = Capture::new();
     cap.install(&tel, &[]);
 
-    let _ = Lexer::with_source_name("fn x() do, :ok end", "<test>")
-        .tokenize(&tel)
-        .expect("lex");
+    let _ = test_lexer("fn x() do, :ok end").tokenize(&tel).expect("lex");
 
     // Find the SpanStart and the tokens_built event; same span_id.
     let start = cap
@@ -368,7 +374,7 @@ fn telemetry_user_event_inherits_span_id() {
 #[test]
 fn null_telemetry_is_a_silent_no_op() {
     // Same call path; just verifies the null impl compiles + runs.
-    let toks = Lexer::with_source_name("fn x(), do: :ok", "<test>")
+    let toks = test_lexer("fn x(), do: :ok")
         .tokenize(&crate::telemetry::sink::NullTelemetry)
         .expect("lex");
     assert!(!toks.is_empty());
@@ -409,7 +415,7 @@ fn heredoc_is_one_token_holding_its_lines() {
     // `"""` used to be three quote characters: an empty string, then an
     // opening quote. The whole heredoc lexed as several tokens and the
     // content was silently dropped (fz-5xp.78).
-    let toks = Lexer::with_source_name("\"\"\"\nhello\n\"\"\"", "<test>")
+    let toks = test_lexer("\"\"\"\nhello\n\"\"\"")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -428,7 +434,7 @@ fn heredoc_is_one_token_holding_its_lines() {
 fn heredoc_strips_the_closing_delimiters_indentation() {
     // Elixir measures indentation from the closing `"""`, so text indented
     // further than the delimiter keeps the difference.
-    let toks = Lexer::with_source_name("\"\"\"\n  indented\n    deeper\n  \"\"\"", "<test>")
+    let toks = test_lexer("\"\"\"\n  indented\n    deeper\n  \"\"\"")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -440,7 +446,7 @@ fn heredoc_strips_the_closing_delimiters_indentation() {
 // DROP: heredoc edge case, lexer infrastructure
 #[test]
 fn heredoc_with_no_lines_is_the_empty_binary() {
-    let toks = Lexer::with_source_name("\"\"\"\n\"\"\"", "<test>")
+    let toks = test_lexer("\"\"\"\n\"\"\"")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -452,7 +458,7 @@ fn heredoc_with_no_lines_is_the_empty_binary() {
 // DROP: heredoc escapes, lexer infrastructure
 #[test]
 fn heredoc_decodes_escapes_like_any_other_string() {
-    let toks = Lexer::with_source_name("\"\"\"\na\\tb\n\"\"\"", "<test>")
+    let toks = test_lexer("\"\"\"\na\\tb\n\"\"\"")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect("lex");
     match &toks[0].tok {
@@ -466,7 +472,7 @@ fn heredoc_decodes_escapes_like_any_other_string() {
 fn heredoc_refuses_content_on_its_opening_line() {
     // Elixir rejects this outright rather than guessing what the author
     // meant, and so does fz: the text after `"""` has no defined indentation.
-    let err = Lexer::with_source_name("\"\"\"oops\nx\n\"\"\"", "<test>")
+    let err = test_lexer("\"\"\"oops\nx\n\"\"\"")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .expect_err("content on the opening line should not lex");
     assert!(

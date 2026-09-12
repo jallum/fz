@@ -30,11 +30,12 @@ should consume `PatternDispatchPlan` or the underlying `DispatchGraph` directly.
 - `src/dispatch_matrix/pattern.rs` owns source-pattern production. It converts
   AST patterns into `RegionQuestion`s and stores pattern-specific payloads beside
   the matrix as `PatternDispatchPlan`.
-- `src/ir_lower/pattern_dispatch.rs` walks `DispatchGraph` into inline IR for
-  function clauses, `case`, `with else`, and guard helper dispatch.
-- `src/ir_interp/dispatch_exec.rs` executes receive probes from the same plan.
-- `src/ir_codegen/receive.rs` emits the scheduler-facing receive probe function
-  by walking the same plan.
+- `src/compiler2/jobs/body.rs` constructs inline outcome edges and their target
+  signatures together; `jobs/native.rs` lowers the graph and its winning values.
+- `src/ir_interp/dispatch_exec.rs` returns the winning outcome and successful
+  subject state for inline dispatch, function dispatch, and receive probes.
+- `src/compiler2/native_codegen/receive.rs` emits the scheduler-facing receive
+  probe function by walking the same plan.
 
 ## Test First, Project Second
 
@@ -46,6 +47,21 @@ projects `ListHead(subject)` and `ListTail(subject)`; the miss edge does not.
 For tuples, `TupleArity(n)` dominates every `TupleField` projection. For maps,
 `MapKeyPresent(map, key)` projects a map value only on the present edge, so a
 present `nil` value and an absent key remain distinguishable.
+
+For `%Box{value: x}`, the source producer asks `Region::Type` with Box's
+atomic tagged-record `Ty`. Its success edge publishes a `StructField("value")`
+projection; both a binding and a literal subpattern read that field subject.
+The miss edge publishes no field access. Named fields resolve through the
+runtime schema's named-field accessor; tuple offsets never establish struct
+identity or field meaning.
+
+`PatternResolver` supplies the source producer's two contextual answers:
+struct types and guard-helper dispatch. Compiler2's `SourcePatternResolver`
+uses the definition's World namespace and owner to resolve `ModuleTarget` to
+`ModuleId`, then constructs the existing tagged-record type with unconstrained
+fields. Definition diagnostics use that same identity resolver without needing
+physical layout. Entry, guard-helper, and body jobs record the source pattern's
+ordinary struct-reference and field obligations before executable planning.
 
 This rule is the reason the matrix carries branch evidence rather than letting
 lowering freely materialize paths from syntax.
@@ -60,8 +76,26 @@ matrix:
 - `pinned`: `^name` inputs captured from the surrounding scope.
 - `prepared_keys`: heap values, such as atom/binary/float map keys, materialized
   once outside the dispatch graph.
-- `bitstring_direct_bindings`: names introduced by bitstring fields that later
-  field-size expressions may reference.
+
+Nested guard calls carry their own typed operand-binding edge. A child pin
+comes from an evaluated helper argument; a child prepared key
+names a caller `PreparedKeyId`. The source constructor lifts child keys into
+the parent's existing prepared operands, transitively through helpers. Receive
+therefore prepares constants before parking, not while probing messages. Only
+the root ABI decoder knows flattened offsets; child execution receives its own
+plan-local bindings. Caller demand follows the call operands, never child
+subject ordinals.
+Named helpers have no implicit lexical capture edge: an unresolved helper name
+is a construction diagnostic even when the caller has a same-spelled pin.
+
+`matrix.subjects` is the sole retained subject graph. Source-facing
+`PatternSubjectRef` values exist only during construction. Bitstring field
+subjects carry their exact extraction recipe: source, preceding field subject,
+kind, size (including a dependent subject), endian, signedness, unit, and whether
+the field is last. Shape questions reference those subjects; consumers do not
+recover field meaning from an arm or field ordinal.
+Edge evidence reveals only projected subject IDs; it stores no second copy of
+their source or projection recipe.
 
 The generic `DispatchMatrix` sees only regions and opaque outcome ids. Bodies,
 receive wakeup behavior, and guard result interpretation belong to the producer.
@@ -77,8 +111,46 @@ receive wakeup behavior, and guard result interpretation belong to the producer.
 - `receive` builds one subject for the candidate message. The receive term
   stores an `Arc<PatternDispatchPlan>`; the interpreter and native receive probe
   both run that cached plan against mailbox messages.
-- Single-clause unguarded function heads and lambdas still bind inline because
-  there is no dispatch choice. They must still obey test-first/project-second.
+- Function heads retain their separate `bind_pattern` lowering until
+  fz-5xp.56. Inline `case`, `with`, and `with else` outcomes do not re-walk
+  syntax to bind values. Standalone asserting matches retain `apply_pattern`.
+
+## Outcome Values and Retained Lists
+
+Each inline or receive `OutcomeEdge` owns its outcome, target, and explicit
+`{ subject, parameter: ValueId, role: Semantic | Physical }` arguments. Target
+parameters are constructed from that relation. Semantic typing and the existing
+value-origin machinery borrow the owning body's plan and dispatch inputs;
+keying, tuple/callable transport, and execution do not reconstruct bindings by
+position or source spelling. Execution transfers the actual successful state;
+native miss paths keep the pre-test state.
+
+Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
+value. Semantic parameters project their types from mailbox `any` through the
+winning plan's evidence. Native receive preserves subject-to-parameter identity
+in its function ABI; pinned values and prepared keys are indexed by the plan,
+never by source spelling. A sender-side winning probe copies only those exact
+projected arguments, including physical sources, into the receiver heap with
+one forwarding map. Misses and timeouts expose no outcome arguments.
+
+A one-cons `List` construction may carry `ListRetention { source, permission }`.
+The source is an ordinary traced physical operand through entries, captures,
+and `Prim::MakeList`, not a head-to-source capability map. Identical head/tail
+contents retain the source even when published. Changed contents require both
+construction-owned `Rewrite` permission and a runtime unaliased cell; otherwise
+they allocate. Body-local permission examines the existing origins and reachable
+entry DAG: desired operands cannot retain the source, and no later competing
+use may retain it. A live ancestor/equal path retains the cell; a strict descendant
+does not reach its parent. Another construction's retention is an exact-cell
+identity edge, not access to the source's old children. The result and its pure
+projections are the new owner; exclusive arms may each receive conditional Rewrite.
+
+Actual call arguments and tuple fields own `Transfer | Share` annotations.
+Peer overlap and caller-retained semantic/physical sources force Share before
+independent incoming or returned roots are used. Unknown overlap stays
+conservative; one-shot captures themselves do not split ownership. Receive arms
+share their traced physical capture layout. The runtime guard and container/copy
+publication rules live in [AnyValue's list ownership section](any-value.md#list-ownership).
 
 ## Guards
 

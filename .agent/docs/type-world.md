@@ -19,6 +19,11 @@ graph (see [`type-naming`](type-naming.md)), not in the kernel. The string a
 constructor like `opaque_of("Mod::t")` accepts is the symbol's own nominal identity,
 not a key into a lookup table the kernel consults.
 
+Source type expressions arrive as token payloads whose spans retain their exact
+immutable `SourceVersion`; resolution uses those spans only for provenance and
+diagnostics, never as type identity. The owner/version split is defined in
+[`quoted-source`](quoted-source.md#source-identity-and-provenance).
+
 The payoff of keeping the kernel name-blind: a `Ty` is **self-contained**. Every
 question about it is answered from its own structure, with no external map threaded
 in. A brand minted `mint_brand(integer, "Meters")` carries the integer kind axes

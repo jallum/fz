@@ -1,0 +1,63 @@
+#---
+# purpose: "Receive winning subjects retain the receiver-owned list cell without allocation"
+#---
+fn rebuild() do
+  receive do
+    [head | tail] -> [head | tail]
+  after
+    1000 -> []
+  end
+end
+
+fn receive_fields(offset) do
+  receive do
+    :empty -> offset
+    {offset, [head | tail]} -> {offset, [head | tail]}
+    <<len, payload::binary-size(len), rest::binary>> -> {len, payload, rest}
+  after
+    1000 -> :timeout
+  end
+end
+
+fn churn(0, acc), do: Enum.count(acc)
+fn churn(n, acc), do: churn(n - 1, [n | acc])
+
+fn sender(parent) do
+  receive do
+    :go -> send(parent, [[90, 91, 92], 4, 5])
+  end
+end
+
+fn receive_parked() do
+  receive do
+    [_, head | tail] -> if true do
+      assert(churn(2000, []) == 2000)
+      before = Process.heap_alloc_stats().list_cons_allocs
+      value = [head | tail]
+      count_after = Process.heap_alloc_stats().list_cons_allocs
+      {value, count_after - before}
+    end
+  after
+    1000 -> :timeout
+  end
+end
+
+fn main() do
+  send(self(), [1, 2])
+  before = Process.heap_alloc_stats().list_cons_allocs
+  value = rebuild()
+  count_after = Process.heap_alloc_stats().list_cons_allocs
+  dbg({value, count_after - before})
+
+  send(self(), {7, [2.5, :ok]})
+  assert(receive_fields(99) == {7, [2.5, :ok]})
+  send(self(), <<2, 65, 66, 67>>)
+  assert(receive_fields(99) == {2, <<65, 66>>, <<67>>})
+  send(self(), :empty)
+  assert(receive_fields(99) == 99)
+
+  parent = self()
+  child = spawn(fn () -> sender(parent) end, 4096)
+  send(child, :go)
+  assert(receive_parked() == {[4, 5], 0})
+end

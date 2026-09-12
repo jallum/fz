@@ -3,15 +3,19 @@ use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
 use super::quoted_function::derive_function_surface;
-use super::{CodeId, QuotedSourceRoot, parse_quoted_program};
+use super::{QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program};
 
-fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
+fn grouped_function_root(source_name: &str, text: &str) -> (QuotedSourceRoot, crate::source::SourceMap) {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse");
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(source_name), text);
+    let root = parse_quoted_program(&sources, version, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
-    root.interned_list_subroot(&item_roots)
-        .expect("grouped function root should intern")
+    let grouped = root
+        .interned_list_subroot(&item_roots)
+        .expect("grouped function root should intern");
+    (grouped, sources)
 }
 
 #[test]
@@ -20,6 +24,9 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
     use crate::modules::identity::{ModuleDenotation, ModuleName};
     let heap = std::rc::Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
+    let mut sources = crate::source::SourceMap::new();
+    let version = sources.add_code(Some("projected-module.fz"), "A.B.C");
+    let span = crate::source::Span::new(version, 0, 5);
     let module = ModuleDenotation::ProtocolImpl {
         protocol: ModuleName::parse_dotted("A").unwrap(),
         target: ModuleName::parse_dotted("B.C").unwrap(),
@@ -27,6 +34,7 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
     let empty = QuotedSourceMetadata::default();
     let meta = QuotedSourceMetadata {
         module: Some(module.clone()),
+        span: Some(span),
         ..Default::default()
     };
     // Even a non-alias display head/tail is inert once the module is resolved.
@@ -42,13 +50,24 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
     let keyword = builder.list(&[builder.keyword("do", body).unwrap()]).unwrap();
     let function = builder.call("fn", &empty, &[head, keyword]).unwrap();
     let source = builder.root(builder.list(&[function]).unwrap()).unwrap();
-    let decoded = derive_function_surface(&source).unwrap();
+    assert!(
+        derive_function_surface(&source, &crate::source::SourceMap::new()).is_err(),
+        "a resolved module identity cannot bypass validation of its exact source version"
+    );
+    let decoded = derive_function_surface(&source, &sources).unwrap();
     let Expr::Tuple(items) = &decoded.clauses[0].body.node else {
         panic!("tuple body")
     };
     let Expr::Call(target, _) = &items[0].node else {
         panic!("qualified call")
     };
+    let Expr::Index(module_expr, _) = &target.node else {
+        panic!("qualified target")
+    };
+    assert_eq!(
+        module_expr.span, span,
+        "typed module decoding retains exact node provenance"
+    );
     let call = crate::ast::CallableName::for_call(&target.node, 1).unwrap();
     assert_eq!(call.module, Some(module.clone()));
     assert_eq!(call.name, "val");
@@ -62,7 +81,7 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
 
 #[test]
 fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
-    let root = grouped_function_root(
+    let (root, sources) = grouped_function_root(
         "lambda_occurrences.fz",
         "fn choose(0), do: {fn () -> fn () -> 1 end end, fn () -> 2 end}\nfn choose(1), do: fn () -> 3 end\n",
     );
@@ -95,7 +114,7 @@ fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
         };
         [*outer, *inner, *sibling, *next_clause]
     }
-    let decoded = derive_function_surface(&root).expect("decode source");
+    let decoded = derive_function_surface(&root, &sources).expect("decode source");
     let first = occurrences(&decoded);
     assert_eq!(
         first.iter().copied().collect::<std::collections::HashSet<_>>().len(),
@@ -107,7 +126,7 @@ fn source_lambda_occurrences_survive_cloning_and_decode_retries() {
     assert_eq!(first, occurrences(&cloned), "lowering clones retain source identity");
     assert_eq!(
         first,
-        occurrences(&derive_function_surface(&root).expect("retry decode")),
+        occurrences(&derive_function_surface(&root, &sources).expect("retry decode")),
         "retrying unchanged source does not mint new occurrences"
     );
 }
@@ -118,8 +137,8 @@ fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_par
 @spec pack(integer) :: binary
 fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
 "#;
-    let root = grouped_function_root("pack.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("pack.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     let Attribute::Spec(spec) = &surface.attrs[0] else {
         panic!("expected @spec attr");
@@ -157,8 +176,8 @@ fn compiler2_quoted_function_surface_derives_operator_specs_from_quoted_source()
 @spec integer + integer :: integer
 fn left + right, do: left + right
 "#;
-    let root = grouped_function_root("plus.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("plus.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let Attribute::Spec(spec) = &surface.attrs[0] else {
@@ -179,8 +198,8 @@ fn compiler2_quoted_function_surface_derives_typed_operator_clause_annotations()
     let source = r#"
 fn left :: integer + right :: float, do: left + right
 "#;
-    let root = grouped_function_root("typed_plus.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("typed_plus.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let left = surface.clauses[0].param_annotations[0]
@@ -200,8 +219,8 @@ fn pick(v) do
   with {:ok, x} <- v do x else :err -> 0 end
 end
 "#;
-    let root = grouped_function_root("with.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("with.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     let Expr::With(bindings, body, else_clauses) = &surface.clauses[0].body.node else {
         panic!("expected with body");
@@ -221,8 +240,8 @@ fn compiler2_quoted_function_surface_decodes_struct_literals_before_percent_oper
     let source = r#"
 fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 "#;
-    let root = grouped_function_root("range.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("range.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
         panic!("expected %Range{{}} to decode as a struct literal");
@@ -234,33 +253,69 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     );
 }
 
+#[test]
+fn source_less_ast_child_stays_source_less_under_a_spanned_parent() {
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("generated-child.fz"), "fn main(), do: generated\n");
+    let heap = std::rc::Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let parent_meta = QuotedSourceMetadata {
+        span: Some(crate::source::Span::new(version, 0, 24)),
+        ..QuotedSourceMetadata::default()
+    };
+    let generated_meta = QuotedSourceMetadata {
+        span: Some(crate::source::Span::DUMMY),
+        ..QuotedSourceMetadata::default()
+    };
+    let head = builder.call("main", &parent_meta, &[]).expect("function head");
+    let body = builder
+        .variable("generated", &generated_meta)
+        .expect("source-less generated variable");
+    let do_entry = builder.keyword("do", body).expect("do entry");
+    let options = builder.list(&[do_entry]).expect("function options");
+    let function = builder
+        .call("fn", &parent_meta, &[head, options])
+        .expect("function form");
+    let items = builder.list(&[function]).expect("function list");
+    let root = builder.root(items).expect("quoted function root");
+
+    let surface = derive_function_surface(&root, &sources).expect("generated child decodes");
+    assert!(
+        surface.clauses[0].body.span.is_dummy(),
+        "missing child provenance must not be reconstructed from its parent"
+    );
+}
+
 /// A macro's quoted fragment gets rematerialized into a caller's heap by
 /// `world::run_macro_on_source` -- byte offsets intact -- and decoded there
-/// with no external code id at all (`derive_function_surface` takes only the
-/// source root). A decoded token's span must still name the file it was
-/// actually lexed from: the code id is embedded in the token tuple at encode
-/// time, so it travels with the token instead of being reattached from the
-/// decode call site. This test lexes a fragment under one real submitted
-/// `CodeId` and asserts the decoded token span keeps that id -- there is no
-/// decode-time code id that could override it.
+/// against the World's authoritative `SourceMap`. The token tuple carries its
+/// exact immutable version rather than accepting provenance from the decode
+/// site. This test lexes a fragment under one real submitted `SourceVersion`
+/// and asserts the decoded token span keeps that version -- there is no
+/// decode-time source identity that could override it.
 #[test]
-fn a_decoded_token_span_carries_its_own_files_baked_code_id() {
+fn a_decoded_token_span_retains_its_exact_source_version() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = super::Compiler2::new(tel);
-    let file_code = compiler.submit_code(super::CodeSubmission {
-        name: Some("macro_file.fz".to_string()),
-        text: String::new(),
-    });
-
     let source = "fn tmpl(), do: x :: integer\n";
-    let root = parse_quoted_program("macro_file.fz", source, file_code, compiler.telemetry()).expect("quoted parse");
+    let owner = compiler.submit_code(super::CodeSubmission {
+        name: Some("macro_file.fz".to_string()),
+        text: source.to_string(),
+    });
+    let version = compiler
+        .world()
+        .source_version(owner)
+        .expect("submitted source version");
+
+    let source_map = compiler.world().source_map();
+    let root = parse_quoted_program(&source_map.borrow(), version, compiler.telemetry()).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     let grouped = root
         .interned_list_subroot(&item_roots)
         .expect("grouped function root should intern");
 
-    let surface = derive_function_surface(&grouped).expect("derive function surface");
+    let surface = derive_function_surface(&grouped, &source_map.borrow()).expect("derive function surface");
 
     let Expr::Ascribe(_, type_expr) = &surface.clauses[0].body.node else {
         panic!("expected an ascribed body expression");
@@ -270,48 +325,42 @@ fn a_decoded_token_span_carries_its_own_files_baked_code_id() {
         .first()
         .expect("type expr body should carry at least one token");
     assert_eq!(
-        token.span.code_id,
-        crate::source::Id(file_code.as_u32()),
-        "a decoded token must carry the code id of the file it was actually lexed from"
+        token.span.source_version, version,
+        "a decoded token must retain the immutable source version it was lexed from"
     );
 }
 
-/// The AST-node sibling of the token test above: `span_from_meta` used to
-/// build a decoded `Expr`/`Pattern` span from a caller-supplied `code_id`
-/// plus the node's own `start`/`length` -- the same external-reattachment
-/// hazard the token fix closed, just one layer up. A macro's quoted fragment
-/// is rematerialized into a caller's heap with its `__fz_span__` meta
-/// untouched, and decoding it used to mislabel which file the *expression*
-/// span (not just its inner type-expr tokens) named. Every `__fz_span__` now
-/// bakes its own originating code id at emit time, so `span_from_meta` reads
-/// it back from the node -- and `derive_function_surface` no longer even takes
-/// a code id, so there is nothing external left to override it. This test
-/// lexes a fragment under one real submitted `CodeId` and asserts the decoded
-/// expression span keeps that id.
+/// AST-node metadata carries the same exact immutable version as token
+/// payloads. The decoder reads that version from the node itself; no lexical
+/// publisher or caller can reattach the node to a different source.
 #[test]
-fn a_decoded_ast_node_meta_span_carries_its_own_files_baked_code_id() {
+fn a_decoded_ast_node_meta_span_retains_its_exact_source_version() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = super::Compiler2::new(tel);
-    let file_code = compiler.submit_code(super::CodeSubmission {
-        name: Some("macro_file.fz".to_string()),
-        text: String::new(),
-    });
-
     let source = "fn tmpl(), do: x :: integer\n";
-    let root = parse_quoted_program("macro_file.fz", source, file_code, compiler.telemetry()).expect("quoted parse");
+    let owner = compiler.submit_code(super::CodeSubmission {
+        name: Some("macro_file.fz".to_string()),
+        text: source.to_string(),
+    });
+    let version = compiler
+        .world()
+        .source_version(owner)
+        .expect("submitted source version");
+
+    let source_map = compiler.world().source_map();
+    let root = parse_quoted_program(&source_map.borrow(), version, compiler.telemetry()).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     let grouped = root
         .interned_list_subroot(&item_roots)
         .expect("grouped function root should intern");
 
-    let surface = derive_function_surface(&grouped).expect("derive function surface");
+    let surface = derive_function_surface(&grouped, &source_map.borrow()).expect("derive function surface");
 
     let body_span = surface.clauses[0].body.span;
     assert_eq!(
-        body_span.code_id,
-        crate::source::Id(file_code.as_u32()),
-        "a decoded expression's own __fz_span__ must carry the code id of the file it was actually parsed from"
+        body_span.source_version, version,
+        "a decoded expression must retain the immutable source version it was parsed from"
     );
 }
 
@@ -323,8 +372,8 @@ fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
     // needs nothing further from it -- this pins that, text and all, so the
     // library can carry Elixir-shaped docs instead of one-line labels.
     let source = "@doc \"\"\"\nAdds one.\n\n## Examples\n\n    bump(1) == 2\n\"\"\"\nfn bump(n), do: n + 1\n";
-    let root = grouped_function_root("bump.fz", source);
-    let surface = derive_function_surface(&root).expect("derive function surface");
+    let (root, sources) = grouped_function_root("bump.fz", source);
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
 
     let Attribute::Doc(doc) = &surface.attrs[0] else {
         panic!("expected @doc attr, got {:?}", surface.attrs[0]);

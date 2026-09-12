@@ -1,16 +1,19 @@
 use super::parse_quoted_program;
-use crate::compiler2::CodeId;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn parse_ok_fixture(path: &str, source: &str) {
     let tel = ConfiguredTelemetry::new();
-    parse_quoted_program(path, source, CodeId::ZERO, &tel)
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(path), source);
+    parse_quoted_program(&sources, version, &tel)
         .unwrap_or_else(|error| panic!("{path} should parse like Elixir: {error}"));
 }
 
 fn parse_err_fixture(path: &str, source: &str, expected: &str) {
     let tel = ConfiguredTelemetry::new();
-    let error = parse_quoted_program(path, source, CodeId::ZERO, &tel)
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(path), source);
+    let error = parse_quoted_program(&sources, version, &tel)
         .err()
         .unwrap_or_else(|| panic!("{path} should currently fail until its fixture is enabled"));
     assert!(

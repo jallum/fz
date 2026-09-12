@@ -2,6 +2,7 @@ mod agenda;
 mod artifact;
 mod backend_program;
 mod body;
+pub(crate) use body::OutcomeEdge;
 pub(crate) mod callsite_dispatch;
 mod canon;
 mod cli;
@@ -65,11 +66,11 @@ pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};
 pub use body::{
     BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
+    LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ValueId,
 };
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
-pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
+pub use code::{CodeMap, CodeState, QuotedCodeSource, SourceOwner};
 pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
@@ -113,6 +114,7 @@ pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
 };
+pub(crate) use source::{META_SPAN_KEY, quoted_span_entries};
 pub(crate) use types::TyCanon;
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, Ty,

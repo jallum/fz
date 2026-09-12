@@ -147,6 +147,10 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ),
         ("fz_list_tail_ref", ir_runtime::fz_list_tail_ref as *const u8),
         (
+            "fz_list_reuse_or_cons_ref",
+            ir_runtime::fz_list_reuse_or_cons_ref as *const u8,
+        ),
+        (
             "fz_list_reuse_or_cons_parts",
             ir_runtime::fz_list_reuse_or_cons_parts as *const u8,
         ),

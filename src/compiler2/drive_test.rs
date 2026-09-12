@@ -14,7 +14,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
-use crate::fz_ir::{ExternTy, FnId, PhysicalCapability, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
+use crate::fz_ir::{ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
@@ -28,8 +28,861 @@ use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 
+#[test]
+fn compiler2_pinned_equality_does_not_define_or_merge_value_origins() {
+    use super::executable_facts::{collect_callsite_return_origins, collect_value_origins};
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = compiler.submit_code(CodeSubmission {
+        name: Some("equality_widening_and_identity.fz".into()),
+        text: include_str!("../../fixtures2/behavior/equality_widening_and_identity.fz").into(),
+    });
+    assert_resolved(compiler.drive(), "source indexing");
+    compiler.demand(Job::ScopeCode(source));
+    assert_resolved(compiler.drive(), "function identities");
+    let function = function_id(&functions, "pinned_origin_lists", 0);
+    compiler.demand(Job::LowerFunction(function));
+    assert_resolved(compiler.drive(), "pinned constraint body");
+
+    let body = lowered_body(&bodies, function);
+    let origins = collect_value_origins(&body, &collect_callsite_return_origins(&body));
+    let LoweredBody::Clauses { entries, .. } = &body else {
+        panic!("clause body")
+    };
+    let (source, value) = entries
+        .iter()
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| match step {
+            LoweredStep::AssertSame { source, value } => Some((*source, *value)),
+            _ => None,
+        })
+        .expect("pinned equality constraint");
+
+    assert_ne!(source, value, "the equal lists are distinct construction values");
+    assert!(
+        !origins.contains_key(&source) && !origins.contains_key(&value),
+        "equality neither defines a value nor aliases independently allocated operands"
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_preserves_duplicate_consumers_and_later_source_use() {
+    let source = "fn rebuild(xs) do\n [h | t] = xs\n first = [h | [9]]\n second = [h | t]\n {first, second, xs}\nend\nfn main() do\n if rebuild([1, 2]) == {[1, 9], [1, 2], [1, 2]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "preserves_duplicate_consumers_and_later_source_use",
+        source,
+        "rebuild",
+        1,
+        crate::fz_ir::ListRewritePermission::RetainOnly,
+        None,
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_keeps_physical_alias_across_semantic_call() {
+    let source = "fn rewrite(xs) do\n  [h | _] = xs\n  [h | [9]]\nend\nfn keep(xs) do\n  case xs do\n    [h | t] -> {rewrite(xs), [h | t]}\n    _ -> {[], []}\n  end\nend\nfn main() do\n  if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "keeps_physical_alias_across_semantic_call",
+        source,
+        "keep",
+        1,
+        crate::fz_ir::ListRewritePermission::Rewrite,
+        Some(("rewrite", 1)),
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_rejects_rewrite_through_joined_alias() {
+    let source = "fn rebuild(flag, xs) do\n  ys = if flag, do: xs, else: []\n  [h | _] = xs\n  changed = [h | [9]]\n  {ys, changed}\nend\nfn main() do\n  if rebuild(true, [1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "rejects_rewrite_through_joined_alias",
+        source,
+        "rebuild",
+        2,
+        crate::fz_ir::ListRewritePermission::RetainOnly,
+        None,
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_composes_retained_identity_without_old_children() {
+    let source = "fn rebuild(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | _] = retained\n changed = [head | [9]]\n {xs, changed}\nend\nfn main() do\n if rebuild([1, 2]) == {[1, 2], [1, 9]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "composes_retained_identity_without_old_children",
+        source,
+        "rebuild",
+        1,
+        crate::fz_ir::ListRewritePermission::RetainOnly,
+        None,
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_guards_composed_physical_identity_at_calls() {
+    let source = "fn rewrite(xs) do\n [h | _] = xs\n [h | [9]]\nend\nfn keep(xs) do\n [h | t] = xs\n retained = [h | t]\n [head | tail] = retained\n changed = rewrite(xs)\n {changed, [head | tail]}\nend\nfn main() do\n if keep([1, 2]) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "guards_composed_physical_identity_at_calls",
+        source,
+        "keep",
+        1,
+        crate::fz_ir::ListRewritePermission::RetainOnly,
+        Some(("rewrite", 1)),
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_cannot_rewrite_its_own_new_tail() {
+    let source = "fn prepend(xs) do\n  [h | _] = xs\n  [h | xs]\nend\nfn main() do\n  case prepend([1, 2]) do\n    [1, 1, 2] -> 42\n    _ -> 0\n  end\nend\n";
+    assert_list_retention_ownership(
+        "cannot_rewrite_its_own_new_tail",
+        source,
+        "prepend",
+        1,
+        crate::fz_ir::ListRewritePermission::RetainOnly,
+        None,
+    );
+}
+
+#[test]
+fn compiler2_list_reconstruction_preserves_a_distinct_aliased_input() {
+    let source = "fn rebuild(xs, ys) do\n  [h | _] = xs\n  changed = [h | [9]]\n  {changed, ys}\nend\nfn main() do\n  xs = [1, 2]\n  if rebuild(xs, xs) == {[1, 9], [1, 2]}, do: 42, else: 0\nend\n";
+    assert_list_retention_ownership(
+        "preserves_a_distinct_aliased_input",
+        source,
+        "rebuild",
+        2,
+        crate::fz_ir::ListRewritePermission::Rewrite,
+        Some(("rebuild", 2)),
+    );
+}
+
+fn assert_list_retention_ownership(
+    name: &str,
+    source: &str,
+    function: &str,
+    arity: u64,
+    permission: crate::fz_ir::ListRewritePermission,
+    shared_callee: Option<(&str, u64)>,
+) {
+    for native in [false, true] {
+        let tel = ConfiguredTelemetry::new();
+        let native_program = NativeProgramCapture::new();
+        native_program.install(&tel);
+        let functions = FunctionCapture::new();
+        functions.install(&tel);
+        let bodies = LoweredBodyCapture::new();
+        bodies.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("{name}.fz")),
+            text: source.into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let result = if native {
+            settle_native_product(&mut compiler, root);
+            let program = native_program.last(root).program;
+            let compiled = jit_compile_native_program(&mut compiler, &program);
+            Ok(compiled.run(compiler.telemetry(), program.entry))
+        } else {
+            compiler.run_root_interp(root)
+        };
+        assert_eq!(
+            result,
+            Ok(42),
+            "{name}: each original and reconstructed list remains immutable; native={native}"
+        );
+        let body = lowered_body(&bodies, function_id(&functions, function, arity));
+        let LoweredBody::Clauses { entries, .. } = &body else {
+            panic!("clause-backed reconstruction")
+        };
+        let retentions = entries
+            .iter()
+            .flat_map(|entry| &entry.steps)
+            .filter_map(|step| match step {
+                LoweredStep::List {
+                    retention: Some(retention),
+                    ..
+                } => Some(retention),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !retentions.is_empty(),
+            "{name}: immutable source retention remains available"
+        );
+        assert!(
+            retentions.iter().all(|retention| retention.permission == permission),
+            "{name}: local permission is distinct from the runtime sharing guard"
+        );
+        if let Some((shared_name, shared_arity)) = shared_callee {
+            let shared_function = function_id(&functions, shared_name, shared_arity);
+            let main = lowered_body(&bodies, function_id(&functions, "main", 0));
+            assert!(
+                [body, main].iter().any(|body| {
+                    let LoweredBody::Clauses { entries, .. } = body else {
+                        return false;
+                    };
+                    entries.iter().any(|entry| match &entry.tail {
+                        LoweredTail::DirectCall { callee, args, .. } if *callee == shared_function => {
+                            args[0].ownership == crate::fz_ir::OwnershipMode::Share
+                        }
+                        _ => false,
+                    })
+                }),
+                "{name}: the producing call guards overlapping ownership before entering the callee"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiler2_operand_returning_boolean_ops_retain_source_ownership() {
+    for expression in ["false or xs", "true and xs"] {
+        let tel = ConfiguredTelemetry::new();
+        let functions = FunctionCapture::new();
+        functions.install(&tel);
+        let bodies = LoweredBodyCapture::new();
+        bodies.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("boolean_operand_ownership.fz".into()),
+            text: format!("fn rebuild(xs) do\n selected = {expression}\n [h | _] = xs\n changed = [h | [9]]\n {{selected, changed}}\nend\nfn main(), do: rebuild([1, 2])\n"),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        settle_native_product(&mut compiler, root);
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", 1)) else {
+            panic!("clause body")
+        };
+        let permissions = entries
+            .iter()
+            .flat_map(|entry| &entry.steps)
+            .filter_map(|step| match step {
+                LoweredStep::List {
+                    retention: Some(retention),
+                    ..
+                } => Some(retention.permission),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            permissions,
+            vec![crate::fz_ir::ListRewritePermission::RetainOnly],
+            "{expression} can return its list operand"
+        );
+    }
+}
+
+#[test]
+fn compiler2_struct_publication_protects_list_fields() {
+    assert_container_list_publication("struct_field_alias", "{%ListBox{value: [1, 2]}, [1, 9]}");
+}
+
+#[test]
+fn compiler2_map_publication_protects_list_fields() {
+    assert_container_list_publication("map_field_alias", "{%{value: [1, 2]}, [1, 9]}");
+}
+
+#[test]
+fn compiler2_map_update_publication_protects_list_fields() {
+    assert_container_list_publication("map_update_field_alias", "{%{value: [1, 2]}, [1, 9]}");
+}
+
+fn assert_container_list_publication(function: &str, expected: &str) {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("container_list_publication.fz".into()),
+        text: format!(
+            "{}\nfn publication_test(), do: if {function}() == {expected}, do: 42, else: 0\n",
+            include_str!("../../fixtures2/behavior/list_ownership_edges.fz"),
+        ),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "publication_test".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+}
+
+#[test]
+fn compiler2_forwarded_constructor_descendants_share_at_each_ownership_boundary() {
+    use crate::fz_ir::OwnershipMode::Share;
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("forwarded_ownership.fz".into()),
+        text: include_str!("../../fixtures2/behavior/list_ownership_edges.fz").into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let result = compiler.run_root_interp(root);
+    for (name, callee, expected) in [
+        (
+            "forwarded_call_peers",
+            Some(("change_shared_tail", 2)),
+            vec![Share, Share],
+        ),
+        ("forwarded_retained_peer", Some(("change_tail", 1)), vec![Share]),
+        ("forwarded_tuple_peers", None, vec![Share, Share]),
+    ] {
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, 1)) else {
+            panic!("clause body")
+        };
+        let modes = if let Some((callee, arity)) = callee {
+            let target = function_id(&functions, callee, arity);
+            entries.iter().find_map(|entry| match &entry.tail {
+                LoweredTail::DirectCall { callee, args, .. } if *callee == target => {
+                    Some(args.iter().map(|arg| arg.ownership).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+        } else {
+            entries
+                .iter()
+                .flat_map(|entry| &entry.steps)
+                .find_map(|step| match step {
+                    LoweredStep::Tuple { items, .. } => Some(items.iter().map(|item| item.mode).collect()),
+                    _ => None,
+                })
+        };
+        assert_eq!(modes, Some(expected), "{name}: forwarding preserves shared descendants");
+    }
+    assert_eq!(result, Ok(42));
+}
+
+#[test]
+fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
+    use crate::fz_ir::OwnershipMode::{Share, Transfer};
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("tuple_ownership.fz".into()),
+        text: "fn split(xs, ys), do: {xs, ys}\nfn duplicate(xs), do: {xs, xs}\nfn kept(xs) do\n box = {xs}\n {box, xs}\nend\nfn main() do\n if {split([1], [2]), duplicate([3]), kept([4])} == {{[1], [2]}, {[3], [3]}, {{[4]}, [4]}}, do: 42, else: 0\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    for (name, arity, expected) in [
+        ("split", 2, vec![Transfer, Transfer]),
+        ("duplicate", 1, vec![Share, Share]),
+        ("kept", 1, vec![Share]),
+    ] {
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, name, arity)) else {
+            panic!("clause body")
+        };
+        let fields = entries
+            .iter()
+            .flat_map(|entry| &entry.steps)
+            .find_map(|step| match step {
+                LoweredStep::Tuple { items, .. } => Some(items.iter().map(|item| item.mode).collect::<Vec<_>>()),
+                _ => None,
+            })
+            .expect("tuple construction");
+        assert_eq!(
+            fields, expected,
+            "{name}: tuple fields transfer only when no peer or old owner overlaps"
+        );
+    }
+}
+
+#[test]
+fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permission() {
+    for (name, source, arity, expected) in [
+        (
+            "exclusive",
+            "fn rebuild(flag, xs) do\n  [h | _] = xs\n  if flag, do: [h | [9]], else: [h | [8]]\nend\nfn main(), do: if rebuild(true, [1, 2]) == [1, 9], do: 42, else: 0\n",
+            2,
+            2,
+        ),
+        (
+            "projected",
+            "fn rebuild(xs) do\n  case xs do\n    [_, h | _] -> [h | [9]]\n    _ -> []\n  end\nend\nfn main(), do: if rebuild([1, 2, 3]) == [2, 9], do: 42, else: 0\n",
+            1,
+            1,
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let bodies = LoweredBodyCapture::new();
+        bodies.install(&tel);
+        let functions = FunctionCapture::new();
+        functions.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("ownership_{name}.fz")),
+            text: source.into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42));
+        let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "rebuild", arity))
+        else {
+            panic!("rebuild body")
+        };
+        let permissions = entries
+            .iter()
+            .flat_map(|entry| &entry.steps)
+            .filter_map(|step| match step {
+                LoweredStep::List {
+                    retention: Some(retention),
+                    ..
+                } => Some(retention.permission),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            permissions,
+            vec![crate::fz_ir::ListRewritePermission::Rewrite; expected],
+            "{name}: mutually exclusive consumers and dead parent paths preserve conditional ownership"
+        );
+    }
+}
+
+#[test]
+fn compiler2_inline_tuple_callable_binding_keeps_its_producer_origin() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("inline_tuple_callable_origin.fz".into()),
+        text: "fn main() do\n  f = fn(x) -> x + 1 end\n  case {f} do\n    {g} -> g.(41)\n  end\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let inventory = compiler
+        .product_executable_inventory(root)
+        .expect("callable program settles");
+    let main = compiler.root_function(root);
+    let executable = inventory
+        .iter()
+        .find(|key| key.activation.function == main)
+        .expect("main executable");
+    let facts = compiler.world().executable_facts(executable).expect("main facts");
+    let LoweredBody::Clauses { entries, .. } = facts.body() else {
+        panic!("clause body")
+    };
+    let argument = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { dispatch, .. } => dispatch.outcomes.iter().flat_map(|edge| &edge.arguments).next(),
+            _ => None,
+        })
+        .expect("tuple outcome argument");
+    assert!(
+        facts.callable_origin(argument.parameter).is_some(),
+        "the winning tuple projection forwards the original callable construction origin"
+    );
+}
+
+#[test]
+fn compiler2_inline_bitstring_recipes_have_distinct_subjects() {
+    let tel = ConfiguredTelemetry::new();
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("inline_bitstring_recipes.fz".into()),
+        text: "fn main() do\n case <<65, 1>> do\n <<x :: integer-size(8), 0>> -> x\n <<x :: binary-size(1), 1>> -> if x == \"A\", do: 42, else: 0\n _ -> 0\n end\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let body = lowered_body(&bodies, compiler.root_function(root));
+    let LoweredBody::Clauses { entries, .. } = body else {
+        panic!("main has a lowered body");
+    };
+    let dispatch = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            _ => None,
+        })
+        .expect("main dispatches bitstring recipes");
+    assert_ne!(
+        dispatch.plan.outcomes[0].bindings[0].source, dispatch.plan.outcomes[1].bindings[0].source,
+        "integer and binary extraction at the same ordinal denote different subjects"
+    );
+}
+
+#[test]
+fn compiler2_inline_forwarding_preserves_input_return_demand() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("inline_forwarding.fz".into()),
+        text: "fn forward(x), do: case x do y -> y end\nfn main(), do: forward(42)\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let forward = function_id(&functions, "forward", 1);
+    assert_eq!(
+        compiler
+            .world()
+            .input_demand(forward)
+            .expect("forward demand settled")
+            .returned,
+        [crate::compiler2::keying::DispatchDemand::Whole],
+        "a winning whole-input binding forwards the original input into the return"
+    );
+}
+
+#[test]
+fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
+    let tel = ConfiguredTelemetry::new();
+    let analyses = Rc::new(RefCell::new(HashMap::new()));
+    let sink = Rc::clone(&analyses);
+    tel.attach_raw_event2::<World, ActivationKey, _>(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        move |_, _, _, world, activation| {
+            sink.borrow_mut().insert(
+                activation.function,
+                world.activation_analysis(activation).unwrap().clone(),
+            );
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("impossible_map_clause.fz".into()),
+        text: concat!(
+            "fn metadata(), do: %{__fz_local__: 42}\n",
+            "fn main() do\n",
+            "  case metadata() do\n",
+            "    %{__fz_span__: _} -> 0\n",
+            "    _ -> 42\n",
+            "  end\n",
+            "end\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let program = compiler.retained_backend_program(root);
+    let analysis = analyses.borrow();
+    let analysis = &analysis[&compiler.root_function(root)];
+    for executable in program.executables() {
+        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+            continue;
+        };
+        assert!(
+            !clauses
+                .iter()
+                .flat_map(|clause| &clause.projections)
+                .chain(entries.iter().flat_map(|entry| &entry.steps))
+                .any(|step| matches!(step, BackendStep::RequireMapValue { .. })),
+            "the impossible wildcard clause has no bound value to materialize; analysis: {analysis:?}"
+        );
+    }
+}
+
 fn module_name(text: &str) -> ModuleName {
     ModuleName::parse_dotted(text).unwrap()
+}
+
+#[test]
+fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
+    use super::body::{SubjectOriginRoot, ValueRole};
+    use super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+    use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_outcome_identity.fz".into()),
+        text: include_str!("../../fixtures2/behavior/receive_outcome_identity.fz").into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("receive values");
+    let binary = compiler.world_mut().types_mut().str_t();
+    let backend = compiler.retained_backend_program(root);
+    let mut physical = 0;
+    let mut bit_fields = 0;
+    for executable in backend.executables() {
+        let facts = compiler
+            .world()
+            .executable_facts(&executable.key)
+            .expect("executable facts");
+        let origins = collect_value_origins(facts.body(), &collect_callsite_return_origins(facts.body()));
+        let LoweredBody::Clauses { entries, .. } = facts.body() else {
+            continue;
+        };
+        for (owner, entry) in entries.iter().enumerate() {
+            let LoweredTail::Receive(receive) = &entry.tail else {
+                continue;
+            };
+            for edge in &receive.outcomes {
+                let target = &entries[edge.target.as_u32() as usize];
+                assert_eq!(target.params.len(), edge.arguments.len());
+                for argument in &edge.arguments {
+                    assert!(target.params.contains(&argument.parameter));
+                    assert_eq!(
+                        target.physical_params.contains(&argument.parameter),
+                        argument.role == ValueRole::Physical
+                    );
+                    assert_eq!(
+                        origins[&argument.parameter],
+                        TransportOrigin::OutcomeSubject {
+                            owner: super::ControlEntryId::from_u32(owner as u32),
+                            subject: argument.subject,
+                        }
+                    );
+                    assert_eq!(
+                        facts
+                            .body()
+                            .dispatch_subject_origin(super::ControlEntryId::from_u32(owner as u32), argument.subject)
+                            .0,
+                        SubjectOriginRoot::MailboxMessage(super::ControlEntryId::from_u32(owner as u32))
+                    );
+                    physical += usize::from(argument.role == ValueRole::Physical);
+                    if let SubjectSource::Projection(projection) = receive.dispatch.subject(argument.subject)
+                        && let ProjectionKind::BitstringField(field) = &projection.kind
+                    {
+                        let ty = executable.abi.materialized.value_types[&argument.parameter];
+                        match field.spec.kind {
+                            BitstringFieldKind::Integer => assert!(compiler.world().types().is_integer(&ty)),
+                            BitstringFieldKind::Binary => assert!(compiler.world().types().is_equivalent(&ty, &binary)),
+                            _ => panic!("fixture bit field kind"),
+                        }
+                        bit_fields += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        physical >= 2,
+        "both direct and tuple-projected list sources are explicit physical arguments"
+    );
+    assert!(bit_fields >= 3, "dependent-size fields keep their extraction types");
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "typed receive ABI");
+    let program = native.last(root).program;
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            if let IrTerm::ReceiveMatched { clauses, .. } = &block.terminator {
+                for edge in clauses {
+                    let target = program.module.fn_by_id(edge.body);
+                    for (_, parameter) in &edge.arguments {
+                        assert!(target.blocks[target.entry.0 as usize].params.contains(parameter));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("inline_bitstring_bindings.fz".into()),
+        text: concat!(
+            "fn main() do\n",
+            "  case <<2, 65, 66, 67>> do\n",
+            "    <<len, payload :: binary-size(len), rest :: binary>> -> len\n",
+            "    _ -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    let binary = compiler.world_mut().types_mut().str_t();
+    let backend = compiler.retained_backend_program(root);
+    let mut arm_arities = Vec::new();
+    for executable in backend.executables() {
+        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+            continue;
+        };
+        assert!(
+            !clauses
+                .iter()
+                .flat_map(|clause| &clause.projections)
+                .chain(entries.iter().flat_map(|entry| &entry.steps))
+                .any(|step| matches!(step, BackendStep::BitstringRead { .. })),
+            "inline bodies must not extract bitstring fields a second time"
+        );
+        for entry in entries {
+            let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
+                continue;
+            };
+            for outcome in &dispatch.plan.outcomes {
+                let arm = &entries[dispatch.outcome(outcome.outcome).target.as_u32() as usize];
+                assert_eq!(arm.params.len(), outcome.bindings.len());
+                arm_arities.push(arm.params.len());
+                for argument in &dispatch.outcome(outcome.outcome).arguments {
+                    let binding = outcome
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.source == argument.subject)
+                        .expect("semantic binding");
+                    let ty = executable.abi.materialized.value_types[&argument.parameter];
+                    let types = compiler.world().types();
+                    match binding.name.as_str() {
+                        "len" => assert!(types.is_integer(&ty), "length keeps its integer field type"),
+                        "payload" | "rest" => {
+                            assert!(types.is_equivalent(&ty, &binary), "binary fields keep their exact kind")
+                        }
+                        other => panic!("unexpected binding {other}"),
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(arm_arities, [3, 0], "each winning row has its own parameter contract");
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "inline bitstring bindings should lower natively");
+    let program = native.last(root).program;
+    let reads = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+        .filter(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::BitReadField { .. })))
+        .count();
+    assert_eq!(
+        reads, 3,
+        "the three dispatch reads are the only field reads in the native artifact"
+    );
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 2);
+}
+
+#[test]
+fn compiler2_inline_map_binding_reuses_the_key_present_read() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("inline_map_binding.fz".into()),
+        text: "fn metadata(), do: %{key: 42}\nfn main() do\n case metadata() do\n %{key: value} -> value\n _ -> 0\n end\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let backend = compiler.retained_backend_program(root);
+    let mut typed_bindings = 0;
+    for executable in backend.executables() {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
+                continue;
+            };
+            for outcome in &dispatch.plan.outcomes {
+                let arm = &entries[dispatch.outcome(outcome.outcome).target.as_u32() as usize];
+                for param in &arm.params {
+                    assert!(
+                        compiler
+                            .world()
+                            .types()
+                            .is_integer(&executable.abi.materialized.value_types[param]),
+                        "a bound map field keeps the producer's integer type"
+                    );
+                    typed_bindings += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(typed_bindings, 1);
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "present map bindings should lower natively");
+    let program = native.last(root).program;
+    let (mut presence_reads, mut repeated_reads) = (0, 0);
+    for stmt in program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+    {
+        match stmt {
+            IrStmt::Let(_, IrPrim::MatcherMapGet(..)) => presence_reads += 1,
+            IrStmt::Let(_, IrPrim::MapGet(..)) => repeated_reads += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        (presence_reads, repeated_reads),
+        (1, 0),
+        "key presence produces the value: the winning arm reuses that exact read"
+    );
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
 }
 
 #[test]
@@ -82,6 +935,48 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
         "the replaced owner's membership must not request its obsolete generated child"
     );
 }
+
+#[test]
+fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
+    fn generated_child(compiler: &Compiler2<ConfiguredTelemetry>, owner: FunctionId) -> FunctionId {
+        compiler
+            .world()
+            .job_outputs(&Job::LowerFunction(owner))
+            .into_iter()
+            .find_map(|fact| match fact {
+                FactKey::FunctionDefined(function) if function != owner => Some(function),
+                _ => None,
+            })
+            .expect("lowering publishes the generated closure definition")
+    }
+
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("closure_replacement.fz".into()),
+        text: "fn main() do\n f = fn () -> 41 end\n f.()\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(41));
+    let owner = compiler.root_function(root);
+    let before = generated_child(&compiler, owner);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("closure_replacement.fz".into()),
+        text: "fn main() do\n f = fn () -> 42 end\n f.()\nend\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let after = generated_child(&compiler, owner);
+
+    assert_eq!(
+        after, before,
+        "the same typed owner-relative occurrence remains one generated callable while its diagnostic version changes"
+    );
+}
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
@@ -96,7 +991,7 @@ type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
-type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+type ListRetentionCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
 
 fn settle_native_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root: crate::compiler2::RootId) {
     compiler
@@ -389,13 +1284,13 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
     // Unique `tkf_` names so the assertions ignore the runtime prelude's own
     // @types, which are noted in the same drive when the user scope pulls it.
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("types.fz".to_string()),
         text: include_str!("../../fixtures2/00002_types_top_level.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable",
     );
     assert_resolved(compiler.drive(), "second drive should scope and note the @types");
@@ -439,13 +1334,13 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("refs.fz".to_string()),
         text: include_str!("../../fixtures2/00003_type_refs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable",
     );
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
@@ -616,13 +1511,13 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("typedefs.fz".to_string()),
         text: include_str!("../../fixtures2/00004_typedefs.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
@@ -717,13 +1612,13 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("brand.fz".to_string()),
         text: include_str!("../../fixtures2/00005_brand.fz").to_string(),
     });
     assert_resolved(compiler.drive(), "first drive should index the source");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scoping the top-level code should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should scope and note the brand");
@@ -770,7 +1665,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
             "defprotocol Proof do\n",
@@ -793,7 +1688,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "source should index protocol and owner modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -827,7 +1722,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
@@ -837,7 +1732,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
@@ -887,7 +1782,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let outputs = OutputCapture::new();
     outputs.install(&tel);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("protocol_domain.fz".to_string()),
         include_str!("../../fixtures2/00006_protocol_domain.fz").to_string(),
     );
@@ -896,7 +1791,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "first drive should index the protocol and impl owner modules",
     );
     let indexed = outputs
-        .take(Job::IndexCode(code_id))
+        .take(Job::IndexCode(source_owner))
         .expect("IndexCode job effects for the protocol-domain case");
     let module_ids = module_indexed_ids(&indexed);
     assert_eq!(
@@ -914,7 +1809,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         .expect("indexed module id for the impl owner");
 
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "scoping the protocol source should be demandable",
     );
     assert_resolved(
@@ -1149,7 +2044,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         },
     );
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_defined_independence.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1168,7 +2063,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1254,7 +2149,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_duplicate_defstruct.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1270,7 +2165,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         "first drive should index the module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1317,8 +2212,8 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     // and `quoted_surface::build_form` recognizes the `:defstruct` head the
     // same way it would from source. When that macro's body writes the
     // fields as a literal (no `__fz_span__` key in its `meta` map), every
-    // expansion gets `Span::DUMMY` (`quoted_surface::span_from_meta`'s
-    // no-span fallback) -- so invoking the SAME macro twice in one module
+    // expansion gets `Span::DUMMY` (the validated AST read's no-span result)
+    // -- so invoking the SAME macro twice in one module
     // produces two `StructDef`s that are not just same-span but
     // byte-IDENTICAL whenever the macro's argument repeats. Before this
     // guard, `publish_struct_def`'s content-comparison gate (fz-rh2.17.5.6.8.1)
@@ -1330,7 +2225,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
         concat!(
             "defmacro make_struct(fields) do\n",
@@ -1350,7 +2245,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         "first drive should index the module",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1450,7 +2345,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
     // (x, y) rather than the literal, reversed write order (y, x).
     let tel = ConfiguredTelemetry::new();
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_out_of_order.fz".to_string()),
         concat!(
             "defmodule Q do\n",
@@ -1469,7 +2364,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1537,7 +2432,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_unknown_field.fz".to_string()),
         concat!(
             "defmodule Point do\n",
@@ -1556,7 +2451,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1604,7 +2499,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_type_expression_out_of_order_unknown_field.fz".to_string()),
         concat!(
             "defmodule Q do\n",
@@ -1623,7 +2518,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1869,7 +2764,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
             "extern \"C\" fn takes(p :: %NotAStruct{x: integer}) :: integer\n",
@@ -1885,7 +2780,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         "first drive should index the code",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -1937,7 +2832,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     let bodies = LoweredBodyCapture::new();
     bodies.install(&tel);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_pattern_out_of_order.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -1956,7 +2851,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2035,7 +2930,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -2053,7 +2948,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2099,7 +2994,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_pattern_unknown_field.fz".to_string()),
         concat!(
             "defmodule B do\n",
@@ -2117,7 +3012,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2165,7 +3060,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_literal_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
@@ -2183,7 +3078,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2231,7 +3126,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "end\n",
     )
     .to_string();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("zero_field_struct_literal_non_struct.fz".to_string()),
         source.clone(),
     );
@@ -2240,7 +3135,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2298,7 +3193,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let mut world = crate::compiler2::World::new();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("struct_pattern_non_struct.fz".to_string()),
         concat!(
             "defmodule NotAStruct do\n",
@@ -2316,7 +3211,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2364,7 +3259,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "end\n",
     )
     .to_string();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("zero_field_struct_pattern_non_struct.fz".to_string()),
         source.clone(),
     );
@@ -2373,7 +3268,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "first drive should index both modules",
     );
     assert!(
-        world.demand(Job::ScopeCode(code_id)),
+        world.demand(Job::ScopeCode(source_owner)),
         "top-level scope should be demandable"
     );
     assert_resolved(
@@ -2690,7 +3585,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string();
 
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: source,
     });
@@ -2703,11 +3598,11 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
 
     assert_resolved(compiler.drive(), "first drive should index quicksort plus foo");
 
-    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    let indexed_stop = outputs.stop(Job::IndexCode(source_owner));
     assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for quicksort plus foo"
     );
     assert_resolved(compiler.drive(), "second drive should define quicksort plus foo");
@@ -2798,7 +3693,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     );
     assert_eq!(
         outputs
-            .stops_matching(|job| matches!(job, Job::IndexCode(id) if *id == code_id))
+            .stops_matching(|job| matches!(job, Job::IndexCode(id) if *id == source_owner))
             .len(),
         1,
         "indexing should close one IndexCode job span for the user submission"
@@ -2824,7 +3719,9 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "indexing should not emit redundant fact.published telemetry"
     );
 
-    let outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
+    let outputs = outputs
+        .take(Job::IndexCode(source_owner))
+        .expect("IndexCode job effects");
     assert_eq!(
         outputs
             .iter()
@@ -2850,7 +3747,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
         "top-level quicksort indexing should not discover nested modules"
     );
     assert!(
-        outputs.contains(&presence(FactKey::CodeIndexed(code_id), true)),
+        outputs.contains(&presence(FactKey::CodeIndexed(source_owner), true)),
         "IndexCode outputs should include the final code-indexed fact"
     );
 }
@@ -2872,7 +3769,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let _code_id = compiler.submit_code(CodeSubmission {
+    let _source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     });
@@ -3124,7 +4021,7 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
         "a tiny root should publish each required source surface once",
     );
 
-    let prelude_code = crate::compiler2::CodeId::ZERO;
+    let prelude_code = compiler.world().runtime_prelude();
     for code in [prelude_code, user_code] {
         let published = outputs
             .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == code))
@@ -3169,12 +4066,12 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("macro_inc.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n\ndefmacro forward_define(source) do\n  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))\nend\n"
             .to_string(),
     });
-    assert!(compiler.demand(Job::ScopeCode(code_id)));
+    assert!(compiler.demand(Job::ScopeCode(source_owner)));
     assert_resolved(
         compiler.drive(),
         "scoping should publish the macro source without lowering it",
@@ -3198,7 +4095,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
     let node = expanded
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("expanded cursor")
         .expect("expanded AST node");
     assert_eq!(node.head.atom_name().expect("expanded head"), "+");
@@ -3218,7 +4115,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     );
     let var_node = quoted
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("quoted variable cursor")
         .expect("quoted variable AST node");
     assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
@@ -3248,12 +4145,12 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("macro should return a quoted compiler-service call");
     let forwarded_node = forwarded
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded cursor")
         .expect("forwarded AST node");
     let callee = forwarded_node
         .head
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded callee")
         .expect("forwarded callee node");
     assert_eq!(
@@ -3274,18 +4171,23 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         "unquote(source) should splice the grouped source fragment itself, not re-render it",
     );
 
-    let long_doc_source = parse_quoted_program(
-        "long_doc_forwarded.fz",
-        r#"
+    let long_doc_text = r#"
 @doc "Removes the first matching left-side item for each item in the right list."
 @spec subtract([a], [a]) :: [a]
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-        "#,
-        crate::compiler2::CodeId::ZERO,
-        compiler.telemetry(),
-    )
-    .expect("long-doc quoted parse");
+        "#;
+    let long_doc_owner = compiler.submit_code(CodeSubmission {
+        name: Some("long_doc_forwarded.fz".into()),
+        text: long_doc_text.into(),
+    });
+    let long_doc_version = compiler
+        .world()
+        .source_version(long_doc_owner)
+        .expect("long-doc version");
+    let source_map = compiler.world().source_map();
+    let long_doc_source = parse_quoted_program(&source_map.borrow(), long_doc_version, compiler.telemetry())
+        .expect("long-doc quoted parse");
     let long_doc_items = long_doc_source.cursor().list_items().expect("long-doc items");
     let long_doc_group = long_doc_source
         .interned_list_subroot(&long_doc_items.iter().map(|item| item.root()).collect::<Vec<_>>())
@@ -3295,7 +4197,7 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         .expect("macro should forward long-doc grouped source");
     let forwarded_long_doc_node = forwarded_long_doc
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded long-doc cursor")
         .expect("forwarded long-doc AST node");
     let forwarded_long_doc_args = forwarded_long_doc_node
@@ -3308,23 +4210,24 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         "unquote(source) should preserve procbin-backed grouped source fragments by identity too",
     );
     let forwarded_group = long_doc_group.subroot(forwarded_long_doc_args[0].root());
-    crate::compiler2::quoted_function::derive_function_surface(&forwarded_group)
+    crate::compiler2::quoted_function::derive_function_surface(&forwarded_group, &source_map.borrow())
         .expect("forwarded long-doc grouped source should still decode");
 
-    let module_source = parse_quoted_program(
-        "forwarded_module.fz",
-        r#"
+    let module_text = r#"
 defmodule M do
   @doc "Removes the first matching left-side item for each item in the right list."
   @spec subtract([a], [a]) :: [a]
   fn subtract(left, []), do: left
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
-        "#,
-        crate::compiler2::CodeId::ZERO,
-        compiler.telemetry(),
-    )
-    .expect("module quoted parse");
+        "#;
+    let module_owner = compiler.submit_code(CodeSubmission {
+        name: Some("forwarded_module.fz".into()),
+        text: module_text.into(),
+    });
+    let module_version = compiler.world().source_version(module_owner).expect("module version");
+    let module_source =
+        parse_quoted_program(&source_map.borrow(), module_version, compiler.telemetry()).expect("module quoted parse");
     let module_items = module_source.cursor().list_items().expect("module items");
     assert_eq!(module_items.len(), 1, "test module should have one top-level form");
     let forwarded_module = compiler
@@ -3332,7 +4235,7 @@ end
         .expect("macro should forward a whole module source node");
     let forwarded_module_node = forwarded_module
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("forwarded module cursor")
         .expect("forwarded module AST node");
     let forwarded_module_args = forwarded_module_node.tail.list_items().expect("forwarded module args");
@@ -3344,8 +4247,9 @@ end
     let forwarded_module_root = module_source
         .interned_list_subroot(&[forwarded_module_args[0].root()])
         .expect("wrap forwarded module form as a top-level source list");
-    let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(&forwarded_module_root)
-        .expect("forwarded whole-module source should still read as scope surface");
+    let forwarded_module_surface =
+        crate::compiler2::quoted_surface::read_scope_surface(&forwarded_module_root, &source_map.borrow())
+            .expect("forwarded whole-module source should still read as scope surface");
     let nested_surface = match forwarded_module_surface
         .forms
         .first()
@@ -3356,9 +4260,11 @@ end
                 .source
                 .interned_list_subroot(&[macro_call.source.root()])
                 .expect("wrap forwarded compiler fragment as a grouped source list");
-            let compiler_fragment =
-                crate::compiler2::quoted_surface::read_compiler_fragment_surface(&compiler_fragment_root)
-                    .expect("forwarded macro-call source should still decode as compiler fragment");
+            let compiler_fragment = crate::compiler2::quoted_surface::read_compiler_fragment_surface(
+                &compiler_fragment_root,
+                &source_map.borrow(),
+            )
+            .expect("forwarded macro-call source should still decode as compiler fragment");
             let module_form = match compiler_fragment
                 .forms
                 .first()
@@ -3367,7 +4273,7 @@ end
                 crate::compiler2::quoted_surface::ScopeForm::Module(module) => module,
                 other => panic!("expected compiler fragment module form, got {other:?}"),
             };
-            crate::compiler2::quoted_surface::read_module_body_surface(module_form)
+            crate::compiler2::quoted_surface::read_module_body_surface(module_form, &source_map.borrow())
                 .expect("forwarded module body should still decode")
         }
         other => panic!("expected forwarded module form, got {other:?}"),
@@ -3380,7 +4286,7 @@ end
         crate::compiler2::quoted_surface::ScopeForm::MacroCall(function) => function,
         other => panic!("expected grouped function macro call, got {other:?}"),
     };
-    crate::compiler2::quoted_function::derive_function_surface(&function.source)
+    crate::compiler2::quoted_function::derive_function_surface(&function.source, &source_map.borrow())
         .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
 }
 
@@ -3584,7 +4490,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
     });
@@ -3609,7 +4515,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
         outputs
             .stops_matching(|job| matches!(job, Job::ScopeCode(_)))
             .iter()
-            .any(|stop| stop.job == Job::ScopeCode(code_id)),
+            .any(|stop| stop.job == Job::ScopeCode(source_owner)),
         "the user code should scope even though runtime modules stay cold"
     );
     assert_eq!(
@@ -4027,14 +4933,14 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
         text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the exact fn-ref fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "fixture scope should be demandable"
     );
     assert_resolved(compiler.drive(), "second drive should define the importing module");
@@ -4927,7 +5833,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         assert_eq!(
             function.physical_entry_params.len(),
             1,
-            "the quicksort continuation should also carry the reusable-cons source as one physical capability param",
+            "the quicksort continuation carries the retained source as one physical parameter",
         );
         assert_eq!(
             entry_block.params.len(),
@@ -4937,17 +5843,13 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         assert_eq!(
             entry_block.params.last().copied(),
             function.physical_entry_params.first().copied(),
-            "the extra raw entry param should be the physical reusable-cons source capability",
+            "the extra raw entry param should be the physical list-retention source capability",
         );
-        assert_eq!(
-            function.physical_capabilities,
-            vec![crate::fz_ir::PhysicalCapabilityFact {
-                source: function.physical_entry_params[0],
-                capability: crate::fz_ir::PhysicalCapability::ReusableConsCell {
-                    rebuilt_head: semantic_entry_params[2],
-                },
-            }],
-            "the physical param should restore the reusable-cons capability for the captured pivot head",
+        assert!(
+            crate::ir_dce::classify_var_uses(function)
+                .1
+                .contains(&function.physical_entry_params[0]),
+            "a continuation must trace its physical source while forwarding it toward its construction"
         );
     }
 }
@@ -6456,8 +7358,8 @@ fn compiler2_null_telemetry_stays_concrete_through_frontdoors_and_runtimes() {
         include_str!("native_codegen/driver.rs"),
     ] {
         assert!(!source.contains("CodegenFnStats"));
-        assert!(!source.contains("reusable_cons_candidate_count"));
-        assert!(!source.contains("reusable_cons_consumed_count"));
+        assert!(!source.contains("list_retention_candidate_count"));
+        assert!(!source.contains("list_retention_consumed_count"));
     }
 }
 
@@ -9970,6 +10872,64 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<
     (compiler, program)
 }
 
+#[test]
+fn compiler2_source_struct_patterns_publish_typed_tests_and_named_field_evidence() {
+    use crate::dispatch_matrix::{ProjectionKind, SubjectSource};
+
+    let (compiler, program) = driven_backend_program("fixtures2/behavior/source_struct_pattern_fields.fz");
+    let plans = artifact_plans(compiler.world(), &program);
+    let mut projected = 0;
+    let mut bound = 0;
+    let mut receive_projected = false;
+    for artifact in plans {
+        let plan = artifact.plan;
+        for arm in &plan.matrix.arms {
+            for question in &arm.questions {
+                for result in &question.match_evidence.projections {
+                    let SubjectSource::Projection(projection) = plan.subject(*result) else {
+                        panic!("field evidence must name a projected subject");
+                    };
+                    let ProjectionKind::StructField(_) = &projection.kind else {
+                        continue;
+                    };
+                    let Region::Type(ty) = question.predicate.region else {
+                        panic!("a named field projection must be owned by a successful type discriminator");
+                    };
+                    assert_eq!(
+                        compiler.world().types().struct_modules([ty]).len(),
+                        1,
+                        "a source struct question must retain exactly one World module identity"
+                    );
+                    assert_eq!(projection.source, question.predicate.subject);
+                    assert!(
+                        question.miss_evidence.projections.is_empty(),
+                        "a rejected schema grants no access to its fields"
+                    );
+                    projected += 1;
+                    receive_projected |= matches!(artifact.site, PlanSite::Receive { .. });
+                }
+            }
+        }
+        for outcome in &plan.outcomes {
+            for binding in &outcome.bindings {
+                if let SubjectSource::Projection(projection) = &plan.matrix.subjects[binding.source.0 as usize].source
+                    && let ProjectionKind::StructField(field) = &projection.kind
+                {
+                    assert_eq!(
+                        field, "value",
+                        "the binding must read its named value field, not the parent record"
+                    );
+                    bound += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        projected > 0 && bound > 0 && receive_projected,
+        "the production artifacts must exercise typed projections, field bindings, and receive evidence"
+    );
+}
+
 /// Where in the artifact a [`PatternDispatchPlan`] sits.
 ///
 /// The artifact carries FIVE, and every one of them decides which body a
@@ -10106,25 +11066,29 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                     plan: &dispatch.plan,
                     bodies: dispatch.arms.iter().map(|arm| arm.body_id).collect(),
                 }),
-                // `native.rs` and `ir_interp/backend.rs` both reach the arm by
-                // `arm_entries[body_id]`, so the arm order IS the body order.
                 BackendTail::Dispatch { dispatch, .. } => plans.push(ArtifactPlan {
                     site: PlanSite::Case {
                         executable: index,
                         entry: entry_index,
                     },
                     plan: &dispatch.plan,
-                    bodies: (0..dispatch.arm_entries.len() as u32).collect(),
+                    bodies: dispatch
+                        .outcomes
+                        .iter()
+                        .map(|edge| dispatch.plan.outcome(edge.outcome).expect("outcome").body_id)
+                        .collect(),
                 }),
-                // Same weld on the receive side: the matched clause index is
-                // the plan's body id, and `clauses` is in source order.
                 BackendTail::Receive(receive) => plans.push(ArtifactPlan {
                     site: PlanSite::Receive {
                         executable: index,
                         entry: entry_index,
                     },
                     plan: &receive.dispatch,
-                    bodies: (0..receive.clauses.len() as u32).collect(),
+                    bodies: receive
+                        .outcomes
+                        .iter()
+                        .map(|edge| receive.dispatch.outcome(edge.outcome).expect("receive outcome").body_id)
+                        .collect(),
                 }),
                 _ => {}
             }
@@ -10566,7 +11530,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 156, 148), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 159, 151), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -11116,23 +12080,25 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// fifteen content-caused analyses on this combined stack; eleven of those runs had
 /// reached a matched `Region::Type` question, so each affected row's
 /// observation denominator falls 373 -> 362 while escapes stay at zero.
+/// Exact input alternatives retain separate callable surfaces, so runtime
+/// member selection observes more type questions while every escape stays zero.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 362, 0),
-    ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
+    ("fixtures2/00183_enum_take_list_range.fz", "", 82, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 82, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 12, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 82, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 382, 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 12, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 362, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 362, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 382, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 82, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
@@ -12629,7 +13595,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         "entry seeding should settle before later code arrives"
     );
 
-    let late_code_id = compiler.submit_code(CodeSubmission {
+    let late_source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/late_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00030_foo_42.fz").to_string(),
     });
@@ -12639,7 +13605,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     );
 
     let scope_outputs = outputs
-        .take(Job::ScopeCode(late_code_id))
+        .take(Job::ScopeCode(late_source_owner))
         .expect("late code ScopeCode job effects");
     // Scope publication is demand-addressed (fz-f98.14.5): the late ScopeCode
     // publishes CodeScoped and eagerly stashes foo/0's source, but does NOT
@@ -12648,7 +13614,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     assert!(
         scope_outputs
             .iter()
-            .any(|(fact, _)| *fact == FactKey::CodeScoped(late_code_id)),
+            .any(|(fact, _)| *fact == FactKey::CodeScoped(late_source_owner)),
         "late code should auto-scope without an explicit ScopeCode demand"
     );
     let foo_id = function_id(&functions, "foo", 0);
@@ -13152,14 +14118,14 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_clause_projections.fz".to_string()),
         text: include_str!("../../fixtures2/00033_clause_projections.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the clause fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs defined functions",
     );
     assert_resolved(compiler.drive(), "second drive should define the clause fixture");
@@ -13213,14 +14179,14 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
         text: include_str!("../../fixtures2/00034_lambda_capture.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the capture fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs a defined owner function"
     );
     assert_resolved(compiler.drive(), "second drive should define the capture fixture");
@@ -13285,14 +14251,14 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_local_match.fz".to_string()),
         text: include_str!("../../fixtures2/00035_local_match.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the local match fixture");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "lowering still needs a defined function",
     );
     assert_resolved(compiler.drive(), "second drive should define the local match fixture");
@@ -13469,102 +14435,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 }
 
 #[test]
-// Triaged 2026-08-24: this is NOT awaiting triage, it asserts a contract
-// fz-f98.14.11 deliberately superseded. Its param-shape half pins the OLD rule
-// that a discarded call result still occupies a delivered return lane
-// (`extra_params: 1`); the rule is now that a discarded result carries no demand
-// and publishes no lanes, so lowering yields `extra_params: 0`. Its real
-// subject -- the reusable-cons capability surviving a delivered continuation --
-// is unaffected and still worth pinning. Re-enabling means rewriting the lane
-// assertions to the new contract, deriving the expected shape from the rule
-// rather than from whatever lowering currently emits. See fz-f98.22.
-#[ignore = "asserts the pre-fz-f98.14.11 discarded-result lane contract; see fz-f98.22"]
-fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
-    let tel = ConfiguredTelemetry::new();
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_continuation.fz".to_string()),
-        text: r#"
-fn ping(x), do: x
-
-fn rebuild(xs) do
-  [h | t] = xs
-  ping(0)
-  [h | t]
-end
-
-fn main(), do: rebuild([1, 2])
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    settle_native_product(&mut compiler, root_id);
-
-    assert_resolved(
-        compiler.drive(),
-        "reusable-cons continuation fixture should settle before native lowering inspection",
-    );
-
-    let program = native.last(root_id).program;
-    let continuation = program
-        .bodies
-        .iter()
-        .find(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
-        .expect("the non-tail call should lower through a continuation helper");
-    let function = program.module.fn_by_id(continuation.fn_id);
-
-    assert!(
-        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),
-        "the ignored ping/1 result should still occupy the callee's delivered return lane, got {:?}",
-        continuation.entry_abi,
-    );
-    assert_eq!(
-        function.block(function.entry).params,
-        vec![
-            crate::fz_ir::Var(0),
-            crate::fz_ir::Var(1),
-            crate::fz_ir::Var(2),
-            crate::fz_ir::Var(3),
-        ],
-        "the continuation should accept the delivered result, its two semantic captures, and one hidden physical source param",
-    );
-    assert_eq!(
-        function.ignored_entry_params,
-        vec![true, false, false, false],
-        "the delivered ping/1 result is a boundary lane, but it must not become a semantic specialization input",
-    );
-    assert_eq!(
-        function.physical_entry_params,
-        vec![crate::fz_ir::Var(3)],
-        "the hidden source-cons param should be marked physical on the entry",
-    );
-    assert_eq!(
-        function.physical_capabilities,
-        vec![crate::fz_ir::PhysicalCapabilityFact {
-            source: crate::fz_ir::Var(3),
-            capability: PhysicalCapability::ReusableConsCell {
-                rebuilt_head: crate::fz_ir::Var(1),
-            },
-        }],
-        "the continuation should restore the reusable-cons fact for its captured head",
-    );
-    assert_eq!(
-        function.semantic_entry_params(),
-        vec![crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
-        "semantic entry params must ignore both the unused delivered result and the hidden physical capture",
-    );
-}
-
-#[test]
-fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivered_entries() {
+fn compiler2_lowered_body_records_list_retention_sources_on_delivered_entries() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -13572,8 +14443,8 @@ fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivere
     bodies.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_continuation.fz".to_string()),
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("list_retention_continuation.fz".to_string()),
         text: r#"
 fn ping(x), do: x
 
@@ -13586,14 +14457,14 @@ end
         .to_string(),
     });
 
-    assert_resolved(compiler.drive(), "reusable-cons fixture should index cleanly");
+    assert_resolved(compiler.drive(), "list-retention fixture should index cleanly");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
-        "reusable-cons fixture still needs function definition before lowered-body inspection",
+        compiler.demand(Job::ScopeCode(source_owner)),
+        "list-retention fixture still needs function definition before lowered-body inspection",
     );
     assert_resolved(
         compiler.drive(),
-        "reusable-cons fixture should define its functions cleanly",
+        "list-retention fixture should define its functions cleanly",
     );
 
     let rebuild_id = function_id(&functions, "rebuild", 1);
@@ -13603,7 +14474,7 @@ end
     );
     assert_resolved(
         compiler.drive(),
-        "lowering rebuild/1 should publish reusable-cons capture metadata on its entries",
+        "lowering rebuild/1 should attach the exact construction source and its physical capture",
     );
 
     let body = lowered_body(&bodies, rebuild_id);
@@ -13615,39 +14486,49 @@ end
         .find(|entry| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }))
         .expect("the non-tail call should lower through a delivered-resume entry");
     assert_eq!(
-        continuation.reusable_cons_captures.len(),
+        continuation.physical_captures.len(),
         1,
         "the delivered entry should declare exactly the one reusable list cell it must receive",
     );
 
-    let capture = continuation.reusable_cons_captures[0];
-    assert!(
-        continuation.captures.contains(&capture.head),
-        "the hidden physical capture should be paired with a semantic capture for the rebuilt head",
-    );
+    let source_operand = continuation.physical_captures[0];
+    let head_value = continuation
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            LoweredStep::List {
+                items,
+                retention: Some(retention),
+                ..
+            } if retention.source == source_operand => items.first().copied(),
+            _ => None,
+        })
+        .expect("the construction directly names its retained source");
 
     let source = clauses
         .iter()
         .flat_map(|clause| clause.projections.iter())
         .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
         .find_map(|step| match step {
-            LoweredStep::SplitList { source, head, .. } if *head == capture.head => Some(*source),
+            LoweredStep::SplitList { source, head, .. } if *head == head_value => Some(*source),
             _ => None,
         });
     assert_eq!(
         source,
-        Some(capture.source),
+        Some(source_operand),
         "the delivered entry should capture the exact source cons paired with its rebuilt head",
     );
 }
 
 #[test]
-fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
+fn compiler2_list_retention_crosses_continuations_as_a_traced_construction_operand() {
     let tel = ConfiguredTelemetry::new();
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
-    let reusable_cons = ReusableConsCapture::new();
-    reusable_cons.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let list_retention = ListRetentionTelemetryCapture::new();
+    list_retention.install(&tel);
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -13656,7 +14537,7 @@ fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
         need: ExecutableNeed::Value,
     });
     compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_continuation.fz".to_string()),
+        name: Some("list_retention_continuation.fz".to_string()),
         text: r#"
 fn ping(x), do: x
 
@@ -13672,25 +14553,55 @@ fn main(), do: rebuild([1, 2])
     });
 
     compiler.run_root_jit(root_id).unwrap_or_else(|error| {
-        panic!("reusable-cons telemetry fixture should run end-to-end: {error}");
+        panic!("list-retention telemetry fixture should run end-to-end: {error}");
     });
 
-    assert_eq!(reusable_cons.last(), Some((root_id, 1, 1)));
+    assert_eq!(list_retention.last(), Some((root_id, 1, 1)));
+
+    let program = native.last(root_id).program;
+    let continuation = program
+        .bodies
+        .iter()
+        .find(|body| {
+            matches!(body.origin, NativeBodyOrigin::Continuation { .. })
+                && !program.module.fn_by_id(body.fn_id).physical_entry_params.is_empty()
+                && program
+                    .module
+                    .fn_by_id(body.fn_id)
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.stmts)
+                    .any(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::MakeList(_, _, Some(_)))))
+        })
+        .expect("retained source continuation");
+    let function = program.module.fn_by_id(continuation.fn_id);
+    assert!(
+        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 0 }),
+        "the discarded result has no delivered lane"
+    );
+    assert_eq!(function.physical_entry_params.len(), 1);
+    assert_eq!(function.semantic_entry_params().len(), 2);
+    let source = function.physical_entry_params[0];
+    assert!(
+        function.blocks.iter().flat_map(|block| &block.stmts).any(
+            |stmt| matches!(stmt, IrStmt::Let(_, IrPrim::MakeList(_, _, Some(retention))) if retention.source == source)
+        ),
+        "the exact construction consumes its traced physical source"
+    );
 
     let exit = exits.last().expect("runtime process exit telemetry");
-    assert_eq!(exit.reusable_cons_attempts, 1);
+    assert_eq!(exit.list_retention_attempts, 1);
     assert_eq!(
-        exit.reusable_cons_reused, 1,
-        "the transported cell stays unique across the stack-resident continuation, so the \
-         rebuilt `[h | t]` reuses it in place instead of allocating a fresh cons",
+        exit.list_retention_hits, 1,
+        "unchanged `[h | t]` retains its source across the continuation without allocating",
     );
 }
 
 #[test]
-fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
+fn compiler2_list_retention_telemetry_does_not_count_a_split_without_reconstruction() {
     let tel = ConfiguredTelemetry::new();
-    let reusable_cons = ReusableConsCapture::new();
-    reusable_cons.install(&tel);
+    let list_retention = ListRetentionTelemetryCapture::new();
+    list_retention.install(&tel);
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -13699,7 +14610,7 @@ fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
         need: ExecutableNeed::Value,
     });
     compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_no_transport.fz".to_string()),
+        name: Some("list_retention_no_transport.fz".to_string()),
         text: r#"
 fn ping(x), do: x
 
@@ -13718,16 +14629,16 @@ fn main(), do: ignore([1, 2])
         panic!("born-without-transport fixture should run end-to-end: {error}");
     });
 
-    assert_eq!(reusable_cons.last(), Some((root_id, 1, 0)));
+    assert_eq!(list_retention.last(), Some((root_id, 0, 0)));
 }
 
 #[test]
-fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
+fn compiler2_list_retention_runtime_telemetry_reports_source_identity_hits() {
     let tel = ConfiguredTelemetry::new();
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
-    let reusable_cons = ReusableConsCapture::new();
-    reusable_cons.install(&tel);
+    let list_retention = ListRetentionTelemetryCapture::new();
+    list_retention.install(&tel);
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -13736,7 +14647,7 @@ fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
         need: ExecutableNeed::Value,
     });
     compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_runtime_reuse.fz".to_string()),
+        name: Some("list_retention_runtime_reuse.fz".to_string()),
         text: r#"
 fn rebuild(xs) do
   [h | t] = xs
@@ -13749,20 +14660,20 @@ fn main(), do: rebuild([1, 2])
     });
 
     compiler.run_root_jit(root_id).unwrap_or_else(|error| {
-        panic!("direct reusable-cons fixture should run end-to-end: {error}");
+        panic!("direct list-retention fixture should run end-to-end: {error}");
     });
 
-    assert_eq!(reusable_cons.last(), Some((root_id, 1, 0)));
+    assert_eq!(list_retention.last(), Some((root_id, 1, 0)));
 
     let exit = exits.last().expect("runtime process exit telemetry");
-    assert_eq!(exit.reusable_cons_attempts, 1);
-    assert_eq!(exit.reusable_cons_reused, 1);
+    assert_eq!(exit.list_retention_attempts, 1);
+    assert_eq!(exit.list_retention_hits, 1);
 }
 
 #[test]
-fn compiler2_reusable_cons_preserves_typed_source_and_reuses_a_returned_list() {
-    let run = reusable_cons_run(
-        "reusable_cons_returned_source_alias.fz",
+fn compiler2_list_retention_preserves_typed_source_and_reuses_a_returned_list() {
+    let run = list_retention_run(
+        "list_retention_returned_source_alias.fz",
         r#"
 fn rebuild(xs) do
   [h | t] = xs
@@ -13777,7 +14688,7 @@ end
 "#,
     );
 
-    assert_eq!((run.births, run.transported), (1, 0));
+    assert_eq!((run.constructions, run.physical_captures), (1, 0));
     assert_eq!((run.attempts, run.reused), (1, 1));
     assert_eq!(
         (run.live_count, run.bytes_used),
@@ -13789,9 +14700,9 @@ end
 }
 
 #[test]
-fn compiler2_reusable_cons_erases_unused_call_argument_before_reuse() {
-    let run = reusable_cons_run(
-        "reusable_cons_erased_unused_argument.fz",
+fn compiler2_list_retention_erases_unused_call_argument_before_reuse() {
+    let run = list_retention_run(
+        "list_retention_erased_unused_argument.fz",
         r#"
 fn ping(x), do: x
 
@@ -13808,9 +14719,9 @@ fn main(), do: rebuild([1, 2])
     assert_eq!((run.attempts, run.reused), (1, 1));
 }
 
-struct ReusableConsRun {
-    births: u64,
-    transported: u64,
+struct ListRetentionRun {
+    constructions: u64,
+    physical_captures: u64,
     attempts: u64,
     reused: u64,
     live_count: usize,
@@ -13819,14 +14730,14 @@ struct ReusableConsRun {
     output: Vec<String>,
 }
 
-fn reusable_cons_run(name: &str, source: &str) -> ReusableConsRun {
+fn list_retention_run(name: &str, source: &str) -> ListRetentionRun {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
-    let reusable_cons = ReusableConsCapture::new();
-    reusable_cons.install(&tel);
+    let list_retention = ListRetentionTelemetryCapture::new();
+    list_retention.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
     let dbg = DbgCapture::new();
@@ -13847,17 +14758,17 @@ fn reusable_cons_run(name: &str, source: &str) -> ReusableConsRun {
         let diagnostic = capture
             .last(&["fz", "diag", "error"])
             .map(|event| metadata_str(&event, "message").to_string());
-        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}; {diagnostic:?}");
+        panic!("alias-fallback list-retention fixture should run end-to-end: {error}; {diagnostic:?}");
     });
 
     let exit = exits.last().expect("runtime process exit telemetry");
-    let (_, births, transported) = reusable_cons.last().expect("reusable-cons compilation telemetry");
-    let source_and_rebuild_share_return = reusable_cons_source_and_rebuild_share_return(&native.last(root_id).program);
-    ReusableConsRun {
-        births,
-        transported,
-        attempts: exit.reusable_cons_attempts,
-        reused: exit.reusable_cons_reused,
+    let (_, constructions, physical_captures) = list_retention.last().expect("list-retention compilation telemetry");
+    let source_and_rebuild_share_return = list_retention_source_and_rebuild_share_return(&native.last(root_id).program);
+    ListRetentionRun {
+        constructions,
+        physical_captures,
+        attempts: exit.list_retention_attempts,
+        reused: exit.list_retention_hits,
         live_count: exit.live_count,
         bytes_used: exit.bytes_used,
         source_and_rebuild_share_return,
@@ -13865,29 +14776,11 @@ fn reusable_cons_run(name: &str, source: &str) -> ReusableConsRun {
     }
 }
 
-fn reusable_cons_source_and_rebuild_share_return(program: &NativeProgram) -> bool {
+fn list_retention_source_and_rebuild_share_return(program: &NativeProgram) -> bool {
     program.module.fns.iter().any(|function| {
-        function.physical_capabilities.iter().any(|fact| {
-            let PhysicalCapability::ReusableConsCell { rebuilt_head } = fact.capability;
-            let rebuilt = function
-                .blocks
-                .iter()
-                .flat_map(|block| block.stmts.iter())
-                .find_map(|stmt| match stmt {
-                    IrStmt::Let(value, IrPrim::MakeList(items, Some(_))) if items.as_slice() == [rebuilt_head] => {
-                        Some(*value)
-                    }
-                    _ => None,
-                });
-            rebuilt.is_some_and(|rebuilt| {
-                function.blocks.iter().any(|block| {
-                    matches!(
-                        &block.terminator,
-                        IrTerm::ReturnLanes(lanes)
-                            if lanes.contains(&fact.source) && lanes.contains(&rebuilt)
-                    )
-                })
-            })
+        function.blocks.iter().flat_map(|block| &block.stmts).any(|stmt| {
+            let IrStmt::Let(rebuilt, IrPrim::MakeList(_, _, Some(retention))) = stmt else { return false };
+            function.blocks.iter().any(|block| matches!(&block.terminator, IrTerm::ReturnLanes(lanes) if lanes.contains(&retention.source) && lanes.contains(rebuilt)))
         })
     })
 }
@@ -14299,7 +15192,7 @@ end
 // before runtime use" (native.rs's unbound-value invariant) -- so this test is
 // one of fz-k22's detectors and re-enables with it.
 #[ignore = "blocked on fz-k22: generic Enum HOF leaves a backend value unbound"]
-fn compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters() {
+fn compiler2_jit_and_backend_interp_agree_on_list_retention_exit_counters() {
     let source = r#"
 fn ping(x), do: x
 
@@ -14332,11 +15225,11 @@ end
         need: ExecutableNeed::Value,
     });
     jit_compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_mixed_exit_counters.fz".to_string()),
+        name: Some("list_retention_mixed_exit_counters.fz".to_string()),
         text: source.to_string(),
     });
     jit_compiler.run_root_jit(jit_root).unwrap_or_else(|error| {
-        panic!("compiler2 jit should run the mixed reusable-cons fixture: {error}");
+        panic!("compiler2 jit should run the mixed list-retention fixture: {error}");
     });
     let jit_exit = jit_exits.last().expect("jit runtime process exit telemetry");
 
@@ -14351,26 +15244,26 @@ end
         need: ExecutableNeed::Value,
     });
     interp_compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_mixed_exit_counters.fz".to_string()),
+        name: Some("list_retention_mixed_exit_counters.fz".to_string()),
         text: source.to_string(),
     });
     let interp_halt = interp_compiler
         .run_root_interp(interp_root)
-        .expect("compiler2 backend interpreter should run the mixed reusable-cons fixture");
+        .expect("compiler2 backend interpreter should run the mixed list-retention fixture");
     assert_eq!(interp_halt, 0);
     let interp_exit = interp_exits.last().expect("interp runtime process exit telemetry");
 
     assert_eq!(jit_exit.halt_value, 0);
     assert_eq!(jit_exit.halt_value, interp_exit.halt_value);
-    assert_eq!(jit_exit.reusable_cons_attempts, 2);
-    assert_eq!(jit_exit.reusable_cons_reused, 1);
+    assert_eq!(jit_exit.list_retention_attempts, 2);
+    assert_eq!(jit_exit.list_retention_hits, 1);
     assert_eq!(
-        jit_exit.reusable_cons_attempts, interp_exit.reusable_cons_attempts,
-        "jit and backend interpreter should agree on reusable-cons attempts",
+        jit_exit.list_retention_attempts, interp_exit.list_retention_attempts,
+        "jit and backend interpreter should agree on list-retention attempts",
     );
     assert_eq!(
-        jit_exit.reusable_cons_reused, interp_exit.reusable_cons_reused,
-        "jit and backend interpreter should agree on in-place reusable-cons reuse",
+        jit_exit.list_retention_hits, interp_exit.list_retention_hits,
+        "jit and backend interpreter should agree on in-place list-retention reuse",
     );
 }
 
@@ -14497,14 +15390,14 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     guard_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helpers.fz".to_string()),
         text: include_str!("../../fixtures2/00036_guard_helpers.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper functions");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope helper definitions"
     );
     assert_resolved(compiler.drive(), "second drive should define helper functions");
@@ -14565,14 +15458,14 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     guard_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_destructure.fz".to_string()),
         text: include_str!("../../fixtures2/00037_guard_destructure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index destructuring helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope destructuring helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define destructuring helpers");
@@ -14624,14 +15517,14 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_cycle.fz".to_string()),
         text: include_str!("../../fixtures2/00038_guard_cycle.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index cyclic helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope cyclic helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define cyclic helpers");
@@ -14679,14 +15572,14 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helper_wider_than_caller.fz".to_string()),
         text: include_str!("../../fixtures2/00558_guard_helper_wider_than_caller.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the helper and its caller");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope the wider helper",
     );
     assert_resolved(compiler.drive(), "second drive should define the wider helper");
@@ -14715,6 +15608,167 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
 }
 
 #[test]
+fn compiler2_nested_guard_demand_names_only_caller_arguments() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("guard_input_owner.fz".into()),
+        text: "fn wanted(_, value) when value == 42, do: true\nfn wanted(_, _), do: false\nfn choose(_guard_subject, _unused, value) when wanted(0, value), do: 42\nfn choose(_, _, _), do: 7\nfn main(), do: choose(:guard_subject, :unused, 42)\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    assert_eq!(
+        compiler
+            .world()
+            .input_demand(function_id(&functions, "choose", 3))
+            .unwrap()
+            .local_dispatch,
+        [
+            crate::compiler2::keying::DispatchDemand::Whole,
+            crate::compiler2::keying::DispatchDemand::Ignore,
+            crate::compiler2::keying::DispatchDemand::Whole
+        ],
+        "helper subject one receives caller input two; it cannot demand unused caller input one"
+    );
+}
+
+#[test]
+fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operands() {
+    use crate::dispatch_matrix::PreparedKeyId;
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("guard_binding_owner.fz".into()),
+        text: "fn wanted(%{\"key\" => value}), do: value == 42\nfn wanted(_), do: false\nfn relayed(value), do: wanted(value)\nfn main() do\n send(self(), %{\"outer\" => %{\"key\" => 42}})\n receive do\n %{\"outer\" => value} when relayed(value) -> 42\n after\n 1000 -> 0\n end\nend\n".into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let (function, block) = program
+        .module
+        .fns
+        .iter()
+        .enumerate()
+        .find_map(|(function, ir)| {
+            ir.blocks
+                .iter()
+                .position(|block| matches!(block.terminator, IrTerm::ReceiveMatched { .. }))
+                .map(|block| (function, block))
+        })
+        .unwrap();
+    let IrTerm::ReceiveMatched { dispatch, pinned, .. } = &program.module.fns[function].blocks[block].terminator else {
+        unreachable!()
+    };
+    assert_eq!(
+        pinned.len(),
+        2,
+        "outer key and transitively lifted helper key are prepared before receive"
+    );
+    assert_eq!(**dispatch, dispatch.map_type_handle(&mut |ty| ty.clone()));
+    let PatternGuardExpr::Dispatch {
+        bindings,
+        dispatch: child,
+        ..
+    } = &dispatch.guards[0]
+    else {
+        panic!("relayed edge")
+    };
+    assert_eq!(
+        bindings.prepared,
+        [PreparedKeyId(1)],
+        "helper key is caller key one, not caller key zero"
+    );
+    let PatternGuardExpr::Dispatch { bindings, .. } = &child.bodies[0] else {
+        panic!("wanted edge")
+    };
+    assert_eq!(
+        bindings.prepared,
+        [PreparedKeyId(0)],
+        "nested key is local to the intermediate helper"
+    );
+
+    let mut invalid = (*program).clone();
+    let IrTerm::ReceiveMatched { dispatch, .. } = &mut invalid.module.fns[function].blocks[block].terminator else {
+        unreachable!()
+    };
+    let PatternGuardExpr::Dispatch { bindings, .. } = &mut std::sync::Arc::make_mut(dispatch).guards[0] else {
+        unreachable!()
+    };
+    bindings.prepared[0] = PreparedKeyId(99);
+    assert_ne!(
+        *program, invalid,
+        "operand edges participate in native artifact equality"
+    );
+    assert_eq!(
+        compiler.compile_native_program_jit_for_test(&invalid).err().unwrap(),
+        "compiler2 native program JIT compile failed: codegen: guard prepared operand PreparedKeyId(99) is missing from its caller"
+    );
+
+    let mut invalid = (*program).clone();
+    let IrTerm::ReceiveMatched { pinned, .. } = &mut invalid.module.fns[function].blocks[block].terminator else {
+        unreachable!()
+    };
+    pinned.pop();
+    assert_eq!(
+        compiler.compile_native_program_jit_for_test(&invalid).err().unwrap(),
+        "compiler2 native program JIT compile failed: codegen: receive dispatch expects 2 plan operands, got 1"
+    );
+}
+
+#[test]
+fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
+    for (label, source) in [
+        (
+            "receive",
+            "fn wanted(value), do: value == missing\nfn main() do\n receive do\n value when wanted(value) -> 42\n after\n 1000 -> 0\n end\nend\n",
+        ),
+        (
+            "case",
+            "fn wanted(value), do: value == missing\nfn main() do\n missing = 42\n case 42 do\n ^missing when wanted(missing) -> 42\n _ -> 7\n end\nend\n",
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        capture.install(&tel, &[]);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("guard_missing_pin.fz".into()),
+            text: source.into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert!(compiler.run_root_interp(root).is_err());
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .expect("missing lexical pin diagnostic");
+        assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNBOUND.0);
+        assert_eq!(
+            metadata_str(&diagnostic, "message"),
+            format!("compiler2 {label} guard references unknown name `missing`")
+        );
+    }
+}
+
+#[test]
 fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -14723,14 +15777,14 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     functions.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_impure.fz".to_string()),
         text: include_str!("../../fixtures2/00039_guard_impure.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index impure helpers");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope impure helpers"
     );
     assert_resolved(compiler.drive(), "second drive should define impure helpers");
@@ -14778,7 +15832,7 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
         text: include_str!("../../fixtures2/00040_entry_dispatch_aliases.fz").to_string(),
     });
@@ -14789,11 +15843,11 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     );
     let module_ids = module_indexed_ids(
         &outputs
-            .take(Job::IndexCode(code_id))
+            .take(Job::IndexCode(source_owner))
             .expect("IndexCode job effects for module-scoped entry dispatch"),
     );
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should scope module contents before planning entry dispatch",
     );
     assert_resolved(compiler.drive(), "second drive should scope the root namespace");
@@ -14858,14 +15912,14 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00041_entry_dispatch_single.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index the single-clause function");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "single-clause entry dispatch still needs a defined function surface",
     );
     assert_resolved(
@@ -14913,14 +15967,14 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     entry_defs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
         text: include_str!("../../fixtures2/00042_blast_radius_v1.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index helper users");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "scope_code should define helper users"
     );
     assert_resolved(compiler.drive(), "second drive should define helper users");
@@ -14961,7 +16015,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let wanted_plan_before = latest_entry_dispatch(&entry_defs, wanted_id);
     let other_plan_before = latest_entry_dispatch(&entry_defs, other_id);
 
-    let _code_id = compiler.submit_code(CodeSubmission {
+    let _source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v2.fz".to_string()),
         text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
     });
@@ -15021,13 +16075,15 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/nested_modules.fz".to_string()),
         text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should only index the raw source");
-    let indexed_outputs = outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects");
+    let indexed_outputs = outputs
+        .take(Job::IndexCode(source_owner))
+        .expect("IndexCode job effects");
     assert_eq!(
         indexed_outputs
             .iter()
@@ -15037,11 +16093,11 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         "raw source indexing should discover each nested scope-shaping module definition once",
     );
 
-    let indexed_stop = outputs.stop(Job::IndexCode(code_id));
+    let indexed_stop = outputs.stop(Job::IndexCode(source_owner));
     assert!(indexed_stop.effects_present, "indexing job should finish with effects");
 
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for nested modules"
     );
     assert_resolved(
@@ -15049,7 +16105,9 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
         "second drive should expand root definition macros and discover nested modules from compiler fragments",
     );
 
-    let scoped_outputs = outputs.take(Job::ScopeCode(code_id)).expect("ScopeCode job effects");
+    let scoped_outputs = outputs
+        .take(Job::ScopeCode(source_owner))
+        .expect("ScopeCode job effects");
     assert_eq!(
         module_indexed_ids(&scoped_outputs).len(),
         3,
@@ -15150,16 +16208,20 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only.fz".to_string()),
         text: include_str!("../../fixtures2/00045_import_only.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-only scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-only modules");
@@ -15704,16 +16766,20 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
     outputs.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_unknown.fz".to_string()),
         text: include_str!("../../fixtures2/00046_import_only_unknown.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-only unknown scope"
     );
     assert_resolved(
@@ -15747,16 +16813,20 @@ fn compiler2_import_all_waits_for_module_interface() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_all.fz".to_string()),
         text: include_str!("../../fixtures2/00047_import_all.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-all scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-all scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-all modules");
@@ -15814,16 +16884,20 @@ fn compiler2_import_except_waits_for_module_interface() {
     modules.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_except.fz".to_string()),
         text: include_str!("../../fixtures2/00048_import_except.fz").to_string(),
     });
 
     assert_resolved(compiler.drive(), "first drive should index import-except scope");
-    let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let module_ids = module_indexed_ids(
+        &outputs
+            .take(Job::IndexCode(source_owner))
+            .expect("IndexCode job effects"),
+    );
     let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "explicit demand should enqueue root definition for import-except scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-except modules");
@@ -15954,11 +17028,11 @@ struct NativeProgramCapture {
     defs: NativeProgramDefs,
 }
 
-struct ReusableConsCapture {
-    counts: ReusableConsCounts,
+struct ListRetentionTelemetryCapture {
+    counts: ListRetentionCounts,
 }
 
-impl ReusableConsCapture {
+impl ListRetentionTelemetryCapture {
     fn new() -> Self {
         Self {
             counts: Rc::new(RefCell::new(Vec::new())),
@@ -15968,10 +17042,13 @@ impl ReusableConsCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let counts = Rc::clone(&self.counts);
         telemetry.attach_raw_event2::<crate::compiler2::RootId, BackendProgram, _>(
-            &["fz", "compiler2", "native_program", "reusable_cons"],
+            &["fz", "compiler2", "native_program", "list_retention"],
             move |_, _, _, root, program| {
-                let (birth_count, transport_count) = reusable_cons_counts(program);
-                counts.borrow_mut().push((*root, birth_count, transport_count));
+                let (construction_count, physical_capture_count) =
+                    crate::telemetry::jsonl::list_retention_counts(program);
+                counts
+                    .borrow_mut()
+                    .push((*root, construction_count, physical_capture_count));
             },
         );
     }
@@ -16559,32 +17636,6 @@ struct SourceNoteCapture {
     event: &'static [&'static str],
 }
 
-fn reusable_cons_counts(program: &BackendProgram) -> (u64, u64) {
-    let mut birth_count = 0_u64;
-    let mut transport_count = 0_u64;
-    for executable in program.executables() {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
-            continue;
-        };
-        for clause in clauses {
-            birth_count += clause
-                .projections
-                .iter()
-                .filter(|step| matches!(step, BackendStep::SplitList { .. }))
-                .count() as u64;
-        }
-        for entry in entries {
-            birth_count += entry
-                .steps
-                .iter()
-                .filter(|step| matches!(step, BackendStep::SplitList { .. }))
-                .count() as u64;
-            transport_count += entry.reusable_cons_captures.len() as u64;
-        }
-    }
-    (birth_count, transport_count)
-}
-
 fn record_function_definition(
     defs: &FunctionDefs,
     world: &crate::compiler2::World,
@@ -16597,7 +17648,10 @@ fn record_function_definition(
     let clauses = if from_source {
         world
             .pending_function_source(function_id)
-            .and_then(|source| crate::compiler2::quoted_function::derive_function_surface(&source.source).ok())
+            .and_then(|source| {
+                let source_map = world.source_map();
+                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
+            })
             .map_or(0, |surface| surface.clauses.len() as u64)
     } else {
         world.function_surface(function_id).clauses.len() as u64
@@ -17014,7 +18068,7 @@ fn guard_dispatch_has_binary_nested_input(dispatch: &PatternGuardDispatch<Ty>) -
 
 fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
     match expr {
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
             inputs
                 .iter()
                 .any(|input| matches!(input, PatternGuardExpr::Binary { .. }))
@@ -18106,7 +19160,7 @@ fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(Strin
         .filter_map(|event| event.diagnostic)
         .filter(|diagnostic| diagnostic.code == codes::TYPE_NO_MATCHING_CLAUSE)
         .map(|diagnostic| {
-            let source = if diagnostic.primary.span.code_id.0 == user_code.as_u32() {
+            let source = if Some(diagnostic.primary.span.source_version) == world.source_version(user_code) {
                 source_name.to_string()
             } else {
                 "<runtime>".to_string()
@@ -18773,8 +19827,7 @@ fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_
 
 #[test]
 fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
-    use crate::compiler2::facts::DerivationId;
-    use crate::compiler2::scheduler::{DerivationEffects, Scheduler};
+    use crate::compiler2::scheduler::{CompletionEffects, Scheduler};
     use crate::compiler2::semantic::SemanticOrd;
 
     let mut types = Types::new();
@@ -18788,8 +19841,8 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
         Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[list], &mut types)),
     ];
     jobs.sort_by(|left, right| left.semantic_cmp(right, &types));
-    let shared = FactKey::CodeIndexed(crate::compiler2::CodeId::ZERO);
-    let writer = Job::IndexCode(crate::compiler2::CodeId::ZERO);
+    let shared = FactKey::CodeIndexed(crate::compiler2::SourceOwner::for_test(0));
+    let writer = Job::IndexCode(crate::compiler2::SourceOwner::for_test(0));
 
     let complete = |scheduler: &mut Scheduler<Job, FactKey>,
                     job: &Job,
@@ -18799,14 +19852,12 @@ fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
                     changed: Vec<FactKey>| {
         scheduler.complete_ordered(
             job,
-            waits.clone(),
-            vec![DerivationEffects {
-                derivation: DerivationId::SOLE,
+            CompletionEffects {
                 reads,
+                waits,
                 outputs,
                 changed,
-                concluded: waits.is_empty(),
-            }],
+            },
             &types,
         )
     };

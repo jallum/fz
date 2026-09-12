@@ -2,12 +2,41 @@ use super::facts::FactUse;
 use super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
-use crate::compiler2::drive::{DependencyKey, JobDerivation, JobEffects};
-use crate::compiler2::facts::DerivationId;
+use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+#[test]
+fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {
+    let mut world = World::new();
+    let job = Job::IndexCode(super::SourceOwner::for_test(0));
+    let fact = FactKey::CodeIndexed(super::SourceOwner::for_test(0));
+    let read = FactUse::current(FactKey::ModuleDefined(ModuleId::GLOBAL));
+    let completion = world.complete_job(
+        job.clone(),
+        JobEffects {
+            reads: vec![read.clone()],
+            outputs: vec![fact.clone()],
+            changed: vec![fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(completion.job, job);
+    assert_eq!(world.job_reads(&job), std::collections::HashSet::from([read]));
+    assert_eq!(world.job_outputs(&job), vec![fact.clone()]);
+    assert_eq!(
+        world
+            .work_graph
+            .facts()
+            .publishers(&DependencyKey::Fact(fact))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![job],
+        "the production completion has one owning job, shared by its reads and claims"
+    );
+}
 
 /// The demand fact a body that forwards NOTHING and returns none of its own
 /// inputs publishes: what its own clauses ask about its inputs is the whole of
@@ -87,6 +116,27 @@ fn compiler2_world_is_lifetime_free_semantic_state() {
 }
 
 #[test]
+fn runtime_source_owner_is_stable_before_its_version_is_materialized() {
+    let mut world = World::new();
+    let runtime_module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Enum").unwrap());
+    let owner = world
+        .runtime_module_owner(runtime_module)
+        .expect("runtime bootstrap reserves every module source owner");
+    let source_count = world.source_map().borrow().code_count();
+
+    assert_eq!(world.source_version(owner), None);
+    let unrelated = world.submit_code(Some("unrelated.fz".into()), "fn unrelated(), do: 1\n".into());
+    assert!(world.source_version(unrelated).is_some());
+    assert_eq!(world.runtime_module_owner(runtime_module), Some(owner));
+    assert_eq!(world.source_version(owner), None);
+    assert_eq!(world.ensure_runtime_module(runtime_module), Some(owner));
+    assert!(world.source_version(owner).is_some());
+    assert_eq!(world.source_map().borrow().code_count(), source_count + 2);
+    assert_eq!(world.ensure_runtime_module(runtime_module), Some(owner));
+    assert_eq!(world.source_map().borrow().code_count(), source_count + 2);
+}
+
+#[test]
 fn compiler2_world_core_mutates_without_an_observer() {
     let mut world = World::new();
     let code = world.submit_code(
@@ -95,7 +145,7 @@ fn compiler2_world_core_mutates_without_an_observer() {
     );
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
 
-    assert_eq!(world.code_text(code), "fn main(), do: 0\n");
+    assert_eq!(world.code_text(code).as_ref(), "fn main(), do: 0\n");
     assert_eq!(
         world.root_entry(root).function,
         world.reference_function(ModuleId::GLOBAL, "main", 0)
@@ -842,6 +892,18 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         },
     );
 
+    let fact = FactKey::ActivationInputs(key.clone());
+    let dependency = DependencyKey::Fact(fact.clone());
+    let reader = Job::LowerFunction(function);
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(fact)],
+            ..JobEffects::default()
+        },
+    );
+    while world.work_graph.pop().is_some() {}
+
     let step = world.complete_job(Job::SeedRoot(root), JobEffects::default());
     assert!(
         step.changed.iter().any(|change| {
@@ -856,6 +918,24 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         world.activation_inputs_joined(&key),
         Some(vec![input_b]),
         "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
+    );
+    let wakes = step
+        .wakes
+        .iter()
+        .filter(|wake| wake.job == reader && wake.cause == FactUse::current(dependency.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        wakes.len(),
+        1,
+        "the narrowed aggregate should wake its exact reader once"
+    );
+    assert!(
+        wakes[0].shift,
+        "the authoritative contribution withdrawal must reach the reader as a ground shift",
+    );
+    assert!(
+        world.work_graph.rebased(&reader),
+        "the reader must replace evidence derived from the removed input row",
     );
 }
 
@@ -1167,7 +1247,7 @@ fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories(
 }
 
 #[test]
-fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() {
+fn completion_outputs_movements_and_wakes_use_semantic_order_across_seeds() {
     let completion_order = |non_empty_first: bool| {
         let mut world = World::new();
         let root = super::RootId::for_test(0);
@@ -1199,29 +1279,15 @@ fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() 
                 ..JobEffects::default()
             },
         );
-        let mut derivations = vec![
-            JobDerivation {
-                derivation: DerivationId(1),
-                reads: Vec::new(),
-                outputs: vec![list_fact.clone()],
-                changed: vec![list_fact.clone()],
-                concluded: true,
-            },
-            JobDerivation {
-                derivation: DerivationId(2),
-                reads: Vec::new(),
-                outputs: vec![non_empty_fact.clone()],
-                changed: vec![non_empty_fact.clone()],
-                concluded: true,
-            },
-        ];
+        let mut outputs = vec![list_fact.clone(), non_empty_fact.clone()];
         if non_empty_first {
-            derivations.reverse();
+            outputs.reverse();
         }
         let completion = world.complete_job(
             Job::DeriveCallGraphComponent(function),
             JobEffects {
-                derivations,
+                changed: outputs.clone(),
+                outputs,
                 ..JobEffects::default()
             },
         );
@@ -1258,7 +1324,7 @@ fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() 
     assert_eq!(
         (&list_first.1, &list_first.2, &list_first.3),
         (&non_empty_first.1, &non_empty_first.2, &non_empty_first.3),
-        "one typed order must own derivation application, movements, and wake publication"
+        "one typed order must own output application, movements, and wake publication"
     );
 }
 
@@ -1529,7 +1595,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let code_id = world.submit_code(
+    let source_owner = world.submit_code(
         Some("global_fn.fz".to_string()),
         "fn greet(name), do: name\n".to_string(),
     );
@@ -1546,7 +1612,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         "a pending candidate home must never leave demand_function_scope empty"
     );
     assert!(
-        waits.contains(&FactKey::CodeIndexed(code_id)),
+        waits.contains(&FactKey::CodeIndexed(source_owner)),
         "the pending code should be named as a CodeIndexed candidate, got {waits:?}"
     );
 
@@ -1562,7 +1628,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         .expect("no duplicate global home in this test");
     assert_eq!(
         waits,
-        vec![FactKey::CodeScoped(code_id)],
+        vec![FactKey::CodeScoped(source_owner)],
         "once a home is found, only its CodeScoped wait should be named"
     );
 

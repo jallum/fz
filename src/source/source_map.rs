@@ -1,19 +1,17 @@
 //! SourceMap: owns source code and resolves spans to display location.
 //!
-//! Code is added via `add_code`, which assigns a source::Id. Optional display
-//! names are stored separately from the code bytes; spans index into `bytes`
-//! directly and `locate(span)` computes line/col on demand from a lazily-built
-//! line-offset index.
+//! Code is added via `add_code`, which assigns an immutable `SourceVersion`.
+//! Each entry owns its optional display name and shared bytes; spans index into
+//! those bytes directly and `locate(span)` computes line/col on demand from a
+//! lazily-built line-offset index.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
-use super::{Id, Span};
+use super::{SourceVersion, Span};
 
 #[derive(Debug, Clone)]
 pub struct Code {
+    pub name: Option<Arc<str>>,
     pub bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
     /// byte offset of the start of a line; line 1 starts at byte 0.
@@ -21,8 +19,9 @@ pub struct Code {
 }
 
 impl Code {
-    fn new(bytes: Arc<str>) -> Self {
+    fn new(name: Option<Arc<str>>, bytes: Arc<str>) -> Self {
         Self {
+            name,
             bytes,
             line_starts: OnceLock::new(),
         }
@@ -46,7 +45,7 @@ impl Code {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
-    pub code_id: Id,
+    pub source_version: SourceVersion,
     /// 1-based line number of `span.start`.
     pub line: u32,
     /// 1-based display column at `span.start`. v1 = byte-count within line
@@ -62,48 +61,52 @@ pub struct Location {
 #[derive(Debug, Default, Clone)]
 pub struct SourceMap {
     codes: Vec<Code>,
-    names: HashMap<Id, String>,
 }
 
 impl SourceMap {
     #[cfg(test)]
     pub fn new() -> Self {
-        Self {
-            codes: Vec::new(),
-            names: HashMap::new(),
-        }
+        Self { codes: Vec::new() }
     }
 
-    pub fn add_code<N>(&mut self, name: Option<N>, bytes: impl Into<Arc<str>>) -> Id
+    pub fn add_code<N>(&mut self, name: Option<N>, bytes: impl Into<Arc<str>>) -> SourceVersion
     where
         N: Into<String>,
     {
-        let id = Id(self.codes.len() as u32);
-        self.codes.push(Code::new(bytes.into()));
-        if let Some(name) = name {
-            self.names.insert(id, name.into());
-        }
+        let id = SourceVersion::from_index(self.codes.len());
+        let name = name.map(Into::into).map(Arc::<str>::from);
+        self.codes.push(Code::new(name, bytes.into()));
         id
     }
 
-    pub fn code(&self, id: Id) -> &Code {
-        &self.codes[id.0 as usize]
+    pub fn code(&self, id: SourceVersion) -> &Code {
+        &self.codes[id.index()]
     }
 
-    pub fn name(&self, id: Id) -> Option<&str> {
-        self.names.get(&id).map(String::as_str)
+    pub fn name(&self, id: SourceVersion) -> Option<&str> {
+        self.code(id).name.as_deref()
     }
 
-    #[cfg(test)]
-    pub fn code_count(&self) -> usize {
+    pub(crate) fn code_count(&self) -> usize {
         self.codes.len()
+    }
+
+    /// Constructs provenance only after proving that its encoded version and
+    /// byte range name an exact location in this source authority.
+    pub(crate) fn checked_span(&self, version: u32, start: u32, end: u32) -> Option<Span> {
+        if version == SourceVersion::NONE.as_u32() || end < start {
+            return None;
+        }
+        let source_version = SourceVersion::from_encoded(version);
+        let code = self.codes.get(source_version.index())?;
+        (end as usize <= code.bytes.len()).then(|| Span::new(source_version, start, end))
     }
 
     /// Returns the location of `span.start`. Panics on DUMMY spans —
     /// callers are responsible for the is_dummy guard.
     pub fn locate(&self, span: Span) -> Location {
         assert!(!span.is_dummy(), "SourceMap::locate on DUMMY span");
-        let f = self.code(span.code_id);
+        let f = self.code(span.source_version);
         let starts = f.line_starts();
         let off = span.start;
         let idx = match starts.binary_search(&off) {
@@ -118,7 +121,7 @@ impl SourceMap {
             line_end
         };
         Location {
-            code_id: span.code_id,
+            source_version: span.source_version,
             line: (idx + 1) as u32,
             col: off - line_start + 1,
             line_start,

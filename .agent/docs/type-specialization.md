@@ -18,13 +18,19 @@ return             = union over reachable clauses of each clause's body type
 ```
 
 `compiler2/dispatch_reachability.rs` owns that first calculation. Its branch
-state is only the original input-root `Ty` row, memoized with the graph node.
-Every tested `PatternSubjectRef` is projected fresh from those roots; exact
-tuple-field constraints lift back through the full projection path before
-intersecting the match root or subtracting the miss root. This keeps sibling
-fields correlated instead of caching independently widened projected types.
-Value-only predicates and projections the type lattice cannot represent retain
-both branches.
+state contains the input-root `Ty` row and subject-indexed empty/cons list-shape
+evidence; the graph node and this full state form the visited key.
+Every tested plan-owned `SubjectId`'s type is projected fresh from those roots
+through its `SubjectSource` recipe; exact tuple-field and named-struct-field
+constraints lift back through the full projection path before intersecting the
+match root or subtracting the miss root. This keeps sibling fields correlated
+instead of caching independently widened projected types. Predicates and
+projections not settled by root types or list-shape evidence retain both branches.
+
+A `StructField` projects the field's atom key from its tagged-record type.
+Refinement keeps the source module tag and lifts the field constraint through
+any enclosing exact tuple or struct path. Plain maps and other struct families
+fail the preceding typed discriminator before field evidence is considered.
 
 The reachable clauses and failure bit remain one `EntryReachability` value in
 the activation-analysis fact. Runtime demand and materialization consume that

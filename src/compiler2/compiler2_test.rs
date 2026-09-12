@@ -1,5 +1,5 @@
-use super::{CodeId, CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface, World};
-use crate::exec::runtime::DbgCapture;
+use super::{CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface, SourceOwner, World};
+use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
@@ -13,6 +13,92 @@ struct ContractCase<'a> {
     name: &'a str,
     source_name: &'a str,
     source_text: &'a str,
+}
+
+#[test]
+fn submissions_return_stable_owners_backed_by_exact_immutable_versions() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    let unnamed = compiler.submit_code(CodeSubmission {
+        name: None,
+        text: "fn unnamed(), do: 1\n".into(),
+    });
+    let named = compiler.submit_code(CodeSubmission {
+        name: Some("named.fz".into()),
+        text: "fn named(), do: 2\n".into(),
+    });
+    let scoped_prelude = compiler.submit_scoped_prelude(CodeSubmission {
+        name: Some("prelude:test.fz".into()),
+        text: "fn helper(), do: 3\n".into(),
+    });
+
+    assert_ne!(unnamed, named);
+    assert_ne!(named, scoped_prelude);
+    let versions = [unnamed, named, scoped_prelude].map(|owner| {
+        compiler
+            .world()
+            .source_version(owner)
+            .expect("every submitted owner has one immutable version")
+    });
+    assert_ne!(versions[0], versions[1]);
+    assert_ne!(versions[1], versions[2]);
+
+    let source_map = compiler.source_map();
+    let source_map = source_map.borrow();
+    assert_eq!(source_map.name(versions[0]), None);
+    assert_eq!(source_map.code(versions[0]).bytes.as_ref(), "fn unnamed(), do: 1\n");
+    assert_eq!(source_map.name(versions[1]), Some("named.fz"));
+    assert_eq!(source_map.code(versions[1]).bytes.as_ref(), "fn named(), do: 2\n");
+    assert_eq!(source_map.name(versions[2]), Some("prelude:test.fz"));
+    assert_eq!(source_map.code(versions[2]).bytes.as_ref(), "fn helper(), do: 3\n");
+}
+
+#[test]
+fn ordinary_quote_metadata_is_identical_in_interpreter_and_native_execution() {
+    let source = r#"fn main() do
+  {_, meta, _} = quote do: 40 + 2
+  span = meta.__fz_span__
+  span.source_version * 1000000 + span.start * 1000 + span.length
+end
+"#;
+    let telemetry = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&telemetry, &["fz", "diag"]);
+    let exits = ProcessExitCapture::new();
+    exits.install(&telemetry);
+    let mut compiler = Compiler2::new(telemetry);
+    let owner = compiler.submit_code(CodeSubmission {
+        name: Some("ordinary_quote_metadata.fz".into()),
+        text: source.into(),
+    });
+    let version = compiler
+        .world()
+        .source_version(owner)
+        .expect("submitted source version");
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+
+    let expected_start = source.find("40 + 2").expect("quoted expression offset") as i64;
+    let expected_length = "40 + 2".len() as i64;
+    let expected_version = i64::from(version.as_u32());
+    assert!(expected_start < 1000 && expected_length < 1000);
+    let expected = expected_version * 1_000_000 + expected_start * 1_000 + expected_length;
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(expected),
+        "{:?}",
+        diagnostics.events()
+    );
+    compiler.run_root_jit(root).expect("native quote execution");
+
+    assert_eq!(
+        exits.last().expect("native root exit").halt_value,
+        expected,
+        "native execution must read the exact typed source version, start, and length from quoted metadata"
+    );
 }
 
 #[test]
@@ -509,9 +595,9 @@ fn run_contract(case: ContractCase<'_>) {
         move |_, _, _, _, outcome| *outcome_sink.borrow_mut() = Some(outcome.clone()),
         |_, _, _, _| {},
     );
-    let submissions = Rc::new(RefCell::new(Vec::<(CodeId, usize)>::new()));
+    let submissions = Rc::new(RefCell::new(Vec::<(SourceOwner, usize)>::new()));
     let submission_sink = Rc::clone(&submissions);
-    tel.attach_raw_event2::<World, CodeId, _>(
+    tel.attach_raw_event2::<World, SourceOwner, _>(
         &["fz", "compiler2", "code", "submitted"],
         move |_, _, _, world, code| {
             submission_sink.borrow_mut().push((*code, world.code_text(*code).len()));
@@ -521,7 +607,7 @@ fn run_contract(case: ContractCase<'_>) {
     jobs.install(&tel);
     let mut compiler = Compiler2::new(tel);
 
-    let code_id = compiler.submit_code(CodeSubmission {
+    let source_owner = compiler.submit_code(CodeSubmission {
         name: Some(case.source_name.to_string()),
         text: case.source_text.to_string(),
     });
@@ -529,8 +615,8 @@ fn run_contract(case: ContractCase<'_>) {
     let submitted = submissions.borrow();
     let (submitted_id, submitted_bytes) = *submitted.last().expect("compiler2 submitted event");
     assert_eq!(
-        submitted_id, code_id,
-        "{} should report the submitted code id",
+        submitted_id, source_owner,
+        "{} should report the submitted source owner",
         case.name
     );
     assert_eq!(
@@ -541,7 +627,7 @@ fn run_contract(case: ContractCase<'_>) {
     );
 
     assert_eq!(
-        jobs.stop_count(Job::IndexCode(code_id)),
+        jobs.stop_count(Job::IndexCode(source_owner)),
         0,
         "{} should not index before drive runs",
         case.name
@@ -553,14 +639,14 @@ fn run_contract(case: ContractCase<'_>) {
     );
 
     assert!(matches!(*drive_outcome.borrow(), Some(DriveOutcome::Resolved)));
-    let indexed_start = jobs.start(Job::IndexCode(code_id));
+    let indexed_start = jobs.start(Job::IndexCode(source_owner));
     assert_eq!(
         indexed_start.parent_span_id,
         drive_span_id.get(),
         "{} should start indexed work under the drive span",
         case.name
     );
-    let indexed_stop = jobs.stop(Job::IndexCode(code_id));
+    let indexed_stop = jobs.stop(Job::IndexCode(source_owner));
     assert_eq!(
         indexed_stop.parent_span_id,
         drive_span_id.get(),
@@ -581,7 +667,7 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        jobs.stop_count(Job::IndexCode(code_id)),
+        jobs.stop_count(Job::IndexCode(source_owner)),
         1,
         "{} should close exactly one IndexCode job span",
         case.name
@@ -611,7 +697,7 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        jobs.stop_count(Job::IndexCode(code_id)),
+        jobs.stop_count(Job::IndexCode(source_owner)),
         1,
         "{} should close exactly one IndexCode job span",
         case.name
@@ -624,7 +710,7 @@ fn run_contract(case: ContractCase<'_>) {
     );
 
     assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
+        compiler.demand(Job::ScopeCode(source_owner)),
         "{} should accept an explicit define-code demand after indexing",
         case.name
     );
@@ -915,7 +1001,7 @@ fn compiler2_run_root_jit_executes_resources() {
 ///
 /// This counts the one telemetry event
 /// `lower_native_program` unconditionally emits per successful lowering
-/// (`["fz","compiler2","native_program","reusable_cons"]`) instead of tapping
+/// (`["fz","compiler2","native_program","list_retention"]`) instead of tapping
 /// that span.
 #[test]
 fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
@@ -1020,7 +1106,7 @@ fn capture_native_lowerings(telemetry: &ConfiguredTelemetry) -> Rc<Cell<u64>> {
     let count = Rc::new(Cell::new(0));
     let sink = Rc::clone(&count);
     telemetry.attach_raw_event2::<super::RootId, super::BackendProgram, _>(
-        &["fz", "compiler2", "native_program", "reusable_cons"],
+        &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| sink.set(sink.get() + 1),
     );
     count

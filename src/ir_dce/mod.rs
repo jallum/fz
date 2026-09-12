@@ -97,7 +97,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             after,
             ..
         } => {
-            for (_, v) in pinned {
+            for v in pinned {
                 used.insert(*v);
             }
             for v in captures {

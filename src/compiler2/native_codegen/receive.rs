@@ -11,8 +11,8 @@
 //! - `pinned`: pointer to `AnyValueRef` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
 //! - `out`: caller-supplied `[AnyValueRef; bound_arity]`
-//!   scratch buffer; the dispatch writes the winning clause's bound-var
-//!   values here.
+//!   scratch buffer; the dispatch writes the winning edge's semantic and
+//!   physical arguments at the receiving parameter slots.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
 //!   indexes `clause_bodies[k-1]`).
 //!
@@ -21,7 +21,6 @@
 
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
-    prepared_key_name,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
@@ -92,6 +91,7 @@ pub(crate) struct DispatchRuntimeHelpers {
     pub bs_reader_init_id: Option<FuncId>,
     pub bs_read_field_id: Option<FuncId>,
     pub struct_get_field_id: Option<FuncId>,
+    pub struct_get_named_field_id: Option<FuncId>,
     pub list_is_cons_id: Option<FuncId>,
     pub list_head_id: Option<FuncId>,
     pub list_tail_id: Option<FuncId>,
@@ -118,14 +118,15 @@ struct DispatchRuntimeRefs {
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
     struct_get_field_fref: Option<ir::FuncRef>,
+    struct_get_named_field_fref: Option<ir::FuncRef>,
     list_is_cons_fref: Option<ir::FuncRef>,
     list_head_fref: Option<ir::FuncRef>,
     list_tail_fref: Option<ir::FuncRef>,
 }
 
 /// Emit the receive ABI dispatch directly from the cached AST-free
-/// [`PatternDispatchPlan`]. The clause slice is still used for ABI metadata
-/// (`bound_names`), but matching control flow comes from the dispatch graph.
+/// [`PatternDispatchPlan`]. Each winning edge names exact subjects and the
+/// receiving function's actual parameter identities.
 pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -133,7 +134,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
-    pinned: &[(String, Var)],
+    pinned: &[Var],
     clauses: &[ReceiveClause],
     dispatch: &ReceiveDispatchPlan,
     helpers: &DispatchRuntimeHelpers,
@@ -155,15 +156,18 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         bs_reader_init_id,
         bs_read_field_id,
         struct_get_field_id,
+        struct_get_named_field_id,
         list_is_cons_id,
         list_head_id,
         list_tail_id,
     } = *helpers;
-    let pinned_indices: HashMap<String, usize> = pinned.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect();
-    let bound_indices_per_clause: Vec<HashMap<String, usize>> = clauses
-        .iter()
-        .map(|c| c.bound_names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect())
-        .collect();
+    let expected = dispatch.pinned.len() + dispatch.prepared_keys.len();
+    if pinned.len() != expected {
+        return Err(CodegenError::new(format!(
+            "receive dispatch expects {expected} plan operands, got {}",
+            pinned.len()
+        )));
+    }
 
     let mut unique_bytes = Vec::new();
     collect_binary_literals_in_dispatch(dispatch, &mut unique_bytes);
@@ -186,7 +190,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    emit_fn_body(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
+    let defined = emit_fn_body(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -219,6 +223,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             bs_reader_init_fref: bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             bs_read_field_fref: bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             struct_get_field_fref: struct_get_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            struct_get_named_field_fref: struct_get_named_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_is_cons_fref: list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_head_fref: list_head_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             list_tail_fref: list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func)),
@@ -229,9 +234,15 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             fz_module,
             tuple_schema_ids,
             named_schema_ids,
-            bound_indices_per_clause: &bound_indices_per_clause,
-            pinned_indices: &pinned_indices,
-            pinned_ptr,
+            outcomes: clauses,
+            bindings: crate::compiler2::DispatchBindings {
+                pinned: (0..dispatch.pinned.len())
+                    .map(|index| load_receive_value_ref(b, pinned_ptr, index))
+                    .collect(),
+                prepared: (0..dispatch.prepared_keys.len())
+                    .map(|index| load_receive_value_ref(b, pinned_ptr, dispatch.pinned.len() + index))
+                    .collect(),
+            },
             out_ptr,
             dispatch,
             inputs: vec![msg],
@@ -251,12 +262,12 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         let zero = b.ins().iconst(types::I32, 0);
         b.ins().return_(&[zero]);
     })
-    .map_err(|e| CodegenError::new(format!("define receive dispatch fn: {}", e)))?;
+    .map_err(|e| CodegenError::new(format!("define receive dispatch fn: {}", e)));
 
     if let Some(e) = compile_err {
         return Err(e);
     }
-    Ok(())
+    defined
 }
 
 #[derive(Clone, Copy)]
@@ -276,9 +287,8 @@ struct DispatchCtx<'a> {
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
     named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
-    bound_indices_per_clause: &'a [HashMap<String, usize>],
-    pinned_indices: &'a HashMap<String, usize>,
-    pinned_ptr: ir::Value,
+    outcomes: &'a [ReceiveClause],
+    bindings: crate::compiler2::DispatchBindings<ReceiveValue>,
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
     inputs: Vec<ReceiveValue>,
@@ -289,8 +299,6 @@ struct DispatchCtx<'a> {
 #[derive(Default, Clone)]
 struct DispatchEmitState {
     values: HashMap<SubjectId, ReceiveValue>,
-    bitstring_fields: HashMap<(SubjectId, u32), ReceiveValue>,
-    direct_bindings: HashMap<String, ReceiveValue>,
 }
 
 fn emit_receive_value_ref(
@@ -459,18 +467,24 @@ fn emit_dispatch_node(
             Ok(())
         }
         DispatchNode::Outcome { outcome, .. } => {
-            let outcome = ctx
-                .dispatch
-                .outcome(*outcome)
-                .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} out of bounds", outcome)))?;
-            let bound = &ctx.bound_indices_per_clause[outcome.body_id as usize];
-            for binding in &outcome.bindings {
-                let val = resolve_dispatch_subject(b, ctx, binding.source, state)?;
-                if let Some(&idx) = bound.get(&binding.name) {
-                    store_receive_value_ref(b, ctx, ctx.out_ptr, idx, val)?;
-                }
+            let (clause_index, edge) = ctx
+                .outcomes
+                .iter()
+                .enumerate()
+                .find(|(_, edge)| edge.outcome == *outcome)
+                .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} has no target edge", outcome)))?;
+            let target = ctx.fz_module.fn_by_id(edge.body);
+            let parameters = &target.blocks[target.entry.0 as usize].params;
+            for (subject, parameter) in &edge.arguments {
+                let value = resolve_dispatch_subject(b, ctx, *subject, state)?;
+                let slot = parameters
+                    .iter()
+                    .position(|candidate| candidate == parameter)
+                    .expect("receive argument names an actual target parameter");
+                assert!(slot < edge.arguments.len(), "receive arguments precede captures");
+                store_receive_value_ref(b, ctx, ctx.out_ptr, slot, value)?;
             }
-            let k = b.ins().iconst(types::I32, (outcome.body_id + 1) as i64);
+            let k = b.ins().iconst(types::I32, (clause_index + 1) as i64);
             b.ins().return_(&[k]);
             let dead = b.create_block();
             b.switch_to_block(dead);
@@ -532,6 +546,23 @@ fn resolve_dispatch_subject(
                 let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
                 emit_struct_get_field(b, ctx, parent, *index)?
             }
+            ProjectionKind::StructField(field) => {
+                let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
+                let fref = ctx
+                    .runtime
+                    .struct_get_named_field_fref
+                    .ok_or_else(|| CodegenError::new("struct projection requires fz_struct_get_named_field"))?;
+                let atom_id = ctx
+                    .fz_module
+                    .atom_names
+                    .iter()
+                    .position(|name| name == field)
+                    .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
+                let parent = emit_receive_value_ref(b, ctx, parent)?;
+                let atom = b.ins().iconst(types::I64, atom_id as i64);
+                let inst = b.ins().call(fref, &[ctx.process, parent, atom]);
+                receive_value_from_ref_word(b, b.inst_results(inst)[0])
+            }
             ProjectionKind::ListHead => {
                 let parent = resolve_dispatch_subject(b, ctx, projection.source, state)?;
                 let Some(fref) = ctx.runtime.list_head_fref else {
@@ -556,45 +587,24 @@ fn resolve_dispatch_subject(
                 let map = resolve_dispatch_subject(b, ctx, projection.source, state)?;
                 emit_dispatch_map_get_value(b, ctx, map, key)?
             }
-            ProjectionKind::BitstringField(index) => *state
-                .values
-                .get(&subject)
-                .or_else(|| state.bitstring_fields.get(&(projection.source, *index)))
-                .ok_or_else(|| {
-                    CodegenError::new(format!(
-                        "receive dispatch bitstring field {:?}/{} not available",
-                        projection.source, index
-                    ))
-                })?,
+            ProjectionKind::BitstringField(_) => {
+                return Err(CodegenError::new(
+                    "receive bitstring subject lacks successful extraction evidence",
+                ));
+            }
         },
     };
     state.values.insert(subject, v);
     Ok(v)
 }
 
-fn load_pinned_dispatch_value(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    pinned: PinnedValueId,
-) -> Result<ReceiveValue, CodegenError> {
-    let p = ctx
-        .dispatch
-        .pinned
-        .get(pinned.0 as usize)
-        .ok_or_else(|| CodegenError::new(format!("pinned {:?} out of bounds", pinned)))?;
-    if let Some(input) = p.input {
-        return ctx
-            .inputs
-            .get(input as usize)
-            .copied()
-            .ok_or_else(|| CodegenError::new(format!("pinned helper input {:?} out of bounds", input)));
-    }
-
-    let &idx = ctx
-        .pinned_indices
-        .get(&p.name)
-        .ok_or_else(|| CodegenError::new(format!("pinned ^{} not in dispatch pinned table", p.name)))?;
-    Ok(load_receive_value_ref(b, ctx.pinned_ptr, idx))
+fn load_pinned_dispatch_value(ctx: &DispatchCtx<'_>, pinned: PinnedValueId) -> Result<ReceiveValue, CodegenError> {
+    ctx.bindings.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
+        CodegenError::new(format!(
+            "dispatch pinned operand {:?} is missing from its owning plan",
+            pinned
+        ))
+    })
 }
 
 fn emit_region_test(
@@ -619,7 +629,7 @@ fn emit_region_test(
         }
         Region::Equal(ComparisonValue::Pinned(pinned)) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
-            let want = load_pinned_dispatch_value(b, ctx, *pinned)?;
+            let want = load_pinned_dispatch_value(ctx, *pinned)?;
             emit_typed_eq_branch(b, ctx, val, want, true_b, false_b)?;
         }
         Region::TupleArity(arity) => {
@@ -641,11 +651,12 @@ fn emit_region_test(
         Region::MapKeyPresent { key } => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
             let got = emit_dispatch_map_get_value(b, ctx, val, key)?;
-            for projection in &evidence.projections {
-                if projection.source == subject
+            for result in &evidence.projections {
+                if let SubjectSource::Projection(projection) = ctx.dispatch.subject(*result)
+                    && projection.source == subject
                     && matches!(&projection.kind, ProjectionKind::MapValue { key: projection_key } if projection_key == key)
                 {
-                    true_values.push((projection.result, got));
+                    true_values.push((*result, got));
                 }
             }
             let cmp = emit_not_dispatch_map_miss(b, ctx, got)?;
@@ -841,19 +852,12 @@ fn apply_edge_evidence_to_receive_state(
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     for projection in &evidence.projections {
-        if state.values.contains_key(&projection.result) {
+        if state.values.contains_key(projection) {
             continue;
         }
 
-        if let ProjectionKind::BitstringField(index) = projection.kind
-            && let Some(value) = state.bitstring_fields.get(&(projection.source, index)).copied()
-        {
-            state.values.insert(projection.result, value);
-            continue;
-        }
-
-        let value = resolve_dispatch_subject(b, ctx, projection.result, state)?;
-        state.values.insert(projection.result, value);
+        let value = resolve_dispatch_subject(b, ctx, *projection, state)?;
+        state.values.insert(*projection, value);
     }
     Ok(())
 }
@@ -1039,18 +1043,18 @@ fn emit_dispatch_map_get_value(
     map: ReceiveValue,
     key: &GroundValue,
 ) -> Result<ReceiveValue, CodegenError> {
-    if let Some(index) = prepared_dispatch_key_index(ctx.dispatch, key) {
+    if let Some(id) = ctx.dispatch.prepared_key_id(key) {
         let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
             return Err(CodegenError::new(
                 "prepared map dispatch key requires fz_matcher_map_get_ref",
             ));
         };
-        let name = prepared_key_name(index);
-        let &idx = ctx
-            .pinned_indices
-            .get(&name)
-            .ok_or_else(|| CodegenError::new(format!("prepared dispatch key {} not in pinned table", index)))?;
-        let key = load_receive_value_ref(b, ctx.pinned_ptr, idx);
+        let key = ctx.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
+            CodegenError::new(format!(
+                "dispatch prepared operand {:?} is missing from its owning plan",
+                id
+            ))
+        })?;
         let map_ref = emit_receive_value_ref(b, ctx, map)?;
         let key_ref = emit_receive_value_ref(b, ctx, key)?;
         let inst = b.ins().call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
@@ -1076,10 +1080,6 @@ fn emit_dispatch_map_get_value(
     Ok(receive_value_from_ref_word(b, out_ref))
 }
 
-fn prepared_dispatch_key_index(dispatch: &ReceiveDispatchPlan, key: &GroundValue) -> Option<usize> {
-    dispatch.prepared_keys.iter().position(|prepared| prepared == key)
-}
-
 fn emit_bitstring_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
@@ -1101,7 +1101,9 @@ fn emit_bitstring_test(
     let init = b.ins().call(init_fref, &[ctx.process, value_ref]);
     let mut reader = b.inst_results(init)[0];
 
-    for (index, field) in shape.fields.iter().enumerate() {
+    for field_subject in &shape.fields {
+        let extraction = ctx.dispatch.bitstring_extraction(*field_subject);
+        let field = &extraction.spec;
         let (size_present, size_value) = emit_dispatch_bit_size(b, ctx, field, state)?;
         let field_spec = fz_bs_field_spec(
             dispatch_bit_type_tag(field.kind),
@@ -1109,7 +1111,7 @@ fn emit_bitstring_test(
             field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
             dispatch_endian_tag(field.endian),
             field.signed as u32,
-            (index + 1 == shape.fields.len()) as u32,
+            extraction.is_last as u32,
         );
         let field_spec = b.ins().iconst(types::I64, field_spec as i64);
         let inst = b.ins().call(read_fref, &[ctx.process, reader, field_spec, size_value]);
@@ -1124,16 +1126,7 @@ fn emit_bitstring_test(
         let extracted = emit_struct_get_field(b, ctx, result_value, 1)?;
         let next_reader = emit_struct_get_field(b, ctx, result_value, 2)?;
         reader = emit_receive_value_ref(b, ctx, next_reader)?;
-        let index = index as u32;
-        state.bitstring_fields.insert((subject, index), extracted);
-        if let Some(field_subject) = bitstring_field_subject(ctx.dispatch, subject, index) {
-            state.values.insert(field_subject, extracted);
-            if let Some(names) = ctx.dispatch.bitstring_direct_bindings.get(&field_subject) {
-                for name in names {
-                    state.direct_bindings.insert(name.clone(), extracted);
-                }
-            }
-        }
+        state.values.insert(*field_subject, extracted);
     }
 
     if !shape.require_done {
@@ -1148,25 +1141,6 @@ fn emit_bitstring_test(
     let done = b.ins().icmp(IntCC::Equal, bit_len, pos);
     b.ins().brif(done, true_b, &[], false_b, &[]);
     Ok(())
-}
-
-fn bitstring_field_subject<TypeHandle>(
-    dispatch: &PatternDispatchPlan<TypeHandle>,
-    source: SubjectId,
-    index: u32,
-) -> Option<SubjectId> {
-    dispatch
-        .matrix
-        .subjects
-        .iter()
-        .find_map(|subject| match &subject.source {
-            SubjectSource::Projection(projection)
-                if projection.source == source && projection.kind == ProjectionKind::BitstringField(index) =>
-            {
-                Some(subject.id)
-            }
-            _ => None,
-        })
 }
 
 fn emit_struct_get_field(
@@ -1237,7 +1211,7 @@ fn emit_dispatch_bit_size(
         }
         // A size from the enclosing scope arrives as a PIN (fz-5xp.54).
         Some(BitstringFieldSize::Pinned(pinned)) => {
-            let value = load_pinned_dispatch_value(b, ctx, *pinned)?;
+            let value = load_pinned_dispatch_value(ctx, *pinned)?;
             Ok((1, strict_int_i32(b, ctx, value)?))
         }
     }
@@ -1297,7 +1271,7 @@ fn emit_dispatch_guard_expr(
             dispatch_const_receive_value(b, value)
         }
         PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(b, ctx, *subject, state)?,
-        PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(b, ctx, *pinned)?,
+        PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
         PatternGuardExpr::Unary { op, expr } => {
             let v = emit_dispatch_guard_expr(b, ctx, expr, state)?;
             match op {
@@ -1371,12 +1345,16 @@ fn emit_dispatch_guard_expr(
                 }
             }
         }
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch {
+            inputs,
+            bindings,
+            dispatch,
+        } => {
             let values = inputs
                 .iter()
                 .map(|input| emit_dispatch_guard_expr(b, ctx, input, state))
                 .collect::<Result<Vec<_>, _>>()?;
-            emit_guard_dispatch(b, ctx, dispatch, values)?
+            emit_guard_dispatch(b, ctx, dispatch, bindings, values)?
         }
     })
 }
@@ -1385,6 +1363,7 @@ fn emit_guard_dispatch(
     b: &mut FunctionBuilder<'_>,
     parent: &DispatchCtx<'_>,
     dispatch: &ReceiveGuardDispatch,
+    bindings: &crate::dispatch_matrix::pattern::PatternGuardBindings,
     inputs: Vec<ReceiveValue>,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = b.create_block();
@@ -1394,9 +1373,28 @@ fn emit_guard_dispatch(
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
         named_schema_ids: parent.named_schema_ids,
-        bound_indices_per_clause: parent.bound_indices_per_clause,
-        pinned_indices: parent.pinned_indices,
-        pinned_ptr: parent.pinned_ptr,
+        outcomes: parent.outcomes,
+        bindings: crate::compiler2::DispatchBindings {
+            pinned: bindings
+                .pinned
+                .iter()
+                .map(|id| {
+                    inputs
+                        .get(id.0 as usize)
+                        .copied()
+                        .ok_or_else(|| CodegenError::new(format!("guard argument {:?} is missing", id)))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            prepared: bindings
+                .prepared
+                .iter()
+                .map(|id| {
+                    parent.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
+                        CodegenError::new(format!("guard prepared operand {:?} is missing from its caller", id))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        },
         out_ptr: parent.out_ptr,
         dispatch: &dispatch.plan,
         inputs,
@@ -1746,7 +1744,7 @@ fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u
             collect_binary_literals_in_guard(lhs, out);
             collect_binary_literals_in_guard(rhs, out);
         }
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
             for input in inputs {
                 collect_binary_literals_in_guard(input, out);
             }

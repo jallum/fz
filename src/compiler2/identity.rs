@@ -6,7 +6,7 @@ use crate::function_surface::FunctionSurface;
 use crate::source::Span;
 use crate::types::ClosureTarget;
 
-use super::code::CodeId;
+use super::code::SourceOwner;
 use super::module_interface::ModuleInterface;
 use super::namespace::Namespace;
 use super::quoted_surface::ScopeSurface;
@@ -170,7 +170,7 @@ pub enum ModuleState {
         interface: Option<ModuleInterface>,
     },
     Defined {
-        source: ModuleSource,
+        source: Option<ModuleSource>,
         base: Namespace,
         interface: ModuleInterface,
     },
@@ -180,9 +180,8 @@ impl ModuleState {
     pub(crate) fn source(&self) -> Option<&ModuleSource> {
         match self {
             ModuleState::Placeholder { .. } => None,
-            ModuleState::Indexed { source, .. }
-            | ModuleState::Scoped { source, .. }
-            | ModuleState::Defined { source, .. } => Some(source),
+            ModuleState::Indexed { source, .. } | ModuleState::Scoped { source, .. } => Some(source),
+            ModuleState::Defined { source, .. } => source.as_ref(),
         }
     }
 
@@ -205,7 +204,7 @@ impl ModuleState {
 
 #[derive(Debug, Clone)]
 pub struct ModuleSource {
-    pub code: CodeId,
+    pub owner: SourceOwner,
     pub parent: ModuleId,
     pub source: QuotedSourceRoot,
     pub kind: ModuleSourceKind,
@@ -227,20 +226,6 @@ pub struct ProtocolImplSource {
     pub protocol: ModuleId,
     pub target: ModuleId,
     pub body: ScopeSurface,
-}
-
-impl ModuleSource {
-    fn empty(code: CodeId) -> Self {
-        Self {
-            code,
-            parent: ModuleId::GLOBAL,
-            source: QuotedSourceRoot::empty(),
-            kind: ModuleSourceKind::Body(ScopeSurface {
-                attrs: Vec::new(),
-                forms: Vec::new(),
-            }),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -278,7 +263,7 @@ impl FunctionState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSource {
-    pub code: CodeId,
+    pub owner: SourceOwner,
     pub owner_module: ModuleId,
     pub namespace: Namespace,
     pub capture_params: Vec<String>,
@@ -353,7 +338,7 @@ impl ModuleMap {
     pub fn new() -> Self {
         Self {
             slots: vec![ModuleState::Defined {
-                source: ModuleSource::empty(CodeId::ZERO),
+                source: None,
                 base: Namespace::default(),
                 interface: ModuleInterface::default(),
             }],
@@ -377,9 +362,9 @@ impl ModuleMap {
         id
     }
 
-    pub fn define(&mut self, id: ModuleId, code: CodeId, base: Namespace, interface: ModuleInterface) -> bool {
+    pub fn define(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
         let module = &mut self.slots[id.0 as usize];
-        let source = module.source().cloned().unwrap_or_else(|| ModuleSource::empty(code));
+        let source = module.source().cloned();
         let next = ModuleState::Defined {
             base: module.base_namespace().unwrap_or(base),
             interface,
@@ -423,7 +408,7 @@ impl ModuleMap {
             .clone();
         let next = if let ModuleState::Defined { interface, .. } = &*module {
             ModuleState::Defined {
-                source,
+                source: Some(source),
                 base: base_namespace,
                 interface: interface.clone(),
             }
@@ -440,7 +425,7 @@ impl ModuleMap {
     pub fn index_body(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
@@ -448,7 +433,7 @@ impl ModuleMap {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed {
             source: ModuleSource {
-                code,
+                owner,
                 parent,
                 source,
                 kind: ModuleSourceKind::Body(surface),
@@ -461,7 +446,7 @@ impl ModuleMap {
     pub fn index_protocol(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         surface: ScopeSurface,
@@ -469,7 +454,7 @@ impl ModuleMap {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed {
             source: ModuleSource {
-                code,
+                owner,
                 parent,
                 source,
                 kind: ModuleSourceKind::Protocol(surface),
@@ -482,7 +467,7 @@ impl ModuleMap {
     pub fn index_protocol_impl(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         impl_source: ProtocolImplSource,
@@ -490,7 +475,7 @@ impl ModuleMap {
         let module = &mut self.slots[id.0 as usize];
         let next = ModuleState::Indexed {
             source: ModuleSource {
-                code,
+                owner,
                 parent,
                 source,
                 kind: ModuleSourceKind::ProtocolImpl(impl_source),
@@ -938,7 +923,14 @@ impl ModuleState {
                     base: right_base,
                     interface: right_interface,
                 },
-            ) => left_source.same_source(right_source) && left_base == right_base && left_interface == right_interface,
+            ) => {
+                (match (left_source, right_source) {
+                    (Some(left), Some(right)) => left.same_source(right),
+                    (None, None) => true,
+                    _ => false,
+                }) && left_base == right_base
+                    && left_interface == right_interface
+            }
             _ => false,
         }
     }
@@ -946,7 +938,7 @@ impl ModuleState {
 
 impl ModuleSource {
     fn same_source(&self, other: &Self) -> bool {
-        self.code == other.code
+        self.owner == other.owner
             && self.parent == other.parent
             && self.source.semantically_eq(&other.source, Horizon::Surface)
     }
@@ -981,7 +973,7 @@ impl FunctionState {
 }
 
 fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
-    left.code == right.code
+    left.owner == right.owner
         && left.owner_module == right.owner_module
         && left.namespace == right.namespace
         && left.capture_params == right.capture_params

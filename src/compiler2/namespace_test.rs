@@ -1,4 +1,4 @@
-use super::{BindingId, CodeMap, FunctionMap, ModuleMap, NamespaceStore, NamespaceSymbol, TypeName};
+use super::{BindingId, FunctionMap, ModuleMap, NamespaceStore, NamespaceSymbol, TypeName};
 
 #[test]
 fn compiler2_namespace_type_binding_coexists_with_a_value_of_the_same_name() {
@@ -33,19 +33,12 @@ fn compiler2_namespace_type_binding_coexists_with_a_value_of_the_same_name() {
 
 #[test]
 fn compiler2_namespace_store_shadows_and_restores_by_head() {
-    let mut code = CodeMap::new();
     let mut modules = ModuleMap::new();
     let mut functions = FunctionMap::new();
     let mut namespaces = NamespaceStore::new();
 
-    let code_id = code.define(Some("kernel.fz".to_string()), String::new());
     let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
-    let _ = modules.define(
-        kernel,
-        code_id,
-        BindingId::END,
-        crate::compiler2::ModuleInterface::default(),
-    );
+    let _ = modules.define(kernel, BindingId::END, crate::compiler2::ModuleInterface::default());
     let dbg_fn = functions.reference(kernel, None, "dbg", 1);
     let plus_fn = functions.reference(kernel, None, "+", 2);
 
@@ -82,19 +75,12 @@ fn compiler2_namespace_store_shadows_and_restores_by_head() {
 
 #[test]
 fn compiler2_namespace_store_reuses_identical_binding_chains() {
-    let mut code = CodeMap::new();
     let mut modules = ModuleMap::new();
     let mut functions = FunctionMap::new();
     let mut namespaces = NamespaceStore::new();
 
-    let code_id = code.define(Some("kernel.fz".to_string()), String::new());
     let kernel = modules.reference_named(crate::modules::identity::ModuleName::parse_dotted("Kernel").unwrap());
-    let _ = modules.define(
-        kernel,
-        code_id,
-        BindingId::END,
-        crate::compiler2::ModuleInterface::default(),
-    );
+    let _ = modules.define(kernel, BindingId::END, crate::compiler2::ModuleInterface::default());
     let dbg_fn = functions.reference(kernel, None, "dbg", 1);
 
     let first = namespaces.bind(BindingId::END, "dbg", NamespaceSymbol::Function(dbg_fn));

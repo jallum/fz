@@ -158,10 +158,10 @@ pub struct Process {
     pub reductions_executed: u64,
     /// Cumulative yields caused by ordinary reduction-budget exhaustion.
     pub reduction_yields: u64,
-    /// Cumulative reusable-cons attempts performed by runtime list rebuilds.
-    pub reusable_cons_attempts: u64,
-    /// Cumulative reusable-cons attempts that rewrote the source cons in place.
-    pub reusable_cons_reused: u64,
+    /// Cumulative construction-owned list-retention attempts.
+    pub list_retention_attempts: u64,
+    /// Attempts that returned the source cell, unchanged or after guarded rewrite.
+    pub list_retention_hits: u64,
     /// Compact reason bits pending for the next scheduler boundary. A yielding
     /// back edge sets the reduction bit, and the boundary consumes it via
     /// `finish_yield_report` and `boundary_maintenance`. GC pressure is tracked
@@ -457,8 +457,8 @@ impl Process {
             reductions_per_quantum,
             reductions_executed: 0,
             reduction_yields: 0,
-            reusable_cons_attempts: 0,
-            reusable_cons_reused: 0,
+            list_retention_attempts: 0,
+            list_retention_hits: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,

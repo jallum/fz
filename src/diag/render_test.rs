@@ -1,11 +1,11 @@
 use super::*;
 use crate::diag::diagnostic::DiagCode;
-use crate::source::{Id as CodeId, SourceMap, Span};
+use crate::source::{SourceMap, SourceVersion, Span};
 
 const TEST_ERROR: DiagCode = DiagCode("test/error");
 const TEST_WARNING: DiagCode = DiagCode("test/warning");
 
-fn rebuild(src: &str) -> (SourceMap, CodeId) {
+fn rebuild(src: &str) -> (SourceMap, SourceVersion) {
     let mut sm = SourceMap::new();
     let id = sm.add_code(Some("input.fz"), src);
     (sm, id)

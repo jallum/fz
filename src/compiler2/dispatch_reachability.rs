@@ -1,8 +1,9 @@
 use std::collections::{BTreeSet, HashSet};
 
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    ComparisonValue, DispatchNode, GraphNodeId, ListRegion, OutcomeId, ProofSense, Region, RegionPredicate,
+    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, OutcomeId, ProjectionKind, ProofSense,
+    Region, RegionPredicate, SubjectId, SubjectSource,
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
@@ -54,7 +55,7 @@ pub(crate) fn calculate_dispatch_reachability(
         #[cfg(test)]
         max_root_slots: 0,
     };
-    let list_shapes = vec![None; plan.subjects.len()];
+    let list_shapes = vec![None; plan.matrix.subjects.len()];
     calculator.visit(plan.graph.root, ReachabilityState { roots, list_shapes });
     DispatchReachability {
         outcomes: calculator.outcomes.into_iter().collect(),
@@ -131,14 +132,12 @@ impl ReachabilityCalculator<'_> {
         predicate: &RegionPredicate<Ty>,
         sense: ProofSense,
     ) -> Option<ReachabilityState> {
-        let Some(subject) = self.plan.subject_ref(predicate.subject) else {
-            return Some(state);
-        };
+        let subject = predicate.subject;
         self.record_list_shape(&state.roots, &mut state.list_shapes, predicate, subject, sense)?;
         let Some(target) = predicate_target(self.types, &predicate.region) else {
             return Some(state);
         };
-        let ordinal = subject_input(subject)?;
+        let ordinal = subject_input(self.plan, subject)?;
         let root = *state.roots.get(ordinal)?;
         let alternatives = self.types.projection_alternatives(root);
         let mut matched = None;
@@ -146,7 +145,7 @@ impl ReachabilityCalculator<'_> {
         for alternative in alternatives {
             let mut row = state.roots.clone();
             row[ordinal] = alternative;
-            let projected = project_subject(self.types, &row, subject);
+            let projected = project_subject(self.types, self.plan, &row, subject);
             let overlap = self.types.intersect(projected, target.ty);
             if self.types.is_empty(&overlap) {
                 missed = join_optional(self.types, missed, alternative);
@@ -157,8 +156,9 @@ impl ReachabilityCalculator<'_> {
                 continue;
             }
             if target.exact
-                && tuple_only_path(subject)
-                && let Some((lifted_ordinal, lifted)) = lift_tuple_constraint(self.types, &row, subject, target.ty)
+                && exact_projection_path(self.plan, subject)
+                && let Some((lifted_ordinal, lifted)) =
+                    lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
             {
                 debug_assert_eq!(lifted_ordinal, ordinal);
                 let match_alternative = self.types.intersect(alternative, lifted);
@@ -189,7 +189,7 @@ impl ReachabilityCalculator<'_> {
         roots: &[Ty],
         list_shapes: &mut [Option<ListRegion>],
         predicate: &RegionPredicate<Ty>,
-        subject: &PatternSubjectRef,
+        subject: SubjectId,
         sense: ProofSense,
     ) -> Option<()> {
         let Region::List(region) = predicate.region else {
@@ -198,7 +198,7 @@ impl ReachabilityCalculator<'_> {
         let known = match sense {
             ProofSense::Holds => region,
             ProofSense::DoesNotHold => {
-                let projected = project_subject(self.types, roots, subject);
+                let projected = project_subject(self.types, self.plan, roots, subject);
                 let any = self.types.any();
                 let proper_list = self.types.list(any);
                 if !self.types.is_subtype(&projected, &proper_list) {
@@ -281,78 +281,100 @@ fn tested_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
         .nodes
         .iter()
         .filter_map(|node| match node {
-            DispatchNode::Test { predicate, .. } => plan.subject_ref(predicate.subject),
+            DispatchNode::Test { predicate, .. } => subject_input(plan, predicate.subject),
             _ => None,
         })
-        .filter_map(subject_input)
         .collect()
 }
 
-fn subject_input(subject: &PatternSubjectRef) -> Option<usize> {
-    match subject {
-        PatternSubjectRef::Input(ordinal) => Some(*ordinal as usize),
-        PatternSubjectRef::TupleField { tuple, .. } => subject_input(tuple),
-        PatternSubjectRef::ListHead(list) | PatternSubjectRef::ListTail(list) => subject_input(list),
-        PatternSubjectRef::MapValue { map, .. } => subject_input(map),
-        PatternSubjectRef::BitstringField { bitstring, .. } => subject_input(bitstring),
+fn subject_input(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> Option<usize> {
+    match plan.subject(subject) {
+        SubjectSource::Input { ordinal } => Some(*ordinal as usize),
+        SubjectSource::Projection(projection) => subject_input(plan, projection.source),
     }
 }
 
-fn tuple_only_path(subject: &PatternSubjectRef) -> bool {
-    match subject {
-        PatternSubjectRef::Input(_) => true,
-        PatternSubjectRef::TupleField { tuple, .. } => tuple_only_path(tuple),
-        PatternSubjectRef::ListHead(_)
-        | PatternSubjectRef::ListTail(_)
-        | PatternSubjectRef::MapValue { .. }
-        | PatternSubjectRef::BitstringField { .. } => false,
+fn exact_projection_path(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> bool {
+    match plan.subject(subject) {
+        SubjectSource::Input { .. } => true,
+        SubjectSource::Projection(projection) => {
+            matches!(
+                projection.kind,
+                ProjectionKind::TupleField(_) | ProjectionKind::StructField(_)
+            ) && exact_projection_path(plan, projection.source)
+        }
     }
 }
 
-fn project_subject(types: &mut Types, roots: &[Ty], subject: &PatternSubjectRef) -> Ty {
-    match subject {
-        PatternSubjectRef::Input(ordinal) => roots.get(*ordinal as usize).copied().unwrap_or_else(|| types.any()),
-        PatternSubjectRef::TupleField { tuple, index } => {
-            let tuple = project_subject(types, roots, tuple);
-            types.tuple_field_type(&tuple, *index as usize)
-        }
-        PatternSubjectRef::ListHead(list) => {
-            let list = project_subject(types, roots, list);
-            types.list_element_type(&list)
-        }
-        PatternSubjectRef::ListTail(list) => {
-            let list = project_subject(types, roots, list);
-            let element = types.list_element_type(&list);
+pub(crate) fn project_subject(
+    types: &mut Types,
+    plan: &PatternDispatchPlan<Ty>,
+    roots: &[Ty],
+    subject: SubjectId,
+) -> Ty {
+    let SubjectSource::Projection(projection) = plan.subject(subject) else {
+        let SubjectSource::Input { ordinal } = plan.subject(subject) else {
+            unreachable!()
+        };
+        return roots.get(*ordinal as usize).copied().unwrap_or_else(|| types.any());
+    };
+    let source = project_subject(types, plan, roots, projection.source);
+    match &projection.kind {
+        ProjectionKind::TupleField(index) => types.tuple_field_type(&source, *index as usize),
+        ProjectionKind::StructField(field) => types
+            .map_field_lookup(&source, &crate::types::MapKey::Atom(field.clone()))
+            .unwrap_or_else(|| types.any()),
+        ProjectionKind::ListHead => types.list_element_type(&source),
+        ProjectionKind::ListTail => {
+            let element = types.list_element_type(&source);
             types.list(element)
         }
-        PatternSubjectRef::MapValue { .. } | PatternSubjectRef::BitstringField { .. } => types.any(),
+        ProjectionKind::MapValue { key } => key
+            .as_map_key()
+            .and_then(|key| types.map_field_lookup(&source, &key))
+            .unwrap_or_else(|| types.any()),
+        ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {
+            BitstringFieldKind::Integer
+            | BitstringFieldKind::Utf8
+            | BitstringFieldKind::Utf16
+            | BitstringFieldKind::Utf32 => types.int(),
+            BitstringFieldKind::Float => types.float(),
+            BitstringFieldKind::Binary => types.str_t(),
+            BitstringFieldKind::Bits => types.str_t(),
+        },
     }
 }
 
-fn lift_tuple_constraint(
+fn lift_projection_constraint(
     types: &mut Types,
+    plan: &PatternDispatchPlan<Ty>,
     roots: &[Ty],
-    subject: &PatternSubjectRef,
+    subject: SubjectId,
     constraint: Ty,
 ) -> Option<(usize, Ty)> {
-    match subject {
-        PatternSubjectRef::Input(ordinal) => Some((*ordinal as usize, constraint)),
-        PatternSubjectRef::TupleField { tuple, index } => {
-            let tuple_ty = project_subject(types, roots, tuple);
-            let arity = types.max_tuple_arity(&tuple_ty);
-            if *index as usize >= arity {
-                return None;
-            }
-            let any = types.any();
-            let mut fields = types.repeat(any, arity);
-            fields[*index as usize] = constraint;
-            let tuple_constraint = types.tuple(&fields);
-            lift_tuple_constraint(types, roots, tuple, tuple_constraint)
+    match plan.subject(subject) {
+        SubjectSource::Input { ordinal } => Some((*ordinal as usize, constraint)),
+        SubjectSource::Projection(projection) => {
+            let source = projection.source;
+            let source_ty = project_subject(types, plan, roots, source);
+            let constrained = match &projection.kind {
+                ProjectionKind::StructField(field) => {
+                    types.refine_map_field(&source_ty, &crate::types::MapKey::Atom(field.clone()), &constraint)
+                }
+                ProjectionKind::TupleField(index) => {
+                    let arity = types.max_tuple_arity(&source_ty);
+                    if *index as usize >= arity {
+                        return None;
+                    }
+                    let any = types.any();
+                    let mut fields = types.repeat(any, arity);
+                    fields[*index as usize] = constraint;
+                    types.tuple(&fields)
+                }
+                _ => return None,
+            };
+            lift_projection_constraint(types, plan, roots, source, constrained)
         }
-        PatternSubjectRef::ListHead(_)
-        | PatternSubjectRef::ListTail(_)
-        | PatternSubjectRef::MapValue { .. }
-        | PatternSubjectRef::BitstringField { .. } => None,
     }
 }
 
@@ -368,7 +390,9 @@ mod tests {
     use super::*;
     use crate::ast::{Pattern, Spanned};
     use crate::compiler2::types::{MapKey, Sigma, TypeVarId};
-    use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+    use crate::dispatch_matrix::pattern::{
+        PatternRow, PatternSubjectRef, SourcePatternRows, pattern_dispatch_from_source,
+    };
 
     fn row(pattern: Pattern, body_id: u32) -> PatternRow<Ty> {
         PatternRow {
@@ -394,6 +418,77 @@ mod tests {
             .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
             .map(|outcome| outcome.body_id)
             .collect()
+    }
+
+    #[test]
+    fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_families() {
+        use crate::compiler2::dispatch::SourcePatternResolver;
+        use crate::compiler2::{ModuleId, Namespace, World};
+        use crate::dispatch_matrix::pattern::pattern_dispatch_from_source_with_resolver;
+        use crate::modules::identity::ModuleName;
+
+        let mut world = World::new();
+        let name = ModuleName::parse_dotted("Nested.Box").unwrap();
+        let module = world.reference_module(name.clone());
+        let other_module = world.reference_module(ModuleName::parse_dotted("Other.Box").unwrap());
+        let mut resolver = SourcePatternResolver {
+            world: &mut world,
+            namespace: Namespace::default(),
+            owner: ModuleId::GLOBAL,
+            guard: |_world: &mut World, _name: &crate::ast::CallableName, _arity: usize| Ok(None),
+        };
+        let plan = pattern_dispatch_from_source_with_resolver(
+            SourcePatternRows {
+                input_count: 1,
+                rows: vec![
+                    row(
+                        Pattern::Tuple(vec![Spanned::dummy(Pattern::Struct {
+                            module: crate::ast::ModuleTarget::Unresolved(name),
+                            fields: vec![("value".into(), Spanned::dummy(Pattern::Atom("hit".into())))],
+                        })]),
+                        0,
+                    ),
+                    row(Pattern::Wildcard, 1),
+                ],
+            },
+            &mut resolver,
+        )
+        .unwrap();
+        let hit = world.types_mut().atom_lit("hit");
+        let miss = world.types_mut().atom_lit("miss");
+        let values = world.types_mut().union(hit, miss);
+        let fields = vec!["value".into()];
+        let named = world.struct_value_ty(module, &fields, &[values]);
+        let named_hit = world.struct_value_ty(module, &fields, &[hit]);
+        let named_miss = world.struct_value_ty(module, &fields, &[miss]);
+        let wrong = world.struct_value_ty(other_module, &fields, &[hit]);
+        let plain = world.types_mut().map(&[(MapKey::Atom("value".into()), hit)]);
+        let types = world.types_mut();
+        for (input, expected) in [
+            (named_hit, vec![0]),
+            (named_miss, vec![1]),
+            (wrong, vec![1]),
+            (plain, vec![1]),
+        ] {
+            let input = types.tuple(&[input]);
+            let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+            assert_eq!(reachable_body_ids(&plan, &reach), expected);
+            assert!(!reach.fail_reachable);
+        }
+        let input = types.tuple(&[named]);
+        let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+        assert_eq!(reachable_body_ids(&plan, &reach), vec![0, 1]);
+        let matched_root = reach
+            .outcome_inputs
+            .iter()
+            .find(|(outcome, _)| *outcome == plan.outcomes[0].outcome)
+            .unwrap()
+            .1[0];
+        let expected = types.tuple(&[named_hit]);
+        assert!(
+            types.is_equivalent(&matched_root, &expected),
+            "field evidence must lift through the enclosing tuple without losing its struct tag"
+        );
     }
 
     fn list_pattern(length: usize, open_tail: bool) -> Pattern {

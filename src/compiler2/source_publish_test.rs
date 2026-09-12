@@ -5,7 +5,7 @@ use super::quoted_surface::read_compiler_fragment_surface;
 use super::source_publish::{ScopePublication, publish_scope};
 use super::source_test::quoted_tokens;
 use super::{
-    CodeId, DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
+    DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -78,24 +78,26 @@ impl MacroExpansionCapture {
 fn publish_compiler_fragment_scope(
     world: &mut World,
     tel: &ConfiguredTelemetry,
-    code: super::CodeId,
+    owner: super::SourceOwner,
     root: &QuotedSourceRoot,
 ) -> ScopePublication {
-    let surface = read_compiler_fragment_surface(root).expect("compiler fragment surface");
+    let source_map = world.source_map();
+    let surface = read_compiler_fragment_surface(root, &source_map.borrow()).expect("compiler fragment surface");
     publish_scope(
         world,
         tel,
         None,
-        code,
+        owner,
         ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
         &surface,
     )
     .expect("publish compiler fragment scope")
 }
 
-fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
-    let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse");
+fn grouped_function_root(world: &World, owner: super::SourceOwner, tel: &ConfiguredTelemetry) -> QuotedSourceRoot {
+    let source_map = world.source_map();
+    let version = world.source_version(owner).expect("submitted source version");
+    let root = parse_quoted_program(&source_map.borrow(), version, tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     root.interned_list_subroot(&item_roots)
@@ -264,14 +266,13 @@ fn compiler_service_define_preserves_long_doc_procbin_payloads() {
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 "#;
-    let grouped = grouped_function_root("long-doc.fz", source);
-    let grouped_items = grouped.cursor().list_items().expect("grouped items");
-    let grouped_item_roots = grouped_items.iter().map(|item| item.root()).collect::<Vec<_>>();
-
     let tel = ConfiguredTelemetry::new();
 
     let mut direct_world = World::new();
     let direct_code = direct_world.submit_code(Some("direct-long-doc.fz".to_string()), source.to_string());
+    let grouped = grouped_function_root(&direct_world, direct_code, &tel);
+    let grouped_items = grouped.cursor().list_items().expect("grouped items");
+    let grouped_item_roots = grouped_items.iter().map(|item| item.root()).collect::<Vec<_>>();
     let direct_publication = publish_compiler_fragment_scope(
         &mut direct_world,
         &tel,
@@ -293,7 +294,8 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 
     let mut service_world = World::new();
     let service_code = service_world.submit_code(Some("service-long-doc.fz".to_string()), source.to_string());
-    let builder = grouped.builder();
+    let service_grouped = grouped_function_root(&service_world, service_code, &tel);
+    let builder = service_grouped.builder();
     let env = service_world
         .project_env_value(
             &builder,
@@ -304,7 +306,7 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     let service_root = builder
         .root(
             builder
-                .list(&[compiler_define_form(&builder, grouped.root(), env)])
+                .list(&[compiler_define_form(&builder, service_grouped.root(), env)])
                 .expect("service root list"),
         )
         .expect("service quoted root");
@@ -410,9 +412,12 @@ fn main(), do: answer()
     // Scope publication stashes the published source eagerly without noting the
     // body fact until demand (fz-f98.14.5); the stash proves the item macro's
     // returned source was published.
-    assert!(
-        world.pending_function_source(answer).is_some(),
-        "item macro should publish the function source it returned",
+    let answer_source = world
+        .pending_function_source(answer)
+        .expect("item macro should publish the function source it returned");
+    assert_eq!(
+        answer_source.owner, code,
+        "the returned function must retain the item macro call's lexical publishing owner"
     );
     assert!(
         world.pending_function_source(main).is_some(),

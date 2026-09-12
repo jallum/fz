@@ -239,7 +239,7 @@ semantic fixpoint's, which is the agenda's. A callable value's
 mint order, which is the agenda's again. `plan_callable_flows`
 (`jobs/runtime_demand.rs`) removes that schedule channel by sorting the
 first-class surfaces with `Types::cmp_activation_tys` over their inputs. The
-typed relation walks addressed arrows and stable callable labels; raw type
+typed relation walks addressed arrows and typed callable identities; raw type
 handles and rendered strings never establish construction order. The formula
 then resolves each edge directly from the same immutable callable-flow plan.
 `finish_callable_flows` preserves that edge order and applies
@@ -671,7 +671,7 @@ the two groups say. Three properties carry it:
   total order across groups: the typed activation relation is `Equal` only on
   identical `Ty` slices, identical surfaces project to identical questions,
   and one question is one group — so two distinct groups can never tie. The
-  relation walks structural addresses and immutable callable labels; neither
+  relation walks structural addresses and immutable typed callable identities; neither
   raw type ids nor rendered strings break ties.
 - **It removes the axis exactly where the axis was free, and nowhere else.**
   `Separated` is symmetric but NOT transitive: `A|B` and `B|C` separated says
@@ -1105,7 +1105,7 @@ projected outcome-closure payload for the winning clause body; a miss outcome is
 
 Compiler2 semantic reachability is another consumer, not another dispatch
 model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
-against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+against root input `Ty` rows and walks the plan's flat subject graph to
 derive every tested projection. It never stores types by `SubjectId` and never
 adds type/domain policy to this generic module. Before traversal, a runtime
 envelope replaces bare inference templates in positive, recursively inspectable
@@ -1114,7 +1114,7 @@ instead of widening them, and preserves callable arrows that the pattern graph
 cannot inspect. Negative finite variable branches are erased while preserving
 their concrete axes; negative cofinite branches with excluded variable IDs
 become empty. A cofinite variable axis with no excluded IDs remains ordinary
-top. Exact tuple projections lift to their roots;
+top. Exact tuple and named-struct projections lift to their roots;
 ambiguous positional list projections keep their root type on both edges. The
 traversal separately retains the graph's branch-local empty/cons fact for each
 subject. When the projected domain is already a proper list, `not empty`

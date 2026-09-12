@@ -533,6 +533,52 @@ fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
 }
 
 #[test]
+fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_keep_only_identity() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let key = MapKey::Atom("value".to_string());
+    let hit = t.atom_lit("hit");
+    let var = t.type_var(TypeVarId(555));
+    let fields = t.tuple(&[hit, var]);
+    let record = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Box"), &[(key.clone(), fields)]);
+    let nested = t.tuple(&[record]);
+    let semantic = t.runtime_envelope(nested);
+    let semantic_record = t.tuple_field_type(&semantic, 0);
+    let semantic_fields = t.map_field_lookup(&semantic_record, &key).unwrap();
+    assert_eq!(t.tuple_field_type(&semantic_fields, 0), hit);
+    let any = t.any();
+    assert_eq!(
+        t.tuple_field_type(&semantic_fields, 1),
+        any,
+        "unknown field evidence widens at its own position, without erasing concrete sibling fields"
+    );
+    let predicate = t.runtime_type_test_envelope(nested);
+    let predicate_record = t.tuple_field_type(&predicate, 0);
+    assert_eq!(t.map_field_lookup(&predicate_record, &key), Some(any));
+    assert_eq!(
+        t.runtime_type_predicate(&semantic),
+        t.runtime_type_predicate(&predicate),
+        "retaining semantic projection evidence does not teach the runtime type predicate a field test"
+    );
+    let raw_not_record = t.difference(any, record);
+    let negative_semantic = t.runtime_envelope(raw_not_record);
+    assert!(
+        t.is_subtype(&raw_not_record, &negative_semantic),
+        "unresolved negative field evidence must not exclude additional values"
+    );
+    let concrete = t.struct_map(ModuleId::for_test(1), module_name("Pkg.Box"), &[(key, hit)]);
+    let not_concrete = t.difference(any, concrete);
+    let semantic_not_concrete = t.runtime_envelope(not_concrete);
+    assert!(t.is_equivalent(&not_concrete, &semantic_not_concrete));
+    let negative_predicate = t.runtime_type_test_envelope(raw_not_record);
+    assert!(
+        t.is_subtype(&raw_not_record, &negative_predicate),
+        "a field-blind predicate must retain the untestable residue of a shaped negative struct"
+    );
+}
+
+#[test]
 fn substitution_descends_only_through_equal_record_tags() {
     use crate::compiler2::identity::ModuleId;
 

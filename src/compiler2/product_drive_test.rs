@@ -252,7 +252,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed_lowerings = std::rc::Rc::clone(&lowerings);
     tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
-        &["fz", "compiler2", "native_program", "reusable_cons"],
+        &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| observed_lowerings.set(observed_lowerings.get() + 1),
     );
     let mut compiler = Compiler2::new(tel);
@@ -441,7 +441,7 @@ fn jit_and_aot_share_one_retained_native_product() {
     let lowerings = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&lowerings);
     tel.attach_raw_event2::<RootId, super::BackendProgram, _>(
-        &["fz", "compiler2", "native_program", "reusable_cons"],
+        &["fz", "compiler2", "native_program", "list_retention"],
         move |_, _, _, _, _| observed.set(observed.get() + 1),
     );
     let mut compiler = Compiler2::new(tel);
@@ -1960,7 +1960,7 @@ fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_ch
     );
     let mut world = World::new();
     let root = RootId::for_test(88);
-    let code = super::CodeId::ZERO;
+    let code = super::SourceOwner::for_test(0);
     let left = FactKey::CodeIndexed(code);
     let right = FactKey::CodeScoped(code);
     let left_job = Job::IndexCode(code);

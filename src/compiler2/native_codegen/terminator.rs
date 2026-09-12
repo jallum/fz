@@ -736,7 +736,6 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
-        mark_retained_call_args_as_published(body, var_env, args, &continuation.captured);
         let callee_sid = resolve_callee_sid(env, blk, EmitSlot::Direct);
         let cont_sid = resolve_cont_sid(env, blk);
         if spec_is_native(env, callee_sid) {
@@ -1251,7 +1250,6 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
-        mark_retained_call_args_as_published(body, var_env, args, &continuation.captured);
         let cont_sid = resolve_cont_sid(env, blk);
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
@@ -1366,9 +1364,8 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 // Selective-receive park-site CLIF.
 //
 // Layout, mirroring fz_runtime::park::ParkRecord:
-//   - matcher fn addr (declared/emitted by the planned codegen matcher pass).
-//   - pinned[]: one-word value entries, one per `^name`
-//     referenced across all clauses, in source order.
+//   - matcher fn addr (declared/emitted from the receive dispatch plan).
+//   - pinned[]: plan-indexed pinned inputs followed by prepared keys.
 //   - clause_bodies[]: i64 array of cont-closure refs,
 //     one per source clause; each closure carries the clause-body
 //     fn entry, while captures are populated through closure
@@ -1376,8 +1373,8 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 //     bookkeeping).
 //   - clause_bound_counts[]: i64 array, one per source clause.
 //     The matcher scratch uses max bound_arity; the resumed
-//     outcome env uses only the winning clause's actual binds.
-//   - bound_arity: max bound-var count across clauses; sizes
+//     outcome env uses only the winning edge's semantic/physical arguments.
+//   - bound_arity: max outcome-argument count across clauses; sizes
 //     the `out` buffer the matcher fills on a hit.
 //   - after_deadline_or_neg1: -1 when no after clause,
 //     else the unboxed timeout in ms.
@@ -1397,7 +1394,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
-    pinned: &[(String, Var)],
+    pinned: &[Var],
     captures: &[Var],
 ) -> Result<(), CodegenError> {
     let dispatch_fid = *env
@@ -1425,7 +1422,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
 }
 
 // Lay out the ParkRecord fields described in
-// `fz_runtime::park::ParkRecord` (pinned snapshot, clause cont
+// `fz_runtime::park::ParkRecord` (pinned inputs, clause cont
 // closures, optional after closure, bound-arity), then call
 // fz_receive_park_matched and return the YIELD sentinel.
 #[allow(clippy::too_many_arguments)]
@@ -1438,14 +1435,14 @@ fn build_park_record<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
-    pinned: &[(String, Var)],
+    pinned: &[Var],
     captures: &[Var],
     matcher_addr: ir::Value,
 ) -> ir::Value {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
     let runtime = env.runtime;
 
-    // Pinned snapshot: alloca [AnyValueRef; n_pinned], take base addr.
+    // Pinned inputs: alloca [AnyValueRef; n_pinned], take base addr.
     let n_pinned = pinned.len();
     let pinned_ptr = if n_pinned == 0 {
         body.b.ins().iconst(types::I64, 0)
@@ -1455,7 +1452,7 @@ fn build_park_record<M: cranelift_module::Module>(
             (n_pinned * SLOT_BYTES as usize) as u32,
             3,
         ));
-        for (i, (_name, v)) in pinned.iter().enumerate() {
+        for (i, v) in pinned.iter().enumerate() {
             let value_ref = body.tagged_var(var_env, v.0);
             body.b
                 .ins()
@@ -1464,7 +1461,7 @@ fn build_park_record<M: cranelift_module::Module>(
         body.b.ins().stack_addr(types::I64, slot, 0)
     };
 
-    // Captures snapshot, shared across every clause body /
+    // Capture operands, shared across every clause body /
     // guard / after closure. `Term::ReceiveMatched::captures`
     // is already deduplicated by ir_lower; the cont fns'
     // capture-param slots line up with this order.
@@ -1472,9 +1469,9 @@ fn build_park_record<M: cranelift_module::Module>(
         .iter()
         .map(|cv| closure_capture_for_var(body, var_env, cv.0))
         .collect();
-    // bound_arity: max bound-var count across clauses (matcher
+    // bound_arity: max outcome-argument count across clauses (matcher
     // ABI sizes the out buffer to this).
-    let bound_arity = clauses.iter().map(|c| c.bound_names.len()).max().unwrap_or(0);
+    let bound_arity = clauses.iter().map(|c| c.arguments.len()).max().unwrap_or(0);
 
     // clause_bodies[]: build one cont-closure per clause body
     // and stack-store its ptr.
@@ -1488,7 +1485,7 @@ fn build_park_record<M: cranelift_module::Module>(
         (n_clauses * SLOT_BYTES as usize) as u32,
         3,
     ));
-    let needs_bound_counts = clauses.iter().any(|c| c.bound_names.len() != bound_arity);
+    let needs_bound_counts = clauses.iter().any(|c| c.arguments.len() != bound_arity);
     let bound_counts_slot = needs_bound_counts.then(|| {
         body.b.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
@@ -1513,7 +1510,7 @@ fn build_park_record<M: cranelift_module::Module>(
         );
         body.b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
         if let Some(slot) = bound_counts_slot {
-            let bound_count_v = body.b.ins().iconst(types::I64, c.bound_names.len() as i64);
+            let bound_count_v = body.b.ins().iconst(types::I64, c.arguments.len() as i64);
             body.b.ins().stack_store(bound_count_v, slot, (i * 8) as i32);
         }
     }

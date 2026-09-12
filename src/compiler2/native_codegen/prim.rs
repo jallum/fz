@@ -91,8 +91,6 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
     } else {
         let key_ref = body.value_as_any_ref(key);
         let value_ref = body.value_as_any_ref(value);
-        let key_ref = body.mark_published_ref_aliased(key_ref);
-        let value_ref = body.mark_published_ref_aliased(value_ref);
         let fref = body.jmod.declare_func_in_func(runtime.map_dest_put_ref_id, body.b.func);
         let process = body.process_arg();
         body.b.ins().call(fref, &[process, map_bits, key_ref, value_ref]);
@@ -316,13 +314,14 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             LowerOut::ValueRefWord(body.list_tail(list_ref))
         }
-        Prim::MakeList(elems, tail) => {
+        Prim::MakeList(elems, tail, retention) => {
             if elems.len() == 1
                 && let Some(tail_var) = tail
+                && let Some(retention) = retention
             {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
-                let reused = emit_reusable_cons_or_alloc(body, var_env, elems[0], tail);
+                let reused = emit_list_retention_or_alloc(body, var_env, elems[0], tail, *retention);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
                 }
@@ -858,6 +857,21 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     // through the match and is wrapped in `LowerOut::ValueRef(_)` at the
     // bottom of the function.
     match prim {
+        Prim::Share(value) => {
+            let binding = binding_for_var(var_env, value.0);
+            if matches!(
+                binding,
+                CodegenValue::AnyRef(_)
+                    | CodegenValue::Known {
+                        kind: ValueKind::LIST,
+                        ..
+                    }
+            ) {
+                let value_ref = body.value_as_any_ref(binding);
+                let _ = body.mark_published_ref_aliased(value_ref);
+            }
+            Ok(LowerOut::Strict(binding))
+        }
         Prim::Const(c) => match c {
             // Emit the raw payload when the consumer's type is
             // int-monomorphic; ValueRef consumers retag via `tagged_get`

@@ -37,8 +37,8 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     } = context;
     let tel = *telemetry;
     match job {
-        Job::IndexCode(code_id) => source::index_code(world, tel, *code_id),
-        Job::ScopeCode(code_id) => source::scope_code(world, tel, product_sessions.as_deref(), *code_id),
+        Job::IndexCode(source_owner) => source::index_code(world, tel, *source_owner),
+        Job::ScopeCode(source_owner) => source::scope_code(world, tel, product_sessions.as_deref(), *source_owner),
         Job::DefineModule(module_id) => source::define_module(world, tel, product_sessions.as_deref(), *module_id),
         Job::DefineModuleInterface(module_id) => source::define_module_interface(world, tel, *module_id),
         Job::PublishFunctionSource(function_id) => source::publish_function_source_job(world, tel, *function_id),

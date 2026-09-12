@@ -2,12 +2,13 @@ use std::rc::Rc;
 
 use fz_runtime::any_value::ValueKind;
 
+use super::source::{META_SPAN_KEY, META_SPAN_LENGTH_KEY, META_SPAN_START_KEY, META_SPAN_VERSION_KEY};
 use super::{
-    CodeId, Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
+    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::modules::runtime_library;
-use crate::source::{Id as SourceId, Span};
+use crate::source::{SourceVersion, Span};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// Every atom name and UTF-8 binary payload reachable in a quoted graph, in
@@ -70,11 +71,17 @@ fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], name
 // carries no source name, and these tests assert spans are not semantic content,
 // so the helper just needs to vary the span by its `line` input.
 fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> QuotedSourceMetadata {
+    let mut sources = crate::source::SourceMap::new();
+    let version = sources.add_code(Some("quoted-structural-test.fz"), " ".repeat(256));
     QuotedSourceMetadata {
         module: None,
         from_brackets: false,
         lexical_context: Some(context.clone()),
-        span: Some(Span::new(SourceId(0), line, line.saturating_add(3))),
+        span: Some(Span::new(
+            version,
+            line,
+            line.checked_add(3).expect("test span end fits in u32"),
+        )),
     }
 }
 
@@ -118,7 +125,7 @@ fn module_reference_metadata_keeps_portable_identity_in_semantic_equality() {
     for (root, expected) in [(first, left), (other_impl, right)] {
         assert_eq!(
             root.cursor()
-                .ast_node()
+                .ast_node(&crate::source::SourceMap::new())
                 .unwrap()
                 .unwrap()
                 .meta
@@ -154,6 +161,95 @@ fn malformed_module_reference_metadata_is_rejected_without_interning() {
             .unwrap();
         assert!(meta.cursor().module_denotation().is_err());
     }
+}
+
+fn encoded_ast_with_span(start: i64, length: i64, source_version: i64) -> QuotedSourceRoot {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let span = builder
+        .map(&[
+            (builder.atom(META_SPAN_START_KEY), builder.int(start)),
+            (builder.atom(META_SPAN_LENGTH_KEY), builder.int(length)),
+            (builder.atom(META_SPAN_VERSION_KEY), builder.int(source_version)),
+        ])
+        .expect("encoded span map");
+    let meta = builder
+        .map(&[(builder.atom(META_SPAN_KEY), span)])
+        .expect("encoded metadata map");
+    let node = builder
+        .tuple(&[builder.atom("node"), meta, builder.nil()])
+        .expect("encoded AST node");
+    builder.root(node).expect("encoded AST root")
+}
+
+fn encoded_token(start: i64, end: i64, source_version: i64) -> QuotedSourceRoot {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let token = builder
+        .tuple(&[
+            builder.atom("ident"),
+            builder.utf8_binary("integer").expect("token payload"),
+            builder.int(start),
+            builder.int(end),
+            builder.bool(false),
+            builder.int(source_version),
+        ])
+        .expect("encoded token");
+    let tokens = builder.list(&[token]).expect("encoded token list");
+    builder.root(tokens).expect("encoded token root")
+}
+
+#[test]
+fn quoted_span_decoder_rejects_overflow_and_explicit_absence() {
+    let sources = crate::source::SourceMap::default();
+    let overflow = encoded_ast_with_span(i64::from(u32::MAX), 1, 0);
+    assert!(
+        overflow
+            .cursor()
+            .ast_node(&sources)
+            .unwrap_err()
+            .to_string()
+            .contains("overflows u32")
+    );
+
+    let absent = encoded_ast_with_span(0, 0, i64::from(SourceVersion::NONE.as_u32()));
+    assert!(
+        absent
+            .cursor()
+            .ast_node(&sources)
+            .unwrap_err()
+            .to_string()
+            .contains("does not resolve in the source map")
+    );
+}
+
+#[test]
+fn absent_quoted_span_metadata_is_not_malformed() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let meta = builder.map(&[]).expect("empty metadata");
+    let node = builder
+        .tuple(&[builder.atom("node"), meta, builder.nil()])
+        .expect("source-less AST node");
+    let root = builder.root(node).expect("source-less AST root");
+    assert_eq!(
+        root.cursor()
+            .ast_node(&crate::source::SourceMap::default())
+            .expect("absence is valid")
+            .expect("AST node")
+            .span,
+        None
+    );
+}
+
+#[test]
+fn quoted_token_decoder_rejects_unregistered_source_versions() {
+    let sources = crate::source::SourceMap::default();
+    let encoded = encoded_token(0, 1, i64::from(u32::MAX - 1));
+    assert!(
+        super::token_payload::decode_tokens(&encoded.cursor(), &sources).is_err(),
+        "token provenance must resolve through the authoritative source map"
+    );
 }
 
 fn build_simple_def(
@@ -263,7 +359,11 @@ fn cursor_reads_definition_and_caller_contexts_separately() {
         .expect("definition call");
     let root = builder.root(call).expect("quoted source root");
 
-    let node = root.cursor().ast_node().expect("call cursor").expect("ast node");
+    let node = root
+        .cursor()
+        .trusted_ast_node()
+        .expect("call cursor")
+        .expect("ast node");
     assert_eq!(node.head.atom_name().expect("call head atom"), "double");
 
     let call_ctx = node
@@ -291,7 +391,10 @@ fn cursor_reads_definition_and_caller_contexts_separately() {
     );
 
     let args = node.tail.list_items().expect("call args");
-    let arg_node = args[0].ast_node().expect("arg node cursor").expect("arg ast node");
+    let arg_node = args[0]
+        .trusted_ast_node()
+        .expect("arg node cursor")
+        .expect("arg ast node");
     assert_eq!(arg_node.head.atom_name().expect("arg head atom"), "x");
     assert_eq!(
         arg_node
@@ -438,9 +541,13 @@ fn semantic_walk_reaches_the_last_leaf_of_long_ast_lists() {
 fn semantic_walk_handles_runtime_sized_quoted_roots() {
     let tel = ConfiguredTelemetry::new();
     for (name, source) in runtime_library::module_sources() {
-        let left = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
+        let mut left_sources = crate::source::SourceMap::default();
+        let left_version = left_sources.add_code(Some(format!("runtime:{name}.fz")), source);
+        let left = parse_quoted_program(&left_sources, left_version, &tel)
             .unwrap_or_else(|error| panic!("runtime source `{name}` should parse to quoted root: {error}"));
-        let right = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
+        let mut right_sources = crate::source::SourceMap::default();
+        let right_version = right_sources.add_code(Some(format!("runtime:{name}.fz")), source);
+        let right = parse_quoted_program(&right_sources, right_version, &tel)
             .unwrap_or_else(|error| panic!("runtime source `{name}` should re-parse to quoted root: {error}"));
         assert!(
             left.semantically_eq(&right, Horizon::Full),
@@ -494,7 +601,9 @@ fn semantic_walk_compares_bitstring_payloads_in_long_lists() {
 }
 
 fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
-    parse_quoted_program(name, text, CodeId::ZERO, &ConfiguredTelemetry::new()).expect("parse quoted program")
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some(name), text);
+    parse_quoted_program(&sources, version, &ConfiguredTelemetry::new()).expect("parse quoted program")
 }
 
 // Spans and source positions are not semantic content: the same code parsed
@@ -517,13 +626,15 @@ fn semantically_eq_ignores_span_and_position() {
 #[test]
 fn semantic_map_keys_ignore_metadata_that_changes_runtime_order() {
     fn graph(reverse_spans: bool) -> QuotedSourceRoot {
+        let mut sources = crate::source::SourceMap::new();
+        let version = sources.add_code(Some("metadata-order.fz"), "ab");
         let heap = Rc::new(QuotedSourceHeap::new());
         let builder = heap.builder();
         let entries = ["a", "b"].into_iter().enumerate().map(|(index, name)| {
             let position = if reverse_spans { 1 - index } else { index } as u32;
             let metadata = builder
                 .meta(&QuotedSourceMetadata {
-                    span: Some(Span::new(SourceId(0), position, position + 1)),
+                    span: Some(Span::new(version, position, position + 1)),
                     ..Default::default()
                 })
                 .unwrap();

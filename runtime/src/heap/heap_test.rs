@@ -42,6 +42,37 @@ fn published_map_cannot_reenter_mutable_construction() {
 }
 
 #[test]
+fn map_publication_shares_list_keys_and_values() {
+    for construction in 0..3 {
+        let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
+        let key = heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST);
+        let value = heap.alloc_list_cons_slot(AnyValue::int(2), EMPTY_LIST);
+        match construction {
+            0 => {
+                heap.alloc_map_slots(&[(heap_root(key), heap_root(value))]);
+            }
+            1 => {
+                heap.map_put_slot_bits(0, heap_root(key), heap_root(value));
+            }
+            _ => {
+                let destination = heap.alloc_map_destination(None, 1);
+                unsafe {
+                    heap.map_destination_put(destination, heap_root(key), heap_root(value));
+                }
+                heap.map_destination_freeze(destination);
+            }
+        }
+        for source in [key, value] {
+            let cell = list_addr_from_tagged(source).expect("list source") as *const ListCons;
+            assert!(
+                unsafe { (*cell).aliased() },
+                "construction {construction} publishes both fields"
+            );
+        }
+    }
+}
+
+#[test]
 fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
     let mut heap = Heap::new(SIZE_TABLE[0], empty_registry());
     let a = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
@@ -813,7 +844,7 @@ fn gc_preserves_list_alias_metadata() {
     let n2 = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let n1 = alloc_int_list_cons(&mut h, 1, n2);
     let n2_ref = list_ref_from_bits(n2);
-    h.mark_list_cons_aliased(n2_ref).expect("mark aliased");
+    h.mark_published_ref_aliased(n2_ref).expect("mark aliased");
 
     let mut root = null_mut();
     let mut roots = [heap_root(n1)];
@@ -845,6 +876,23 @@ fn published_ref_alias_marking_marks_every_reachable_list_cons() {
 }
 
 #[test]
+fn shared_spine_publication_visits_only_newly_protected_cells() {
+    let mut heap = Heap::new(1024, empty_registry());
+    let tail = alloc_int_list_cons(&mut heap, 3, EMPTY_LIST);
+    let middle = alloc_int_list_cons(&mut heap, 2, tail);
+    let head = alloc_int_list_cons(&mut heap, 1, middle);
+
+    assert_eq!(heap.share_list_spine(list_ref_from_bits(middle)).unwrap(), 2);
+    assert_eq!(heap.share_list_spine(list_ref_from_bits(head)).unwrap(), 1);
+    assert_eq!(heap.share_list_spine(list_ref_from_bits(head)).unwrap(), 0);
+    assert_eq!(heap.share_list_spine(list_ref_from_bits(tail)).unwrap(), 0);
+    for bits in [head, middle, tail] {
+        let cons = unsafe { &*(list_addr_from_tagged(bits).unwrap() as *const ListCons) };
+        assert!(cons.aliased());
+    }
+}
+
+#[test]
 fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
     let mut h = Heap::new(1024, empty_registry());
     let scalar = 42u64;
@@ -856,6 +904,36 @@ fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
             .expect("mark empty list"),
         AnyValueRef::empty_list()
     );
+}
+
+#[test]
+fn unchanged_list_retention_needs_no_rewrite_permission_even_when_published() {
+    let mut heap = Heap::new(1024, empty_registry());
+    let tail = alloc_int_list_cons(&mut heap, 2, EMPTY_LIST);
+    let source = alloc_int_list_cons(&mut heap, 1, tail);
+    let source_ref = list_ref_from_bits(source);
+    heap.mark_published_ref_aliased(source_ref).unwrap();
+    heap.reset_alloc_stats();
+    let retained = heap
+        .reuse_or_alloc_list_cons_raw_kind(source_ref, 1, ValueKind::INT, list_ref_from_bits(tail), false)
+        .unwrap();
+    assert_eq!(retained, source_ref);
+    assert_eq!(heap.alloc_stats_snapshot().list_cons.allocs, 0);
+}
+
+#[test]
+fn retained_unaliased_source_without_permission_allocates_for_changed_contents() {
+    let mut heap = Heap::new(1024, empty_registry());
+    let source = alloc_int_list_cons(&mut heap, 1, EMPTY_LIST);
+    let source_ref = list_ref_from_bits(source);
+    heap.reset_alloc_stats();
+    let rebuilt = heap
+        .reuse_or_alloc_list_cons_raw_kind(source_ref, 9, ValueKind::INT, AnyValueRef::empty_list(), false)
+        .unwrap();
+    assert_ne!(rebuilt, source_ref);
+    assert_eq!(heap.alloc_stats_snapshot().list_cons.allocs, 1);
+    let original = unsafe { &*(source_ref.list_addr().unwrap() as *const ListCons) };
+    assert_eq!(original.head, 1);
 }
 
 #[test]
@@ -873,6 +951,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
             7,
             ValueKind::ATOM,
             list_ref_from_bits(new_tail),
+            true,
         )
         .expect("reuse");
 
@@ -892,11 +971,11 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
     let head_ref = list_ref_from_bits(head);
-    h.mark_list_cons_aliased(head_ref).expect("mark aliased");
+    h.mark_published_ref_aliased(head_ref).expect("mark aliased");
     h.reset_alloc_stats();
 
     let out = h
-        .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail))
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
@@ -924,7 +1003,7 @@ fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     h.reset_alloc_stats();
 
     let out = h
-        .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail))
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
@@ -1190,11 +1269,111 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
 }
 
 #[test]
+fn deep_copy_repeated_list_reference_establishes_receiver_owned_sharing() {
+    let registry = empty_registry();
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut source = Heap::new(1024, registry.clone());
+    let mut destination = Heap::new(1024, registry);
+    let list = alloc_int_list_cons(&mut source, 7, EMPTY_LIST);
+    let tuple = source.alloc_struct(pair);
+    unsafe {
+        source.write_field_slot(tuple, 0, heap_root(list));
+        source.write_field_slot(tuple, 8, heap_root(list));
+    }
+    let mut forwarding = HashMap::new();
+    let copied = deep_copy_slot(
+        AnyValue::heap_ptr(tuple, ValueKind::STRUCT),
+        &source,
+        &mut destination,
+        &mut forwarding,
+    );
+    let copied_tuple = copied.heap_addr().unwrap();
+    let left = destination.read_field_slot(copied_tuple, 0);
+    let right = destination.read_field_slot(copied_tuple, 8);
+    assert_eq!(left, right, "the receiver preserves duplicate identity");
+    let copied_list = left.heap_addr().unwrap();
+    assert_ne!(copied_list, list_addr_from_tagged(list).unwrap());
+    assert!(
+        unsafe { &*(copied_list as *const ListCons) }.aliased(),
+        "two receiver paths require the receiver's alias guard"
+    );
+}
+
+#[test]
+fn deep_copy_single_boxed_list_keeps_container_publication() {
+    assert_copied_boxed_list_is_published(false);
+}
+
+#[test]
+fn deep_copy_duplicate_outer_box_keeps_nested_list_publication() {
+    assert_copied_boxed_list_is_published(true);
+}
+
+fn assert_copied_boxed_list_is_published(duplicate: bool) {
+    let registry = empty_registry();
+    let boxed = registry.borrow_mut().register(Schema::tuple_of_arity(1));
+    let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut source = Heap::new(1024, registry.clone());
+    let mut destination = Heap::new(1024, registry);
+    let list = alloc_int_list_cons(&mut source, 7, EMPTY_LIST);
+    let inner = source.alloc_struct(boxed);
+    unsafe { source.write_field_slot(inner, 0, heap_root(list)) };
+    let root = if duplicate {
+        let outer = source.alloc_struct(pair);
+        unsafe {
+            source.write_field_slot(outer, 0, AnyValue::heap_ptr(inner, ValueKind::STRUCT));
+            source.write_field_slot(outer, 8, AnyValue::heap_ptr(inner, ValueKind::STRUCT));
+        }
+        outer
+    } else {
+        inner
+    };
+    let mut forwarding = HashMap::new();
+    let copied = deep_copy_slot(
+        AnyValue::heap_ptr(root, ValueKind::STRUCT),
+        &source,
+        &mut destination,
+        &mut forwarding,
+    );
+    let copied_box = if duplicate {
+        destination
+            .read_field_slot(copied.heap_addr().unwrap(), 0)
+            .heap_addr()
+            .unwrap()
+    } else {
+        copied.heap_addr().unwrap()
+    };
+    let copied_list = destination.read_field_slot(copied_box, 0).heap_addr().unwrap();
+    assert!(
+        unsafe { &*(copied_list as *const ListCons) }.aliased(),
+        "a copied container must publish its list field, even if the container itself was copied only once"
+    );
+}
+
+#[test]
+fn deep_copy_closure_publishes_its_list_capture() {
+    let registry = empty_registry();
+    let mut source = Heap::new(1024, registry.clone());
+    let mut destination = Heap::new(1024, registry);
+    let list = alloc_int_list_cons(&mut source, 7, EMPTY_LIST);
+    let closure = source.alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, 0, 1, 0);
+    let address = closure_addr_from_tagged(closure).unwrap();
+    unsafe { source.write_closure_capture_value(address, 0, heap_root(list)) };
+    let mut forwarding = HashMap::new();
+    let copied = deep_copy_slot(heap_root(closure), &source, &mut destination, &mut forwarding);
+    let captured = unsafe { destination.read_closure_capture_value(copied.heap_addr().unwrap(), 0) };
+    assert!(
+        unsafe { &*(captured.heap_addr().unwrap() as *const ListCons) }.aliased(),
+        "copied public closures guard list captures before repeated invocation"
+    );
+}
+
+#[test]
 fn deep_copy_clears_list_alias_metadata() {
     let mut src = Heap::new(1024, empty_registry());
     let mut dst = Heap::new(1024, empty_registry());
     let list_bits = alloc_int_list_cons(&mut src, 7, EMPTY_LIST);
-    src.mark_list_cons_aliased(list_ref_from_bits(list_bits))
+    src.mark_published_ref_aliased(list_ref_from_bits(list_bits))
         .expect("mark aliased");
 
     let mut forwarding = HashMap::new();

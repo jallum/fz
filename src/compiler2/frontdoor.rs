@@ -4,11 +4,10 @@ use std::rc::Rc;
 
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
 use crate::parser::lexer::{Lexer, Tok, Token};
-use crate::source::Span;
+use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
 
-use super::code::CodeId;
 use super::token_payload;
 use super::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap,
@@ -44,13 +43,13 @@ impl From<QuotedSourceError> for FrontDoorError {
 }
 
 pub fn parse_quoted_program<T: RawSpanTelemetry + ?Sized>(
-    source_name: impl AsRef<str>,
-    source_text: &str,
-    code_id: CodeId,
+    sources: &crate::source::SourceMap,
+    source_version: SourceVersion,
     tel: &T,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
-    let source_name = Rc::<str>::from(source_name.as_ref());
-    let tokens = Lexer::with_code_id_and_source_name(source_text, crate::source::Id(code_id.as_u32()), source_name)
+    let source = sources.code(source_version);
+    let source_name = Rc::<str>::from(source.name.as_deref().unwrap_or("<unnamed>"));
+    let tokens = Lexer::with_source_version_and_name(&source.bytes, source_version, source_name)
         .tokenize(tel)
         .map_err(|error| FrontDoorError::syntax(error.msg, error.span))?;
     FrontDoorParser::new(tokens).parse_program()
@@ -255,10 +254,7 @@ impl FrontDoorParser {
 
     fn parse_item_macro_call(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let expr = self.parse_expr(module_path, &[])?;
-        let Some(node) = self.builder.root(expr.root)?.cursor().ast_node()? else {
-            return self.err("expected an item-level macro call");
-        };
-        if node.tail.list_items().is_err() {
+        if !self.builder.root(expr.root)?.cursor().trusted_builder_ast_call()? {
             return self.err("expected an item-level macro call");
         }
         Ok(expr.root)

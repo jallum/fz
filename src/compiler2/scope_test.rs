@@ -27,7 +27,7 @@ fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
         .map_value("module")
         .unwrap()
         .unwrap()
-        .ast_node()
+        .ast_node(&world.source_map().borrow())
         .unwrap()
         .unwrap();
     assert_eq!(projected.tail.list_atom_names().unwrap(), ["A", "B", "C"]);
@@ -61,7 +61,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         .expect("module root");
     let module_alias = module_root
         .cursor()
-        .ast_node()
+        .trusted_ast_node()
         .expect("module alias cursor")
         .expect("module alias node");
     assert_eq!(module_alias.head.atom_name().expect("module alias head"), "__aliases__");
@@ -83,7 +83,7 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         .map_value("module")
         .expect("env module lookup")
         .expect("env module value")
-        .ast_node()
+        .trusted_ast_node()
         .expect("env module cursor")
         .expect("env module node");
     assert_eq!(env_module.head.atom_name().expect("env module head"), "__aliases__");

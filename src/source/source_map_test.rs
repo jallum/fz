@@ -1,28 +1,22 @@
 use super::*;
 
-fn sm_with(name: &str, src: &str) -> (SourceMap, Id) {
+fn sm_with(name: &str, src: &str) -> (SourceMap, SourceVersion) {
     let mut sm = SourceMap::new();
     let f = sm.add_code(Some(name.to_string()), src.to_string());
     (sm, f)
 }
 
 #[test]
-fn add_code_assigns_sequential_ids() {
+fn each_immutable_version_resolves_its_exact_source() {
     let mut sm = SourceMap::new();
     let a = sm.add_code(Some("a".to_string()), "one".to_string());
     let b = sm.add_code(Some("b".to_string()), "two".to_string());
-    assert_eq!(a, Id(0));
-    assert_eq!(b, Id(1));
+    assert_ne!(a, b);
+    assert_eq!(sm.name(a), Some("a"));
+    assert_eq!(sm.code(a).bytes.as_ref(), "one");
+    assert_eq!(sm.name(b), Some("b"));
+    assert_eq!(sm.code(b).bytes.as_ref(), "two");
     assert_eq!(sm.code_count(), 2);
-}
-
-#[test]
-fn name_lookup_is_separate_from_code_bytes() {
-    let mut sm = SourceMap::new();
-    let id = sm.add_code(Some("named".to_string()), "body".to_string());
-    let code = sm.code(id);
-    assert_eq!(&*code.bytes, "body");
-    assert_eq!(sm.name(id), Some("named"));
 }
 
 #[test]
@@ -30,6 +24,18 @@ fn unnamed_code_has_no_display_name() {
     let mut sm = SourceMap::new();
     let id = sm.add_code::<String>(None, "body".to_string());
     assert_eq!(sm.name(id), None);
+}
+
+#[test]
+fn checked_span_accepts_only_ranges_owned_by_a_registered_version() {
+    let (sm, version) = sm_with("t", "abc");
+    assert_eq!(sm.checked_span(version.as_u32(), 0, 0), Some(Span::new(version, 0, 0)));
+    assert_eq!(sm.checked_span(version.as_u32(), 3, 3), Some(Span::new(version, 3, 3)));
+    assert_eq!(sm.checked_span(version.as_u32(), 1, 3), Some(Span::new(version, 1, 3)));
+    assert_eq!(sm.checked_span(version.as_u32(), 2, 1), None);
+    assert_eq!(sm.checked_span(version.as_u32(), 0, 4), None);
+    assert_eq!(sm.checked_span(SourceVersion::NONE.as_u32(), 0, 0), None);
+    assert_eq!(sm.checked_span(u32::MAX - 1, 0, 0), None);
 }
 
 #[test]
@@ -79,9 +85,9 @@ fn multi_file_isolation() {
     let b = sm.add_code(Some("b".to_string()), "zz".to_string());
     let la = sm.locate(Span::new(a, 2, 3));
     let lb = sm.locate(Span::new(b, 1, 2));
-    assert_eq!(la.code_id, a);
+    assert_eq!(la.source_version, a);
     assert_eq!(la.line, 2);
-    assert_eq!(lb.code_id, b);
+    assert_eq!(lb.source_version, b);
     assert_eq!(lb.line, 1);
 }
 

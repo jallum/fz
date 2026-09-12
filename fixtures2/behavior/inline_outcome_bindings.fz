@@ -1,0 +1,70 @@
+#---
+# purpose: "Inline arms receive ordered plan bindings across nested constructors, shadowing, aliases, and dependent bitstrings"
+#---
+defmodule InlineBox do
+  defstruct [:unused, :value]
+end
+
+fn unpack(value) do
+  captured = 100
+  case value do
+    {:nested, [%{box: %InlineBox{value: captured}} | tail]} -> {captured, tail}
+    {:pair, left, right} -> {left, right}
+    %{key: nil} -> :present_nil
+    %{key: bound} -> {:present, bound}
+    _ -> captured
+  end
+end
+
+fn framed(bytes) do
+  case bytes do
+    <<len, payload :: binary-size(len), rest :: binary>> -> {len, payload, rest}
+    _ -> :bad_frame
+  end
+end
+
+fn recipes(bytes) do
+  case bytes do
+    <<x :: integer-size(8), 0>> -> x
+    <<x :: binary-size(1), 1>> -> x
+    _ -> :bad_recipe
+  end
+end
+
+fn aliased(value) do
+  case value do
+    whole = {:same, x, x} -> {whole, x}
+    _ -> :different
+  end
+end
+
+fn accepted(value) do
+  with {:ok, %{key: [head | tail]}} <- value,
+       <<len, payload :: binary-size(len)>> <- head do
+    {len, payload, tail}
+  else
+    {:error, %{reason: reason}} -> {:rejected, reason}
+    %{key: nil} -> :present_nil
+    other -> {:other, other}
+  end
+end
+
+fn main() do
+  assert(unpack({:nested, [%{box: %InlineBox{unused: 9, value: 7}}, 8]}) == {7, [8]},
+    "nested plan subjects bind the field and tail, shadowing the enclosing capture")
+  assert(unpack({:pair, 4, 5}) == {4, 5}, "outcome bindings preserve source order")
+  assert(unpack(%{key: nil}) == :present_nil, "a literal arm wins before a binding arm")
+  assert(unpack(%{key: 42}) == {:present, 42}, "a required present map value is bound")
+  assert(unpack(%{}) == 100, "an absent key reaches the enclosing capture")
+  assert(framed(<<2, 65, 66, 67>>) == {2, "AB", "C"},
+    "dependent field sizes reuse the dispatch extraction")
+  assert(framed(:no) == :bad_frame, "a nonbinary reaches the arm with no bindings")
+  assert(recipes(<<65, 1>>) == "A", "incompatible extraction recipes at the same ordinal cannot share a value")
+  assert(aliased({:same, 7, 7}) == {{:same, 7, 7}, 7}, "aliases and repeated bindings retain their values")
+  assert(accepted({:ok, %{key: [<<2, 65, 66>>, 9]}}) == {2, "AB", [9]},
+    "successive with outcomes supply bindings to the remaining match and body")
+  assert(accepted({:error, %{reason: :bad}}) == {:rejected, :bad},
+    "with else binds a nested map field from its winning outcome")
+  assert(accepted(%{key: nil}) == :present_nil, "with else preserves a present nil")
+  assert(accepted(%{}) == {:other, %{}}, "with else preserves an absent-key fallback")
+end

@@ -14,7 +14,7 @@
 <div class="toc">
 <ul>
   <li><a href="#idea">1. The sorting machine</a></li>
-  <li><a href="#matcher">2. The five pieces a matcher uses</a></li>
+  <li><a href="#matcher">2. The pieces a dispatch plan uses</a></li>
   <li><a href="#guards">3. Guards and pinning</a></li>
   <li><a href="#share">4. We destructure once</a></li>
   <li><a href="#forms">5. One machine, four surface forms</a></li>
@@ -50,18 +50,26 @@ subjects, constants, tests, guards, bindings, and outcomes, not source
 patterns.</p>
 
 <!-- ─────────────────────────────── 2 ─────────────────────────────── -->
-<h2 id="matcher">2. The five pieces a dispatch plan uses</h2>
+<h2 id="matcher">2. The pieces a dispatch plan uses</h2>
 
-<p>A compiled dispatch plan only holds five kinds of node, plus a list of
+<p>A compiled dispatch graph holds three kinds of node, plus a list of
 inputs, pinned values (the <code>^name</code> things), and any
 pre-prepared constants:</p>
 
 <pre>Node
   Fail                                <span class="com"># nothing matched, reject</span>
-  Leaf(body_id, bindings)             <span class="com"># clause won; pluck these</span>
-  Switch(subject, cases, default)     <span class="com"># jump table on a value</span>
-  Test(test, on_true, on_false)       <span class="com"># single yes/no probe</span>
-  Guard(expr, on_true, on_false)      <span class="com"># pure expression check</span></pre>
+  Outcome(outcome, evidence)          <span class="com"># clause won; keep its proven facts</span>
+  Test(predicate, on_match, on_miss)  <span class="com"># single yes/no probe</span></pre>
+
+<p>The plan's outcome table supplies the winning body and its bindings.
+Each test edge carries the facts and field projections established by that
+answer.</p>
+
+<p>For inline <code>case</code> and <code>with</code> matches, the winning
+edge explicitly maps each required plan subject to its arm-local value.
+The arm receives the values already established by that successful match;
+it does not run a second pattern-binding walk. Wildcards create no arm
+binding. Function-head binding remains a separate compiler boundary.</p>
 
 <p>And the things a dispatch plan can ask about are also a small list:</p>
 
@@ -73,22 +81,43 @@ pre-prepared constants:</p>
   MapKind        <span class="com"># is this a map?</span>
   MapHasKey      <span class="com"># does this map have this key?</span>
   Bitstring      <span class="com"># do these bitstring fields parse?</span>
-  Type           <span class="com"># type precondition</span></pre>
+  Type           <span class="com"># type precondition, including a named struct</span>
+  Guard          <span class="com"># does this pure expression succeed?</span></pre>
 
 <p>And the things it can <em>name</em> ("subjects") are paths into the
 original input:</p>
 
-<pre>SubjectRef
+<pre>Subject
   Input(i)                  <span class="com"># the whole i-th input</span>
   TupleField(base, i)       <span class="com"># the i-th slot of a tuple</span>
+  StructField(base, name)   <span class="com"># a named field, after the struct type test passes</span>
   ListHead(base) / ListTail <span class="com"># head/tail of a cons</span>
   MapValue(base, key)       <span class="com"># the value under a key, only valid after MapHasKey</span>
-  BitstringField(base, i)   <span class="com"># the i-th parsed field of a bitstring</span></pre>
+  BitstringField(base, recipe) <span class="com"># exact kind, size, preceding extraction, and field modifiers</span></pre>
+
+<p>Subjects live in one plan-owned graph. A bitstring recipe includes its
+preceding field and any dependent-size subject, so two incompatible field
+recipes cannot accidentally name the same extracted value.</p>
 
 <p>That's the whole vocabulary. A dispatch plan is subjects, tests, branches,
 guards, and leaves that say "clause <em>k</em> wins, and here are the
 values to pluck." Leaves name the winning body and the bindings to
 materialize for it.</p>
+
+<p>A struct pattern checks the named struct before reading its fields:</p>
+
+<pre><span class="kw">case</span> value <span class="kw">do</span>
+  %Box{value: <span class="num">7</span>} -&gt; <span class="atm">:seven</span>
+  %Box{value: x} -&gt; {<span class="atm">:box</span>, x}
+  _ -&gt; <span class="atm">:other</span>
+<span class="kw">end</span></pre>
+
+<p>With <code>%Box{value: 8}</code>, the second clause binds <code>x</code>
+to <code>8</code>. A plain map such as <code>%{value: 8}</code>, or a different
+struct with the same fields, reaches <code>:other</code>. Fields match by name,
+so their order in the pattern does not matter. Qualified and nested struct
+patterns follow the same rule, including in function heads and
+<code>receive</code>.</p>
 
 <div class="box blue">
 <p><strong>The useful constraint:</strong> dispatch plans are probes, tests,
@@ -128,8 +157,8 @@ itself: arithmetic, comparisons, boolean
 connectives, simple field access, and calls to user-defined guard
 helpers. No allocations, no arbitrary function calls.</p>
 
-<p>That is exactly the <code>Guard(expr, on_true, on_false)</code> node
-from section 2. On <code>true</code>, the matcher proceeds to the
+<p>A guard is a predicate on a <code>Test</code> node, like the structural
+questions in section 2. On <code>true</code>, the matcher proceeds to the
 leaf; on <code>false</code>, it falls through to the next row of the
 SourcePatternRows.</p>
 

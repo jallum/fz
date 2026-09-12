@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
-use super::code::CodeId;
-use super::facts::{ClaimShape, DerivationId, FactUse};
+use super::code::SourceOwner;
+use super::facts::{ClaimShape, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
@@ -176,8 +176,8 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Job {
-    IndexCode(CodeId),
-    ScopeCode(CodeId),
+    IndexCode(SourceOwner),
+    ScopeCode(SourceOwner),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
     PublishFunctionSource(FunctionId),
@@ -260,8 +260,8 @@ fn job_order_rank(job: &Job) -> u8 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
-    CodeIndexed(CodeId),
-    CodeScoped(CodeId),
+    CodeIndexed(SourceOwner),
+    CodeScoped(SourceOwner),
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),
@@ -466,26 +466,7 @@ pub(crate) fn as_fact_use(usage: FactUse<DependencyKey>) -> Option<FactUse<FactK
 
 pub type WorkGraph = Scheduler<Job, DependencyKey>;
 
-/// One independently-keyed answer a job reached, beside the whole-body one.
-/// `reads`/`outputs`/`changed` are that answer's alone, and `concluded` says
-/// whether the run reached it before any block (see
-/// `scheduler::DerivationEffects`). A job that reports none of these publishes
-/// its whole body as one answer, which is what every job does today.
-#[derive(Debug, Clone)]
-pub(crate) struct JobDerivation {
-    pub(crate) derivation: DerivationId,
-    pub(crate) reads: Vec<FactUse<FactKey>>,
-    pub(crate) outputs: Vec<FactKey>,
-    pub(crate) changed: Vec<FactKey>,
-    pub(crate) concluded: bool,
-}
-
-/// What one job run reports. The flat `reads`/`outputs`/`changed` fields are
-/// the job's WHOLE-BODY answer — `DerivationId::SOLE` — and `waits` are the
-/// job's, since a job blocks whole. `derivations` names further answers the
-/// same run reached independently; leaving it empty (every job today) means
-/// the whole body is one answer and the ledger behaves exactly as it did
-/// before publisher identity was refined.
+/// One job's answer: exact dependencies, owned facts, and contributions.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     /// Actual RuntimeDemand body walks; prerequisite-only returns perform none.
@@ -500,7 +481,6 @@ pub(crate) struct JobEffects {
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         std::collections::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,
-    pub(crate) derivations: Vec<JobDerivation>,
 }
 
 impl JobEffects {

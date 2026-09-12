@@ -247,7 +247,7 @@ typed address. `Fatal` identifies an actual failed scheduler job.
 The public JSONL projection (`jsonl.rs::write_opaque`) renders `Job`,
 `DependencyKey`, `FactKey`, `ProductKey`, `CallSiteKey`, and `TransportPosition` as
 within-run identity, not a bare variant name: each carries its raw payload
-ids (`root_id`, `function_id`, `arrow`, `code_id`, `module_id`, `callsite`,
+ids (`root_id`, `function_id`, `arrow`, `source_owner`, `module_id`, `callsite`,
 `entry`, `semantic_index`, `need`, ...) alongside `kind`. `arrow` is the
 interned `Ty`'s raw handle (`Ty::as_u32`), never `Types::display` — display
 is measured non-injective and would conflate distinct activations that
@@ -614,7 +614,8 @@ stored fact beside its owner. The observer-free `World` core mutates first; a
 typed `ExecutionContext::emit_*` helper runs only when that mutation reports a
 change. The raw callback receives `World` plus the stable
 key that addresses the result: `FunctionId`, `ModuleId`, `RootId`, `TypeName`,
-`ActivationKey`, or `CallSiteKey`. Generated-function publication adds its raw owner key. A
+`ActivationKey`, or `CallSiteKey`. Generated-function publication adds its typed owning
+`FunctionId`. A
 handler reads the stored function source, contract, lowered body, dispatch,
 type, protocol wiring, activation analysis, or callsite summary from those
 authorities during the callback.
@@ -631,13 +632,20 @@ function contracts, lowered bodies, guard and entry dispatch, modules, structs,
 types, protocol dispatch, activation analysis, callsite summaries, roots, and
 code submissions. Backend and native programs live only in the
 retained product memo: `pull.product.settled` carries successful typed product
-settlement, and `native_program.reusable_cons` carries the root plus its exact
+settlement, and `native_program.list_retention` carries the root plus its exact
 backend input when native lowering succeeds. A failed evaluation appears as a
 typed `pull.product.evaluated` failure with no native settlement. Code
 submission carries raw
-`World` plus either its `CodeId` or the existing runtime-module registration
+`World` plus either its `SourceOwner` or the existing runtime-module registration
 result. No event duplicates ids, arities, counts, names, source references, or
 stored artifacts.
+
+The JSON projection of `native_program.list_retention` reports
+`construction_count` (List instructions with a retained source) and
+`physical_capture_count` (actual physical source capture lanes). Destructuring
+alone counts as neither. Runtime process-exit fields are
+`list_retention_attempts` and `list_retention_hits`; a hit includes unchanged
+identity retention as well as guarded rewriting.
 
 `work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
 the job and applied step, including changed facts, movements, wakes, and waits.
@@ -654,9 +662,9 @@ settled return from `World`. `return_type.widened` is a separate raw
 candidate.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
-`World` with the submitted `CodeId` or runtime registration. Protocol callback
+`World` with the submitted `SourceOwner` or runtime registration. Protocol callback
 and implementation events carry raw `World` plus their already-existing
-function/protocol/target keys. The reusable-cons handler derives its counts
+function/protocol/target keys. The list-retention handler derives its counts
 from the raw `BackendProgram`.
 
 `--dump` output is synchronous requested output, not telemetry. One

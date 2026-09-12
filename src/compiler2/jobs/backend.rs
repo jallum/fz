@@ -685,7 +685,8 @@ fn lower_backend_entry(
         origin: lower_entry_origin(abi, entry_index, entry),
         params: entry.params.clone(),
         captures: backend_entry_captures(lowerer.world, abi, &entry.captures, &capture_positions)?,
-        reusable_cons_captures: entry.reusable_cons_captures.clone(),
+        physical_captures: entry.physical_captures.clone(),
+        physical_params: entry.physical_params.clone(),
         steps: entry
             .steps
             .iter()
@@ -776,7 +777,7 @@ fn lower_backend_tail(
         LoweredTail::Receive(receive) => BackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
             bindings: receive.bindings.clone(),
             dispatch: receive.dispatch.clone(),
-            clauses: receive.clauses.clone(),
+            outcomes: receive.outcomes.clone(),
             after: receive.after.clone(),
             dest: receive.dest.clone(),
         })),
@@ -876,19 +877,30 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     items: items.clone(),
                 },
             ),
-            LoweredStep::List { value, items, tail } => self.construction_step_or_omitted(
+            LoweredStep::List {
+                value,
+                items,
+                tail,
+                retention,
+            } => self.construction_step_or_omitted(
                 *value,
                 BackendStep::List {
                     value: *value,
                     items: items.clone(),
                     tail: *tail,
+                    retention: *retention,
                 },
             ),
-            LoweredStep::Map { value, entries } => self.construction_step_or_omitted(
+            LoweredStep::Map {
+                value,
+                entries,
+                quoted_span,
+            } => self.construction_step_or_omitted(
                 *value,
                 BackendStep::Map {
                     value: *value,
                     entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+                    quoted_span: *quoted_span,
                 },
             ),
             LoweredStep::MapUpdate { value, base, entries } => self.construction_step_or_omitted(
@@ -1049,7 +1061,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         _closure_callee: Option<super::super::body::ValueId>,
         args: &[CallArg],
     ) -> Result<Vec<BackendCallArg>, FatalError> {
-        args.iter().map(|arg| Ok(BackendCallArg { value: arg.value })).collect()
+        args.iter()
+            .map(|arg| {
+                Ok(BackendCallArg {
+                    value: arg.value,
+                    ownership: arg.ownership,
+                })
+            })
+            .collect()
     }
 }
 
@@ -1210,6 +1229,9 @@ fn collect_dispatch_atoms(
                 if let ProjectionKind::MapValue { key } = &projection.kind {
                     collect_dispatch_const_atoms(key, seen, atoms);
                 }
+                if let ProjectionKind::StructField(field) = &projection.kind {
+                    push_atom(seen, atoms, field);
+                }
             }
         }
     }
@@ -1275,7 +1297,7 @@ fn collect_guard_atoms(
             collect_guard_atoms(world, lhs, seen, atoms);
             collect_guard_atoms(world, rhs, seen, atoms);
         }
-        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+        PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
             for input in inputs {
                 collect_guard_atoms(world, input, seen, atoms);
             }
@@ -1481,7 +1503,8 @@ mod tests {
                     origin: BackendEntryOrigin::Clause,
                     params: Vec::new(),
                     captures: Vec::new(),
-                    reusable_cons_captures: Vec::new(),
+                    physical_captures: Vec::new(),
+                    physical_params: Vec::new(),
                     steps: Vec::new(),
                     tail: BackendTail::ClosureCall {
                         value: ValueId::from_u32(2),
@@ -1490,6 +1513,7 @@ mod tests {
                         target: None,
                         args: vec![BackendCallArg {
                             value: ValueId::from_u32(3),
+                            ownership: crate::fz_ir::OwnershipMode::Share,
                         }],
                         dest: ControlDestination::Return,
                         return_flow: Some(BackendReturnFlow::Deliver {

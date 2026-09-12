@@ -48,6 +48,13 @@ only. Distinct rows still reach the antichain below, and another analysis
 conclusion has its own contribution set, so neither evidence nor publisher
 ownership is collapsed.
 
+Callsite coalescing joins the walked targets' transport surfaces and return
+evidence while carrying their original activation contributions intact. For
+example, rows `(list(int), list(:left))` and `(list(:right), list(int))`
+remain two rows even when they select one callee key. The column-wise call
+summary is a transport projection, never a new call to resolve or an input
+row to publish.
+
 - whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
   says exactly what a standing row says;
 - whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated
@@ -84,13 +91,15 @@ Clause reachability is a pure compiler2 calculation over the entry
 `PatternDispatchPlan`, the shared `Types`, and one input row at a time —
 `AnalyzeActivation` dispatches and analyzes each row independently and merges
 only post-analysis results (reachable clauses by set union, failure by OR,
-return evidence by join, call emissions by coalescing). Branch
-states retain only root input `Ty` values and are memoized by graph node plus
-root row. Edge proofs refine those roots; projected subjects are always derived
-again through `PatternSubjectRef`, so no independently cached field/head type
-can lose correlation or leak one list position into another. The result names
-sorted reachable outcomes and whether graph failure remains reachable; it does
-not publish a fact or consult `World`.
+return evidence by join, call emissions by coalescing). Branch states retain
+root input `Ty` values and subject-indexed empty/cons list-shape evidence;
+the graph node and this full state form the visited key. Edge proofs refine
+the roots and list-shape evidence. Each plan-owned `SubjectId`'s type is projected
+fresh by following its `SubjectSource` recipe from the roots, not cached
+independently. List-shape evidence rejects contradictory paths without widening
+one list position's observation into another's type. The result names sorted
+reachable outcomes and whether graph failure remains reachable; it does not
+publish a fact or consult `World`.
 
 ## Executable demand is local semantic output
 
@@ -291,7 +300,10 @@ the ignition path for that caller-discovered callee's first analysis pass.
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. The `Activation` CLAIM rides a
+changes can withdraw stale contributions. If another publisher remains, the
+store reports whether that withdrawal actually narrowed the joined input rows;
+a changed withdrawal travels as a ground shift, while an equal withdrawal is
+quiet. The `Activation` CLAIM rides a
 stricter rule than the inputs do: a non-rebased conclusion keeps every
 `Activation` it did not re-emit, and only a rebased one — whose ground actually
 shifted — withdraws. The

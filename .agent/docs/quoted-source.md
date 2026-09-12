@@ -2,6 +2,39 @@
 
 `src/compiler2/source.rs` is the compiler2-owned quoted-source substrate.
 
+## Source Identity And Provenance
+
+`SourceOwner` identifies one logical publication slot. Ordinary named and
+unnamed submissions and compiler-owned preludes each receive a distinct owner;
+runtime modules reserve their owners before their source is demanded. A
+reserved owner has no source version yet.
+
+`SourceVersion` identifies one exact immutable name/text entry in `SourceMap`.
+`CodeMap` holds the owner state and its optional version, but does not copy the
+name or text. Materializing a reserved owner creates the `SourceMap` entry and
+records that version in the same owner slot. The current ingestion API creates
+each ordinary owner and version together; source replacement is not exposed.
+The front door receives that map and version and reads the registered name/text
+directly, so callers cannot pair a version with different source bytes.
+
+Jobs and declaration provenance use `SourceOwner` because they publish for a
+logical source. Tokens, diagnostics, and quoted AST metadata use
+`SourceVersion` because their byte ranges belong to exact text. Macro results
+keep each node's original version independently—quoted nodes retain the macro
+definition version while an unquoted subtree retains the caller version—and
+keep the lexical publisher's owner separately. A quoted graph remains owned by
+its `QuotedSourceRoot`; it is never assigned a synthetic whole-graph version.
+
+A generated lambda's diagnostic `Span` remains exact node provenance, separate
+from its code/capture identity. Final quoted-function decoding assigns each
+lambda a typed `LambdaOccurrence` in its existing recursive traversal. Immutable
+AST clones preserve that occurrence through lowering. The function interner
+combines it with its owner's shared `FunctionDenotation`; compiler type ordering
+and runtime closure comparison read that same immutable denotation. Two
+source-less or same-definition-site macro expansions therefore remain distinct
+without making byte ranges, `SourceVersion`, or rendered labels semantic
+authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
+
 ## What It Owns
 
 - One source graph lives on one Fz `Process` heap, carried as runtime-shaped
@@ -45,6 +78,11 @@
 
 - AST nodes are Elixir-shaped 3-tuples:
   `{head, meta_map, tail}`.
+- Untrusted readers obtain that structure only through
+  `QuotedSourceCursor::ast_node(&SourceMap)`. That boundary validates the
+  node's own optional span and returns it with the node, so nested wrappers
+  cannot be consumed before their provenance is checked. It is local to each
+  structural read; there is no whole-graph validation pass.
 - Most calls use an atom head and `tail = [arg, ...]`.
 - Remote calls and closure calls are allowed to carry a quoted callee AST in
   `head`, not just an atom.
@@ -59,8 +97,9 @@
   frontdoor while it is already walking the source token stream. A token
   payload is Fz-shaped quoted data, not a source string: a list of encoded
   lexer tokens with kind, payload, span bounds, and `space_before`. Quoted
-  readers decode those payloads directly; they never re-enter `Lexer` or
-  reconstruct type tokens from quoted AST.
+  readers decode those payloads directly through the same `SourceMap` range
+  validation as AST metadata; they never re-enter `Lexer` or reconstruct type
+  tokens from quoted AST.
 - Postfix bracket access quotes through an `Access.get` remote callee form whose
   metadata carries `__fz_from_brackets__`. Decoding recognises the access by
   THAT MARKER, never by the alias: decoding runs before alias resolution, so
@@ -69,8 +108,8 @@
   user-defined `get/2` into a map index. Elixir draws the same line, with a
   resolved module atom plus `from_brackets: true` in meta. The marker is not
   writable from source.
-- `cond do` quotes through ordinary `{:cond, meta, [[do: [{:->, ...}, ...]]]}`.
-  structure.
+- `cond do` quotes through ordinary
+  `{:cond, meta, [[do: [{:->, ...}, ...]]]}` structure.
 - Capture refs cover local names, remote names, and bare/operator refs such as
   `&Kernel.+/2` and `&+/2`.
 - Source-only sugars may appear in raw quoted source and in raw
@@ -123,8 +162,8 @@
   `FunctionSurface`. Partial `case` and `with else` surfaces emit
   `type/no-matching-clause` warnings through the normal diagnostic telemetry
   bus.
-- The front door renders those diagnostics through the shared `CodeMap` source
-  index. Quoted macro errors must retain the originating call span; a generated
+- Diagnostics resolve exact versions through the World-held `SourceMap`.
+  Quoted macro errors must retain the originating call span; a generated
   span is reserved for diagnostics with no user construct to locate.
 - The noted function-source fact must carry enough callable surface to keep
   pre-definition name resolution honest. Today that explicitly includes the
@@ -156,12 +195,13 @@
 - `__fz_lexical__`: stable lexical context; semantic content, compared by
   `semantically_eq`.
 - `__fz_span__`: diagnostic-only span payload; not semantic content, skipped
-  by `semantically_eq`. Self-describing: it bakes the originating `SourceId`
-  alongside `start`/`length` at emit time, so `span_from_meta` reconstructs
-  the span from the node's own payload and needs no external code id from the
-  decode call site. This keeps a macro's rematerialized quoted fragment
-  correctly attributed to the file it was actually parsed from, even when a
-  different caller decodes it.
+  by `semantically_eq`. Self-describing: it carries the exact originating
+  `SourceVersion` alongside `start`/`length`. Readers accept it only when that
+  version and byte range resolve in the authoritative `SourceMap`; malformed
+  metadata is an error, while a missing key is explicit source absence and
+  remains `Span::DUMMY`. Source-less generated nodes are never stamped from a
+  parent. A macro's quoted fragment therefore remains attributed to its
+  definition text even when a different caller publishes or decodes it.
 - `__fz_namespace_id__`: transport-only namespace handle; not semantic
   content, skipped by `semantically_eq`.
 

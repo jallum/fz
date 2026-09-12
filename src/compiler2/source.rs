@@ -16,7 +16,7 @@ use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
-use crate::source::Span;
+use crate::source::{SourceMap, Span};
 
 const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
@@ -24,8 +24,23 @@ const FALSE_ATOM: &str = "false";
 
 const META_LEXICAL_KEY: &str = "__fz_lexical__";
 const META_NAMESPACE_ID_KEY: &str = "__fz_namespace_id__";
-const META_SPAN_KEY: &str = "__fz_span__";
 pub(crate) const META_MODULE_KEY: &str = "__fz_module__";
+pub(crate) const META_SPAN_KEY: &str = "__fz_span__";
+pub(crate) const META_SPAN_START_KEY: &str = "start";
+pub(crate) const META_SPAN_LENGTH_KEY: &str = "length";
+pub(crate) const META_SPAN_VERSION_KEY: &str = "source_version";
+
+pub(crate) fn quoted_span_entries(span: Span) -> [(&'static str, i64); 3] {
+    assert!(
+        !span.is_dummy(),
+        "absent provenance cannot be serialized as a quoted span"
+    );
+    [
+        (META_SPAN_START_KEY, span.start as i64),
+        (META_SPAN_LENGTH_KEY, span.length() as i64),
+        (META_SPAN_VERSION_KEY, span.source_version.as_u32() as i64),
+    ]
+}
 /// Stamped on the callee of a `lhs[key]` access so decoding can recognise the
 /// front door's own bracket sugar. The alias in that callee is NOT sufficient:
 /// decoding runs before alias resolution, so `alias Foo, as: Access` is
@@ -155,11 +170,9 @@ pub struct QuotedSourceMetadata {
     /// See [`META_FROM_BRACKETS_KEY`].
     pub from_brackets: bool,
     /// The byte-offset source span, carried verbatim from the lexer. Positions
-    /// are stored as a byte range — never line/column — so quoting and reading a
-    /// span are free copies; line/column is derived only when a diagnostic is
-    /// rendered, by the `SourceMap` (fz-hyj). The `code_id` is contextual: the
-    /// reader stamps the span with the source it is reading, so only the byte
-    /// range travels in the quoted heap.
+    /// are stored as an exact source version plus byte range — never
+    /// line/column. Quoting and reading a span are free copies; line/column is
+    /// derived only when a diagnostic is rendered by the `SourceMap`.
     pub span: Option<Span>,
 }
 
@@ -360,13 +373,9 @@ impl QuotedSourceBuilder {
         self.map(&entries)
     }
 
-    pub fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
-        let length = span.end.saturating_sub(span.start);
-        self.map(&[
-            (self.atom("start"), self.int(span.start as i64)),
-            (self.atom("length"), self.int(length as i64)),
-            (self.atom("code_id"), self.int(span.code_id.0 as i64)),
-        ])
+    fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
+        let entries = quoted_span_entries(*span).map(|(key, value)| (self.atom(key), self.int(value)));
+        self.map(&entries)
     }
 
     pub fn meta(&self, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
@@ -377,8 +386,8 @@ impl QuotedSourceBuilder {
         if let Some(context) = &meta.lexical_context {
             entries.push((self.atom(META_LEXICAL_KEY), self.lexical_context(context)?));
         }
-        if let Some(span) = &meta.span {
-            entries.push((self.atom(META_SPAN_KEY), self.span(span)?));
+        if let Some(span) = meta.span.filter(|span| !span.is_dummy()) {
+            entries.push((self.atom(META_SPAN_KEY), self.span(&span)?));
         }
         if meta.from_brackets {
             entries.push((self.atom(META_FROM_BRACKETS_KEY), self.bool(true)));
@@ -558,6 +567,9 @@ pub struct QuotedAstNode {
     pub head: QuotedSourceCursor,
     pub meta: QuotedSourceCursor,
     pub tail: QuotedSourceCursor,
+    /// Exact provenance resolved by the `SourceMap` at the structural read
+    /// boundary. Absence is represented only by `None`.
+    pub span: Option<Span>,
 }
 
 impl QuotedSourceCursor {
@@ -722,7 +734,7 @@ impl QuotedSourceCursor {
         Ok(None)
     }
 
-    pub fn ast_node(&self) -> Result<Option<QuotedAstNode>, QuotedSourceError> {
+    fn ast_node_parts(&self) -> Result<Option<[Self; 3]>, QuotedSourceError> {
         if self.root.tag() != ValueKind::STRUCT {
             return Ok(None);
         }
@@ -730,12 +742,63 @@ impl QuotedSourceCursor {
         if items.len() != 3 {
             return Ok(None);
         }
-        Ok(Some(QuotedAstNode {
-            head: items[0].clone(),
-            meta: items[1].clone(),
-            tail: items[2].clone(),
+        Ok(Some([items[0].clone(), items[1].clone(), items[2].clone()]))
+    }
+
+    /// Reads an untrusted AST node only after validating its own metadata
+    /// against the source authority.
+    pub fn ast_node(&self, sources: &SourceMap) -> Result<Option<QuotedAstNode>, QuotedSourceError> {
+        let Some([head, meta, tail]) = self.ast_node_parts()? else {
+            return Ok(None);
+        };
+        let span = span_from_meta(&meta, sources)?;
+        Ok(Some(QuotedAstNode { head, meta, tail, span }))
+    }
+
+    /// The front door has just built this value from typed lexer data, before
+    /// it crosses the quoted-source reader boundary. It needs only to confirm
+    /// that an item-position expression is call-shaped.
+    pub(super) fn trusted_builder_ast_call(&self) -> Result<bool, QuotedSourceError> {
+        let Some([_, _, tail]) = self.ast_node_parts()? else {
+            return Ok(false);
+        };
+        Ok(tail.list_items().is_ok())
+    }
+
+    /// Structural inspection for tests that own the builder input. Production
+    /// quoted-source readers must use [`Self::ast_node`].
+    #[cfg(test)]
+    pub(crate) fn trusted_ast_node(&self) -> Result<Option<QuotedAstNode>, QuotedSourceError> {
+        Ok(self.ast_node_parts()?.map(|[head, meta, tail]| QuotedAstNode {
+            head,
+            meta,
+            tail,
+            span: None,
         }))
     }
+}
+
+fn span_from_meta(meta: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<Span>, QuotedSourceError> {
+    let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
+        return Ok(None);
+    };
+    let read_u32 = |key| -> Result<u32, QuotedSourceError> {
+        let value = span_map
+            .map_value(key)?
+            .ok_or_else(|| QuotedSourceError::new(format!("quoted span is missing `{key}`")))?
+            .int_value()?;
+        u32::try_from(value).map_err(|_| QuotedSourceError::new(format!("quoted span `{key}` is outside u32")))
+    };
+    let start = read_u32(META_SPAN_START_KEY)?;
+    let length = read_u32(META_SPAN_LENGTH_KEY)?;
+    let source_version = read_u32(META_SPAN_VERSION_KEY)?;
+    let end = start
+        .checked_add(length)
+        .ok_or_else(|| QuotedSourceError::new("quoted span range overflows u32"))?;
+    sources
+        .checked_span(source_version, start, end)
+        .map(Some)
+        .ok_or_else(|| QuotedSourceError::new("quoted span does not resolve in the source map"))
 }
 
 /// Two-sided semantic equality over two quoted graphs in (possibly) different

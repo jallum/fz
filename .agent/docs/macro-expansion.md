@@ -63,7 +63,7 @@ exception:
   `MacroCall` (`build_form` in `quoted_surface.rs`), and its structure emerges
   from the expand -> `Fz.Compiler.define` -> define pipeline, never from a
   second mode-gated source parse.
-- The bootstrap is the lone exception. `is_bootstrap(code)` source — the prelude
+- The bootstrap is the lone exception. `is_bootstrap(owner)` source — the prelude
   and the runtime library modules — is read canonically: the same one reader,
   then `canonicalize_definitions` turns each def-head `MacroCall` into its typed
   form via `build_definition_form`, because the macros that implement def-heads
@@ -90,8 +90,11 @@ It does four macro-relevant jobs:
    `required_remote_macros`. An invocation demands the macro's backend content.
 
 3. Publish raw function source.
-   `define_source_function(...)` writes `FunctionSource { source,
-   required_remote_macros, ... }` without expanding ordinary bodies first.
+   `define_source_function(...)` writes `FunctionSource { owner, source,
+   required_remote_macros, ... }` without expanding ordinary bodies first. The
+   lexical publisher remains an owner while every returned node carries its own
+   immutable version; see
+   [`quoted-source`](quoted-source.md#source-identity-and-provenance).
 
 4. Expand item macros.
    `apply_item_macro_call(...)` expands the call through the same macro runtime

@@ -128,6 +128,14 @@ question about a language VALUE, not a storage kind, and a binary has two
 representations. `ValueKind::BINARY_REPRS` names them once so every lowering
 reads the same fact (fz-5xp.57).
 
+**Source struct matching** — the source producer in `dispatch_matrix::pattern`
+asks the same `Region::Type` question with a World-resolved tagged-record `Ty`.
+Its success evidence owns named `StructField` projections. Field names are
+source atom keys; schema module identity is typed, and neither tuple storage
+offsets nor a rendered type name participates in clause selection. Interpreter,
+local native dispatch, and receive dispatch consume this shared plan and use
+the existing named-field accessors.
+
 **Bitstring matching** — one runtime implementation, `fz_bs_read_field_bits`,
 reached from every door. But the CLAUSE HEAD is lowered twice — once into a
 dispatch region to select the clause, once into body steps to bind — so each

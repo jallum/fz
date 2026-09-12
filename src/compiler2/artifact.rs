@@ -26,10 +26,9 @@ use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::CallableShape;
 use crate::source::Span;
 
-pub use super::body::ReusableConsCapture;
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
-    LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
+    LoweredBitFieldSpec, LoweredBody, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId, ModuleId};
 use super::semantic::ExecutableRuntimeDemand;
@@ -735,7 +734,7 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
                 after,
                 ..
             } => {
-                other_uses.extend(pinned.iter().map(|(_, var)| *var));
+                other_uses.extend(pinned.iter().copied());
                 other_uses.extend(captures.iter().copied());
                 if let Some(after) = after {
                     other_uses.insert(after.timeout);
@@ -1142,7 +1141,7 @@ fn collect_edge_evidence_inputs(plan: &PatternDispatchPlan<Ty>, evidence: &EdgeE
         collect_region_predicate_inputs(plan, &proof.predicate, out);
     }
     for projection in &evidence.projections {
-        collect_subject_inputs(plan, projection.source, out);
+        collect_subject_inputs(plan, *projection, out);
     }
 }
 
@@ -1228,7 +1227,8 @@ pub struct BackendEntry {
     pub origin: BackendEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<BackendEntryCapture>,
-    pub reusable_cons_captures: Vec<ReusableConsCapture>,
+    pub physical_captures: Vec<ValueId>,
+    pub physical_params: Vec<ValueId>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
 }
@@ -1242,7 +1242,7 @@ pub struct BackendEntryCapture {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendReceive {
     pub bindings: DispatchBindings,
-    pub clauses: Vec<ReceiveClause>,
+    pub(crate) outcomes: Vec<OutcomeEdge>,
     pub after: Option<ReceiveAfter>,
     pub dest: ControlDestination,
     pub(crate) dispatch: PatternDispatchPlan<Ty>,
@@ -1271,6 +1271,7 @@ impl BackendEntryOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallArg {
     pub value: ValueId,
+    pub ownership: crate::fz_ir::OwnershipMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1322,16 +1323,18 @@ pub enum BackendStep {
     },
     Tuple {
         value: ValueId,
-        items: Vec<ValueId>,
+        items: Vec<crate::fz_ir::OwnershipUse<ValueId>>,
     },
     List {
         value: ValueId,
         items: Vec<ValueId>,
         tail: Option<ValueId>,
+        retention: Option<crate::fz_ir::ListRetention<ValueId>>,
     },
     Map {
         value: ValueId,
         entries: Vec<(ValueId, ValueId)>,
+        quoted_span: Option<Span>,
     },
     MapUpdate {
         value: ValueId,
@@ -1500,7 +1503,6 @@ fn native_fns_equal(left: &IrFn, right: &IrFn) -> bool {
         && left.owner_module == right.owner_module
         && left.ignored_entry_params == right.ignored_entry_params
         && left.physical_entry_params == right.physical_entry_params
-        && left.physical_capabilities == right.physical_capabilities
         && left.blocks.len() == right.blocks.len()
         && left
             .blocks
@@ -1688,7 +1690,8 @@ fn native_conts_equal(left: &IrCont, right: &IrCont) -> bool {
 
 fn native_receive_clauses_equal(left: &IrReceiveClause, right: &IrReceiveClause) -> bool {
     native_callsite_idents_equal(&left.ident, &right.ident)
-        && left.bound_names == right.bound_names
+        && left.outcome == right.outcome
+        && left.arguments == right.arguments
         && left.guard == right.guard
         && left.body == right.body
         && left.span == right.span

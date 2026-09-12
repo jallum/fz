@@ -1072,12 +1072,9 @@ fn bitstring_bad_size_error_span_brackets_the_size_modifier() {
 
 /// A malformed `@type` in the SECOND submitted file must surface its
 /// `RESOLVE_TYPE_ALIAS` diagnostic pointing at that second file, not at the
-/// first. `token_payload::decode_token` used to stamp every decoded token
-/// with a hardcoded `SourceId(0)` placeholder code id (only the byte
-/// offsets were real); in a single-file compile file 0 IS the only file, so
-/// the bug was invisible. Once a second file exists, an error whose tokens
-/// were decoded from that second file must carry ITS code id, or the
-/// diagnostic renders against the wrong source text entirely.
+/// first. Every decoded token must carry the exact immutable version of the
+/// text that produced it; accepting an inferred or placeholder identity would
+/// render the diagnostic against unrelated source text.
 #[test]
 fn malformed_type_alias_in_second_file_points_at_that_files_span() {
     let tel = ConfiguredTelemetry::new();
@@ -1107,13 +1104,17 @@ fn malformed_type_alias_in_second_file_points_at_that_files_span() {
 
     // The second file arrives once a root is already active, so it is
     // auto-scoped (fz-f98.14.5) -- exercising exactly the multi-file shape
-    // this bug hid behind: a real second `SourceId` whose decoded tokens
-    // must carry their own code id, not file 0's.
+    // this bug hid behind: a real second source version whose decoded tokens
+    // must retain that version rather than the first submission's.
     let second_source = "@type bad :: ,\n";
     let second_code = compiler.submit_code(CodeSubmission {
         name: Some("second.fz".to_string()),
         text: second_source.to_string(),
     });
+    let second_version = compiler
+        .world()
+        .source_version(second_code)
+        .expect("second source version");
     assert!(
         matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
         "the malformed `@type` in the second file should fail to parse",
@@ -1130,9 +1131,8 @@ fn malformed_type_alias_in_second_file_points_at_that_files_span() {
 
     let span = last_span.borrow().expect("expected a captured diagnostic span");
     assert_eq!(
-        span.code_id,
-        crate::source::Id(second_code.as_u32()),
-        "the diagnostic span must point at the SECOND file's source id, not file 0's"
+        span.source_version, second_version,
+        "the diagnostic span must point at the second file's immutable source version"
     );
 
     let comma_offset = second_source.find(',').expect("fixture contains `,`") as u32;

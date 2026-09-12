@@ -1,6 +1,7 @@
 use super::ordered_set::OrderedSet;
 
 use super::FactTable;
+use super::facts::ContentMovement;
 
 type TestFacts = FactTable<u32, &'static str>;
 
@@ -134,7 +135,7 @@ fn compiler2_fact_table_keeps_demand_facts_alive_until_the_last_demander_leaves(
 #[test]
 fn compiler2_fact_table_allows_retraction_to_bump_a_still_present_joined_fact() {
     let mut facts = TestFacts::new();
-    let fact = "activation-inputs";
+    let fact = "cum_activation-inputs";
 
     facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact], false);
     facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new(), false);
@@ -150,6 +151,11 @@ fn compiler2_fact_table_allows_retraction_to_bump_a_still_present_joined_fact() 
         changed.changed[0].new_revision,
         Some(2),
         "the surviving fact should receive a fresh revision when one publisher's removal changes it"
+    );
+    assert_eq!(
+        changed.changed[0].content_movement(),
+        Some(ContentMovement::Shift),
+        "a changed contribution withdrawal narrows the joined value",
     );
     assert_eq!(facts.revision(&fact), Some(2));
 }

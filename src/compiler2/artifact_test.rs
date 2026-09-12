@@ -166,7 +166,6 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         owner_module: String::new(),
         ignored_entry_params: vec![false],
         physical_entry_params: Vec::new(),
-        physical_capabilities: Vec::new(),
     });
     module.fn_idx.insert(entry_fn, 0);
 
@@ -327,7 +326,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         owner_module: String::new(),
         ignored_entry_params: vec![false],
         physical_entry_params: Vec::new(),
-        physical_capabilities: Vec::new(),
     });
     module.fn_idx.insert(entry_fn, 0);
     module.fns.push(FnIr {
@@ -345,7 +343,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         owner_module: String::new(),
         ignored_entry_params: vec![false],
         physical_entry_params: Vec::new(),
-        physical_capabilities: Vec::new(),
     });
     module.fn_idx.insert(cont_fn, 1);
 
@@ -521,7 +518,6 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         owner_module: String::new(),
         ignored_entry_params: vec![false],
         physical_entry_params: Vec::new(),
-        physical_capabilities: Vec::new(),
     });
     module.fn_idx.insert(entry_fn, 0);
 

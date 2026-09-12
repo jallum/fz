@@ -15,12 +15,10 @@
 # current-process heap allocation counters, and prints the list/struct/map heap
 # headline.
 #
-# Target for native JIT/AOT:
+# Interpreter/JIT/AOT allocation contract:
 #
 # - the two list literals allocate five cons cells;
-# - reusable-cons transport removes the append prefix copy, so no extra cons
-#   cells are
-#   allocated;
+# - exact source retention and strict-tail Transfer avoid an append prefix copy;
 # - no tuple/struct or map objects are needed for the value path;
 # - `heap_bytes = 80`.
 #

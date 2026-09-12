@@ -2,13 +2,13 @@ use super::*;
 use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
 use crate::diag::render::Renderer;
 use crate::metadata;
-use crate::source::{Id as CodeId, SourceMap, Span};
+use crate::source::{SourceMap, SourceVersion, Span};
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::vec_writer;
 use crate::telemetry::sink::TelemetryExt;
 use crate::telemetry::value::opaque;
 
-fn fixture() -> (Rc<RefCell<SourceMap>>, CodeId) {
+fn fixture() -> (Rc<RefCell<SourceMap>>, SourceVersion) {
     let mut sm = SourceMap::new();
     let fid = sm.add_code(Some("test.fz"), "fn main(), do: :ok\n");
     (Rc::new(RefCell::new(sm)), fid)

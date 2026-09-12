@@ -310,8 +310,8 @@
           </p>
           <p>
             When a settled prerequisite asks the drained graph to resolve a cycle,
-            finality belongs to the exact derivation and its co-outputs. Sibling
-            derivations and other publishers keep their own claims; unsettled
+            finality belongs to each publishing job and its co-outputs. Other
+            publishing jobs keep their own claims; unsettled
             external-product ground prevents certification. Later dependency
             movement unfinalizes the same claims through the ordinary work graph.
           </p>
@@ -1064,14 +1064,17 @@ ActivationAnalyzed(root, main/0, [])</code></pre>
         <p>
           Later analyses of <code>qsort/1</code>, <code>partition/4</code>, and
           <code>append/2</code> may re-contribute to an existing activation with different but
-          compatible input types. Those contributions join in the <code>Activation</code> slot:
+          compatible input types. Each call contributes a whole input row to
+          <code>ActivationInputs</code> for the selected activation:
         </p>
-        <pre><code>Activation(root, qsort/1, [nonempty_list(int)])   -- first contribution
-Activation(root, qsort/1, [list(int)])             -- later recursive contribution
-join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></pre>
+        <pre><code>qsort input row: [non_empty_list(int)]   -- first contribution
+qsort input row: [list(int)]             -- later recursive contribution
+retained row:   [list(int)]              -- covers the earlier whole row</code></pre>
         <p>
-          There is no second type-fixpoint loop hiding behind this. The joined activation fact is
-          the loop.
+          Arguments that arrived together stay together. If two calls share an activation but
+          supply different pairs, both pairs remain alternatives; combining their callsite
+          summaries does not invent a third call containing every mixture of those arguments.
+          Changed input evidence wakes the analysis through the same fact graph.
         </p>
       </div>
 

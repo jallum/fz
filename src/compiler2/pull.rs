@@ -673,13 +673,13 @@ impl ProductMemo {
         if self.observed_products.contains(key) {
             let after = self.external_state(key);
             if before != after {
-                self.external_changes.push(FactChange {
-                    key: key.clone(),
-                    old_revision: before.revision,
-                    new_revision: after.revision,
-                    old_settled: before.settled,
-                    new_settled: after.settled,
-                });
+                self.external_changes.push(FactChange::replacing(
+                    key.clone(),
+                    before.revision,
+                    after.revision,
+                    before.settled,
+                    after.settled,
+                ));
             }
         }
     }
@@ -1676,14 +1676,16 @@ impl ProductSessions {
         }
         let mut changes = coalesced
             .into_values()
-            .filter(|change| change.content_changed() || change.readiness_changed())
-            .map(|change| FactChange {
-                key: DependencyKey::Product(ProductAddress { root, key: change.key }),
-                old_revision: change.old_revision,
-                new_revision: change.new_revision,
-                old_settled: change.old_settled,
-                new_settled: change.new_settled,
+            .map(|change| {
+                FactChange::replacing(
+                    DependencyKey::Product(ProductAddress { root, key: change.key }),
+                    change.old_revision,
+                    change.new_revision,
+                    change.old_settled,
+                    change.new_settled,
+                )
             })
+            .filter(|change| change.content_changed() || change.readiness_changed())
             .collect::<Vec<_>>();
         changes.sort_by(|left, right| left.key.semantic_cmp(&right.key, types));
         for change in &changes {
@@ -1906,13 +1908,13 @@ impl ProductSessions {
             .iter()
             .map(|key| {
                 let before = session.memo.external_state(key);
-                FactChange {
-                    key: DependencyKey::Product(ProductAddress { root, key: key.clone() }),
-                    old_revision: before.revision,
-                    new_revision: None,
-                    old_settled: before.settled,
-                    new_settled: false,
-                }
+                FactChange::replacing(
+                    DependencyKey::Product(ProductAddress { root, key: key.clone() }),
+                    before.revision,
+                    None,
+                    before.settled,
+                    false,
+                )
             })
             .collect()
     }
@@ -2665,8 +2667,12 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler.complete_ordered_with_external(
             &super::super::Job::SeedRoot(root),
-            HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
-            Vec::new(),
+            crate::compiler2::scheduler::CompletionEffects {
+                reads: HashSet::new(),
+                waits: HashSet::from([FactUse::current(DependencyKey::Product(address.clone()))]),
+                outputs: Vec::new(),
+                changed: Vec::new(),
+            },
             &sessions,
             &types,
         );
@@ -3412,7 +3418,7 @@ mod tests {
                         }
                     } else if self.backend_value.is_none() {
                         return PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(
-                            super::super::CodeId::ZERO,
+                            super::super::SourceOwner::for_test(0),
                         )));
                     }
                     self.produced.insert(key.clone());
@@ -3752,7 +3758,7 @@ mod tests {
         let executable = fake_executable(root);
         let parent = ProductKey::RootBackendProduct(root);
         let child = ProductKey::AbiExecutable(executable.clone());
-        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::SourceOwner::for_test(0)));
         let mut producers = FakeProducers {
             root_entry: Some(executable),
             runtime_fact: Some(fact.clone()),
@@ -3844,7 +3850,7 @@ mod tests {
     fn readiness_movement_invalidates_a_mixed_current_and_settled_fact_reader() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(70);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let fact = FactKey::CodeIndexed(super::super::SourceOwner::for_test(0));
         let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
@@ -3891,7 +3897,7 @@ mod tests {
     fn settled_reader_coalesces_dirty_and_equal_resettlement() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(71);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let fact = FactKey::CodeIndexed(super::super::SourceOwner::for_test(0));
         let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
@@ -3933,7 +3939,7 @@ mod tests {
     fn settled_reader_reproduces_after_changed_resettlement() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(72);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let fact = FactKey::CodeIndexed(super::super::SourceOwner::for_test(0));
         let key = ProductKey::AbiExecutable(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
@@ -3973,7 +3979,7 @@ mod tests {
         let grandparent = ProductKey::RootBackendProduct(root);
         let parent = ProductKey::AbiExecutable(executable.clone());
         let child = ProductKey::BackendExecutable(executable);
-        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::SourceOwner::for_test(0)));
         let mut producers = FakeProducers {
             root_entry: match &parent {
                 ProductKey::AbiExecutable(executable) => Some(executable.clone()),
@@ -4065,7 +4071,9 @@ mod tests {
         let executable = fake_executable(root);
         let key = ProductKey::BackendExecutable(executable);
         let mut producers = FakeProducers {
-            backend_fact: Some(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO))),
+            backend_fact: Some(FactUse::current(FactKey::CodeIndexed(
+                super::super::SourceOwner::for_test(0),
+            ))),
             ..FakeProducers::default()
         };
         let mut driver = ProductDriver::new(&tel, root);
@@ -4074,7 +4082,9 @@ mod tests {
 
         assert_eq!(
             outcome,
-            PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO)))
+            PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(
+                super::super::SourceOwner::for_test(0)
+            )))
         );
         assert!(driver.session().memo().get(&key).is_none());
         assert!(!driver.session().memo().contains_in_progress(&key));
@@ -4807,7 +4817,8 @@ mod tests {
                     origin: ControlEntryOrigin::Clause,
                     params: Vec::new(),
                     captures: Vec::new(),
-                    reusable_cons_captures: Vec::new(),
+                    physical_captures: Vec::new(),
+                    physical_params: Vec::new(),
                     steps: Vec::new(),
                     tail: LoweredTail::Halt {
                         atom: "done".to_string(),
@@ -5693,7 +5704,7 @@ mod tests {
         let root = RootId::for_test(40);
         let reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 400));
         let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 401));
-        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::SourceOwner::for_test(0)));
         let other_fact = FactUse::settled(FactKey::RootEntry(root));
         let first = FactState {
             revision: Some(1),
@@ -5755,7 +5766,7 @@ mod tests {
         let right = ProductKey::AbiExecutable(fake_executable_with_function(root, 411));
         let external = ProductKey::AbiExecutable(fake_executable_with_function(root, 412));
         let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 413));
-        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::SourceOwner::for_test(0)));
         let fact_one = FactState {
             revision: Some(1),
             settled: false,

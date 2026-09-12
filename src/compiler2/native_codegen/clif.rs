@@ -60,16 +60,16 @@ pub(crate) fn emit_fn_body<M: Module>(
     Ok(())
 }
 
-/// Pack a Span into a Cranelift SourceLoc (u32): 8 bits code_id + 24
+/// Pack a Span into a Cranelift SourceLoc (u32): 8 bits source_version + 24
 /// bits start offset. Dummy spans become SourceLoc::default() so they
 /// don't generate noise in the dump.
 pub(crate) fn span_to_srcloc(s: Span) -> SourceLoc {
     if s.is_dummy() {
         return SourceLoc::default();
     }
-    let code_id = (s.code_id.0 & 0xFF) << 24;
+    let source_version = (s.source_version.as_u32() & 0xFF) << 24;
     let offset = s.start & 0x00FF_FFFF;
-    SourceLoc::new(code_id | offset)
+    SourceLoc::new(source_version | offset)
 }
 
 pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {

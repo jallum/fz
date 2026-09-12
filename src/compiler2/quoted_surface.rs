@@ -5,12 +5,10 @@ use fz_runtime::any_value::AnyValueRef;
 use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
-use crate::source::{Id as SourceId, Span};
+use crate::source::{SourceMap, Span};
 
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
-
-const META_SPAN_KEY: &str = "__fz_span__";
 
 #[derive(Debug, Clone)]
 pub struct ScopeSurface {
@@ -141,8 +139,8 @@ type ImportKeywordArgs = Vec<(String, ImportFilterList)>;
 /// (`fn`/`fnp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
 /// later. Structure is never re-parsed from source here; it emerges from the
 /// expand -> `Fz.Compiler.define` -> define pipeline.
-pub fn read_scope_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError> {
-    read_surface(source)
+pub fn read_scope_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
+    read_surface(source, sources)
 }
 
 /// Reads canonical content — the bootstrap source and any post-expansion node
@@ -151,21 +149,24 @@ pub fn read_scope_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, Quo
 /// `MacroCall` is extracted into its typed [`ScopeForm`] via
 /// [`build_definition_form`]: in canonical content a def-head is a definition to
 /// extract, not a macro to expand.
-pub fn read_compiler_fragment_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_surface(source)?)
+pub fn read_compiler_fragment_surface(
+    source: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<ScopeSurface, QuotedSourceError> {
+    canonicalize_definitions(read_surface(source, sources)?, sources)
 }
 
 /// Extracts the typed definitions out of an already-read surface. A def-head
 /// that the user reader produced as a `MacroCall` becomes its typed form; every
 /// other form passes through unchanged.
-fn canonicalize_definitions(surface: ScopeSurface) -> Result<ScopeSurface, QuotedSourceError> {
+fn canonicalize_definitions(surface: ScopeSurface, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
     let ScopeSurface { attrs, forms } = surface;
     let mut canonical = Vec::with_capacity(forms.len());
     for form in forms {
         match form {
-            ScopeForm::MacroCall(call) => match surface_head_name(&call.source).ok() {
+            ScopeForm::MacroCall(call) => match surface_head_name(&call.source, sources)? {
                 Some(head) if is_scope_definition_head(&head) => {
-                    canonical.push(build_definition_form(call.source, &head)?);
+                    canonical.push(build_definition_form(call.source, &head, sources)?);
                 }
                 _ => canonical.push(ScopeForm::MacroCall(call)),
             },
@@ -178,7 +179,7 @@ fn canonicalize_definitions(surface: ScopeSurface) -> Result<ScopeSurface, Quote
     })
 }
 
-fn read_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError> {
+fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
     let quoted_items = source.cursor().list_items()?;
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
@@ -187,30 +188,28 @@ fn read_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceE
     let mut pending_function_attrs = Vec::new();
 
     for quoted_item in quoted_items {
-        let Some(node) = quoted_item.ast_node()? else {
+        let Some(node) = quoted_item.ast_node(sources)? else {
             return Err(QuotedSourceError::new("expected quoted item AST node"));
         };
-        let head_name = match node.head.atom_name() {
-            Ok(head_name) => head_name,
-            Err(_) => {
-                flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
-                reject_dangling_function_attrs(source, &pending_function_attrs)?;
-                forms.push(build_form(source.subroot(quoted_item.root()))?);
-                continue;
-            }
-        };
+        if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
+            flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+            reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
+            forms.push(build_form(source.subroot(quoted_item.root()), sources)?);
+            continue;
+        }
+        let head_name = node.head.atom_name()?;
         if head_name.starts_with('@') {
             if matches!(head_name.as_str(), "@doc" | "@spec") {
                 pending_function_attrs.push(quoted_item.root());
             } else {
-                attrs.push(parse_scope_attr(&quoted_item)?);
+                attrs.push(parse_scope_attr(&quoted_item, sources)?);
             }
             continue;
         }
 
         match head_name.as_str() {
             head if is_function_definition_head(head) => {
-                let key = parse_function_group_key(&source.subroot(quoted_item.root()))?;
+                let key = parse_function_group_key(&source.subroot(quoted_item.root()), sources)?;
                 let order_key = key.clone();
                 let entry = groups.entry(key.clone()).or_insert_with(|| {
                     group_order.push(order_key);
@@ -229,40 +228,43 @@ fn read_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceE
                 entry.item_roots.push(quoted_item.root());
             }
             "extern" => {
-                flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
+                flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
                 let mut item_roots = std::mem::take(&mut pending_function_attrs);
                 item_roots.push(quoted_item.root());
                 let grouped = source.interned_list_subroot(&item_roots)?;
-                forms.push(build_form(grouped)?);
+                forms.push(build_form(grouped, sources)?);
             }
             _ => {
-                flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
-                reject_dangling_function_attrs(source, &pending_function_attrs)?;
-                forms.push(build_form(source.subroot(quoted_item.root()))?);
+                flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+                reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
+                forms.push(build_form(source.subroot(quoted_item.root()), sources)?);
             }
         }
     }
 
-    flush_function_groups(source, &mut forms, &mut group_order, &mut groups)?;
-    reject_dangling_function_attrs(source, &pending_function_attrs)?;
+    flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+    reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
     Ok(ScopeSurface { attrs, forms })
 }
 
-pub fn read_module_body_surface(form: &ModuleForm) -> Result<ScopeSurface, QuotedSourceError> {
-    read_do_body_surface(&form.source)
+pub fn read_module_body_surface(form: &ModuleForm, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
+    read_do_body_surface(&form.source, sources)
 }
 
-pub fn read_protocol_body_surface(form: &ProtocolForm) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_do_body_surface(&form.source)?)
+pub fn read_protocol_body_surface(form: &ProtocolForm, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
+    canonicalize_definitions(read_do_body_surface(&form.source, sources)?, sources)
 }
 
-pub fn read_protocol_impl_body_surface(form: &ProtocolImplForm) -> Result<ScopeSurface, QuotedSourceError> {
-    canonicalize_definitions(read_do_body_surface(&form.source)?)
+pub fn read_protocol_impl_body_surface(
+    form: &ProtocolImplForm,
+    sources: &SourceMap,
+) -> Result<ScopeSurface, QuotedSourceError> {
+    canonicalize_definitions(read_do_body_surface(&form.source, sources)?, sources)
 }
 
-fn read_do_body_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError> {
-    let body = extract_do_body_list_root(source)?;
-    read_surface(&body)
+fn read_do_body_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
+    let body = extract_do_body_list_root(source, sources)?;
+    read_surface(&body, sources)
 }
 
 /// A pending `@doc`/`@spec` attaches to the NEXT function group (or extern).
@@ -271,19 +273,22 @@ fn read_do_body_surface(source: &QuotedSourceRoot) -> Result<ScopeSurface, Quote
 /// where the dangling attribute is visible, instead of degrading into a
 /// confusing unknown-export diagnostic when the described function is rooted
 /// later.
-fn reject_dangling_function_attrs(source: &QuotedSourceRoot, pending: &[AnyValueRef]) -> Result<(), QuotedSourceError> {
+fn reject_dangling_function_attrs(
+    source: &QuotedSourceRoot,
+    pending: &[AnyValueRef],
+    sources: &SourceMap,
+) -> Result<(), QuotedSourceError> {
     let Some(root) = pending.first() else {
         return Ok(());
     };
     let attr_root = source.subroot(*root);
     let head = attr_root
         .cursor()
-        .ast_node()
-        .ok()
-        .flatten()
-        .and_then(|node| node.head.atom_name().ok())
+        .ast_node(sources)?
+        .map(|node| node.head.atom_name())
+        .transpose()?
         .unwrap_or_else(|| "@doc/@spec".to_string());
-    let span = surface_span(&attr_root)?;
+    let span = surface_span(&attr_root, sources)?;
     Err(QuotedSourceError::user(
         crate::diag::codes::PARSE_DANGLING_FUNCTION_ATTR,
         Some(span),
@@ -298,11 +303,12 @@ fn flush_function_groups(
     forms: &mut Vec<ScopeForm>,
     order: &mut Vec<FunctionGroupKey>,
     groups: &mut HashMap<FunctionGroupKey, PendingFunctionGroup>,
+    sources: &SourceMap,
 ) -> Result<(), QuotedSourceError> {
     for key in order.drain(..) {
         if let Some(group) = groups.remove(&key) {
             let grouped = source.interned_list_subroot(&group.item_roots)?;
-            forms.push(build_form(grouped)?);
+            forms.push(build_form(grouped, sources)?);
         }
     }
     Ok(())
@@ -314,53 +320,60 @@ fn flush_function_groups(
 /// `store_definition`/module compile — invoked by the define pipeline and the
 /// bootstrap. It does not depend on any surface-read mode: it always extracts a
 /// definition from a node already known to be a def-head.
-pub(crate) fn build_definition_form(source: QuotedSourceRoot, head: &str) -> Result<ScopeForm, QuotedSourceError> {
+pub(crate) fn build_definition_form(
+    source: QuotedSourceRoot,
+    head: &str,
+    sources: &SourceMap,
+) -> Result<ScopeForm, QuotedSourceError> {
     Ok(match head {
-        head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source)?),
-        "defmodule" => ScopeForm::Module(parse_module_form(source)?),
-        "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source)?),
-        "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source)?),
+        head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source, sources)?),
+        "defmodule" => ScopeForm::Module(parse_module_form(source, sources)?),
+        "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source, sources)?),
+        "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, sources)?),
         _ => unreachable!("covered by is_scope_definition_head"),
     })
 }
 
-fn build_form(source: QuotedSourceRoot) -> Result<ScopeForm, QuotedSourceError> {
-    if let Some(service) = parse_compiler_service_form(source.clone())? {
+fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm, QuotedSourceError> {
+    if let Some(service) = parse_compiler_service_form(source.clone(), sources)? {
         return Ok(ScopeForm::CompilerService(service));
     }
 
-    let head = match surface_head_name(&source) {
-        Ok(head) => head,
-        Err(_error) if source.cursor().ast_node()?.is_some() => {
+    let head = match surface_head_name(&source, sources)? {
+        Some(head) => head,
+        None if source.cursor().ast_node(sources)?.is_some() => {
             return Ok(ScopeForm::MacroCall(MacroCallForm {
-                span: surface_span(&source)?,
+                span: surface_span(&source, sources)?,
                 source,
             }));
         }
-        Err(error) => return Err(error),
+        None => return Err(QuotedSourceError::new("expected quoted item AST node")),
     };
     match head.as_str() {
-        "alias" => Ok(ScopeForm::Alias(parse_alias_form(source)?)),
-        "import" => Ok(ScopeForm::Import(parse_import_form(source)?)),
-        "require" => Ok(ScopeForm::Require(parse_import_form(source)?)),
+        "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, sources)?)),
+        "import" => Ok(ScopeForm::Import(parse_import_form(source, sources)?)),
+        "require" => Ok(ScopeForm::Require(parse_import_form(source, sources)?)),
         head if is_scope_definition_head(head) => Ok(ScopeForm::MacroCall(MacroCallForm {
-            span: surface_span(&source)?,
+            span: surface_span(&source, sources)?,
             source,
         })),
-        "extern" => Ok(ScopeForm::Function(parse_function_form(source)?)),
-        "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source)?)),
+        "extern" => Ok(ScopeForm::Function(parse_function_form(source, sources)?)),
+        "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, sources)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
-            span: surface_span(&source)?,
+            span: surface_span(&source, sources)?,
             source,
         })),
     }
 }
 
-fn parse_compiler_service_form(source: QuotedSourceRoot) -> Result<Option<CompilerServiceForm>, QuotedSourceError> {
-    let Some(node) = source.cursor().ast_node()? else {
+fn parse_compiler_service_form(
+    source: QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<Option<CompilerServiceForm>, QuotedSourceError> {
+    let Some(node) = source.cursor().ast_node(sources)? else {
         return Ok(None);
     };
-    let Some(callee) = node.head.ast_node()? else {
+    let Some(callee) = node.head.ast_node(sources)? else {
         return Ok(None);
     };
     if callee.head.atom_name()? != "." {
@@ -370,7 +383,7 @@ fn parse_compiler_service_form(source: QuotedSourceRoot) -> Result<Option<Compil
     if callee_parts.len() != 2 {
         return Ok(None);
     }
-    if !matches_alias(&callee_parts[0], &["Fz", "Compiler"])? {
+    if !matches_alias(&callee_parts[0], &["Fz", "Compiler"], sources)? {
         return Ok(None);
     }
     let service = match callee_parts[1].atom_name()?.as_str() {
@@ -391,12 +404,16 @@ fn parse_compiler_service_form(source: QuotedSourceRoot) -> Result<Option<Compil
         service,
         source: source.subroot(args[0].root()),
         env: source.subroot(args[1].root()),
-        span: span_from_meta(&node.meta)?,
+        span: node.span.unwrap_or(Span::DUMMY),
     }))
 }
 
-fn matches_alias(cursor: &QuotedSourceCursor, expected: &[&str]) -> Result<bool, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn matches_alias(
+    cursor: &QuotedSourceCursor,
+    expected: &[&str],
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Ok(false);
     };
     if node.head.atom_name()? != "__aliases__" {
@@ -406,8 +423,8 @@ fn matches_alias(cursor: &QuotedSourceCursor, expected: &[&str]) -> Result<bool,
     Ok(segments.iter().map(String::as_str).eq(expected.iter().copied()))
 }
 
-fn parse_scope_attr(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSourceError> {
-    let node = expect_ast_cursor_node(cursor, "scope attribute")?;
+fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
+    let node = expect_ast_cursor_node(cursor, "scope attribute", sources)?;
     let head = node.head.atom_name()?;
     let args = node.tail.list_items()?;
     let Some(value) = args.first() else {
@@ -415,18 +432,22 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSour
             "quoted scope attribute `{head}` is missing its payload"
         )));
     };
-    let span = span_from_meta(&node.meta)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     match head.as_str() {
         "@moduledoc" => Ok(Attribute::ModuleDoc(value.utf8_binary_text()?)),
-        "@type" => decode_type_alias_attr(value, span),
+        "@type" => decode_type_alias_attr(value, span, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
         ))),
     }
 }
 
-fn decode_type_alias_attr(payload: &QuotedSourceCursor, span: Span) -> Result<Attribute, QuotedSourceError> {
-    let mut tokens = token_payload::decode_tokens(payload)?
+fn decode_type_alias_attr(
+    payload: &QuotedSourceCursor,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<Attribute, QuotedSourceError> {
+    let mut tokens = token_payload::decode_tokens(payload, sources)?
         .into_iter()
         .filter(|token| !matches!(token.tok, Tok::Newline | Tok::Eof))
         .peekable();
@@ -502,16 +523,16 @@ fn decode_type_alias_attr(payload: &QuotedSourceCursor, span: Span) -> Result<At
     }))
 }
 
-fn parse_alias_form(source: QuotedSourceRoot) -> Result<AliasForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_alias_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<AliasForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.is_empty() {
         return Err(QuotedSourceError::new("alias expects a target path"));
     }
-    let path = parse_alias_segments(&args[0])?;
+    let path = parse_alias_segments(&args[0], sources)?;
     let as_name = if let Some(kwargs) = args.get(1) {
-        parse_alias_keyword_args(kwargs)?
+        parse_alias_keyword_args(kwargs, sources)?
     } else {
         None
     }
@@ -519,14 +540,14 @@ fn parse_alias_form(source: QuotedSourceRoot) -> Result<AliasForm, QuotedSourceE
     Ok(AliasForm { path, as_name, span })
 }
 
-fn parse_import_form(source: QuotedSourceRoot) -> Result<ImportForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_import_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ImportForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.is_empty() {
         return Err(QuotedSourceError::new("import/require expects a target path"));
     }
-    let path = parse_alias_segments(&args[0])?;
+    let path = parse_alias_segments(&args[0], sources)?;
     let mut only = None;
     let mut except = None;
     if let Some(kwargs) = args.get(1) {
@@ -546,11 +567,12 @@ fn parse_import_form(source: QuotedSourceRoot) -> Result<ImportForm, QuotedSourc
     })
 }
 
-fn parse_function_form(source: QuotedSourceRoot) -> Result<FunctionForm, QuotedSourceError> {
-    let span = surface_span(&source)?;
-    let head = surface_head_name(&source)?;
+fn parse_function_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<FunctionForm, QuotedSourceError> {
+    let span = surface_span(&source, sources)?;
+    let head = surface_head_name(&source, sources)?
+        .ok_or_else(|| QuotedSourceError::new("expected atom-headed function form"))?;
     if head == "extern" {
-        let node = first_non_attr_node(&source)?;
+        let node = first_non_attr_node(&source, sources)?;
         let args = node.tail.list_items()?;
         if args.len() != 2 {
             return Err(QuotedSourceError::new("quoted extern expects ABI and detail map"));
@@ -581,7 +603,7 @@ fn parse_function_form(source: QuotedSourceRoot) -> Result<FunctionForm, QuotedS
         });
     }
 
-    let FunctionGroupKey { name, arity } = parse_function_group_key(&source)?;
+    let FunctionGroupKey { name, arity } = parse_function_group_key(&source, sources)?;
     Ok(FunctionForm {
         source,
         name,
@@ -593,49 +615,55 @@ fn parse_function_form(source: QuotedSourceRoot) -> Result<FunctionForm, QuotedS
     })
 }
 
-fn parse_module_form(source: QuotedSourceRoot) -> Result<ModuleForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_module_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ModuleForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.is_empty() {
         return Err(QuotedSourceError::new("defmodule expects a module alias"));
     }
-    let name = ModuleName::from_segments(parse_alias_segments(&args[0])?);
+    let name = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
     Ok(ModuleForm { source, name, span })
 }
 
-fn parse_protocol_form(source: QuotedSourceRoot) -> Result<ProtocolForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_protocol_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ProtocolForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.is_empty() {
         return Err(QuotedSourceError::new("defprotocol expects a protocol alias"));
     }
-    let name = ModuleName::from_segments(parse_alias_segments(&args[0])?);
+    let name = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
     Ok(ProtocolForm { source, name, span })
 }
 
-fn parse_protocol_impl_form(source: QuotedSourceRoot) -> Result<ProtocolImplForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_protocol_impl_form(
+    source: QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<ProtocolImplForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.len() != 2 {
         return Err(QuotedSourceError::new(
             "defimpl expects a protocol alias and keyword args",
         ));
     }
-    let protocol = ModuleName::from_segments(parse_alias_segments(&args[0])?);
+    let protocol = ModuleName::from_segments(parse_alias_segments(&args[0], sources)?);
     let kwargs = args[1].list_items()?;
-    let target = kwargs
-        .into_iter()
-        .find_map(|entry| {
-            let tuple = entry.tuple_items().ok()?;
-            if tuple.len() != 2 || tuple[0].atom_name().ok().as_deref() != Some("for") {
-                return None;
-            }
-            parse_alias_segments(&tuple[1]).ok().map(ModuleName::from_segments)
-        })
-        .ok_or_else(|| QuotedSourceError::new("defimpl is missing `for:` target"))?;
+    let mut target = None;
+    for entry in kwargs {
+        let tuple = entry.tuple_items()?;
+        if tuple.len() != 2
+            || tuple[0].root().tag() != fz_runtime::any_value::ValueKind::ATOM
+            || tuple[0].atom_name()? != "for"
+        {
+            continue;
+        }
+        target = Some(ModuleName::from_segments(parse_alias_segments(&tuple[1], sources)?));
+        break;
+    }
+    let target = target.ok_or_else(|| QuotedSourceError::new("defimpl is missing `for:` target"))?;
     Ok(ProtocolImplForm {
         source,
         protocol,
@@ -644,9 +672,9 @@ fn parse_protocol_impl_form(source: QuotedSourceRoot) -> Result<ProtocolImplForm
     })
 }
 
-fn parse_struct_form(source: QuotedSourceRoot) -> Result<StructForm, QuotedSourceError> {
-    let node = expect_surface_node(&source)?;
-    let span = span_from_meta(&node.meta)?;
+fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<StructForm, QuotedSourceError> {
+    let node = expect_surface_node(&source, sources)?;
+    let span = node.span.unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     let Some(fields) = args.first() else {
         return Err(QuotedSourceError::new("defstruct expects a field list"));
@@ -655,27 +683,30 @@ fn parse_struct_form(source: QuotedSourceRoot) -> Result<StructForm, QuotedSourc
     Ok(StructForm { source, fields, span })
 }
 
-fn parse_function_group_key(root: &QuotedSourceRoot) -> Result<FunctionGroupKey, QuotedSourceError> {
-    let node = first_non_attr_node(root)?;
+fn parse_function_group_key(
+    root: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<FunctionGroupKey, QuotedSourceError> {
+    let node = first_non_attr_node(root, sources)?;
     let args = node.tail.list_items()?;
     let Some(head) = args.first() else {
         return Err(QuotedSourceError::new(
             "quoted function clause is missing its head expression",
         ));
     };
-    parse_function_head_key(head)
+    parse_function_head_key(head, sources)
 }
 
 pub(crate) fn reserved_source_definition(
     source: &QuotedSourceRoot,
+    sources: &SourceMap,
 ) -> Result<Option<ReservedSourceDefinition>, QuotedSourceError> {
-    let head = match surface_head_name(source) {
-        Ok(head) => head,
-        Err(_) => return Ok(None),
+    let Some(head) = surface_head_name(source, sources)? else {
+        return Ok(None);
     };
     Ok(match head.as_str() {
         "fn" | "fnp" | "defmacro" => {
-            let FunctionGroupKey { name, arity } = parse_function_group_key(source)?;
+            let FunctionGroupKey { name, arity } = parse_function_group_key(source, sources)?;
             Some(ReservedSourceDefinition::Function {
                 name,
                 arity,
@@ -683,29 +714,29 @@ pub(crate) fn reserved_source_definition(
             })
         }
         "defmodule" => {
-            let node = expect_surface_node(source)?;
+            let node = expect_surface_node(source, sources)?;
             let args = node.tail.list_items()?;
             let Some(name) = args.first() else {
                 return Err(QuotedSourceError::new("defmodule expects a module alias"));
             };
-            let name = ModuleName::from_segments(parse_alias_segments(name)?);
+            let name = ModuleName::from_segments(parse_alias_segments(name, sources)?);
             Some(ReservedSourceDefinition::Module { name })
         }
         "defprotocol" => {
-            let node = expect_surface_node(source)?;
+            let node = expect_surface_node(source, sources)?;
             let args = node.tail.list_items()?;
             let Some(name) = args.first() else {
                 return Err(QuotedSourceError::new("defprotocol expects a protocol alias"));
             };
             Some(ReservedSourceDefinition::Protocol {
-                name: ModuleName::from_segments(parse_alias_segments(name)?),
+                name: ModuleName::from_segments(parse_alias_segments(name, sources)?),
             })
         }
         "defimpl" => {
             // Recognition only: scope-time registration resolves the protocol
             // and target into the implementation's typed owner pair. Validate
             // just the arity here.
-            let node = expect_surface_node(source)?;
+            let node = expect_surface_node(source, sources)?;
             let args = node.tail.list_items()?;
             if args.len() != 2 {
                 return Err(QuotedSourceError::new(
@@ -718,8 +749,11 @@ pub(crate) fn reserved_source_definition(
     })
 }
 
-fn parse_function_head_key(cursor: &QuotedSourceCursor) -> Result<FunctionGroupKey, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn parse_function_head_key(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<FunctionGroupKey, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Err(QuotedSourceError::new("expected quoted function head AST node"));
     };
     if node.head.atom_name()? == "when" {
@@ -729,7 +763,7 @@ fn parse_function_head_key(cursor: &QuotedSourceCursor) -> Result<FunctionGroupK
                 "quoted `when` head is missing the guarded function head",
             ));
         };
-        return parse_function_head_key(inner);
+        return parse_function_head_key(inner, sources);
     }
     Ok(FunctionGroupKey {
         name: node.head.atom_name()?,
@@ -737,8 +771,8 @@ fn parse_function_head_key(cursor: &QuotedSourceCursor) -> Result<FunctionGroupK
     })
 }
 
-fn parse_alias_segments(cursor: &QuotedSourceCursor) -> Result<Vec<String>, QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+fn parse_alias_segments(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Vec<String>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Err(QuotedSourceError::new("expected alias AST node"));
     };
     if node.head.atom_name()? != "__aliases__" {
@@ -771,14 +805,17 @@ fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywor
     Ok(out)
 }
 
-fn parse_alias_keyword_args(cursor: &QuotedSourceCursor) -> Result<Option<String>, QuotedSourceError> {
+fn parse_alias_keyword_args(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<String>, QuotedSourceError> {
     for entry in cursor.list_items()? {
         let tuple = entry.tuple_items()?;
         if tuple.len() != 2 {
             return Err(QuotedSourceError::new("expected alias keyword tuple"));
         }
         if tuple[0].atom_name()? == "as" {
-            let path = parse_alias_segments(&tuple[1])?;
+            let path = parse_alias_segments(&tuple[1], sources)?;
             return path
                 .last()
                 .cloned()
@@ -797,8 +834,11 @@ fn decode_bool(cursor: &QuotedSourceCursor) -> Result<bool, QuotedSourceError> {
     }
 }
 
-fn extract_do_body_list_root(root: &QuotedSourceRoot) -> Result<QuotedSourceRoot, QuotedSourceError> {
-    let Some(node) = root.cursor().ast_node()? else {
+fn extract_do_body_list_root(
+    root: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<QuotedSourceRoot, QuotedSourceError> {
+    let Some(node) = root.cursor().ast_node(sources)? else {
         return Err(QuotedSourceError::new("expected quoted call node with a do body"));
     };
     let args = node.tail.list_items()?;
@@ -817,23 +857,22 @@ fn extract_do_body_list_root(root: &QuotedSourceRoot) -> Result<QuotedSourceRoot
     Err(QuotedSourceError::new("expected quoted do-body keyword"))
 }
 
-fn surface_head_name(root: &QuotedSourceRoot) -> Result<String, QuotedSourceError> {
-    if let Some(node) = root.cursor().ast_node()? {
-        return node.head.atom_name();
+fn surface_head_name(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Option<String>, QuotedSourceError> {
+    if let Some(node) = root.cursor().ast_node(sources)? {
+        return atom_head_name(&node);
     }
-    first_non_attr_node(root)?.head.atom_name()
+    atom_head_name(&first_non_attr_node(root, sources)?)
 }
 
-fn first_non_attr_node(root: &QuotedSourceRoot) -> Result<QuotedAstNode, QuotedSourceError> {
-    if let Some(node) = root.cursor().ast_node()? {
+fn first_non_attr_node(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<QuotedAstNode, QuotedSourceError> {
+    if let Some(node) = root.cursor().ast_node(sources)? {
         return Ok(node);
     }
     for item in root.cursor().list_items()? {
-        let Some(node) = item.ast_node()? else {
+        let Some(node) = item.ast_node(sources)? else {
             return Err(QuotedSourceError::new("expected quoted grouped surface item AST node"));
         };
-        let head = node.head.atom_name()?;
-        if !head.starts_with('@') {
+        if !atom_head_name(&node)?.is_some_and(|head| head.starts_with('@')) {
             return Ok(node);
         }
     }
@@ -842,28 +881,32 @@ fn first_non_attr_node(root: &QuotedSourceRoot) -> Result<QuotedAstNode, QuotedS
     ))
 }
 
-fn expect_surface_node(root: &QuotedSourceRoot) -> Result<QuotedAstNode, QuotedSourceError> {
+fn expect_surface_node(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<QuotedAstNode, QuotedSourceError> {
     root.cursor()
-        .ast_node()?
+        .ast_node(sources)?
         .ok_or_else(|| QuotedSourceError::new("expected quoted item AST node"))
 }
 
-fn expect_ast_cursor_node(cursor: &QuotedSourceCursor, label: &str) -> Result<QuotedAstNode, QuotedSourceError> {
+fn expect_ast_cursor_node(
+    cursor: &QuotedSourceCursor,
+    label: &str,
+    sources: &SourceMap,
+) -> Result<QuotedAstNode, QuotedSourceError> {
     cursor
-        .ast_node()?
+        .ast_node(sources)?
         .ok_or_else(|| QuotedSourceError::new(format!("expected {label} AST node")))
 }
 
-fn surface_span(root: &QuotedSourceRoot) -> Result<Span, QuotedSourceError> {
-    if let Some(node) = root.cursor().ast_node()? {
-        return span_from_meta(&node.meta);
+fn surface_span(root: &QuotedSourceRoot, sources: &SourceMap) -> Result<Span, QuotedSourceError> {
+    if let Some(node) = root.cursor().ast_node(sources)? {
+        return Ok(node.span.unwrap_or(Span::DUMMY));
     }
     let mut merged: Option<Span> = None;
     for item in root.cursor().list_items()? {
-        let Some(node) = item.ast_node()? else {
+        let Some(node) = item.ast_node(sources)? else {
             return Err(QuotedSourceError::new("expected grouped quoted surface item AST node"));
         };
-        let span = span_from_meta(&node.meta)?;
+        let span = node.span.unwrap_or(Span::DUMMY);
         merged = Some(match merged {
             Some(current) => current.merge(span),
             None => span,
@@ -872,21 +915,9 @@ fn surface_span(root: &QuotedSourceRoot) -> Result<Span, QuotedSourceError> {
     Ok(merged.unwrap_or(Span::DUMMY))
 }
 
-pub(crate) fn span_from_meta(meta: &QuotedSourceCursor) -> Result<Span, QuotedSourceError> {
-    let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
-        return Ok(Span::DUMMY);
-    };
-    let start = span_map
-        .map_value("start")?
-        .ok_or_else(|| QuotedSourceError::new("quoted span is missing `start`"))?
-        .int_value()? as u32;
-    let length = span_map
-        .map_value("length")?
-        .ok_or_else(|| QuotedSourceError::new("quoted span is missing `length`"))?
-        .int_value()? as u32;
-    let code_id = span_map
-        .map_value("code_id")?
-        .ok_or_else(|| QuotedSourceError::new("quoted span is missing `code_id`"))?
-        .int_value()? as u32;
-    Ok(Span::new(SourceId(code_id), start, start.saturating_add(length)))
+fn atom_head_name(node: &QuotedAstNode) -> Result<Option<String>, QuotedSourceError> {
+    if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
+        return Ok(None);
+    }
+    node.head.atom_name().map(Some)
 }

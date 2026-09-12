@@ -14,8 +14,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternDispatchError, PatternGuardExpr, PatternRow, SourcePatternError, SourcePatternRows,
-    pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
+    PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
+    pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
     explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
@@ -29,9 +29,9 @@ use crate::source::Span;
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
-    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
+    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId,
 };
-use super::super::code::CodeId;
+use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
@@ -61,16 +61,15 @@ struct ExprBlock {
 #[derive(Debug, Clone)]
 struct ExprDispatch {
     plan: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
-    arm_blocks: Vec<ExprBlock>,
+    arm_blocks: Vec<ExprOutcome>,
     miss_block: ExprBlock,
 }
 
 #[derive(Debug, Clone)]
-struct ExprReceiveClause {
-    span: Span,
-    bound_names: Vec<String>,
-    params: Vec<ValueId>,
-    body: ExprBlock,
+struct ExprOutcome {
+    outcome: crate::dispatch_matrix::OutcomeId,
+    arguments: Box<[super::super::body::OutcomeArgument]>,
+    block: ExprBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +84,7 @@ struct ExprReceive {
     value: ValueId,
     bindings: DispatchBindings,
     dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
-    clauses: Vec<ExprReceiveClause>,
+    outcomes: Vec<ExprOutcome>,
     after: Option<ExprReceiveAfter>,
     captures: Vec<ValueId>,
 }
@@ -108,6 +107,7 @@ enum ExprStep {
     Map {
         value: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
+        quoted_span: Option<Span>,
     },
     MapUpdate {
         value: ValueId,
@@ -282,7 +282,7 @@ pub(super) fn lower_function(
                 tel,
                 source.namespace,
                 source.owner_module,
-                source.code,
+                source.owner,
                 param,
                 &mut reads,
                 &mut waits,
@@ -294,7 +294,7 @@ pub(super) fn lower_function(
                 tel,
                 source.namespace,
                 source.owner_module,
-                source.code,
+                source.owner,
                 guard,
                 &mut reads,
                 &mut waits,
@@ -305,7 +305,7 @@ pub(super) fn lower_function(
             tel,
             source.namespace,
             source.owner_module,
-            source.code,
+            source.owner,
             &clause.body,
             &mut reads,
             &mut waits,
@@ -357,7 +357,7 @@ fn collect_local_dispatch_requirements(
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
-    code: CodeId,
+    owner: SourceOwner,
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -365,7 +365,7 @@ fn collect_local_dispatch_requirements(
     match &expr.node {
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, subject, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, subject, reads, waits)?;
             }
             for clause in clauses {
                 collect_local_pattern_requirements(
@@ -373,7 +373,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.pattern,
                     reads,
                     waits,
@@ -386,7 +386,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -402,7 +402,7 @@ fn collect_local_dispatch_requirements(
                             tel,
                             namespace,
                             owner_module,
-                            code,
+                            owner,
                             pattern,
                             reads,
                             waits,
@@ -412,7 +412,7 @@ fn collect_local_dispatch_requirements(
                             tel,
                             namespace,
                             owner_module,
-                            code,
+                            owner,
                             expr,
                             reads,
                             waits,
@@ -424,7 +424,7 @@ fn collect_local_dispatch_requirements(
                             tel,
                             namespace,
                             owner_module,
-                            code,
+                            owner,
                             expr,
                             reads,
                             waits,
@@ -432,14 +432,14 @@ fn collect_local_dispatch_requirements(
                     }
                 }
             }
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
             for clause in else_clauses {
                 collect_local_pattern_requirements(
                     world,
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.pattern,
                     reads,
                     waits,
@@ -452,7 +452,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -460,15 +460,15 @@ fn collect_local_dispatch_requirements(
             }
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, then_expr, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
                 collect_local_dispatch_requirements(
                     world,
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     else_expr,
                     reads,
                     waits,
@@ -477,8 +477,8 @@ fn collect_local_dispatch_requirements(
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
             }
         }
         Expr::Receive { clauses, after } => {
@@ -488,7 +488,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.pattern,
                     reads,
                     waits,
@@ -501,7 +501,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -513,7 +513,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &after.timeout,
                     reads,
                     waits,
@@ -523,7 +523,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &after.body,
                     reads,
                     waits,
@@ -531,36 +531,36 @@ fn collect_local_dispatch_requirements(
             }
         }
         Expr::Match(pattern, rhs) => {
-            collect_local_pattern_requirements(world, tel, namespace, owner_module, code, pattern, reads, waits)?;
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, pattern, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)?;
         }
         Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)?;
         }
         Expr::Quote(rhs) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, left, reads, waits)?;
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, right, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, right, reads, waits)?;
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, target, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, target, reads, waits)?;
             for arg in args {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, arg, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, arg, reads, waits)?;
             }
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, tail, reads, waits)?;
             }
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
         }
         Expr::Bitstring(fields) => {
@@ -570,7 +570,7 @@ fn collect_local_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &field.value,
                     reads,
                     waits,
@@ -579,11 +579,11 @@ fn collect_local_dispatch_requirements(
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, base, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, key, reads, waits)?;
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, key, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
         }
         Expr::Struct { module, fields } => {
@@ -592,7 +592,7 @@ fn collect_local_dispatch_requirements(
                 tel,
                 namespace,
                 owner_module,
-                code,
+                owner,
                 module,
                 fields.iter().map(|(name, _)| name.as_str()),
                 expr.span,
@@ -600,12 +600,12 @@ fn collect_local_dispatch_requirements(
                 waits,
             )?;
             for (_, value) in fields {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, expr, reads, waits)?;
             }
         }
         Expr::Lambda { .. } => {}
@@ -625,19 +625,19 @@ fn collect_local_dispatch_requirements(
 
 /// Walks one pattern for the same reason `collect_local_dispatch_requirements`
 /// walks expressions: a `%Mod{field: pattern, ...}` struct pattern needs
-/// `Mod`'s ordered field schema before `lower_struct_pattern` can turn it into
-/// `AssertStruct`/`FieldAccess` steps, so this pre-pass records the field
-/// obligations and the `StructDefined` wait up front, mirroring the
-/// `Expr::Struct` arm above. Patterns never carry dispatch calls of their own
+/// `Mod`'s schema before executable pattern dispatch or body binding can use its
+/// fields. Entry, guard-helper, and body jobs share these field obligations and
+/// the `StructDefined` wait, mirroring the `Expr::Struct` arm above.
+/// Patterns never carry dispatch calls of their own
 /// (guards are the only dispatch-call surface, and guards are walked
 /// separately), so this only needs to recurse far enough to find nested
 /// struct patterns.
-fn collect_local_pattern_requirements(
+pub(super) fn collect_local_pattern_requirements(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
-    code: CodeId,
+    owner: SourceOwner,
     pattern: &Spanned<Pattern>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -649,7 +649,7 @@ fn collect_local_pattern_requirements(
                 tel,
                 namespace,
                 owner_module,
-                code,
+                owner,
                 module,
                 fields.iter().map(|(name, _)| name.as_str()),
                 pattern.span,
@@ -662,7 +662,7 @@ fn collect_local_pattern_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     field_pattern,
                     reads,
                     waits,
@@ -671,24 +671,24 @@ fn collect_local_pattern_requirements(
         }
         Pattern::Tuple(items) => {
             for item in items {
-                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
         }
         Pattern::List(items, tail) => {
             for item in items {
-                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, tail, reads, waits)?;
             }
         }
         Pattern::Map(entries) => {
             for (_, value) in entries {
-                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
         }
         Pattern::As(_, inner) => {
-            collect_local_pattern_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)?;
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)?;
         }
         Pattern::Bitstring(fields) => {
             for field in fields {
@@ -697,7 +697,7 @@ fn collect_local_pattern_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &field.value,
                     reads,
                     waits,
@@ -742,7 +742,7 @@ fn record_struct_reference<'a>(
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
-    code: CodeId,
+    owner: SourceOwner,
     module: &crate::ast::ModuleTarget,
     fields: impl Iterator<Item = &'a str>,
     span: Span,
@@ -753,7 +753,7 @@ fn record_struct_reference<'a>(
         return Ok(());
     };
     let requester = InterfaceRequester {
-        code,
+        owner,
         module: owner_module,
         span,
     };
@@ -779,17 +779,17 @@ fn collect_unquote_dispatch_requirements(
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
-    code: CodeId,
+    owner: SourceOwner,
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
     match &expr.node {
         Expr::Unquote(inner) => {
-            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)
         }
         Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, inner, reads, waits)
         }
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
@@ -798,7 +798,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     subject,
                     reads,
                     waits,
@@ -811,7 +811,7 @@ fn collect_unquote_dispatch_requirements(
                         tel,
                         namespace,
                         owner_module,
-                        code,
+                        owner,
                         guard,
                         reads,
                         waits,
@@ -822,7 +822,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -839,7 +839,7 @@ fn collect_unquote_dispatch_requirements(
                             tel,
                             namespace,
                             owner_module,
-                            code,
+                            owner,
                             expr,
                             reads,
                             waits,
@@ -847,7 +847,7 @@ fn collect_unquote_dispatch_requirements(
                     }
                 }
             }
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
             for clause in else_clauses {
                 if let Some(guard) = &clause.guard {
                     collect_unquote_dispatch_requirements(
@@ -855,7 +855,7 @@ fn collect_unquote_dispatch_requirements(
                         tel,
                         namespace,
                         owner_module,
-                        code,
+                        owner,
                         guard,
                         reads,
                         waits,
@@ -866,7 +866,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -875,15 +875,15 @@ fn collect_unquote_dispatch_requirements(
             Ok(())
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, then_expr, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
                 collect_unquote_dispatch_requirements(
                     world,
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     else_expr,
                     reads,
                     waits,
@@ -893,8 +893,8 @@ fn collect_unquote_dispatch_requirements(
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, cond, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
             }
             Ok(())
         }
@@ -906,7 +906,7 @@ fn collect_unquote_dispatch_requirements(
                         tel,
                         namespace,
                         owner_module,
-                        code,
+                        owner,
                         guard,
                         reads,
                         waits,
@@ -917,7 +917,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &clause.body,
                     reads,
                     waits,
@@ -929,7 +929,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &after.timeout,
                     reads,
                     waits,
@@ -939,7 +939,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &after.body,
                     reads,
                     waits,
@@ -948,31 +948,31 @@ fn collect_unquote_dispatch_requirements(
             Ok(())
         }
         Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, rhs, reads, waits)
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, left, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, right, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, right, reads, waits)
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, target, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, target, reads, waits)?;
             for arg in args {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, arg, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, arg, reads, waits)?;
             }
             Ok(())
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, tail, reads, waits)?;
             }
             Ok(())
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, item, reads, waits)?;
             }
             Ok(())
         }
@@ -983,7 +983,7 @@ fn collect_unquote_dispatch_requirements(
                     tel,
                     namespace,
                     owner_module,
-                    code,
+                    owner,
                     &field.value,
                     reads,
                     waits,
@@ -993,23 +993,23 @@ fn collect_unquote_dispatch_requirements(
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, base, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, key, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, key, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, owner, expr, reads, waits)?;
             }
             Ok(())
         }
@@ -1097,8 +1097,8 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             Expr::Atom(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.lowerer.push_const(self.steps, GroundValue::Nil)),
-            Expr::Var(name) => self.lower_variable(name),
-            Expr::Module(module) => Ok(self.lower_module(module)),
+            Expr::Var(name) => self.lower_variable(name, expr.span),
+            Expr::Module(module) => Ok(self.lower_module(module, expr.span)),
             Expr::List(items, None) => {
                 let values = items
                     .iter()
@@ -1119,7 +1119,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
                     .iter()
                     .map(|item| self.lower(item))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.lower_atom_node("{}", values)
+                self.lower_atom_node("{}", values, expr.span)
             }
             Expr::Map(entries) => {
                 let values = entries
@@ -1130,27 +1130,27 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
                         Ok(self.push_tuple(vec![key, value]))
                     })
                     .collect::<Result<Vec<_>, FatalError>>()?;
-                self.lower_atom_node("%{}", values)
+                self.lower_atom_node("%{}", values, expr.span)
             }
             Expr::Call(callee, args) => {
                 let values = args.iter().map(|arg| self.lower(arg)).collect::<Result<Vec<_>, _>>()?;
                 if let Expr::Var(name) = &callee.node {
                     let name = self.quoted_callable_name(name, values.len());
-                    self.lower_atom_node(&name, values)
+                    self.lower_atom_node(&name, values, expr.span)
                 } else {
                     let head = self.lower(callee)?;
                     let tail = self.push_list(values, None);
-                    Ok(self.push_ast_node(head, tail))
+                    Ok(self.push_ast_node(head, tail, expr.span))
                 }
             }
             Expr::BinOp(op, left, right) => {
                 let left = self.lower(left)?;
                 let right = self.lower(right)?;
-                self.lower_atom_node(quoted_binop_atom(*op), vec![left, right])
+                self.lower_atom_node(quoted_binop_atom(*op), vec![left, right], expr.span)
             }
             Expr::UnOp(op, input) => {
                 let input = self.lower(input)?;
-                self.lower_atom_node(quoted_unop_atom(*op), vec![input])
+                self.lower_atom_node(quoted_unop_atom(*op), vec![input], expr.span)
             }
             Expr::Match(pattern, rhs) => {
                 let Pattern::Var(name) = &pattern.node else {
@@ -1163,16 +1163,16 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
                         ),
                     ));
                 };
-                let lhs = self.lower_variable(name)?;
+                let lhs = self.lower_variable(name, pattern.span)?;
                 let rhs = self.lower(rhs)?;
-                self.lower_atom_node("=", vec![lhs, rhs])
+                self.lower_atom_node("=", vec![lhs, rhs], expr.span)
             }
             Expr::Block(exprs) => {
                 let values = exprs
                     .iter()
                     .map(|expr| self.lower(expr))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.lower_atom_node("__block__", values)
+                self.lower_atom_node("__block__", values, expr.span)
             }
             Expr::If(cond, then_expr, else_expr) => {
                 let cond = self.lower(cond)?;
@@ -1183,7 +1183,7 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
                     keywords.push(self.push_keyword("else", else_value));
                 }
                 let keyword_list = self.push_list(keywords, None);
-                self.lower_atom_node("if", vec![cond, keyword_list])
+                self.lower_atom_node("if", vec![cond, keyword_list], expr.span)
             }
             Expr::Index(base, key) => self.lower_index(base, key, expr.span),
             Expr::Quote(_)
@@ -1238,16 +1238,16 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         format!("{module_name}.{name}")
     }
 
-    fn lower_variable(&mut self, name: &str) -> Result<ValueId, FatalError> {
+    fn lower_variable(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
         if quoted_alias_segments(name).is_some() {
-            return self.lower_alias(name);
+            return self.lower_alias(name, span);
         }
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
         let tail = self.lowerer.push_const(self.steps, GroundValue::Nil);
-        Ok(self.push_ast_node(head, tail))
+        Ok(self.push_ast_node(head, tail, span))
     }
 
-    fn lower_alias(&mut self, name: &str) -> Result<ValueId, FatalError> {
+    fn lower_alias(&mut self, name: &str, span: Span) -> Result<ValueId, FatalError> {
         let segments = quoted_alias_segments(name).expect("checked quoted alias name");
         let head = self
             .lowerer
@@ -1260,10 +1260,10 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             );
         }
         let tail = self.push_list(items, None);
-        Ok(self.push_ast_node(head, tail))
+        Ok(self.push_ast_node(head, tail, span))
     }
 
-    fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
+    fn lower_module(&mut self, module: &ModuleDenotation, span: Span) -> ValueId {
         let head = self
             .lowerer
             .push_const(self.steps, GroundValue::Atom("__aliases__".into()));
@@ -1279,7 +1279,11 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
             self.steps,
             GroundValue::Atom(super::super::source::META_MODULE_KEY.into()),
         );
-        let meta = self.push_map(vec![(key, identity)]);
+        let key = LoweredMapKey {
+            value: key,
+            literal: Some(GroundValue::Atom(super::super::source::META_MODULE_KEY.into())),
+        };
+        let meta = self.push_meta(span, vec![(key, identity)]);
         self.push_tuple(vec![head, meta, tail])
     }
 
@@ -1304,20 +1308,30 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
         let base = self.lower(base)?;
         let field = self.lowerer.push_const(self.steps, GroundValue::Atom(field.clone()));
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(".".to_string()));
-        let meta = self.push_map(Vec::new());
+        let meta = self.push_meta(span, Vec::new());
         let tail = self.push_list(vec![base, field], None);
         Ok(self.push_tuple(vec![head, meta, tail]))
     }
 
-    fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>) -> Result<ValueId, FatalError> {
+    fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>, span: Span) -> Result<ValueId, FatalError> {
         let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
         let tail = self.push_list(args, None);
-        Ok(self.push_ast_node(head, tail))
+        Ok(self.push_ast_node(head, tail, span))
     }
 
-    fn push_ast_node(&mut self, head: ValueId, tail: ValueId) -> ValueId {
-        let meta = self.push_map(Vec::new());
+    fn push_ast_node(&mut self, head: ValueId, tail: ValueId, span: Span) -> ValueId {
+        let meta = self.push_meta(span, Vec::new());
         self.push_tuple(vec![head, meta, tail])
+    }
+
+    fn push_meta(&mut self, span: Span, entries: Vec<(LoweredMapKey, ValueId)>) -> ValueId {
+        let value = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::Map {
+            value,
+            entries,
+            quoted_span: (!span.is_dummy()).then_some(span),
+        });
+        value
     }
 
     fn push_keyword(&mut self, key: &str, value: ValueId) -> ValueId {
@@ -1334,24 +1348,6 @@ impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a
     fn push_list(&mut self, items: Vec<ValueId>, tail: Option<ValueId>) -> ValueId {
         let value = self.lowerer.fresh_value();
         self.steps.push(ExprStep::List { value, items, tail });
-        value
-    }
-
-    fn push_map(&mut self, entries: Vec<(ValueId, ValueId)>) -> ValueId {
-        let value = self.lowerer.fresh_value();
-        let entries = entries
-            .into_iter()
-            .map(|(key, value)| {
-                (
-                    LoweredMapKey {
-                        value: key,
-                        literal: None,
-                    },
-                    value,
-                )
-            })
-            .collect();
-        self.steps.push(ExprStep::Map { value, entries });
         value
     }
 }
@@ -1390,14 +1386,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         for clause in self.surface.clauses.clone() {
             clause_defs.push(self.lower_clause(&clause)?);
         }
-        let (clauses, entries) = self.plan_clauses(clause_defs);
+        let body = self.plan_clauses(clause_defs);
 
         Ok((
-            LoweredBody::Clauses {
-                clauses,
-                entries,
-                generated: self.generated_ids.clone(),
-            },
+            body,
             std::mem::take(&mut self.generated),
             std::mem::take(&mut self.generated_changed),
         ))
@@ -1479,8 +1471,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     }
 
     fn declared_by_runtime_library(&self) -> bool {
-        self.world
-            .is_bootstrap(super::super::CodeId::from_source(self.surface.name_span.code_id))
+        self.world.is_bootstrap(self.source.owner)
     }
 
     fn extern_abi_error(&self, message: String) -> FatalError {
@@ -1601,7 +1592,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
-            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps).lower_module(module)),
+            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps).lower_module(module, expr.span)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1716,6 +1707,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 steps.push(ExprStep::Map {
                     value,
                     entries: lowered,
+                    quoted_span: None,
                 });
                 Ok(value)
             }
@@ -1809,10 +1801,12 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                             CallArg {
                                 value: left,
                                 ascription: None,
+                                ownership: crate::fz_ir::OwnershipMode::Share,
                             },
                             CallArg {
                                 value: right,
                                 ascription: None,
+                                ownership: crate::fz_ir::OwnershipMode::Share,
                             },
                         ],
                     });
@@ -2033,7 +2027,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
         InterfaceRequester {
-            code: self.source.code,
+            owner: self.source.owner,
             module: self.source.owner_module,
             span,
         }
@@ -2065,6 +2059,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             lowered.push(CallArg {
                 value: self.lower_expr(expr, env, steps)?,
                 ascription,
+                ownership: crate::fz_ir::OwnershipMode::Share,
             });
         }
         Ok(lowered)
@@ -2216,7 +2211,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let bindings = self.lower_dispatch_bindings(&plan, &[subject_value], env, steps, span)?;
         let arm_blocks = clauses
             .iter()
-            .map(|clause| self.lower_match_clause_block(subject_value, clause, env.clone()))
+            .enumerate()
+            .map(|(index, clause)| self.lower_match_clause_block(&plan.outcomes[index], clause, env.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         let value = self.fresh_value();
         steps.push(ExprStep::Dispatch {
@@ -2286,7 +2282,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             },
             dispatch: Box::new(ExprDispatch {
                 plan: self.compile_bool_true_dispatch(span)?,
-                arm_blocks: vec![arm_block],
+                arm_blocks: vec![ExprOutcome {
+                    outcome: crate::dispatch_matrix::OutcomeId(0),
+                    arguments: Box::default(),
+                    block: arm_block,
+                }],
                 miss_block,
             }),
         });
@@ -2323,10 +2323,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             WithBinding::Match(pattern, expr) => {
                 let mut steps = Vec::new();
                 let matched = self.lower_expr(expr, &mut env, &mut steps)?;
-                let success_block =
-                    self.lower_match_success_block(matched, pattern, rest, body, else_clauses, env.clone(), span)?;
-                let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
                 let plan = self.compile_single_pattern_dispatch("with", pattern, span)?;
+                let mut success_env = env.clone();
+                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut success_env);
+                let success_block = self.lower_with_block(span, rest, body, else_clauses, success_env)?;
+                let miss_block = self.lower_with_fail_block(span, matched, else_clauses, env.clone())?;
                 let bindings = self.lower_dispatch_bindings(&plan, &[matched], &env, &mut steps, pattern.span)?;
                 let value = self.fresh_value();
                 steps.push(ExprStep::Dispatch {
@@ -2335,7 +2336,11 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     bindings,
                     dispatch: Box::new(ExprDispatch {
                         plan,
-                        arm_blocks: vec![success_block],
+                        arm_blocks: vec![ExprOutcome {
+                            outcome: crate::dispatch_matrix::OutcomeId(0),
+                            arguments,
+                            block: success_block,
+                        }],
                         miss_block,
                     }),
                 });
@@ -2346,27 +2351,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 })
             }
         }
-    }
-
-    fn lower_match_success_block(
-        &mut self,
-        subject: ValueId,
-        pattern: &Spanned<Pattern>,
-        remaining_bindings: &[WithBinding],
-        body: &Spanned<Expr>,
-        else_clauses: &[MatchClause],
-        mut env: HashMap<String, ValueId>,
-        span: Span,
-    ) -> Result<ExprBlock, FatalError> {
-        let mut steps = Vec::new();
-        self.bind_pattern(&pattern.node, pattern.span, subject, &mut env, &mut steps)?;
-        let rest = self.lower_with_block(span, remaining_bindings, body, else_clauses, env)?;
-        steps.extend(rest.steps);
-        Ok(ExprBlock {
-            span: pattern.span,
-            steps,
-            result: rest.result,
-        })
     }
 
     fn lower_with_fail_block(
@@ -2388,7 +2372,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let bindings = self.lower_dispatch_bindings(&plan, &[failed], &env, &mut steps, span)?;
         let arm_blocks = else_clauses
             .iter()
-            .map(|clause| self.lower_match_clause_block(failed, clause, env.clone()))
+            .enumerate()
+            .map(|(index, clause)| self.lower_match_clause_block(&plan.outcomes[index], clause, env.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         let value = self.fresh_value();
         Ok(ExprBlock {
@@ -2435,9 +2420,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         let plan = self.compile_match_dispatch("receive", span, match_rows(clauses))?;
         let bindings = self.lower_dispatch_bindings(&plan, &[], env, steps, span)?;
         let captures = self.receive_capture_values(clauses, after, env);
-        let clauses = clauses
+        let outcomes = plan
+            .outcomes
             .iter()
-            .map(|clause| self.lower_receive_clause(clause, env.clone()))
+            .map(|outcome| self.lower_match_clause_block(outcome, &clauses[outcome.body_id as usize], env.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         let after = after
             .map(|after| self.lower_receive_after(after, timeout.expect("receive after should have a timeout"), env))
@@ -2447,7 +2433,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             value,
             bindings,
             dispatch: plan,
-            clauses,
+            outcomes,
             after,
             captures,
         })));
@@ -2456,19 +2442,37 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     fn lower_match_clause_block(
         &mut self,
-        subject: ValueId,
+        outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
         clause: &MatchClause,
         mut env: HashMap<String, ValueId>,
-    ) -> Result<ExprBlock, FatalError> {
-        let mut steps = Vec::new();
-        self.bind_pattern(&clause.pattern.node, clause.pattern.span, subject, &mut env, &mut steps)?;
-        let body = self.lower_expr_as_block(&clause.body, env)?;
-        steps.extend(body.steps);
-        Ok(ExprBlock {
-            span: clause.span,
-            steps,
-            result: body.result,
+    ) -> Result<ExprOutcome, FatalError> {
+        let arguments = self.bind_outcome_arguments(outcome, &mut env);
+        let block = self.lower_expr_as_block(&clause.body, env)?;
+        Ok(ExprOutcome {
+            outcome: outcome.outcome,
+            arguments,
+            block,
         })
+    }
+
+    fn bind_outcome_arguments(
+        &mut self,
+        outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
+        env: &mut HashMap<String, ValueId>,
+    ) -> Box<[super::super::body::OutcomeArgument]> {
+        outcome
+            .bindings
+            .iter()
+            .map(|binding| {
+                let parameter = self.fresh_value();
+                env.insert(binding.name.clone(), parameter);
+                super::super::body::OutcomeArgument {
+                    subject: binding.source,
+                    parameter,
+                    role: super::super::body::ValueRole::Semantic,
+                }
+            })
+            .collect()
     }
 
     fn compile_match_dispatch(
@@ -2478,17 +2482,17 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         rows: Vec<PatternRow<super::super::types::Ty>>,
     ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
         let source = SourcePatternRows { input_count: 1, rows };
-        let mut resolver = |name: &CallableName,
-                            arity: usize,
-                            args: Vec<PatternGuardExpr<super::super::types::Ty>>|
-         -> Result<Option<PatternGuardExpr<super::super::types::Ty>>, SourcePatternError> {
-            let callee = resolve_guard_callee_checked(self.world, self.namespace, name, arity);
-            Ok(Some(PatternGuardExpr::Dispatch {
-                inputs: args,
-                dispatch: Box::new(self.world.guard_dispatch(callee)),
-            }))
+        let namespace = self.namespace;
+        let mut resolver = super::super::dispatch::SourcePatternResolver {
+            world: self.world,
+            namespace,
+            owner: self.source.owner_module,
+            guard: |world: &mut World, name: &CallableName, arity: usize| {
+                let callee = resolve_guard_callee_checked(world, namespace, name, arity);
+                Ok(Some(world.guard_dispatch(callee)))
+            },
         };
-        pattern_dispatch_from_source_with_guard_resolver(source, &mut resolver)
+        pattern_dispatch_from_source_with_resolver(source, &mut resolver)
             .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))
     }
 
@@ -2631,30 +2635,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         captures
     }
 
-    fn lower_receive_clause(
-        &mut self,
-        clause: &MatchClause,
-        mut env: HashMap<String, ValueId>,
-    ) -> Result<ExprReceiveClause, FatalError> {
-        let mut bound_names = Vec::new();
-        collect_pattern_bound_names(&clause.pattern.node, &mut bound_names);
-        let params = bound_names
-            .iter()
-            .map(|name| {
-                let value = self.fresh_value();
-                env.insert(name.clone(), value);
-                value
-            })
-            .collect::<Vec<_>>();
-        let body = self.lower_expr_as_block(&clause.body, env)?;
-        Ok(ExprReceiveClause {
-            span: clause.span,
-            bound_names,
-            params,
-            body,
-        })
-    }
-
     fn lower_receive_after(
         &mut self,
         after: &AfterClause,
@@ -2741,7 +2721,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         Ok(value)
     }
 
-    fn plan_clauses(&mut self, clauses: Vec<ExprClause>) -> (Vec<LoweredClause>, Vec<LoweredEntry>) {
+    fn plan_clauses(&mut self, clauses: Vec<ExprClause>) -> LoweredBody {
         let mut lowered = Vec::with_capacity(clauses.len());
         let mut entries = Vec::new();
         let mut clause_bounds = HashMap::new();
@@ -2765,14 +2745,155 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 entry,
             });
         }
-        let captures = compute_entry_captures(&entries, &clause_bounds);
-        let reusable_cons_captures = compute_entry_reusable_cons_captures(&lowered, &entries);
-        for ((entry, captures), reusable_cons_captures) in entries.iter_mut().zip(captures).zip(reusable_cons_captures)
-        {
-            entry.captures = captures;
-            entry.reusable_cons_captures = reusable_cons_captures;
+        let mut body = LoweredBody::Clauses {
+            clauses: lowered,
+            entries,
+            generated: self.generated_ids.clone(),
+        };
+        self.construct_entry_captures(&mut body, &clause_bounds);
+        body
+    }
+
+    fn construct_entry_captures(
+        &mut self,
+        body: &mut LoweredBody,
+        clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+    ) {
+        use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
+        use crate::fz_ir::{ListRetention, ListRewritePermission};
+        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        let LoweredBody::Clauses { entries, .. } = body else {
+            unreachable!()
+        };
+        let constructions = entries
+            .iter()
+            .enumerate()
+            .flat_map(|(entry, block)| {
+                block.steps.iter().enumerate().filter_map(move |(step, instruction)| {
+                    let LoweredStep::List {
+                        items, tail: Some(_), ..
+                    } = instruction
+                    else {
+                        return None;
+                    };
+                    (items.len() == 1).then_some((entry, step, items[0]))
+                })
+            })
+            .collect::<Vec<_>>();
+        let sources = constructions
+            .iter()
+            .filter_map(|&(entry, step, head)| {
+                let origin = list_source_origin(body, &origins, head)?;
+                Some((entry, step, head, origin))
+            })
+            .collect::<Vec<_>>();
+        for (entry, step, head, origin) in &sources {
+            let source = match origin {
+                TransportOrigin::LocalValue(source) => *source,
+                TransportOrigin::OutcomeSubject { owner, subject } => {
+                    let LoweredBody::Clauses { entries, .. } = body else {
+                        unreachable!()
+                    };
+                    let (target, existing) = {
+                        let edge = entries[owner.as_u32() as usize]
+                            .tail
+                            .outcome_edges()
+                            .iter()
+                            .find(|edge| edge.arguments.iter().any(|argument| argument.parameter == *head))
+                            .expect("head has a winning edge");
+                        (
+                            edge.target,
+                            edge.arguments
+                                .iter()
+                                .find(|argument| argument.subject == *subject)
+                                .map(|argument| argument.parameter),
+                        )
+                    };
+                    if let Some(existing) = existing {
+                        existing
+                    } else {
+                        let parameter = self.fresh_value();
+                        entries[target.as_u32() as usize].params.push(parameter);
+                        entries[target.as_u32() as usize].physical_params.push(parameter);
+                        let edge = entries[owner.as_u32() as usize]
+                            .tail
+                            .outcome_edges_mut()
+                            .iter_mut()
+                            .find(|edge| edge.target == target)
+                            .expect("physical subject has its target");
+                        let mut arguments = std::mem::take(&mut edge.arguments).into_vec();
+                        arguments.push(super::super::body::OutcomeArgument {
+                            subject: *subject,
+                            parameter,
+                            role: super::super::body::ValueRole::Physical,
+                        });
+                        edge.arguments = arguments.into_boxed_slice();
+                        parameter
+                    }
+                }
+                _ => unreachable!("a list source is a local value or a plan-owned subject"),
+            };
+            let LoweredBody::Clauses { entries, .. } = body else {
+                unreachable!()
+            };
+            let LoweredStep::List { retention, .. } = &mut entries[*entry].steps[*step] else {
+                unreachable!()
+            };
+            *retention = Some(ListRetention {
+                source,
+                permission: ListRewritePermission::RetainOnly,
+            });
         }
-        (lowered, entries)
+        let LoweredBody::Clauses { entries, .. } = body else {
+            unreachable!()
+        };
+        let semantic = compute_entry_captures(entries, clause_bounds, false);
+        let mut physical = compute_entry_captures(entries, clause_bounds, true);
+        for entry in entries.iter() {
+            let LoweredTail::Receive(receive) = &entry.tail else {
+                continue;
+            };
+            let targets = receive
+                .outcomes
+                .iter()
+                .map(|edge| edge.target)
+                .chain(receive.after.iter().map(|after| after.entry))
+                .collect::<Vec<_>>();
+            let mut shared = targets
+                .iter()
+                .flat_map(|target| physical[target.as_u32() as usize].iter().copied())
+                .collect::<Vec<_>>();
+            shared.sort_unstable_by_key(|value| value.as_u32());
+            shared.dedup();
+            for target in targets {
+                physical[target.as_u32() as usize] = shared.clone();
+            }
+        }
+        for ((entry, captures), retained) in entries.iter_mut().zip(semantic).zip(physical) {
+            entry.physical_captures = retained.into_iter().filter(|value| !captures.contains(value)).collect();
+            entry.captures = captures;
+        }
+        let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
+        construct_call_ownership(body, &origins);
+        construct_tuple_ownership(body, &origins);
+        for (entry, step, _, _) in sources {
+            let permission = if list_can_rewrite(body, &origins, entry, step) {
+                ListRewritePermission::Rewrite
+            } else {
+                ListRewritePermission::RetainOnly
+            };
+            let LoweredBody::Clauses { entries, .. } = body else {
+                unreachable!()
+            };
+            let LoweredStep::List {
+                retention: Some(retention),
+                ..
+            } = &mut entries[entry].steps[step]
+            else {
+                unreachable!()
+            };
+            retention.permission = permission;
+        }
     }
 
     fn plan_block(
@@ -2791,7 +2912,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             origin,
             params,
             captures,
-            reusable_cons_captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
             steps,
             tail,
         });
@@ -2946,19 +3068,25 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         );
                         ControlDestination::Deliver(resume)
                     };
-                    let arm_entries = dispatch
+                    let outcomes = dispatch
                         .arm_blocks
                         .iter()
                         .cloned()
                         .map(|arm| {
-                            self.plan_block(
-                                arm,
+                            let params = arm.arguments.iter().map(|argument| argument.parameter).collect();
+                            let target = self.plan_block(
+                                arm.block,
                                 ControlEntryOrigin::Branch,
                                 branch_dest.clone(),
-                                Vec::new(),
+                                params,
                                 Vec::new(),
                                 entries,
-                            )
+                            );
+                            super::super::body::OutcomeEdge {
+                                outcome: arm.outcome,
+                                target,
+                                arguments: arm.arguments,
+                            }
                         })
                         .collect::<Vec<_>>();
                     let miss_entry = self.plan_block(
@@ -2976,7 +3104,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                             bindings: bindings.clone(),
                             dispatch: Box::new(ControlDispatch {
                                 plan: dispatch.plan.clone(),
-                                arm_entries,
+                                outcomes,
                                 miss_entry,
                             }),
                         },
@@ -2986,7 +3114,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     let value = receive.value;
                     let bindings = &receive.bindings;
                     let dispatch = &receive.dispatch;
-                    let clauses = &receive.clauses;
+                    let outcomes = &receive.outcomes;
                     let after = &receive.after;
                     let captures = &receive.captures;
                     let branch_dest = if index + 1 == block.steps.len() && value == block.result {
@@ -3007,21 +3135,21 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         ControlDestination::Deliver(resume)
                     };
                     let receive_dest = branch_dest.clone();
-                    let clauses = clauses
+                    let outcomes = outcomes
                         .iter()
-                        .map(|clause| {
-                            let entry = self.plan_block(
-                                clause.body.clone(),
+                        .map(|outcome| {
+                            let target = self.plan_block(
+                                outcome.block.clone(),
                                 ControlEntryOrigin::ReceiveOutcome,
                                 branch_dest.clone(),
-                                clause.params.clone(),
+                                outcome.arguments.iter().map(|argument| argument.parameter).collect(),
                                 captures.clone(),
                                 entries,
                             );
-                            ReceiveClause {
-                                span: clause.span,
-                                bound_names: clause.bound_names.clone(),
-                                entry,
+                            super::super::body::OutcomeEdge {
+                                outcome: outcome.outcome,
+                                arguments: outcome.arguments.clone(),
+                                target,
                             }
                         })
                         .collect::<Vec<_>>();
@@ -3045,7 +3173,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                         LoweredTail::Receive(Box::new(super::super::body::LoweredReceive {
                             bindings: bindings.clone(),
                             dispatch: dispatch.clone(),
-                            clauses,
+                            outcomes,
                             after,
                             dest: receive_dest,
                         })),
@@ -3401,16 +3529,22 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
         },
         ExprStep::Tuple { value, items } => LoweredStep::Tuple {
             value: *value,
-            items: items.clone(),
+            items: items.iter().copied().map(crate::fz_ir::OwnershipUse::share).collect(),
         },
         ExprStep::List { value, items, tail } => LoweredStep::List {
             value: *value,
             items: items.clone(),
             tail: *tail,
+            retention: None,
         },
-        ExprStep::Map { value, entries } => LoweredStep::Map {
+        ExprStep::Map {
+            value,
+            entries,
+            quoted_span,
+        } => LoweredStep::Map {
             value: *value,
             entries: entries.clone(),
+            quoted_span: *quoted_span,
         },
         ExprStep::MapUpdate { value, base, entries } => LoweredStep::MapUpdate {
             value: *value,
@@ -3524,202 +3658,648 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
 }
 
 fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    for step in steps {
-        match step {
-            LoweredStep::Const { value, .. }
-            | LoweredStep::Tuple { value, .. }
-            | LoweredStep::List { value, .. }
-            | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
-            | LoweredStep::Struct { value, .. }
-            | LoweredStep::Bitstring { value, .. }
-            | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::Lambda { value, .. }
-            | LoweredStep::BinaryOp { value, .. }
-            | LoweredStep::UnaryOp { value, .. }
-            | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
-                out.insert(*value);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                out.insert(*head);
-                out.insert(*tail);
-            }
-            LoweredStep::BitstringInit { reader, .. } => {
-                out.insert(*reader);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                out.insert(*ok);
-                out.insert(*value);
-                out.insert(*next_reader);
-            }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertTuple { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-    out
+    steps.iter().flat_map(step_defined_values).collect()
+}
+
+fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = ValueId> {
+    let values = match step {
+        LoweredStep::Const { value, .. }
+        | LoweredStep::Tuple { value, .. }
+        | LoweredStep::List { value, .. }
+        | LoweredStep::Map { value, .. }
+        | LoweredStep::MapUpdate { value, .. }
+        | LoweredStep::Struct { value, .. }
+        | LoweredStep::Bitstring { value, .. }
+        | LoweredStep::FunctionRef { value, .. }
+        | LoweredStep::Lambda { value, .. }
+        | LoweredStep::BinaryOp { value, .. }
+        | LoweredStep::UnaryOp { value, .. }
+        | LoweredStep::MapIndex { value, .. }
+        | LoweredStep::FieldAccess { value, .. }
+        | LoweredStep::RequireMapValue { value, .. }
+        | LoweredStep::TupleField { value, .. }
+        | LoweredStep::BitstringInit { reader: value, .. } => [Some(*value), None, None],
+        LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
+        LoweredStep::BitstringRead {
+            ok, value, next_reader, ..
+        } => [Some(*ok), Some(*value), Some(*next_reader)],
+        LoweredStep::AssertLiteral { .. }
+        | LoweredStep::AssertStruct { .. }
+        | LoweredStep::AssertTuple { .. }
+        | LoweredStep::AssertEmptyList { .. }
+        | LoweredStep::AssertSame { .. }
+        | LoweredStep::AssertBitstringDone { .. } => [None; 3],
+    };
+    values.into_iter().flatten()
+}
+
+fn value_definition(body: &LoweredBody, value: ValueId) -> Option<&LoweredStep> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return None;
+    };
+    clauses
+        .iter()
+        .flat_map(|clause| &clause.projections)
+        .chain(entries.iter().flat_map(|entry| &entry.steps))
+        .find(|step| step_defined_values(step).any(|defined| defined == value))
 }
 
 fn compute_entry_captures(
     entries: &[LoweredEntry],
     clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
+    physical: bool,
 ) -> Vec<Vec<ValueId>> {
     let mut memo = HashMap::new();
     for entry_id in 0..entries.len() {
         let entry_id = ControlEntryId::from_u32(entry_id as u32);
-        let _ = entry_captures(entries, clause_bounds, entry_id, &mut memo);
+        let _ = entry_captures(entries, clause_bounds, entry_id, physical, &mut memo);
     }
     (0..entries.len())
         .map(|index| memo.remove(&ControlEntryId::from_u32(index as u32)).unwrap_or_default())
         .collect()
 }
 
-fn compute_entry_reusable_cons_captures(
-    clauses: &[LoweredClause],
-    entries: &[LoweredEntry],
-) -> Vec<Vec<ReusableConsCapture>> {
-    let mut entry_clause_inputs = vec![Vec::<HashMap<ValueId, ValueId>>::new(); entries.len()];
-    for clause in clauses {
-        entry_clause_inputs[clause.entry.as_u32() as usize].push(reusable_cons_sources_in_steps(&clause.projections));
-    }
-
-    let mut entry_parents = vec![Vec::<ControlEntryId>::new(); entries.len()];
-    for (index, entry) in entries.iter().enumerate() {
-        let parent = ControlEntryId::from_u32(index as u32);
-        for child in child_entries(entry.tail.clone()) {
-            entry_parents[child.as_u32() as usize].push(parent);
-        }
-    }
-
-    let local_caps = entries
-        .iter()
-        .map(|entry| reusable_cons_sources_in_steps(&entry.steps))
-        .collect::<Vec<_>>();
-    let mut available_in = vec![HashMap::<ValueId, ValueId>::new(); entries.len()];
-    let mut available_out = local_caps.clone();
-
-    loop {
-        let mut changed = false;
-        for (index, entry) in entries.iter().enumerate() {
-            let incoming = if matches!(entry.origin, ControlEntryOrigin::ReceiveOutcome) {
-                HashMap::new()
-            } else {
-                let mut inputs = entry_clause_inputs[index].clone();
-                inputs.extend(
-                    entry_parents[index]
-                        .iter()
-                        .map(|parent| available_out[parent.as_u32() as usize].clone()),
-                );
-                intersect_reusable_cons_sources(inputs)
+fn list_source_origin(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    head: ValueId,
+) -> Option<super::super::executable_facts::TransportOrigin> {
+    use super::super::executable_facts::TransportOrigin;
+    use crate::dispatch_matrix::{ProjectionKind, SubjectSource};
+    match origins.get(&head)? {
+        TransportOrigin::Projection {
+            source,
+            kind: ProjectionKind::ListHead,
+        } => Some(TransportOrigin::LocalValue(*source)),
+        TransportOrigin::OutcomeSubject { owner, subject } => {
+            let LoweredBody::Clauses { entries, .. } = body else {
+                return None;
             };
-            let mut outgoing = incoming.clone();
-            outgoing.extend(local_caps[index].iter().map(|(head, source)| (*head, *source)));
-            if available_in[index] != incoming {
-                available_in[index] = incoming;
-                changed = true;
-            }
-            if available_out[index] != outgoing {
-                available_out[index] = outgoing;
-                changed = true;
-            }
+            let SubjectSource::Projection(projection) =
+                entries[owner.as_u32() as usize].tail.dispatch_plan().subject(*subject)
+            else {
+                return None;
+            };
+            matches!(projection.kind, ProjectionKind::ListHead).then_some(TransportOrigin::OutcomeSubject {
+                owner: *owner,
+                subject: projection.source,
+            })
         }
-        if !changed {
-            break;
-        }
+        _ => None,
     }
+}
 
-    let direct_needed = entries.iter().map(direct_reusable_cons_heads).collect::<Vec<_>>();
-    let mut captures = vec![HashMap::<ValueId, ValueId>::new(); entries.len()];
+type SourcePath = (SubjectOriginRoot, Vec<crate::dispatch_matrix::ProjectionKind>);
 
-    loop {
-        let mut changed = false;
-        for index in (0..entries.len()).rev() {
-            let entry = &entries[index];
-            let mut needed = HashMap::new();
-            for head in &direct_needed[index] {
-                if let Some(source) = available_in[index].get(head).copied() {
-                    needed.insert(*head, source);
-                }
+fn origin_source_path(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origin: &super::super::executable_facts::TransportOrigin,
+) -> Option<SourcePath> {
+    use super::super::executable_facts::TransportOrigin;
+    let (value, suffix) = match origin {
+        TransportOrigin::LocalValue(value) => (*value, Vec::new()),
+        TransportOrigin::Projection { source, kind } => (*source, vec![kind.clone()]),
+        TransportOrigin::OutcomeSubject { owner, subject } => {
+            let (source, path) = body.dispatch_subject_origin(*owner, *subject);
+            let path = path.into_iter().cloned().collect();
+            match source {
+                SubjectOriginRoot::Value(value) => (value, path),
+                SubjectOriginRoot::MailboxMessage(_) => return Some((source, path)),
             }
-            for child in child_entries(entry.tail.clone()) {
-                for (head, source) in &captures[child.as_u32() as usize] {
-                    if let Some(incoming_source) = available_in[index].get(head).copied()
-                        && incoming_source == *source
-                    {
-                        needed.insert(*head, *source);
+        }
+        TransportOrigin::Join(alternatives) => {
+            let mut paths = alternatives
+                .iter()
+                .map(|origin| origin_source_path(body, origins, origin));
+            let first = paths.next()??;
+            return paths.all(|path| path.as_ref() == Some(&first)).then_some(first);
+        }
+        _ => return None,
+    };
+    let (mut root, mut path) = match origins.get(&value) {
+        Some(
+            TransportOrigin::ExecutableInput(_)
+            | TransportOrigin::CallsiteReturn(_)
+            | TransportOrigin::ClosureCallReturn { .. }
+            | TransportOrigin::TupleValue(_)
+            | TransportOrigin::CallableValue(_),
+        )
+        | None => (SubjectOriginRoot::Value(value), Vec::new()),
+        Some(origin) => origin_source_path(body, origins, origin)?,
+    };
+    path.extend(suffix);
+    while let SubjectOriginRoot::Value(value) = root
+        && let Some((item, consumed)) = construction_projection(body, origins, value, &path)
+    {
+        let (next_root, mut prefix) = origin_source_path(body, origins, &TransportOrigin::LocalValue(item))?;
+        prefix.extend(path.into_iter().skip(consumed));
+        root = next_root;
+        path = prefix;
+    }
+    Some((root, path))
+}
+
+fn construction_projection(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    root: ValueId,
+    path: &[crate::dispatch_matrix::ProjectionKind],
+) -> Option<(ValueId, usize)> {
+    use crate::dispatch_matrix::ProjectionKind;
+    if let Some(ProjectionKind::TupleField(index)) = path.first()
+        && let Some(super::super::executable_facts::TransportOrigin::TupleValue(items)) = origins.get(&root)
+    {
+        return items.get(*index as usize).map(|item| (*item, 1));
+    }
+    let LoweredStep::List { items, tail, .. } = value_definition(body, root)? else {
+        return None;
+    };
+    let tails = path
+        .iter()
+        .take_while(|kind| matches!(kind, ProjectionKind::ListTail))
+        .count();
+    if tails >= items.len() && !items.is_empty() {
+        return tail.map(|tail| (tail, items.len()));
+    }
+    if matches!(path.get(tails), Some(ProjectionKind::ListHead)) {
+        return items.get(tails).map(|item| (*item, tails + 1));
+    }
+    None
+}
+
+fn list_can_rewrite(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    entry: usize,
+    step: usize,
+) -> bool {
+    use super::super::executable_facts::TransportOrigin;
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return false;
+    };
+    let LoweredStep::List {
+        value,
+        items,
+        tail,
+        retention: Some(retention),
+    } = &entries[entry].steps[step]
+    else {
+        return false;
+    };
+    let Some(source) = origin_source_path(body, origins, &TransportOrigin::LocalValue(retention.source)) else {
+        return false;
+    };
+    !items
+        .iter()
+        .chain(tail)
+        .any(|operand| value_may_retain_source(body, origins, *operand, &source, Some(*value), &mut HashSet::new()))
+        && !source_used_after(body, origins, entry, step, &source)
+}
+
+fn source_used_after(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    entry: usize,
+    step: usize,
+    source: &SourcePath,
+) -> bool {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return true;
+    };
+    let exempt = match entries[entry].steps.get(step) {
+        Some(LoweredStep::List { value, .. } | LoweredStep::Tuple { value, .. }) => Some(*value),
+        _ => None,
+    };
+    any_later_ownership_use(body, entry, step, |value, role| match role {
+        super::super::body::ValueRole::Semantic => {
+            value_may_retain_source(body, origins, value, source, exempt, &mut HashSet::new())
+        }
+        super::super::body::ValueRole::Physical => origin_source_path(
+            body,
+            origins,
+            &super::super::executable_facts::TransportOrigin::LocalValue(value),
+        )
+        .as_ref()
+        .is_none_or(|identity| identity == source),
+    })
+}
+
+fn any_later_ownership_use(
+    body: &LoweredBody,
+    entry: usize,
+    step: usize,
+    mut competes: impl FnMut(ValueId, super::super::body::ValueRole) -> bool,
+) -> bool {
+    use super::super::body::ValueRole;
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return true;
+    };
+    let mut pending = vec![(entry, step + 1)];
+    let mut visited = HashSet::new();
+    while let Some((block_id, start)) = pending.pop() {
+        if !visited.insert(block_id) {
+            continue;
+        }
+        let block = &entries[block_id];
+        let mut used = HashSet::new();
+        collect_used_values(&block.steps[start..], &mut used);
+        for instruction in block.steps.iter().skip(start) {
+            if let LoweredStep::List {
+                retention: Some(retention),
+                ..
+            } = instruction
+                && competes(retention.source, ValueRole::Physical)
+            {
+                return true;
+            }
+        }
+        collect_tail_used_values(&block.tail, &mut used);
+        if used.into_iter().any(|value| competes(value, ValueRole::Semantic)) {
+            return true;
+        }
+        pending.extend(
+            child_entries(block.tail.clone())
+                .into_iter()
+                .map(|child| (child.as_u32() as usize, 0)),
+        );
+    }
+    false
+}
+
+fn value_is_new_owner_projection(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+    owner: ValueId,
+) -> bool {
+    value == owner
+        || origins
+            .get(&value)
+            .is_some_and(|origin| origin_is_new_owner_projection(body, origins, origin, owner))
+}
+
+fn origin_is_new_owner_projection(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origin: &super::super::executable_facts::TransportOrigin,
+    owner: ValueId,
+) -> bool {
+    use super::super::executable_facts::TransportOrigin;
+    match origin {
+        TransportOrigin::LocalValue(value) | TransportOrigin::Projection { source: value, .. } => {
+            value_is_new_owner_projection(body, origins, *value, owner)
+        }
+        TransportOrigin::OutcomeSubject {
+            owner: dispatch,
+            subject,
+        } => match body.dispatch_subject_origin(*dispatch, *subject).0 {
+            SubjectOriginRoot::Value(value) => value_is_new_owner_projection(body, origins, value, owner),
+            SubjectOriginRoot::MailboxMessage(_) => false,
+        },
+        TransportOrigin::Join(alternatives) => {
+            !alternatives.is_empty()
+                && alternatives
+                    .iter()
+                    .all(|origin| origin_is_new_owner_projection(body, origins, origin, owner))
+        }
+        _ => false,
+    }
+}
+
+fn value_may_retain_source(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+    source: &SourcePath,
+    exempt: Option<ValueId>,
+    visiting: &mut HashSet<ValueId>,
+) -> bool {
+    use super::super::executable_facts::TransportOrigin;
+    if exempt.is_some_and(|owner| value_is_new_owner_projection(body, origins, value, owner)) {
+        return false;
+    }
+    if SubjectOriginRoot::Value(value) == source.0 || !visiting.insert(value) {
+        return true;
+    }
+    if let Some((root, path)) = origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
+        && root == source.0
+    {
+        visiting.remove(&value);
+        return source.1.starts_with(&path);
+    }
+    let retained = if let Some(origin) = origins.get(&value) {
+        origin_may_retain_source(body, origins, origin, source, exempt, visiting)
+    } else {
+        match value_definition(body, value) {
+            Some(
+                LoweredStep::Const { .. }
+                | LoweredStep::FunctionRef { .. }
+                | LoweredStep::UnaryOp { .. }
+                | LoweredStep::Bitstring { .. },
+            ) => false,
+            Some(LoweredStep::BinaryOp { op, .. }) if !matches!(op, crate::ast::BinOp::And | crate::ast::BinOp::Or) => {
+                false
+            }
+            Some(step) => {
+                let mut operands = HashSet::new();
+                collect_used_values(std::slice::from_ref(step), &mut operands);
+                if let LoweredStep::List {
+                    retention: Some(retention),
+                    ..
+                } = step
+                {
+                    let identity = origin_source_path(body, origins, &TransportOrigin::LocalValue(retention.source));
+                    if identity.as_ref().is_none_or(|identity| identity == source) {
+                        visiting.remove(&value);
+                        return true;
                     }
                 }
+                operands
+                    .into_iter()
+                    .any(|value| value_may_retain_source(body, origins, value, source, exempt, visiting))
             }
-            if captures[index] != needed {
-                captures[index] = needed;
-                changed = true;
-            }
+            None => true,
         }
-        if !changed {
-            break;
-        }
-    }
-
-    captures
-        .into_iter()
-        .map(|caps| {
-            let mut caps = caps
-                .into_iter()
-                .map(|(head, source)| ReusableConsCapture { head, source })
-                .collect::<Vec<_>>();
-            caps.sort_by_key(|capture| (capture.head.as_u32(), capture.source.as_u32()));
-            caps
-        })
-        .collect()
-}
-
-fn direct_reusable_cons_heads(entry: &LoweredEntry) -> Vec<ValueId> {
-    entry
-        .steps
-        .iter()
-        .filter_map(|step| match step {
-            LoweredStep::List {
-                items, tail: Some(_), ..
-            } if items.len() == 1 => items.first().copied(),
-            _ => None,
-        })
-        .collect()
-}
-
-fn reusable_cons_sources_in_steps(steps: &[LoweredStep]) -> HashMap<ValueId, ValueId> {
-    let mut out = HashMap::new();
-    for step in steps {
-        if let LoweredStep::SplitList { source, head, .. } = step {
-            out.insert(*head, *source);
-        }
-    }
-    out
-}
-
-fn intersect_reusable_cons_sources(inputs: Vec<HashMap<ValueId, ValueId>>) -> HashMap<ValueId, ValueId> {
-    let mut inputs = inputs.into_iter();
-    let Some(mut shared) = inputs.next() else {
-        return HashMap::new();
     };
-    for caps in inputs {
-        shared.retain(|head, source| caps.get(head).is_some_and(|other| other == source));
+    visiting.remove(&value);
+    retained
+}
+
+fn origin_may_retain_source(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    origin: &super::super::executable_facts::TransportOrigin,
+    source: &SourcePath,
+    exempt: Option<ValueId>,
+    visiting: &mut HashSet<ValueId>,
+) -> bool {
+    use super::super::executable_facts::TransportOrigin;
+    if let Some((root, path)) = origin_source_path(body, origins, origin) {
+        if Some(root) == exempt.map(SubjectOriginRoot::Value) {
+            return false;
+        }
+        if root == source.0 {
+            return source.1.starts_with(&path);
+        }
     }
-    shared
+    match origin {
+        TransportOrigin::LocalValue(value) | TransportOrigin::Projection { source: value, .. } => {
+            value_may_retain_source(body, origins, *value, source, exempt, visiting)
+        }
+        TransportOrigin::OutcomeSubject { owner, subject } => {
+            let (value, _) = body.dispatch_subject_origin(*owner, *subject);
+            match value {
+                SubjectOriginRoot::Value(value) => {
+                    value_may_retain_source(body, origins, value, source, exempt, visiting)
+                }
+                SubjectOriginRoot::MailboxMessage(_) => false,
+            }
+        }
+        TransportOrigin::Join(alternatives) => alternatives
+            .iter()
+            .any(|origin| origin_may_retain_source(body, origins, origin, source, exempt, visiting)),
+        TransportOrigin::TupleValue(items) => items
+            .iter()
+            .any(|value| value_may_retain_source(body, origins, *value, source, exempt, visiting)),
+        TransportOrigin::CallableValue(producer) => producer
+            .captures
+            .iter()
+            .any(|value| value_may_retain_source(body, origins, *value, source, exempt, visiting)),
+        // Every producing call edge guards overlap with caller-retained values
+        // before these independent roots enter a body. Unknown ingress without
+        // a producing origin remains conservative in value_may_retain_source.
+        TransportOrigin::ExecutableInput(_)
+        | TransportOrigin::CallsiteReturn(_)
+        | TransportOrigin::ClosureCallReturn { .. } => false,
+    }
+}
+
+fn values_overlap(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    left: ValueId,
+    right: ValueId,
+) -> bool {
+    values_overlap_inner(body, origins, left, right, None, &mut HashSet::new())
+}
+
+fn values_overlap_inner(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    left: ValueId,
+    right: ValueId,
+    exempt: Option<ValueId>,
+    visited: &mut HashSet<(ValueId, ValueId)>,
+) -> bool {
+    use super::super::executable_facts::TransportOrigin;
+    if !visited.insert((left, right)) {
+        return false;
+    }
+    if exempt.is_some_and(|owner| {
+        value_is_new_owner_projection(body, origins, left, owner)
+            || value_is_new_owner_projection(body, origins, right, owner)
+    }) {
+        return false;
+    }
+    let Some(left_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(left)) else {
+        return true;
+    };
+    let Some(right_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(right)) else {
+        return true;
+    };
+    value_may_retain_source(body, origins, left, &right_path, exempt, &mut HashSet::new())
+        || value_may_retain_source(body, origins, right, &left_path, exempt, &mut HashSet::new())
+        || construction_children(body, origins, left)
+            .into_iter()
+            .any(|child| values_overlap_inner(body, origins, child, right, exempt, visited))
+        || construction_children(body, origins, right)
+            .into_iter()
+            .any(|child| values_overlap_inner(body, origins, left, child, exempt, visited))
+}
+
+fn construction_children(
+    body: &LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+) -> Vec<ValueId> {
+    use super::super::executable_facts::TransportOrigin;
+    use crate::dispatch_matrix::ProjectionKind;
+    let Some((value, path)) = origin_source_path(body, origins, &TransportOrigin::LocalValue(value)) else {
+        return Vec::new();
+    };
+    let SubjectOriginRoot::Value(value) = value else {
+        return Vec::new();
+    };
+    if path.is_empty() {
+        match origins.get(&value) {
+            Some(TransportOrigin::TupleValue(items)) => return items.to_vec(),
+            Some(TransportOrigin::CallableValue(producer)) => return producer.captures.to_vec(),
+            _ => {}
+        }
+    }
+    match value_definition(body, value) {
+        Some(LoweredStep::List { items, tail, .. })
+            if path.iter().all(|kind| matches!(kind, ProjectionKind::ListTail)) =>
+        {
+            items.iter().skip(path.len()).chain(tail).copied().collect()
+        }
+        Some(LoweredStep::Struct { fields, .. }) if path.is_empty() => fields.iter().map(|(_, value)| *value).collect(),
+        Some(LoweredStep::Map { entries, .. }) if path.is_empty() => {
+            entries.iter().flat_map(|(key, value)| [key.value, *value]).collect()
+        }
+        Some(LoweredStep::MapUpdate { base, entries, .. }) if path.is_empty() => std::iter::once(*base)
+            .chain(entries.iter().flat_map(|(key, value)| [key.value, *value]))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn construct_call_ownership(
+    body: &mut LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+) {
+    use super::super::executable_facts::TransportOrigin;
+    use crate::fz_ir::OwnershipMode;
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return;
+    };
+    let calls = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let (args, dest) = match &entry.tail {
+                LoweredTail::DirectCall { args, dest, .. } | LoweredTail::ClosureCall { args, dest, .. } => {
+                    (args, dest)
+                }
+                _ => return None,
+            };
+            Some((
+                index,
+                args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
+                dest.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (index, args, dest) in calls {
+        let modes =
+            args.iter()
+                .enumerate()
+                .map(|(arg_index, arg)| {
+                    let peers_overlap = args.iter().enumerate().any(|(peer_index, peer)| {
+                        arg_index != peer_index && values_overlap(body, origins, *arg, *peer)
+                    });
+                    let retained_overlap = if let ControlDestination::Deliver(target) = dest {
+                        let LoweredBody::Clauses { entries, .. } = &*body else {
+                            unreachable!()
+                        };
+                        let target = &entries[target.as_u32() as usize];
+                        target
+                            .captures
+                            .iter()
+                            .any(|capture| values_overlap(body, origins, *arg, *capture))
+                            || target.physical_captures.iter().any(|capture| {
+                                let Some(source) =
+                                    origin_source_path(body, origins, &TransportOrigin::LocalValue(*capture))
+                                else {
+                                    return true;
+                                };
+                                value_may_retain_source(body, origins, *arg, &source, None, &mut HashSet::new())
+                            })
+                    } else {
+                        false
+                    };
+                    if peers_overlap || retained_overlap {
+                        OwnershipMode::Share
+                    } else {
+                        OwnershipMode::Transfer
+                    }
+                })
+                .collect::<Vec<_>>();
+        let LoweredBody::Clauses { entries, .. } = body else {
+            unreachable!()
+        };
+        let args = match &mut entries[index].tail {
+            LoweredTail::DirectCall { args, .. } | LoweredTail::ClosureCall { args, .. } => args,
+            _ => unreachable!(),
+        };
+        for (arg, mode) in args.iter_mut().zip(modes) {
+            arg.ownership = mode;
+        }
+    }
+}
+
+fn construct_tuple_ownership(
+    body: &mut LoweredBody,
+    origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+) {
+    use super::super::body::ValueRole;
+    use super::super::executable_facts::TransportOrigin;
+    use crate::fz_ir::OwnershipMode;
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return;
+    };
+    let tuples = entries
+        .iter()
+        .enumerate()
+        .flat_map(|(entry, block)| {
+            block
+                .steps
+                .iter()
+                .enumerate()
+                .filter_map(move |(step, instruction)| match instruction {
+                    LoweredStep::Tuple { value, items } => Some((
+                        entry,
+                        step,
+                        *value,
+                        items.iter().map(|item| item.value).collect::<Vec<_>>(),
+                    )),
+                    _ => None,
+                })
+        })
+        .collect::<Vec<_>>();
+    for (entry, step, result, items) in tuples {
+        let modes = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let peers_overlap = items
+                    .iter()
+                    .enumerate()
+                    .any(|(peer_index, peer)| index != peer_index && values_overlap(body, origins, *item, *peer));
+                let old_owner = any_later_ownership_use(body, entry, step, |value, role| match role {
+                    ValueRole::Semantic => {
+                        values_overlap_inner(body, origins, value, *item, Some(result), &mut HashSet::new())
+                    }
+                    ValueRole::Physical => origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
+                        .is_none_or(|source| {
+                            value_may_retain_source(body, origins, *item, &source, Some(result), &mut HashSet::new())
+                        }),
+                });
+                if peers_overlap || old_owner {
+                    OwnershipMode::Share
+                } else {
+                    OwnershipMode::Transfer
+                }
+            })
+            .collect::<Vec<_>>();
+        let LoweredBody::Clauses { entries, .. } = body else {
+            unreachable!()
+        };
+        let LoweredStep::Tuple { items, .. } = &mut entries[entry].steps[step] else {
+            unreachable!()
+        };
+        for (item, mode) in items.iter_mut().zip(modes) {
+            item.mode = mode;
+        }
+    }
 }
 
 fn entry_captures(
     entries: &[LoweredEntry],
     clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
     entry_id: ControlEntryId,
+    physical: bool,
     memo: &mut HashMap<ControlEntryId, Vec<ValueId>>,
 ) -> Vec<ValueId> {
     if let Some(captures) = memo.get(&entry_id) {
@@ -3734,9 +4314,23 @@ fn entry_captures(
     }
     bound.extend(values_defined_by_steps(&entry.steps));
 
-    let mut needed = used_values_in_entry(entry);
+    let mut needed = if physical {
+        entry
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                LoweredStep::List {
+                    retention: Some(retention),
+                    ..
+                } => Some(retention.source),
+                _ => None,
+            })
+            .collect()
+    } else {
+        used_values_in_entry(entry)
+    };
     for child in child_entries(entry.tail.clone()) {
-        for capture in entry_captures(entries, clause_bounds, child, memo) {
+        for capture in entry_captures(entries, clause_bounds, child, physical, memo) {
             if !bound.contains(&capture) {
                 needed.insert(capture);
             }
@@ -3758,7 +4352,12 @@ fn entry_captures(
 fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
     let mut out = HashSet::new();
     collect_used_values(&entry.steps, &mut out);
-    match &entry.tail {
+    collect_tail_used_values(&entry.tail, &mut out);
+    out
+}
+
+fn collect_tail_used_values(tail: &LoweredTail, out: &mut HashSet<ValueId>) {
+    match tail {
         LoweredTail::Value { value, .. } => {
             out.insert(*value);
         }
@@ -3792,7 +4391,6 @@ fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
         }
         LoweredTail::Halt { .. } => {}
     }
-    out
 }
 
 /// Every value identity retained by a lowered body's executable surface.
@@ -3811,12 +4409,14 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
     for entry in entries {
         retained.extend(entry.params.iter().copied());
         retained.extend(entry.captures.iter().copied());
-        retained.extend(
-            entry
-                .reusable_cons_captures
-                .iter()
-                .flat_map(|capture| [capture.head, capture.source]),
-        );
+        retained.extend(entry.physical_captures.iter().copied());
+        retained.extend(entry.steps.iter().filter_map(|step| match step {
+            LoweredStep::List {
+                retention: Some(retention),
+                ..
+            } => Some(retention.source),
+            _ => None,
+        }));
         if let Some(value) = entry.origin.input_value() {
             retained.insert(value);
         }
@@ -3830,7 +4430,7 @@ fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
     for step in steps {
         match step {
             LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
-            LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
+            LoweredStep::Tuple { items, .. } => out.extend(items.iter().map(|item| item.value)),
             LoweredStep::List { items, tail, .. } => {
                 out.extend(items.iter().copied());
                 if let Some(tail) = tail {
@@ -3917,12 +4517,12 @@ fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
             then_entry, else_entry, ..
         } => vec![then_entry, else_entry],
         LoweredTail::Dispatch { dispatch, .. } => {
-            let mut children = dispatch.arm_entries.clone();
+            let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
             children.push(dispatch.miss_entry);
             children
         }
         LoweredTail::Receive(receive) => {
-            let mut children = receive.clauses.iter().map(|clause| clause.entry).collect::<Vec<_>>();
+            let mut children = receive.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
             if let Some(after) = &receive.after {
                 children.push(after.entry);
             }
@@ -3945,52 +4545,6 @@ fn lambda_free_names(clauses: &[LambdaClause]) -> HashSet<String> {
         collect_expr_free_names(&clause.body.node, &mut bound, &mut free);
     }
     free
-}
-
-fn collect_pattern_bound_names(pattern: &Pattern, out: &mut Vec<String>) {
-    match pattern {
-        Pattern::Var(name) => out.push(name.clone()),
-        Pattern::As(name, inner) => {
-            out.push(name.clone());
-            collect_pattern_bound_names(&inner.node, out);
-        }
-        Pattern::Tuple(items) => {
-            for item in items {
-                collect_pattern_bound_names(&item.node, out);
-            }
-        }
-        Pattern::List(items, tail) => {
-            for item in items {
-                collect_pattern_bound_names(&item.node, out);
-            }
-            if let Some(tail) = tail {
-                collect_pattern_bound_names(&tail.node, out);
-            }
-        }
-        Pattern::Map(entries) => {
-            for (_, value) in entries {
-                collect_pattern_bound_names(&value.node, out);
-            }
-        }
-        Pattern::Struct { fields, .. } => {
-            for (_, value) in fields {
-                collect_pattern_bound_names(&value.node, out);
-            }
-        }
-        Pattern::Bitstring(fields) => {
-            for field in fields {
-                collect_pattern_bound_names(&field.value.node, out);
-            }
-        }
-        Pattern::Wildcard
-        | Pattern::Int(_)
-        | Pattern::Float(_)
-        | Pattern::Binary(_)
-        | Pattern::Atom(_)
-        | Pattern::Bool(_)
-        | Pattern::Nil
-        | Pattern::Pinned(_) => {}
-    }
 }
 
 fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
@@ -4297,6 +4851,7 @@ fn emit_local_dispatch_error(
         ),
         PatternDispatchError::SourcePattern(
             SourcePatternError::UnknownSubject(_)
+            | SourcePatternError::UnresolvedStruct(_)
             | SourcePatternError::RowPatternArity { .. }
             | SourcePatternError::NonMonotonicBodyId { .. },
         ) => {

@@ -1072,7 +1072,7 @@ pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
 #[derive(Debug, Clone, Copy)]
 pub struct ListCons {
     pub head: u64,
-    pub link: u64,
+    link: u64,
 }
 
 const _: () = {
@@ -1121,7 +1121,7 @@ impl ListLink {
         self.0 & LIST_LINK_ALIAS_MASK != 0
     }
 
-    pub fn mark_aliased(&mut self) {
+    fn mark_aliased(&mut self) {
         self.0 |= LIST_LINK_ALIAS_MASK;
     }
 
@@ -1168,19 +1168,37 @@ impl ListCons {
         self.link().aliased()
     }
 
-    pub fn mark_aliased(&mut self) {
+    fn mark_aliased(&mut self) {
         let mut link = self.link();
         link.mark_aliased();
         self.link = link.raw();
     }
 
-    /// Mutates only an exclusively borrowed cons under construction or a
-    /// collector-owned graph. Published lists are immutable language terms.
-    pub fn set_tail_bits(&mut self, tail_bits: u64) {
+    /// Atomically protect a closed spine, stopping at an already protected tail.
+    ///
+    /// # Safety
+    /// `addr` must be null or the start of a valid finite list spine exclusively
+    /// owned by the current process while publication runs.
+    pub(crate) unsafe fn share_spine(mut addr: *mut u8) -> usize {
+        let mut marked = 0;
+        while !addr.is_null() {
+            let cons = unsafe { &mut *(addr as *mut Self) };
+            if cons.aliased() {
+                break;
+            }
+            cons.mark_aliased();
+            marked += 1;
+            addr = cons.tail_addr() as *mut u8;
+        }
+        marked
+    }
+
+    /// Relocate the same logical tail in a collector-owned graph.
+    pub(crate) fn relocate_tail_for_gc(&mut self, tail_bits: u64) {
         self.link = self.link().with_tail(tail_bits).raw();
     }
 
-    pub fn set_head_raw_kind_tail(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) {
+    fn set_head_raw_kind_tail(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) {
         self.head = head_raw;
         self.link = self.link().with_head_kind(head_kind).with_tail(tail_bits).raw();
     }
@@ -1429,7 +1447,8 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
     )
 }
 
-pub fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
+#[cfg(test)]
+fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head_raw, head_kind, tail_bits));

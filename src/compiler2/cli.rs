@@ -16,7 +16,6 @@ use crate::notify_fixture_execution_start;
 use crate::telemetry::diag_render::{DiagRenderer, DiagnosticStatus};
 use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler};
 
-use super::code::CodeId;
 use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, max_requested_stage, parse_dump_spec};
 use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, read_module_body_surface, read_scope_surface};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, parse_quoted_program};
@@ -307,7 +306,7 @@ fn plural_count(count: usize, singular: &str, plural: &str) -> String {
 /// (adding it there would grow the shared bootstrap's reachable-function count
 /// for every fz2 program, not just ones that use `test`). `fz2 test` instead
 /// registers it as a scoped prelude on the test root's own world — its own
-/// `CodeId`, scoped in over the runtime prelude — so the user's test file is
+/// `SourceOwner`, scoped in over the runtime prelude — so the user's test file is
 /// submitted verbatim with its true on-disk spans intact. It expands to a
 /// plain `fn <name>(), do: <body>` through the same `Fz.Compiler.define` path
 /// every other definition takes, the identical shape `fn`/`defmodule` use in
@@ -328,7 +327,7 @@ const TEST_MACRO_PRELUDE_NAME: &str = "test:prelude.fz";
 /// submits exactly one test's fn (module-qualified when the test lives inside
 /// a `defmodule`) as a root and runs it — JIT by default, `--interp` to run it
 /// through the backend interpreter instead. The `test` item macro is supplied
-/// as a scoped prelude (its own `CodeId`), never spliced into the user source,
+/// as a scoped prelude (its own `SourceOwner`), never spliced into the user source,
 /// so the user's file keeps its true byte offsets.
 fn run_test_root_command(
     tel: ConfiguredTelemetry,
@@ -427,11 +426,13 @@ impl DiscoveredTest {
 /// naming the fn it will define; real compilation (via `load_root`) expands
 /// and defines it exactly as any other item macro would.
 fn discover_tests(source_name: &str, text: &str, tel: &ConfiguredTelemetry) -> Result<Vec<DiscoveredTest>, String> {
-    let quoted_root = parse_quoted_program(source_name, text, CodeId::ZERO, tel).map_err(|error| format!("{error}"))?;
-    let surface = read_scope_surface(&quoted_root).map_err(|error| format!("{error}"))?;
+    let mut source_map = crate::source::SourceMap::default();
+    let source_version = source_map.add_code(Some(source_name), text);
+    let quoted_root = parse_quoted_program(&source_map, source_version, tel).map_err(|error| format!("{error}"))?;
+    let surface = read_scope_surface(&quoted_root, &source_map).map_err(|error| format!("{error}"))?;
     let mut module_path = Vec::new();
     let mut tests = Vec::new();
-    collect_tests(&surface, &mut module_path, &mut tests)?;
+    collect_tests(&surface, &mut module_path, &mut tests, &source_map)?;
     tests.sort_by_key(DiscoveredTest::display_name);
     Ok(tests)
 }
@@ -440,6 +441,7 @@ fn collect_tests(
     surface: &ScopeSurface,
     module_path: &mut Vec<String>,
     out: &mut Vec<DiscoveredTest>,
+    sources: &crate::source::SourceMap,
 ) -> Result<(), String> {
     for form in &surface.forms {
         match form {
@@ -450,14 +452,14 @@ fn collect_tests(
             ScopeForm::Module(module) => {
                 let parent_len = module_path.len();
                 module_path.extend_from_slice(module.name.segments());
-                let nested_result = read_module_body_surface(module)
+                let nested_result = read_module_body_surface(module, sources)
                     .map_err(|error| format!("{error}"))
-                    .and_then(|nested| collect_tests(&nested, module_path, out));
+                    .and_then(|nested| collect_tests(&nested, module_path, out, sources));
                 module_path.truncate(parent_len);
                 nested_result?;
             }
             ScopeForm::MacroCall(macro_call) => {
-                collect_from_macro_call(macro_call, module_path, out)?;
+                collect_from_macro_call(macro_call, module_path, out, sources)?;
             }
             _ => {}
         }
@@ -473,14 +475,16 @@ fn collect_from_macro_call(
     macro_call: &MacroCallForm,
     module_path: &mut Vec<String>,
     out: &mut Vec<DiscoveredTest>,
+    sources: &crate::source::SourceMap,
 ) -> Result<(), String> {
     let cursor = macro_call.source.cursor();
-    let Some(node) = cursor.ast_node().map_err(|error| error.to_string())? else {
+    let Some(node) = cursor.ast_node(sources).map_err(|error| error.to_string())? else {
         return Ok(());
     };
-    let Ok(head) = node.head.atom_name() else {
+    if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
         return Ok(());
-    };
+    }
+    let head = node.head.atom_name().map_err(|error| error.to_string())?;
     match head.as_str() {
         "test" => {
             // Only a `test(<atom>, [do: ...])` shape is a test the macro can
@@ -489,7 +493,12 @@ fn collect_from_macro_call(
             // this macro's shape, so it is skipped here rather than discovered
             // and left to blow up opaquely inside macro expansion.
             let args = node.tail.list_items().map_err(|error| error.to_string())?;
-            let name = args.first().and_then(|first| first.atom_name().ok());
+            let name = match args.first() {
+                Some(first) if first.root().tag() == fz_runtime::any_value::ValueKind::ATOM => {
+                    Some(first.atom_name().map_err(|error| error.to_string())?)
+                }
+                _ => None,
+            };
             // A second argument that is not a `do`-keyword list (e.g. a bare
             // int) simply is not a do-body, so a read error here means "not a
             // test", not a hard failure.
@@ -513,7 +522,7 @@ fn collect_from_macro_call(
             let Some(kwargs) = args.get(1) else {
                 return Ok(());
             };
-            let module_name = module_alias_name(alias).map_err(|error| error.to_string())?;
+            let module_name = module_alias_name(alias, sources).map_err(|error| error.to_string())?;
             let Some(module_name) = module_name else {
                 return Ok(());
             };
@@ -521,9 +530,9 @@ fn collect_from_macro_call(
             let Some(body_root) = body_root else {
                 return Ok(());
             };
-            let nested = read_scope_surface(&body_root).map_err(|error| format!("{error}"))?;
+            let nested = read_scope_surface(&body_root, sources).map_err(|error| format!("{error}"))?;
             module_path.push(module_name);
-            let result = collect_tests(&nested, module_path, out);
+            let result = collect_tests(&nested, module_path, out, sources);
             module_path.pop();
             result
         }
@@ -537,11 +546,12 @@ fn collect_from_macro_call(
 /// compile time; discovery just skips it.
 fn module_alias_name(
     cursor: &super::source::QuotedSourceCursor,
+    sources: &crate::source::SourceMap,
 ) -> Result<Option<String>, super::source::QuotedSourceError> {
-    let Some(node) = cursor.ast_node()? else {
+    let Some(node) = cursor.ast_node(sources)? else {
         return Ok(None);
     };
-    if node.head.atom_name().ok().as_deref() != Some("__aliases__") {
+    if node.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM || node.head.atom_name()? != "__aliases__" {
         return Ok(None);
     }
     Ok(Some(node.tail.list_atom_names()?.join(".")))
@@ -872,7 +882,7 @@ mod test_prelude_span_test {
     #[test]
     fn user_test_source_keeps_its_true_on_disk_span_offsets() {
         // The `test` item macro is supplied as a scoped prelude (its own
-        // CodeId), never spliced into the user's source, so a node parsed from
+        // SourceOwner), never spliced into the user's source, so a node parsed from
         // the user's file carries its real byte offset. Under a textual prepend
         // the user buffer would be shifted forward by the prelude's length and
         // every span would be off by that many bytes -- this asserts the true
@@ -905,7 +915,7 @@ mod test_prelude_span_test {
                     let head = call
                         .source
                         .cursor()
-                        .ast_node()
+                        .ast_node(&compiler.world().source_map().borrow())
                         .ok()
                         .flatten()
                         .and_then(|node| node.head.atom_name().ok());
@@ -921,8 +931,8 @@ mod test_prelude_span_test {
             "the test macro call must carry its true byte offset in the user file, not one shifted by a spliced-in prelude"
         );
         assert_eq!(
-            test_form.span.code_id.0,
-            user_code.as_u32(),
+            test_form.span.source_version,
+            compiler.world().source_version(user_code).expect("user source version"),
             "the user node's span must name the user's own code unit, not a combined prelude+user buffer"
         );
     }

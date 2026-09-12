@@ -1,6 +1,6 @@
 //! Compiler2's owned world state.
 //!
-//! Compiler-owned identities are total here. A `CodeId`, `ModuleId`,
+//! Compiler-owned identities are total here. A `SourceOwner`, `ModuleId`,
 //! `FunctionId`, or `RootId` that came from Compiler2 must resolve; a bad id is
 //! a bug and should panic at the lookup boundary. `Option` is reserved for
 //! legitimate state absence like "this known function is still a placeholder"
@@ -19,10 +19,10 @@ use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
-use crate::source::Span;
+use crate::source::{SourceMap, Span};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
-use super::CodeId;
+use super::SourceOwner;
 use super::artifact::BackendProgram;
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
@@ -51,10 +51,11 @@ use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap, protocol_domain_tag,
 };
+use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::ExternalDependencyStates;
-use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStartTally};
+use super::scheduler::{CompletionEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
@@ -153,7 +154,7 @@ pub struct World {
     namespaces: NamespaceStore,
     types: Types,
     transport: TransportStore,
-    runtime_prelude: CodeId,
+    runtime_prelude: SourceOwner,
     /// Additional user-surface preludes scoped in over the runtime prelude, in
     /// registration order. Each is ordinary user source (read + expanded like
     /// any submission, unlike the bootstrap runtime prelude) whose scope
@@ -161,7 +162,7 @@ pub struct World {
     /// without any textual splicing into the user's own source buffer. The
     /// `fz2 test` front door registers exactly one — the `test` item macro —
     /// scoped into that run's world only, never the global Kernel bootstrap.
-    extra_preludes: Vec<CodeId>,
+    extra_preludes: Vec<SourceOwner>,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
@@ -204,7 +205,7 @@ impl std::ops::Deref for JobCompletion {
 }
 
 struct RuntimeModuleRegistration {
-    code_id: CodeId,
+    owner: SourceOwner,
     inserted: bool,
 }
 
@@ -243,9 +244,16 @@ impl World {
     }
 
     pub fn new() -> Self {
-        let mut world = Self {
-            code: CodeMap::new(),
-            modules: ModuleMap::new(),
+        let mut code = CodeMap::new();
+        let mut modules = ModuleMap::new();
+        let runtime_modules = runtime::bootstrap(&mut modules, &mut code);
+        let runtime_prelude = code.define(
+            Some("runtime:runtime.fz".to_string()),
+            runtime_library::prelude_source().to_string(),
+        );
+        Self {
+            code,
+            modules,
             functions: FunctionMap::new(),
             pending_function_sources: PendingFunctionSourceMap::new(),
             expanded_function_sources: ExpandedFunctionSourceMap::new(),
@@ -282,9 +290,9 @@ impl World {
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             transport: TransportStore::new(),
-            runtime_prelude: CodeId::ZERO,
+            runtime_prelude,
             extra_preludes: Vec::new(),
-            runtime_modules: HashMap::new(),
+            runtime_modules,
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
@@ -295,13 +303,7 @@ impl World {
             work_graph: WorkGraph::new(),
             #[cfg(test)]
             telemetry_query_count: Cell::new(0),
-        };
-        world.runtime_modules = runtime::bootstrap(&mut world.modules);
-        world.runtime_prelude = world.code.define(
-            Some("runtime:runtime.fz".to_string()),
-            runtime_library::prelude_source().to_string(),
-        );
-        world
+        }
     }
 
     pub fn root_function(&self, root: RootId) -> FunctionId {
@@ -466,7 +468,7 @@ impl World {
     /// Registers submitted source text under a fresh id and emits the
     /// `code.submitted` observation. This does NOT enqueue any indexing or
     /// scoping job: it only makes the code demandable, so a wait on
-    /// `CodeIndexed(code_id)`/`CodeScoped(code_id)` reaches the minting job
+    /// `CodeIndexed(source_owner)`/`CodeScoped(source_owner)` reaches the minting job
     /// through the fact->producer pull (`demand_fact_producer`'s
     /// `CodeIndexed -> IndexCode`, `CodeScoped -> ScopeCode` arms). The eager
     /// enqueue that turns registration into a driven work-start is the caller's
@@ -637,34 +639,17 @@ impl World {
                 _ => None,
             })
             .collect();
-        // The flat fields are the job's whole-body answer; `derivations` names
-        // any further answers the same run reached independently. Every job
-        // today reports none, so this is exactly one `DerivationId::SOLE`
-        // completion — the ledger sees what it always saw.
-        let mut derivations = vec![DerivationEffects::sole(
-            reads,
-            outputs.into_iter().map(DependencyKey::Fact).collect(),
-            changed.into_iter().map(DependencyKey::Fact).collect(),
-            waits.is_empty(),
-        )];
-        derivations.extend(effects.derivations.into_iter().map(|derivation| {
-            DerivationEffects {
-                derivation: derivation.derivation,
-                reads: derivation.reads.into_iter().map(fact_dependency).collect(),
-                outputs: dedupe_job_facts(derivation.outputs)
-                    .into_iter()
-                    .map(DependencyKey::Fact)
-                    .collect(),
-                changed: dedupe_job_facts(derivation.changed)
-                    .into_iter()
-                    .map(DependencyKey::Fact)
-                    .collect(),
-                concluded: derivation.concluded,
-            }
-        }));
-        let step = self
-            .work_graph
-            .complete_ordered_with_external(&job, waits, derivations, external, &self.types);
+        let step = self.work_graph.complete_ordered_with_external(
+            &job,
+            CompletionEffects {
+                reads,
+                waits,
+                outputs: outputs.into_iter().map(DependencyKey::Fact).collect(),
+                changed: changed.into_iter().map(DependencyKey::Fact).collect(),
+            },
+            external,
+            &self.types,
+        );
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -788,14 +773,18 @@ impl World {
         }
     }
 
-    pub fn code_name(&self, id: CodeId) -> Option<&str> {
+    pub fn code_name(&self, id: SourceOwner) -> Option<std::sync::Arc<str>> {
         self.code.name(id)
     }
 
-    pub fn code_text(&self, id: CodeId) -> &str {
+    pub fn code_text(&self, id: SourceOwner) -> std::sync::Arc<str> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.code.text(id)
+    }
+
+    pub(crate) fn source_version(&self, owner: SourceOwner) -> Option<crate::source::SourceVersion> {
+        self.code.version(owner)
     }
 
     pub(crate) fn source_map(&self) -> std::rc::Rc<std::cell::RefCell<crate::source::SourceMap>> {
@@ -1046,34 +1035,34 @@ impl World {
     pub fn index_module_body(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
-        self.modules.index_body(id, code, parent, source, surface)
+        self.modules.index_body(id, owner, parent, source, surface)
     }
 
     pub fn index_protocol_module(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
-        self.modules.index_protocol(id, code, parent, source, surface)
+        self.modules.index_protocol(id, owner, parent, source, surface)
     }
 
     pub fn index_protocol_impl_module(
         &mut self,
         id: ModuleId,
-        code: CodeId,
+        owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
         impl_source: super::identity::ProtocolImplSource,
     ) -> bool {
-        self.modules.index_protocol_impl(id, code, parent, source, impl_source)
+        self.modules.index_protocol_impl(id, owner, parent, source, impl_source)
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
@@ -1286,13 +1275,11 @@ impl World {
     pub(crate) fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
         name.name == "t"
             && matches!(name.arity, 0 | 1)
-            && matches!(
-                self.modules.get(name.module),
-                ModuleState::Indexed { source, .. }
-                    | ModuleState::Scoped { source, .. }
-                    | ModuleState::Defined { source, .. }
-                    if matches!(source.kind, ModuleSourceKind::Protocol(_))
-            )
+            && self
+                .modules
+                .get(name.module)
+                .source()
+                .is_some_and(|source| matches!(source.kind, ModuleSourceKind::Protocol(_)))
     }
 
     /// The qualified tag a nominal `@type` (`refines` / `opaque`) brands under.
@@ -1469,7 +1456,7 @@ impl World {
     }
 
     #[cfg(test)]
-    pub(crate) fn runtime_prelude(&self) -> CodeId {
+    pub(crate) fn runtime_prelude(&self) -> SourceOwner {
         self.runtime_prelude
     }
 
@@ -1481,24 +1468,24 @@ impl World {
     /// code is defined but not enqueued; it is pulled lazily when a later
     /// submission's scope waits on its `CodeScoped` fact, exactly as the
     /// runtime prelude is.
-    pub(crate) fn register_scoped_prelude(&mut self, name: Option<String>, text: String) -> CodeId {
-        let code_id = self.code.define(name, text);
-        self.extra_preludes.push(code_id);
-        code_id
+    pub(crate) fn register_scoped_prelude(&mut self, name: Option<String>, text: String) -> SourceOwner {
+        let source_owner = self.code.define(name, text);
+        self.extra_preludes.push(source_owner);
+        source_owner
     }
 
-    /// The preludes whose scope must be settled before `code`'s own scope can
+    /// The preludes whose scope must be settled before `owner`'s own scope can
     /// base off `prelude_head`, in the order their bindings layer: the runtime
-    /// prelude first, then each extra prelude registered before `code` itself.
-    /// `code`'s own entry (if it is an extra prelude) is excluded so a prelude
+    /// prelude first, then each extra prelude registered before `owner` itself.
+    /// `owner`'s own entry (if it is an extra prelude) is excluded so a prelude
     /// never waits on itself.
-    pub(crate) fn preludes_to_await(&self, code: CodeId) -> Vec<CodeId> {
-        if self.is_runtime_prelude(code) {
+    pub(crate) fn preludes_to_await(&self, owner: SourceOwner) -> Vec<SourceOwner> {
+        if self.is_runtime_prelude(owner) {
             return Vec::new();
         }
         let mut preludes = vec![self.runtime_prelude];
         for &extra in &self.extra_preludes {
-            if extra == code {
+            if extra == owner {
                 break;
             }
             preludes.push(extra);
@@ -1508,8 +1495,8 @@ impl World {
 
     /// True for any code whose scope advances `prelude_head`: the runtime
     /// prelude or a registered extra prelude.
-    pub(crate) fn is_prelude(&self, code: CodeId) -> bool {
-        self.is_runtime_prelude(code) || self.extra_preludes.contains(&code)
+    pub(crate) fn is_prelude(&self, owner: SourceOwner) -> bool {
+        self.is_runtime_prelude(owner) || self.extra_preludes.contains(&owner)
     }
 
     /// True only for *the* prelude source — the bootstrap code whose scope seeds
@@ -1517,8 +1504,8 @@ impl World {
     /// against. This is the namespace-base role, narrower than [`World::is_bootstrap`]:
     /// origin (is this bootstrap code) is not the same question as role (is this
     /// the namespace base).
-    pub(crate) fn is_runtime_prelude(&self, code: CodeId) -> bool {
-        code == self.runtime_prelude
+    pub(crate) fn is_runtime_prelude(&self, owner: SourceOwner) -> bool {
+        owner == self.runtime_prelude
     }
 
     /// True for compiler-owned bootstrap code: the prelude and the runtime
@@ -1527,12 +1514,17 @@ impl World {
     /// that implement def-heads are themselves defined here. Every other
     /// submission is user surface. This is the one origin boundary that deserves
     /// special treatment.
-    pub(crate) fn is_bootstrap(&self, code: CodeId) -> bool {
-        self.is_runtime_prelude(code) || self.runtime_modules.values().any(|module| module.code_id == Some(code))
+    pub(crate) fn is_bootstrap(&self, owner: SourceOwner) -> bool {
+        self.is_runtime_prelude(owner) || self.runtime_modules.values().any(|module| module.owner == owner)
     }
 
     pub(crate) fn is_runtime_module(&self, module: ModuleId) -> bool {
         self.runtime_modules.contains_key(&module)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_module_owner(&self, module: ModuleId) -> Option<SourceOwner> {
+        self.runtime_modules.get(&module).map(|source| source.owner)
     }
 
     pub(crate) fn set_prelude_head(&mut self, head: Namespace) {
@@ -1614,11 +1606,11 @@ impl World {
         self.modules.denotation(module)
     }
 
-    pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
+    pub fn finish_code_index(&mut self, id: SourceOwner, source: QuotedCodeSource) -> bool {
         self.code.index(id, source)
     }
 
-    pub fn finish_code_scope(&mut self, id: CodeId, namespace: Namespace) -> bool {
+    pub fn finish_code_scope(&mut self, id: SourceOwner, namespace: Namespace) -> bool {
         self.code.scope(id, namespace)
     }
 
@@ -1775,7 +1767,7 @@ impl World {
     /// enqueue) so a runtime module is minted by the pull that expands this
     /// `ModuleDefined` wait: `ModuleDefined`'s sole producer arm is
     /// `Job::DefineModule`, and `define_module` re-registers the source and
-    /// waits on `CodeIndexed(code_id)` (producer arm `Job::IndexCode`), so the
+    /// waits on `CodeIndexed(source_owner)` (producer arm `Job::IndexCode`), so the
     /// whole chain reaches the minting job through `demand_fact_producer`.
     pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {
         self.work_graph.facts().revision(&DependencyKey::Fact(key.clone()))
@@ -2051,35 +2043,39 @@ impl World {
             .expect("guard dispatch should only be read after its fact is defined")
     }
 
-    pub fn code_source(&self, id: CodeId) -> Option<QuotedCodeSource> {
+    pub fn code_source(&self, id: SourceOwner) -> Option<QuotedCodeSource> {
         match self.code.get(id) {
-            super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
+            super::code::CodeState::Indexed { source, .. } | super::code::CodeState::Scoped { source, .. } => {
                 Some(source.clone())
             }
-            super::code::CodeState::Pending => None,
+            super::code::CodeState::Reserved | super::code::CodeState::Pending { .. } => None,
         }
     }
 
-    pub fn code_surface(&self, id: CodeId) -> Option<&super::quoted_surface::ScopeSurface> {
+    pub fn code_surface(&self, id: SourceOwner) -> Option<&super::quoted_surface::ScopeSurface> {
         match self.code.get(id) {
-            super::code::CodeState::Indexed { source } | super::code::CodeState::Scoped { source, .. } => {
+            super::code::CodeState::Indexed { source, .. } | super::code::CodeState::Scoped { source, .. } => {
                 Some(&source.surface)
             }
-            super::code::CodeState::Pending => None,
+            super::code::CodeState::Reserved | super::code::CodeState::Pending { .. } => None,
         }
     }
 
     pub fn module_scope(&self, module: ModuleId) -> Option<(super::identity::ModuleSource, ScopeSnapshot)> {
         match self.modules.get(module) {
             ModuleState::Scoped { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
-            ModuleState::Defined { source, base, .. } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
+            ModuleState::Defined {
+                source: Some(source),
+                base,
+                ..
+            } => Some((source.clone(), ScopeSnapshot::module(module, *base))),
             _ => None,
         }
     }
 
-    pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(CodeId, ModuleId)> {
+    pub fn module_indexed_parent(&self, module: ModuleId) -> Option<(SourceOwner, ModuleId)> {
         match self.modules.get(module) {
-            ModuleState::Indexed { source, .. } => Some((source.code, source.parent)),
+            ModuleState::Indexed { source, .. } => Some((source.owner, source.parent)),
             _ => None,
         }
     }
@@ -2091,15 +2087,6 @@ impl World {
         }
         let parent = ModuleName::from_segments(segments[..segments.len() - 1].to_vec());
         Some(self.reference_module(parent))
-    }
-
-    fn module_definition_code(&self, module: ModuleId) -> CodeId {
-        match self.modules.get(module) {
-            ModuleState::Scoped { source, .. } | ModuleState::Defined { source, .. } => source.code,
-            ModuleState::Placeholder { .. } | ModuleState::Indexed { .. } => {
-                panic!("modules should be scoped before definition")
-            }
-        }
     }
 
     pub(crate) fn canonical_activation_key(
@@ -2581,12 +2568,14 @@ enum FunctionSurfaceMatch {
     Certain,
 }
 
-fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
-    source
-        .surface
-        .forms
-        .iter()
-        .map(|form| match form {
+fn code_surface_function_match(
+    source: &QuotedCodeSource,
+    function_ref: &FunctionRef,
+    sources: &SourceMap,
+) -> Result<FunctionSurfaceMatch, QuotedSourceError> {
+    let mut best = FunctionSurfaceMatch::None;
+    for form in &source.surface.forms {
+        let score = match form {
             ScopeForm::Function(function)
                 if function_ref.is_named(&function.name) && function.arity == function_ref.arity =>
             {
@@ -2594,13 +2583,13 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
             }
             ScopeForm::Function(_) => FunctionSurfaceMatch::None,
             ScopeForm::CompilerService(service) => {
-                if source_definition_matches_function(&service.source, function_ref) {
+                if source_definition_matches_function(&service.source, function_ref, sources)? {
                     FunctionSurfaceMatch::Certain
                 } else {
                     FunctionSurfaceMatch::None
                 }
             }
-            ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref),
+            ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref, sources)?,
             ScopeForm::Alias(_)
             | ScopeForm::Import(_)
             | ScopeForm::Require(_)
@@ -2608,12 +2597,13 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
             | ScopeForm::Protocol(_)
             | ScopeForm::ProtocolImpl(_)
             | ScopeForm::Struct(_) => FunctionSurfaceMatch::None,
-        })
+        };
         // `Certain` beats `Opaque` beats `None`: one certain form is enough to
         // call the whole code a certain home even if it also contains
         // unrelated opaque macro calls.
-        .max()
-        .unwrap_or(FunctionSurfaceMatch::None)
+        best = best.max(score);
+    }
+    Ok(best)
 }
 
 /// The span of `function_ref`'s matching `fn`/`fnp`/`defmacro` form in
@@ -2633,12 +2623,16 @@ fn function_form_span(source: &QuotedCodeSource, function_ref: &FunctionRef) -> 
     })
 }
 
-fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {
-    matches!(
-        reserved_source_definition(source).ok().flatten(),
+fn source_definition_matches_function(
+    source: &QuotedSourceRoot,
+    function_ref: &FunctionRef,
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
+    Ok(matches!(
+        reserved_source_definition(source, sources)?,
         Some(ReservedSourceDefinition::Function { name, arity, .. })
             if function_ref.is_named(&name) && arity == function_ref.arity
-    )
+    ))
 }
 
 /// How definitively an unexpanded item-level macro call could turn out to be
@@ -2653,18 +2647,22 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
 /// ever wakes (the arm-less `FunctionSourceStash` fallback in
 /// `demand_function_scope`), since nothing would ever demand the `ScopeCode`
 /// that expands the macro and stashes the name it produces.
-fn item_macro_call_match(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
-    match reserved_source_definition(source) {
-        Ok(Some(ReservedSourceDefinition::Function { name, arity, .. })) => {
+fn item_macro_call_match(
+    source: &QuotedSourceRoot,
+    function_ref: &FunctionRef,
+    sources: &SourceMap,
+) -> Result<FunctionSurfaceMatch, QuotedSourceError> {
+    Ok(match reserved_source_definition(source, sources)? {
+        Some(ReservedSourceDefinition::Function { name, arity, .. }) => {
             if function_ref.is_named(&name) && arity == function_ref.arity {
                 FunctionSurfaceMatch::Certain
             } else {
                 FunctionSurfaceMatch::None
             }
         }
-        Ok(Some(_)) => FunctionSurfaceMatch::None,
-        Ok(None) | Err(_) => FunctionSurfaceMatch::Opaque,
-    }
+        Some(_) => FunctionSurfaceMatch::None,
+        None => FunctionSurfaceMatch::Opaque,
+    })
 }
 
 /// A consumer's references are a set: the same type named twice (e.g. by both a
@@ -2752,19 +2750,19 @@ fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: B
 }
 
 impl World {
-    fn register_code(&mut self, name: Option<String>, text: String) -> CodeId {
+    fn register_code(&mut self, name: Option<String>, text: String) -> SourceOwner {
         self.code.define(name, text)
     }
 
-    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let code_id = self.register_code(name, text);
+    pub fn submit_code(&mut self, name: Option<String>, text: String) -> SourceOwner {
+        let source_owner = self.register_code(name, text);
         self.work_graph
-            .enqueue(Job::IndexCode(code_id), WorkStartReason::Ignition);
+            .enqueue(Job::IndexCode(source_owner), WorkStartReason::Ignition);
         if !self.roots.is_empty() {
             self.work_graph
-                .enqueue(Job::ScopeCode(code_id), WorkStartReason::Ignition);
+                .enqueue(Job::ScopeCode(source_owner), WorkStartReason::Ignition);
         }
-        code_id
+        source_owner
     }
 
     pub fn submit_root(
@@ -2833,9 +2831,9 @@ impl World {
             let left_span = left.primary.span;
             let right_span = right.primary.span;
             left_span
-                .code_id
-                .0
-                .cmp(&right_span.code_id.0)
+                .source_version
+                .as_u32()
+                .cmp(&right_span.source_version.as_u32())
                 .then(left_span.start.cmp(&right_span.start))
                 .then(left_span.end.cmp(&right_span.end))
                 .then(left.code.0.cmp(right.code.0))
@@ -2947,8 +2945,14 @@ impl World {
     }
 
     pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
-        let code = self.module_definition_code(id);
-        self.modules.define(id, code, base, interface)
+        assert!(
+            matches!(
+                self.modules.get(id),
+                ModuleState::Scoped { .. } | ModuleState::Defined { .. }
+            ),
+            "modules should be scoped before definition"
+        );
+        self.modules.define(id, base, interface)
     }
 
     fn module_interface_diagnostic(&self, id: ModuleId, interface: &ModuleInterface) -> Option<Diagnostic> {
@@ -3123,7 +3127,7 @@ impl World {
             .reference_generated(owner, owner_module, occurrence, surface.arity());
         self.share_callable_origin(id);
         let fn_source = FunctionSource {
-            code: owner_source.code,
+            owner: owner_source.owner,
             owner_module: owner_source.owner_module,
             namespace,
             capture_params,
@@ -3147,28 +3151,26 @@ impl World {
         self.entry_dispatches.define(function, plan)
     }
 
-    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
+    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<SourceOwner> {
         self.ensure_runtime_module_registration(module)
-            .map(|registration| registration.code_id)
+            .map(|registration| registration.owner)
     }
 
     fn ensure_runtime_module_registration(&mut self, module: ModuleId) -> Option<RuntimeModuleRegistration> {
         let slot = self.runtime_modules.get(&module)?;
-        if let Some(code_id) = slot.code_id {
+        if self.code.version(slot.owner).is_some() {
             return Some(RuntimeModuleRegistration {
-                code_id,
+                owner: slot.owner,
                 inserted: false,
             });
         }
-        let code_id = self.register_code(Some(format!("runtime:{}.fz", slot.name)), slot.source.to_string());
-        self.runtime_modules
-            .get_mut(&module)
-            .expect("runtime module should still exist while recording its code id")
-            .code_id = Some(code_id);
-        Some(RuntimeModuleRegistration {
-            code_id,
-            inserted: true,
-        })
+        let owner = slot.owner;
+        self.code.materialize(
+            owner,
+            Some(format!("runtime:{}.fz", slot.name)),
+            slot.source.to_string(),
+        );
+        Some(RuntimeModuleRegistration { owner, inserted: true })
     }
 
     fn wait_for_type_decl_registration(&mut self, module: ModuleId) -> (JobEffects, Option<RuntimeModuleRegistration>) {
@@ -3186,14 +3188,20 @@ impl World {
             let mut certain_homes = Vec::new();
             let mut opaque_candidates = Vec::new();
             let mut pending = Vec::new();
-            for code_id in self.code.ids() {
-                match self.code.get(code_id) {
-                    CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
-                    CodeState::Indexed { source } => match code_surface_function_match(source, &function_ref) {
-                        FunctionSurfaceMatch::Certain => certain_homes.push(code_id),
-                        FunctionSurfaceMatch::Opaque => opaque_candidates.push(code_id),
-                        FunctionSurfaceMatch::None => {}
-                    },
+            for source_owner in self.code.ids() {
+                match self.code.get(source_owner) {
+                    CodeState::Pending { .. } => pending.push(FactKey::CodeIndexed(source_owner)),
+                    CodeState::Reserved => {}
+                    CodeState::Indexed { source, .. } => {
+                        match code_surface_function_match(source, &function_ref, &self.code.source_map().borrow())
+                            .map_err(|error| {
+                                Box::new(surface_read_diagnostic("function-home discovery failed", &error))
+                            })? {
+                            FunctionSurfaceMatch::Certain => certain_homes.push(source_owner),
+                            FunctionSurfaceMatch::Opaque => opaque_candidates.push(source_owner),
+                            FunctionSurfaceMatch::None => {}
+                        }
+                    }
                     CodeState::Scoped { .. } => {}
                 }
             }
@@ -3202,11 +3210,11 @@ impl World {
                     self.duplicate_function_diagnostic(&function_ref, &certain_homes),
                 ));
             }
-            if let Some(code_id) = certain_homes.into_iter().next() {
-                return Ok(vec![FactKey::CodeScoped(code_id)]);
+            if let Some(source_owner) = certain_homes.into_iter().next() {
+                return Ok(vec![FactKey::CodeScoped(source_owner)]);
             }
-            if let Some(code_id) = opaque_candidates.into_iter().next() {
-                return Ok(vec![FactKey::CodeScoped(code_id)]);
+            if let Some(source_owner) = opaque_candidates.into_iter().next() {
+                return Ok(vec![FactKey::CodeScoped(source_owner)]);
             }
             return Ok(pending);
         }
@@ -3216,19 +3224,21 @@ impl World {
         Ok(Vec::new())
     }
 
-    fn duplicate_function_diagnostic(&self, function_ref: &FunctionRef, certain_homes: &[CodeId]) -> Diagnostic {
+    fn duplicate_function_diagnostic(&self, function_ref: &FunctionRef, certain_homes: &[SourceOwner]) -> Diagnostic {
         let span = certain_homes
             .iter()
             .skip(1)
-            .find_map(|code_id| match self.code.get(*code_id) {
-                CodeState::Indexed { source } => function_form_span(source, function_ref),
+            .find_map(|source_owner| match self.code.get(*source_owner) {
+                CodeState::Indexed { source, .. } => function_form_span(source, function_ref),
                 _ => None,
             })
             .or_else(|| {
-                certain_homes.iter().find_map(|code_id| match self.code.get(*code_id) {
-                    CodeState::Indexed { source } => function_form_span(source, function_ref),
-                    _ => None,
-                })
+                certain_homes
+                    .iter()
+                    .find_map(|source_owner| match self.code.get(*source_owner) {
+                        CodeState::Indexed { source, .. } => function_form_span(source, function_ref),
+                        _ => None,
+                    })
             })
             .unwrap_or(Span::DUMMY);
         Diagnostic::error(
@@ -3257,10 +3267,10 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         );
     }
 
-    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let code_id = self.world.submit_code(name, text);
-        emit_code_submitted(self.telemetry, self.world, &code_id);
-        code_id
+    pub fn submit_code(&mut self, name: Option<String>, text: String) -> SourceOwner {
+        let source_owner = self.world.submit_code(name, text);
+        emit_code_submitted(self.telemetry, self.world, &source_owner);
+        source_owner
     }
 
     pub fn submit_root(
@@ -3585,10 +3595,10 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         effects
     }
 
-    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
+    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<SourceOwner> {
         let registration = self.world.ensure_runtime_module_registration(module)?;
         self.emit_runtime_module_registration(&registration);
-        Some(registration.code_id)
+        Some(registration.owner)
     }
 
     fn emit_runtime_module_registration(&self, registration: &RuntimeModuleRegistration) {
@@ -3596,12 +3606,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             self.telemetry.raw_event2(
                 &["fz", "compiler2", "code", "submitted"],
                 &*self.world,
-                &registration.code_id,
+                &registration.owner,
             );
         }
     }
 }
 
-fn emit_code_submitted(tel: &impl Telemetry, world: &World, code: &CodeId) {
+fn emit_code_submitted(tel: &impl Telemetry, world: &World, code: &SourceOwner) {
     tel.raw_event2(&["fz", "compiler2", "code", "submitted"], world, code);
 }

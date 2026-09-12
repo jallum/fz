@@ -20,7 +20,7 @@
 //! Three rules make the rendering id-free:
 //!
 //! - INTERNED ids (`Ty`, `ShapeId`, `LaneId`, `CallableId`, `BoundaryId`,
-//!   `FunctionId`, `CodeId`) are expanded to what they describe;
+//!   `FunctionId`, `SourceOwner`) are expanded to what they describe;
 //! - PROGRAM-WIDE positions (the executable and construction-wrapper vectors)
 //!   are re-sorted on an id-free key, and every reference to them is remapped
 //!   through that order — in the RENDERING only, never by renumbering the real
@@ -40,12 +40,11 @@ use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
     PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr, PatternPinnedInput,
-    PatternSubjectRef,
 };
 use crate::dispatch_matrix::{
     BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchArm, DispatchEdge, DispatchGraph,
-    DispatchMatrix, DispatchNode, EdgeEvidence, EdgeProjection, GroundValue, ProjectionKind, Proof, Region,
-    RegionPredicate, RegionQuestion, Subject, SubjectSource,
+    DispatchMatrix, DispatchNode, EdgeEvidence, GroundValue, ProjectionKind, Proof, Region, RegionPredicate,
+    RegionQuestion, Subject, SubjectSource,
 };
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
@@ -59,7 +58,7 @@ use super::artifact::{
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
-    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
+    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
 use super::semantic::{
@@ -929,12 +928,16 @@ impl ProgramCanon<'_> {
             .map(|capture| self.entry_capture(capture))
             .collect();
         out.section("captures", captures);
-        let reused: Vec<String> = entry
-            .reusable_cons_captures
+        let physical_captures: Vec<String> = entry
+            .physical_captures
             .iter()
-            .map(|reuse| self.reusable_cons(reuse))
+            .map(|capture| self.names.value(*capture))
             .collect();
-        out.section("reusable_cons", reused);
+        out.section("physical_captures", physical_captures);
+        out.put(&format!(
+            "physical_params [{}]",
+            self.value_list(&entry.physical_params)
+        ));
         for step in &entry.steps {
             let text = self.step(step);
             out.put(&text);
@@ -960,12 +963,6 @@ impl ProgramCanon<'_> {
         format!("{name} {}", self.layout(&capture.layout))
     }
 
-    fn reusable_cons(&mut self, reuse: &ReusableConsCapture) -> String {
-        let head = self.names.value(reuse.head);
-        let source = self.names.value(reuse.source);
-        format!("head={head} source={source}")
-    }
-
     fn step(&mut self, step: &BackendStep) -> String {
         match step {
             BackendStep::Omitted { value } => format!("omitted {}", self.names.value(*value)),
@@ -973,15 +970,34 @@ impl ProgramCanon<'_> {
                 format!("{} = const {}", self.names.value(*value), ground(literal))
             }
             BackendStep::Tuple { value, items } => {
-                format!("{} = tuple [{}]", self.names.value(*value), self.value_list(items))
+                let items = items
+                    .iter()
+                    .map(|item| format!("{} {:?}", self.names.value(item.value), item.mode))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} = tuple [{items}]", self.names.value(*value))
             }
-            BackendStep::List { value, items, tail } => {
+            BackendStep::List {
+                value,
+                items,
+                tail,
+                retention,
+            } => {
                 let head = self.names.value(*value);
                 let items = self.value_list(items);
                 let tail = tail.map(|t| self.names.value(t)).unwrap_or_else(|| "[]".to_string());
-                format!("{head} = list [{items}] tail={tail}")
+                let retained = retention
+                    .map(|retention| {
+                        format!(
+                            " retain={} {:?}",
+                            self.names.value(retention.source),
+                            retention.permission
+                        )
+                    })
+                    .unwrap_or_default();
+                format!("{head} = list [{items}] tail={tail}{retained}")
             }
-            BackendStep::Map { value, entries } => {
+            BackendStep::Map { value, entries, .. } => {
                 format!("{} = map {}", self.names.value(*value), self.value_pairs(entries))
             }
             BackendStep::MapUpdate { value, base, entries } => {
@@ -1259,11 +1275,7 @@ impl ProgramCanon<'_> {
     }
 
     fn control_dispatch(&mut self, out: &mut Out, dispatch: &ControlDispatch) {
-        let arms: Vec<String> = dispatch
-            .arm_entries
-            .iter()
-            .map(|entry| format!("e{}", entry.as_u32()))
-            .collect();
+        let arms: Vec<String> = dispatch.outcomes.iter().map(|edge| self.outcome_edge(edge)).collect();
         out.put(&format!(
             "arms [{}] miss=e{}",
             arms.join(", "),
@@ -1273,14 +1285,27 @@ impl ProgramCanon<'_> {
         out.section("plan", plan);
     }
 
+    fn outcome_edge(&mut self, edge: &OutcomeEdge) -> String {
+        let arguments = edge
+            .arguments
+            .iter()
+            .map(|argument| {
+                format!(
+                    "s{} -> {} {:?}",
+                    argument.subject.0,
+                    self.names.value(argument.parameter),
+                    argument.role
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("o{} -> e{} [{arguments}]", edge.outcome.0, edge.target.as_u32())
+    }
+
     fn receive(&mut self, out: &mut Out, receive: &BackendReceive) {
         let bindings = self.bindings(&receive.bindings);
         out.put(&format!("bindings {bindings}"));
-        let clauses: Vec<String> = receive
-            .clauses
-            .iter()
-            .map(|clause| self.receive_clause(clause))
-            .collect();
+        let clauses: Vec<String> = receive.outcomes.iter().map(|edge| self.outcome_edge(edge)).collect();
         out.section("clauses", clauses);
         if let Some(after) = &receive.after {
             let after = self.receive_after(after);
@@ -1289,15 +1314,6 @@ impl ProgramCanon<'_> {
         out.put(&format!("dest {}", destination(&receive.dest)));
         let plan = self.plan(&receive.dispatch);
         out.section("plan", plan);
-    }
-
-    fn receive_clause(&mut self, clause: &ReceiveClause) -> String {
-        format!(
-            "{} e{} bound=[{}]",
-            self.span(clause.span),
-            clause.entry.as_u32(),
-            clause.bound_names.join(", ")
-        )
     }
 
     fn receive_after(&mut self, after: &ReceiveAfter) -> String {
@@ -1360,8 +1376,9 @@ impl ProgramCanon<'_> {
         if span.is_dummy() {
             return "<generated>".to_string();
         }
-        let code = super::code::CodeId::from_source(span.code_id);
-        let name = self.world.code_name(code).unwrap_or("<anonymous>");
+        let source_map = self.world.source_map();
+        let source_map = source_map.borrow();
+        let name = source_map.name(span.source_version).unwrap_or("<anonymous>");
         format!("@{name}:{}-{}", span.start, span.end)
     }
 }
@@ -1448,16 +1465,6 @@ impl ProgramCanon<'_> {
     fn plan(&mut self, plan: &PatternDispatchPlan<Ty>) -> Vec<String> {
         let mut out = Out::default();
         out.put(&format!("inputs {}", plan.input_count));
-        let subjects: Vec<String> = plan
-            .subjects
-            .iter()
-            .enumerate()
-            .map(|(index, subject)| {
-                let rendered = subject.as_ref().map(subject_ref).unwrap_or_else(|| "-".to_string());
-                format!("s{index} {rendered}")
-            })
-            .collect();
-        out.section("subjects", subjects);
         self.matrix(&mut out, &plan.matrix);
         self.graph(&mut out, &plan.graph);
         let outcomes: Vec<String> = plan.outcomes.iter().map(|outcome| self.plan_outcome(outcome)).collect();
@@ -1476,18 +1483,6 @@ impl ProgramCanon<'_> {
         out.section(
             "prepared_keys",
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
-        );
-        // Keyed by a dense `SubjectId`, so the map's own iteration order is
-        // `RandomState` order and nothing else; the subject index restores it.
-        let mut bindings: Vec<(u32, String)> = plan
-            .bitstring_direct_bindings
-            .iter()
-            .map(|(subject, names)| (subject.0, format!("s{} [{}]", subject.0, names.join(", "))))
-            .collect();
-        bindings.sort();
-        out.section(
-            "bitstring_direct_bindings",
-            bindings.into_iter().map(|(_, line)| line).collect(),
         );
         lines(out)
     }
@@ -1562,7 +1557,11 @@ impl ProgramCanon<'_> {
 
     fn evidence(&mut self, evidence: &EdgeEvidence<Ty>) -> String {
         let proofs: Vec<String> = evidence.proofs.iter().map(|proof| self.proof(proof)).collect();
-        let projections: Vec<String> = evidence.projections.iter().map(projection).collect();
+        let projections: Vec<String> = evidence
+            .projections
+            .iter()
+            .map(|subject| format!("s{}", subject.0))
+            .collect();
         format!(
             "proofs=[{}] projections=[{}]",
             proofs.join("; "),
@@ -1636,8 +1635,13 @@ impl ProgramCanon<'_> {
                 self.guard_expr(out, rhs);
                 out.exit();
             }
-            PatternGuardExpr::Dispatch { inputs, dispatch } => {
+            PatternGuardExpr::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => {
                 out.enter("guard_dispatch");
+                out.put(&format!("bindings {bindings:?}"));
                 for input in inputs {
                     self.guard_expr(out, input);
                 }
@@ -1671,35 +1675,19 @@ fn subject(subject: &Subject) -> String {
     format!("s{} {source}", subject.id.0)
 }
 
-fn subject_ref(reference: &PatternSubjectRef) -> String {
-    match reference {
-        PatternSubjectRef::Input(ordinal) => format!("input({ordinal})"),
-        PatternSubjectRef::TupleField { tuple, index } => format!("field({}, {index})", subject_ref(tuple)),
-        PatternSubjectRef::ListHead(list) => format!("head({})", subject_ref(list)),
-        PatternSubjectRef::ListTail(list) => format!("tail({})", subject_ref(list)),
-        PatternSubjectRef::MapValue { map, key } => format!("map_value({}, {})", subject_ref(map), ground(key)),
-        PatternSubjectRef::BitstringField { bitstring, index } => {
-            format!("bit_field({}, {index})", subject_ref(bitstring))
-        }
-    }
-}
-
-fn projection(projection: &EdgeProjection) -> String {
-    format!(
-        "s{} {} -> s{}",
-        projection.source.0,
-        projection_kind(&projection.kind),
-        projection.result.0
-    )
-}
-
 fn projection_kind(kind: &ProjectionKind) -> String {
     match kind {
         ProjectionKind::TupleField(index) => format!("field({index})"),
+        ProjectionKind::StructField(field) => format!("struct_field({field:?})"),
         ProjectionKind::ListHead => "head".to_string(),
         ProjectionKind::ListTail => "tail".to_string(),
         ProjectionKind::MapValue { key } => format!("map_value({})", ground(key)),
-        ProjectionKind::BitstringField(index) => format!("bit_field({index})"),
+        ProjectionKind::BitstringField(extraction) => format!(
+            "bit_field(prev={:?}, {}, last={})",
+            extraction.previous.map(|id| id.0),
+            bitstring_field(&extraction.spec),
+            extraction.is_last
+        ),
     }
 }
 
@@ -1711,7 +1699,7 @@ fn comparison(value: &ComparisonValue) -> String {
 }
 
 fn bitstring_shape(shape: &BitstringShape) -> String {
-    let fields: Vec<String> = shape.fields.iter().map(bitstring_field).collect();
+    let fields: Vec<String> = shape.fields.iter().map(|subject| format!("s{}", subject.0)).collect();
     format!("<<{}>> done={}", fields.join(", "), shape.require_done)
 }
 

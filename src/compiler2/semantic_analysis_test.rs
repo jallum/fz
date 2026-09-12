@@ -522,18 +522,11 @@ end
         "main/0 should not publish a dbg/1 edge for a continuation that cannot receive a value",
     );
 }
-/// A callsite whose two incoming branches disagree on `cap`'s type (`int`
-/// on one arm, `string` on the other) is observed twice by
-/// `coalesce_call_emissions` before it settles into one published target,
-/// so that target gets rebuilt (`rebuild_coalesced_call_emission`). The
-/// callee here is a zero-argument closure that only ever reads its capture
-/// -- its real activation is one input wide (the capture slot alone), even
-/// though its declared (capture-free) surface is zero wide. Rebuilding from
-/// that zero-wide surface instead of the activation's own `.inputs()` used
-/// to mint a truncated, zero-input activation, and derive_executable_runtime_demand's
-/// per-clause live-demand pass indexed the (nonexistent) capture slot on it
-/// and panicked. This test proves the whole backend product settles without
-/// truncating the activation.
+/// The callsite observes a zero-argument closure with an int capture on one
+/// path and a binary capture on another. Its activation evidence includes the
+/// capture slot even though its declared call surface has no arguments.
+/// Coalescing preserves that evidence through backend settlement and retains
+/// both captured return types.
 #[test]
 fn compiler2_coalesced_closure_target_keeps_its_capture_slot() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();

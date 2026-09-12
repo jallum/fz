@@ -83,8 +83,8 @@ pub struct ExitRecord {
     pub halt_value: i64,
     pub live_count: usize,
     pub bytes_used: usize,
-    pub reusable_cons_attempts: u64,
-    pub reusable_cons_reused: u64,
+    pub list_retention_attempts: u64,
+    pub list_retention_hits: u64,
 }
 
 impl ExitRecord {
@@ -579,8 +579,8 @@ impl ProcessExitCapture {
                     halt_value: process.halt_value,
                     live_count: process.heap.live_count(),
                     bytes_used: process.heap.bytes_used(),
-                    reusable_cons_attempts: process.reusable_cons_attempts,
-                    reusable_cons_reused: process.reusable_cons_reused,
+                    list_retention_attempts: process.list_retention_attempts,
+                    list_retention_hits: process.list_retention_hits,
                 });
             },
         );

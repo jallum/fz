@@ -11,7 +11,9 @@ use crate::parser::lexer::Lexer;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn resolve(tel: &ConfiguredTelemetry, world: &mut World, src: &str) -> Result<Ty, TypeExprError> {
-    let tokens = Lexer::with_source_name(src, "<test>")
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("<test>"), src);
+    let tokens = Lexer::with_source_version_and_name(src, version, "<test>")
         .tokenize(tel)
         .expect("fragment lexes");
     world.resolve_type_expr_body(Namespace::default(), &TypeExprBody(tokens))

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr, prepared_key_name};
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg,
@@ -33,9 +33,9 @@ use super::super::artifact::{
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge,
     CallTarget, DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
-    ReusableConsCapture, required_dispatch_input_ordinals,
+    required_dispatch_input_ordinals,
 };
-use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
+use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
 use super::super::scheduler::FatalError;
@@ -60,7 +60,7 @@ pub(crate) fn produce_native_program(
     };
     match NativeLowerer::new(world, telemetry, root_id, &backend).and_then(NativeLowerer::lower) {
         Ok(program) => {
-            emit_reusable_cons(telemetry, &root_id, &backend);
+            emit_list_retention(telemetry, &root_id, &backend);
             PullOutcome::Produced(ProductValue::NativeProgram(Rc::new(program)))
         }
         Err(_) => PullOutcome::Failed(super::super::pull::ProductFailure::NativeLowering),
@@ -74,8 +74,8 @@ fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
     }
 }
 
-fn emit_reusable_cons(tel: &impl crate::telemetry::Telemetry, root: &RootId, program: &BackendProgram) {
-    tel.raw_event2(&["fz", "compiler2", "native_program", "reusable_cons"], root, program);
+fn emit_list_retention(tel: &impl crate::telemetry::Telemetry, root: &RootId, program: &BackendProgram) {
+    tel.raw_event2(&["fz", "compiler2", "native_program", "list_retention"], root, program);
 }
 
 struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
@@ -112,7 +112,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 atom_ids.insert(atom.to_string(), next);
             }
         }
-
         let mut module = ModuleBuilder::new();
         let executable_fns = program
             .executables()
@@ -284,7 +283,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             )?;
                         }
                         while let Some((entry, fn_id)) = entry_fns.pending.pop_front() {
-                            self.lower_entry_fn(index, executable, entries, &mut entry_fns, entry, fn_id)?;
+                            self.lower_entry_fn(index, executable, entries, &mut entry_fns, entry, fn_id, None)?;
                         }
                         Ok(())
                     }
@@ -415,7 +414,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         ),
                     ));
                 }
-                let mut state = DispatchState::new(args.clone(), Vec::new(), Vec::new());
+                let bindings = self.lower_argument_bindings(&mut ctx, selection, &args)?;
+                let mut state = DispatchState::new(args.clone(), Vec::new(), bindings);
                 self.lower_callable_construction_wrapper_dispatch_node(
                     &mut ctx,
                     boundary,
@@ -496,7 +496,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
+                let mut match_state = state.clone();
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    plan,
+                    predicate.subject,
+                    &predicate.region,
+                    &on_match.evidence,
+                    &mut match_state,
+                )?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -505,7 +513,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     else_b,
                     origin: BranchOrigin::ClauseDispatch,
                 });
-                let mut match_state = state.clone();
                 ctx.current_block = then_b;
                 self.lower_callable_construction_wrapper_dispatch_node(
                     ctx,
@@ -855,7 +862,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
-        let mut state = DispatchState::new(inputs, entry_vars, Vec::new());
+        let bindings = self.lower_argument_bindings(&mut ctx, dispatch.plan(), &inputs)?;
+        let mut state = DispatchState::new(inputs, entry_vars, bindings);
         self.lower_dispatch_node(&mut ctx, dispatch, dispatch.plan().graph.root, &helper_ids, &mut state)?;
         self.finish_native_fn(ctx);
 
@@ -940,7 +948,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         fn_id: FnId,
-    ) -> Result<(), FatalError> {
+        outcome: Option<&super::super::body::OutcomeEdge>,
+    ) -> Result<Vec<(SubjectId, Var)>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let base_name = format!(
             "{}__e{}",
@@ -965,7 +974,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ),
         };
         let (entry_tys, param_reprs, entry_abi) =
-            self.entry_signature(executable, entry, entry.reusable_cons_captures.as_slice());
+            self.entry_signature(executable, entry, entry.physical_captures.as_slice());
         let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
         let mut ctx = NativeFnCtx::new(
             fn_id,
@@ -984,12 +993,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let mut capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        let arguments = outcome
+            .into_iter()
+            .flat_map(|edge| edge.arguments.iter())
+            .map(|argument| {
+                let index = entry
+                    .params
+                    .iter()
+                    .position(|parameter| *parameter == argument.parameter)
+                    .expect("outcome argument belongs to its target entry signature");
+                (argument.subject, entry_vars[index])
+            })
+            .collect();
         self.mark_delivered_entry_semantics(&mut ctx, executable, entry, &entry_vars[..capture_offset])?;
         self.bind_entry_captures(&mut ctx, executable, entry, &entry_vars, &mut capture_offset, &mut env)?;
         self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
         self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
         self.finish_native_fn(ctx);
-        Ok(())
+        Ok(arguments)
     }
 
     fn lower_entry_from_id(
@@ -1023,6 +1044,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
+                    for item in items {
+                        if item.mode == crate::fz_ir::OwnershipMode::Share {
+                            share_native_value(ctx, env.value(item.value));
+                        }
+                    }
+                    let items = items.iter().map(|item| item.value).collect::<Vec<_>>();
                     if let Some(layout) = executable.abi.value_layouts.get(value)
                         && let shape = layout.structural
                         && let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone()
@@ -1031,7 +1058,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             return Err(FatalError);
                         }
                         if matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef(_)) {
-                            let vars = self.env_runtime_vars(ctx, executable, env, items);
+                            let vars = self.env_runtime_vars(ctx, executable, env, &items);
                             let (var, _) = ctx.emit_let(Prim::MakeTuple(vars));
                             self.bind_runtime_value(ctx, executable, env, *value, var);
                         } else {
@@ -1048,23 +1075,39 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             );
                         }
                     } else {
-                        let fields = self.env_runtime_vars(ctx, executable, env, items);
+                        let fields = self.env_runtime_vars(ctx, executable, env, &items);
                         let (var, _) = ctx.emit_let(Prim::MakeTuple(fields));
                         self.bind_runtime_value(ctx, executable, env, *value, var);
                     }
                 }
-                BackendStep::List { value, items, tail } => {
+                BackendStep::List {
+                    value,
+                    items,
+                    tail,
+                    retention,
+                } => {
                     let vars = self.env_runtime_vars(ctx, executable, env, items);
                     let tail = self.list_tail_runtime_var(ctx, executable, env, *tail)?;
-                    let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
+                    let retention = retention.map(|retention| crate::fz_ir::ListRetention {
+                        source: self.env_runtime_var(ctx, executable, env, retention.source),
+                        permission: retention.permission,
+                    });
+                    let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail, retention));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::Map { value, entries } => {
+                BackendStep::Map {
+                    value,
+                    entries,
+                    quoted_span,
+                } => {
+                    if quoted_span.is_some() {
+                        self.ensure_quoted_span_atoms();
+                    }
                     let token = ctx.fresh_token();
                     let (map, _) = ctx.emit_let(Prim::DestMapBegin {
                         token,
                         base: None,
-                        extra: entries.len(),
+                        extra: entries.len() + usize::from(quoted_span.is_some()),
                     });
                     let mut token = token;
                     for (key, item) in entries {
@@ -1076,6 +1119,49 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             token,
                             key,
                             value,
+                            next,
+                        });
+                        token = next;
+                    }
+                    if let Some(span) = quoted_span {
+                        let span_token = ctx.fresh_token();
+                        let (span_map, _) = ctx.emit_let(Prim::DestMapBegin {
+                            token: span_token,
+                            base: None,
+                            extra: 3,
+                        });
+                        let mut span_token = span_token;
+                        for (key, value) in super::super::source::quoted_span_entries(*span) {
+                            let next = ctx.fresh_token();
+                            let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
+                                *self.atom_ids.get(key).expect("quoted metadata atom registered"),
+                            )));
+                            let (value, _) = ctx.emit_let(Prim::Const(Const::Int(value)));
+                            let _ = ctx.emit_let(Prim::DestMapPut {
+                                map: span_map,
+                                token: span_token,
+                                key,
+                                value,
+                                next,
+                            });
+                            span_token = next;
+                        }
+                        let (span_map, _) = ctx.emit_let(Prim::DestMapFreeze {
+                            map: span_map,
+                            token: span_token,
+                        });
+                        let next = ctx.fresh_token();
+                        let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(
+                            *self
+                                .atom_ids
+                                .get(super::super::source::META_SPAN_KEY)
+                                .expect("quoted metadata atom registered"),
+                        )));
+                        let _ = ctx.emit_let(Prim::DestMapPut {
+                            map,
+                            token,
+                            key,
+                            value: span_map,
                             next,
                         });
                         token = next;
@@ -1172,6 +1258,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     captures,
                     construction,
                 } => {
+                    for capture in captures {
+                        share_native_value(ctx, env.value(*capture));
+                    }
                     // As with `FunctionRef`, a settled-`Nothing` closure is omitted
                     // by backend lowering, so every surviving `Lambda` really is
                     // constructed and its captures really are demanded.
@@ -1316,7 +1405,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
                     self.bind_runtime_value(ctx, executable, env, *head, head_var);
-                    ctx.builder.record_reusable_cons_cell(head_var, source);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
                     self.bind_runtime_value(ctx, executable, env, *tail, tail_var);
                 }
@@ -1369,6 +1457,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &ValueEnv,
         tail: &BackendTail,
     ) -> Result<(), FatalError> {
+        if let BackendTail::DirectCall { args, .. } | BackendTail::ClosureCall { args, .. } = tail {
+            for arg in args {
+                if arg.ownership == crate::fz_ir::OwnershipMode::Share {
+                    share_native_value(ctx, env.value(arg.value));
+                }
+            }
+        }
         match tail {
             BackendTail::Value { value, dest } => {
                 self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, dest)
@@ -1616,9 +1711,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => {
                 let input_vars = self.env_runtime_vars(ctx, executable, env, inputs);
                 let pinned_vars = self.env_runtime_vars(ctx, executable, env, &bindings.pinned);
-                let forwarded_vars =
-                    self.control_dispatch_forwarded_args(ctx, executable, entries, &dispatch.arm_entries, env)?;
-                let mut state = DispatchState::new(input_vars, forwarded_vars, pinned_vars);
+                let prepared = self.env_runtime_vars(ctx, executable, env, &bindings.prepared);
+                let mut state = DispatchState::new(
+                    input_vars,
+                    Vec::new(),
+                    DispatchBindings {
+                        pinned: pinned_vars,
+                        prepared,
+                    },
+                );
                 self.lower_control_dispatch_node(
                     ctx,
                     executable,
@@ -1626,7 +1727,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entry_fns,
                     env,
                     &dispatch.plan,
-                    &dispatch.arm_entries,
+                    &dispatch.outcomes,
                     dispatch.miss_entry,
                     dispatch.plan.graph.root,
                     &mut state,
@@ -1635,18 +1736,38 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             BackendTail::Receive(receive) => {
                 let bindings = &receive.bindings;
                 let dispatch = &receive.dispatch;
-                let clauses = &receive.clauses;
+                let outcomes = &receive.outcomes;
                 let after = receive.after.as_ref();
-                let captures = self.receive_capture_vars(ctx, executable, entries, clauses, after, env)?;
-                let clauses = clauses
+                let captures = self.receive_capture_vars(ctx, executable, entries, outcomes, after, env)?;
+                let executable_index = self
+                    .program
+                    .executable_index(&executable.key, self.world.types())
+                    .expect("owning executable");
+                let clauses = outcomes
                     .iter()
-                    .map(|clause| {
+                    .map(|edge| {
+                        let body = self.module.fresh_fn_id();
+                        assert!(
+                            entry_fns.ids.insert(edge.target, body).is_none(),
+                            "one receive outcome owns its target"
+                        );
+                        let arguments = self.lower_entry_fn(
+                            executable_index,
+                            executable,
+                            entries,
+                            entry_fns,
+                            edge.target,
+                            body,
+                            Some(edge),
+                        )?;
+                        let span = entries[edge.target.as_u32() as usize].span;
                         Ok(ReceiveClause {
-                            ident: CallsiteIdent::from_source(clause.span),
-                            bound_names: clause.bound_names.clone(),
+                            ident: CallsiteIdent::from_source(span),
+                            outcome: edge.outcome,
+                            arguments,
                             guard: None,
-                            body: entry_fns.reference(&mut self.module, clause.entry),
-                            span: clause.span,
+                            body,
+                            span,
                         })
                     })
                     .collect::<Result<Vec<_>, FatalError>>()?;
@@ -1660,7 +1781,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         })
                     })
                     .transpose()?;
-                let pinned = self.receive_pinned_vars(ctx, executable, env, bindings, dispatch)?;
+                let pinned = bindings
+                    .pinned
+                    .iter()
+                    .chain(&bindings.prepared)
+                    .map(|value| self.env_runtime_var(ctx, executable, env, *value))
+                    .collect();
                 let dispatch = {
                     let types = self.world.types();
                     dispatch.map_type_handle(&mut |ty| types.runtime_type_predicate(ty))
@@ -1733,8 +1859,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.emit_let(Prim::Const(Const::Nil)).0
                 }
             })
-            .collect();
-        let mut state = DispatchState::new(input_vars, Vec::new(), Vec::new());
+            .collect::<Vec<_>>();
+        let bindings = self.lower_argument_bindings(ctx, &dispatch.plan, &input_vars)?;
+        let mut state = DispatchState::new(input_vars, Vec::new(), bindings);
         self.lower_dispatch_call_node(
             ctx,
             executable,
@@ -1803,8 +1930,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond =
-                    self.lower_dispatch_region(ctx, &dispatch.plan, predicate.subject, &predicate.region, state)?;
+                let mut match_state = state.clone();
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    &dispatch.plan,
+                    predicate.subject,
+                    &predicate.region,
+                    &on_match.evidence,
+                    &mut match_state,
+                )?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -1813,7 +1947,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     else_b,
                     origin: BranchOrigin::User,
                 });
-                let mut match_state = state.clone();
                 ctx.current_block = then_b;
                 self.lower_dispatch_call_node(
                     ctx,
@@ -2053,7 +2186,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
-        reusable_cons_captures: &[ReusableConsCapture],
+        physical_captures: &[ValueId],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         let mut param_tys = entry
             .params
@@ -2078,14 +2211,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .iter()
             .flat_map(|capture| capture.layout.reprs.iter().copied())
             .collect::<Vec<_>>();
-        let physical_capture_tys = reusable_cons_captures
+        let physical_capture_tys = physical_captures
             .iter()
             .map(|capture| {
                 executable
                     .abi
                     .materialized
                     .value_types
-                    .get(&capture.source)
+                    .get(capture)
                     .copied()
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
@@ -2118,6 +2251,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .collect::<Vec<_>>();
                 param_reprs.extend(capture_lane_reprs.iter().copied());
                 param_tys.extend(capture_lane_tys.iter().copied());
+                param_reprs.extend(
+                    physical_capture_tys
+                        .iter()
+                        .copied()
+                        .map(|ty| abi_value_repr(self.world, ty)),
+                );
+                param_tys.extend(physical_capture_tys.iter().copied());
                 (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
             }
             BackendEntryOrigin::DeliveredResume { value: _, layout } => {
@@ -2149,15 +2289,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<usize, FatalError> {
         match &entry.origin {
             BackendEntryOrigin::Clause => Ok(0),
-            BackendEntryOrigin::Branch => {
+            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
                     self.bind_runtime_value(ctx, executable, env, value, var);
-                }
-                Ok(entry.params.len())
-            }
-            BackendEntryOrigin::ReceiveOutcome => {
-                for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    self.bind_runtime_value(ctx, executable, env, value, var);
+                    if entry.physical_params.contains(&value) {
+                        ctx.builder.record_physical_entry_param(var);
+                    }
                 }
                 Ok(entry.params.len())
             }
@@ -2204,22 +2341,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 })?;
             bind_local_value(ctx, executable, env, capture.value, bound);
         }
-        for capture in entry.reusable_cons_captures.iter().copied() {
+        for capture in entry.physical_captures.iter().copied() {
             let physical_var = *entry_vars.get(*capture_offset).ok_or_else(|| {
                 incomplete_native_program(
                     self.telemetry,
                     self.root_id,
                     format!(
-                        "native entry {:?} missing reusable cons capture param at offset {} of {}",
+                        "native entry {:?} missing retained list cell capture param at offset {} of {}",
                         ctx.origin,
                         *capture_offset,
                         entry_vars.len()
                     ),
                 )
             })?;
-            self.bind_runtime_value(ctx, executable, env, capture.source, physical_var);
-            let semantic_var = self.env_runtime_var(ctx, executable, env, capture.head);
-            ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
+            self.bind_runtime_value(ctx, executable, env, capture, physical_var);
+            ctx.builder.record_physical_entry_param(physical_var);
             *capture_offset += 1;
         }
         Ok(())
@@ -2452,14 +2588,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .flat_map(|capture| capture.layout.reprs.iter().copied())
             .collect::<Vec<_>>();
         let physical_capture_tys = entry
-            .reusable_cons_captures
+            .physical_captures
             .iter()
             .map(|capture| {
                 executable
                     .abi
                     .materialized
                     .value_types
-                    .get(&capture.source)
+                    .get(capture)
                     .copied()
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
@@ -2562,39 +2698,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 &mut args,
             )?;
         }
-        for capture in &entry.reusable_cons_captures {
-            args.push(self.env_runtime_var(ctx, executable, env, capture.source));
+        for capture in &entry.physical_captures {
+            args.push(self.env_runtime_var(ctx, executable, env, *capture));
         }
         Ok(args)
-    }
-
-    fn receive_pinned_vars(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        env: &ValueEnv,
-        bindings: &super::super::body::DispatchBindings,
-        dispatch: &PatternDispatchPlan<Ty>,
-    ) -> Result<Vec<(String, Var)>, FatalError> {
-        let mut pinned = Vec::new();
-        for (index, value_id) in bindings.pinned.iter().copied().enumerate() {
-            let Some(pin) = dispatch.pinned.get(index) else {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("receive pinned binding {} is out of bounds", index),
-                ));
-            };
-            if pin.input.is_none() {
-                let var = self.env_runtime_var(ctx, executable, env, value_id);
-                pinned.push((pin.name.clone(), var));
-            }
-        }
-        for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
-            let var = self.env_runtime_var(ctx, executable, env, value_id);
-            pinned.push((prepared_key_name(index), var));
-        }
-        Ok(pinned)
     }
 
     fn receive_capture_vars(
@@ -2602,21 +2709,26 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        clauses: &[super::super::body::ReceiveClause],
+        outcomes: &[super::super::body::OutcomeEdge],
         after: Option<&super::super::body::ReceiveAfter>,
         env: &ValueEnv,
     ) -> Result<Vec<Var>, FatalError> {
-        let mut iter = clauses
+        let mut iter = outcomes
             .iter()
-            .map(|clause| clause.entry)
+            .map(|edge| edge.target)
             .chain(after.iter().map(|after| after.entry));
         let capture_ids = iter
             .next()
-            .map(|entry_id| entries[entry_id.as_u32() as usize].captures.clone())
+            .map(|entry_id| {
+                let entry = &entries[entry_id.as_u32() as usize];
+                (entry.captures.clone(), entry.physical_captures.clone())
+            })
             .unwrap_or_default();
+        let (capture_ids, physical_captures) = capture_ids;
         for entry_id in iter {
             let entry_captures = &entries[entry_id.as_u32() as usize].captures;
-            if entry_captures.len() != capture_ids.len()
+            if entries[entry_id.as_u32() as usize].physical_captures != physical_captures
+                || entry_captures.len() != capture_ids.len()
                 || entry_captures
                     .iter()
                     .zip(&capture_ids)
@@ -2644,6 +2756,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 &mut args,
             )?;
         }
+        args.extend(
+            physical_captures
+                .iter()
+                .map(|capture| self.env_runtime_var(ctx, executable, env, *capture)),
+        );
         Ok(args)
     }
 
@@ -2795,8 +2912,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond =
-                    self.lower_dispatch_region(ctx, dispatch.plan(), predicate.subject, &predicate.region, state)?;
+                let mut match_state = state.clone();
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    dispatch.plan(),
+                    predicate.subject,
+                    &predicate.region,
+                    &on_match.evidence,
+                    &mut match_state,
+                )?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -2805,7 +2929,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     else_b,
                     origin: BranchOrigin::ClauseDispatch,
                 });
-                let mut match_state = state.clone();
                 ctx.current_block = then_b;
                 self.lower_dispatch_node(ctx, dispatch, on_match.target, helper_ids, &mut match_state)?;
                 ctx.current_block = else_b;
@@ -2823,7 +2946,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         env: &ValueEnv,
         plan: &PatternDispatchPlan<Ty>,
-        arm_entries: &[ControlEntryId],
+        outcomes: &[super::super::body::OutcomeEdge],
         miss_entry: ControlEntryId,
         node_id: GraphNodeId,
         state: &mut DispatchState,
@@ -2847,24 +2970,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
-                let Some(body_id) = plan.outcome(outcome).map(|outcome| outcome.body_id) else {
-                    let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
-                    ctx.set_term(Term::TailCall {
-                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, miss_entry)),
-                        args,
-                        is_back_edge: false,
-                    });
-                    return Ok(());
-                };
-                let arm_entry = *arm_entries.get(body_id as usize).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!("local dispatch arm {} is out of bounds", body_id),
-                    )
-                })?;
-                let args = self.control_dispatch_entry_args(ctx, executable, entries, arm_entry, env, state)?;
+                let edge = outcomes
+                    .iter()
+                    .find(|edge| edge.outcome == outcome)
+                    .expect("every native dispatch outcome has an edge");
+                let arm_entry = edge.target;
+                let mut args = Vec::new();
+                for argument in &edge.arguments {
+                    args.push(self.dispatch_subject_var(ctx, plan, state, argument.subject)?);
+                }
+                args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, arm_entry)),
@@ -2878,7 +2993,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
+                let mut match_state = state.clone();
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    plan,
+                    predicate.subject,
+                    &predicate.region,
+                    &on_match.evidence,
+                    &mut match_state,
+                )?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -2887,7 +3010,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     else_b,
                     origin: BranchOrigin::User,
                 });
-                let mut match_state = state.clone();
                 ctx.current_block = then_b;
                 self.lower_control_dispatch_node(
                     ctx,
@@ -2896,7 +3018,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entry_fns,
                     env,
                     plan,
-                    arm_entries,
+                    outcomes,
                     miss_entry,
                     on_match.target,
                     &mut match_state,
@@ -2909,7 +3031,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entry_fns,
                     env,
                     plan,
-                    arm_entries,
+                    outcomes,
                     miss_entry,
                     on_miss.target,
                     state,
@@ -2918,73 +3040,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
-    fn control_dispatch_forwarded_args(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        entries: &[BackendEntry],
-        arm_entries: &[ControlEntryId],
-        env: &ValueEnv,
-    ) -> Result<Vec<Var>, FatalError> {
-        let Some(first_entry) = arm_entries.first().map(|entry_id| &entries[entry_id.as_u32() as usize]) else {
-            return Ok(Vec::new());
-        };
-        let params = first_entry.params.clone();
-        for entry_id in arm_entries.iter().copied().skip(1) {
-            let entry = &entries[entry_id.as_u32() as usize];
-            if entry.params != params {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!(
-                        "local dispatch arm entries disagree on forwarded params: entry {} has {:?}, expected {:?}",
-                        entry_id.as_u32(),
-                        entry.params,
-                        params
-                    ),
-                ));
-            }
-        }
-        Ok(self.env_runtime_vars(ctx, executable, env, &params))
-    }
-
-    fn control_dispatch_entry_args(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        entries: &[BackendEntry],
-        entry_id: ControlEntryId,
-        env: &ValueEnv,
-        state: &DispatchState,
-    ) -> Result<Vec<Var>, FatalError> {
-        let entry = &entries[entry_id.as_u32() as usize];
-        let param_count = entry.params.len();
-        let mut args = state
-            .forwarded_args
-            .get(..param_count)
-            .ok_or_else(|| {
-                incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!(
-                        "local dispatch arm entry {} needs {} forwarded params but dispatch carries {}",
-                        entry_id.as_u32(),
-                        param_count,
-                        state.forwarded_args.len()
-                    ),
-                )
-            })?
-            .to_vec();
-        args.extend(self.entry_capture_args(ctx, executable, entries, entry_id, env)?);
-        Ok(args)
-    }
-
     fn lower_dispatch_region(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         subject: SubjectId,
         region: &Region<Ty>,
+        evidence: &crate::dispatch_matrix::EdgeEvidence<Ty>,
         state: &mut DispatchState,
     ) -> Result<Var, FatalError> {
         Ok(match region {
@@ -3019,9 +3081,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 var
             }
             Region::MapKeyPresent { key } => {
-                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let key = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)?;
-                let (value, _) = ctx.emit_let(Prim::MatcherMapGet(subject, key));
+                let map_var = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let key_var = self.dispatch_key_var(ctx, plan, state, key)?;
+                let (value, _) = ctx.emit_let(Prim::MatcherMapGet(map_var, key_var));
+                for result in &evidence.projections {
+                    if let crate::dispatch_matrix::SubjectSource::Projection(projection) = plan.subject(*result)
+                        && projection.source == subject
+                        && matches!(&projection.kind, crate::dispatch_matrix::ProjectionKind::MapValue { key: projection_key } if projection_key == key)
+                    {
+                        state.values.insert(*result, value);
+                    }
+                }
                 let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
                 let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, is_miss, false_v));
@@ -3045,7 +3115,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             Region::Equal(ComparisonValue::Pinned(pinned)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let pinned = self.dispatch_pinned_var(plan, state, *pinned)?;
+                let pinned = self.dispatch_pinned_var(state, *pinned)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, pinned));
                 var
             }
@@ -3080,14 +3150,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
                 var
             }
-            PatternGuardExpr::Dispatch { .. } => {
-                if let PatternGuardExpr::Dispatch { inputs, dispatch } = expr {
-                    self.lower_guard_dispatch(ctx, plan, state, inputs, dispatch)?
-                } else {
-                    unreachable!("dispatch arm must have matched");
-                }
-            }
-            PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(plan, state, *pinned)?,
+            PatternGuardExpr::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => self.lower_guard_dispatch(ctx, plan, state, inputs, bindings, dispatch)?,
+            PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(state, *pinned)?,
         })
     }
 
@@ -3097,6 +3165,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         parent_plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         inputs: &[PatternGuardExpr<Ty>],
+        bindings: &crate::dispatch_matrix::pattern::PatternGuardBindings,
         dispatch: &crate::dispatch_matrix::pattern::PatternGuardDispatch<Ty>,
     ) -> Result<Var, FatalError> {
         let input_vars = inputs
@@ -3106,7 +3175,33 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
         let fail_b = ctx.builder.block(vec![]);
-        let mut dispatch_state = DispatchState::new(input_vars, Vec::new(), Vec::new());
+        let pinned = bindings
+            .pinned
+            .iter()
+            .map(|id| {
+                input_vars.get(id.0 as usize).copied().ok_or_else(|| {
+                    incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!("guard argument {:?} is missing", id),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let prepared = bindings
+            .prepared
+            .iter()
+            .map(|id| {
+                state.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
+                    incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!("guard prepared operand {:?} is missing from its caller", id),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut dispatch_state = DispatchState::new(input_vars, Vec::new(), DispatchBindings { pinned, prepared });
         self.lower_guard_dispatch_node(
             ctx,
             &dispatch.plan,
@@ -3170,7 +3265,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
+                let mut match_state = state.clone();
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    plan,
+                    predicate.subject,
+                    &predicate.region,
+                    &on_match.evidence,
+                    &mut match_state,
+                )?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -3179,7 +3282,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     else_b,
                     origin: BranchOrigin::ClauseDispatch,
                 });
-                let mut match_state = state.clone();
                 ctx.current_block = then_b;
                 self.lower_guard_dispatch_node(ctx, plan, bodies, on_match.target, done_b, fail_b, &mut match_state)?;
                 ctx.current_block = else_b;
@@ -3235,7 +3337,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let (mut reader, _) = ctx.emit_let(Prim::BitReaderInit(subject_var));
         let field_count = shape.fields.len();
         let mut extracted = Vec::with_capacity(field_count);
-        for (index, field) in shape.fields.iter().enumerate() {
+        for field_subject in &shape.fields {
+            let extraction = plan.bitstring_extraction(*field_subject);
+            let field = &extraction.spec;
             let size = self.lower_dispatch_bit_size(ctx, plan, state, field)?;
             let (result, _) = ctx.emit_let(Prim::BitReadField {
                 reader,
@@ -3244,7 +3348,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 endian: dispatch_endian(field.endian),
                 signed: field.signed,
                 unit: field.unit,
-                is_last: index + 1 == field_count,
+                is_last: extraction.is_last,
             });
             let (ok, _) = ctx.emit_let(Prim::TupleField(result, 0));
             let next_b = ctx.builder.block(vec![]);
@@ -3260,10 +3364,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             reader = next_reader;
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
-            if let Some(field_subject) = bitstring_field_subject(plan, subject, index as u32) {
-                state.values.insert(field_subject, value);
-            }
-            extracted.push((index as u32, value));
+            state.values.insert(*field_subject, value);
+            extracted.push((*field_subject, value));
         }
 
         if shape.require_done {
@@ -3310,10 +3412,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx.set_term(Term::Goto(done_b, missed_args));
 
         ctx.current_block = done_b;
-        for (field_index, var) in carried {
-            if let Some(field_subject) = bitstring_field_subject(plan, subject, field_index) {
-                state.values.insert(field_subject, var);
-            }
+        for (field_subject, var) in carried {
+            state.values.insert(field_subject, var);
         }
         Ok(answer)
     }
@@ -3336,9 +3436,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             // A size from the enclosing scope arrives as a PIN, the same way a
             // pinned value does (fz-5xp.54).
-            Some(BitstringFieldSize::Pinned(pinned)) => {
-                Some(BitSizeIr::Var(self.dispatch_pinned_var(plan, state, *pinned)?))
-            }
+            Some(BitstringFieldSize::Pinned(pinned)) => Some(BitSizeIr::Var(self.dispatch_pinned_var(state, *pinned)?)),
         })
     }
 
@@ -3375,6 +3473,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
                     var
                 }
+                crate::dispatch_matrix::ProjectionKind::StructField(field) => {
+                    let record = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                    let (var, _) = ctx.emit_let(Prim::StructField(record, field.clone()));
+                    var
+                }
                 crate::dispatch_matrix::ProjectionKind::ListHead => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let (var, _) = ctx.emit_let(Prim::ListHead(list));
@@ -3387,7 +3490,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 crate::dispatch_matrix::ProjectionKind::MapValue { key } => {
                     let map = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let key = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)?;
+                    let key = self.dispatch_key_var(ctx, plan, state, key)?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(map, key));
                     var
                 }
@@ -3399,7 +3502,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     return Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
-                        format!("bitstring field projection {index} was read before its pattern test bound it"),
+                        format!("bitstring field projection {index:?} was read before its pattern test bound it"),
                     ));
                 }
             },
@@ -3410,37 +3513,83 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn dispatch_pinned_var(
         &mut self,
-        plan: &PatternDispatchPlan<Ty>,
         state: &DispatchState,
         pinned: crate::dispatch_matrix::PinnedValueId,
     ) -> Result<Var, FatalError> {
-        let pin = plan.pinned.get(pinned.0 as usize).ok_or_else(|| {
+        state.bindings.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
             incomplete_native_program(
                 self.telemetry,
                 self.root_id,
-                format!("dispatch pinned {:?} is out of bounds", pinned),
-            )
-        })?;
-        if let Some(input) = pin.input {
-            return state.dispatch_inputs.get(input as usize).copied().ok_or_else(|| {
-                incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("dispatch pinned input {} is out of bounds", input),
-                )
-            });
-        }
-        state.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
-            incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!("dispatch pinned capture {:?} is out of bounds", pinned),
+                format!("dispatch pinned operand {:?} is out of bounds", pinned),
             )
         })
     }
 
+    fn lower_argument_bindings(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        inputs: &[Var],
+    ) -> Result<DispatchBindings<Var>, FatalError> {
+        let prepared = plan
+            .prepared_keys
+            .iter()
+            .map(|key| lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DispatchBindings {
+            pinned: plan
+                .pinned
+                .iter()
+                .map(|pin| {
+                    pin.input
+                        .and_then(|input| inputs.get(input as usize).copied())
+                        .ok_or_else(|| {
+                            incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                "entry dispatch pin has no argument operand".to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            prepared,
+        })
+    }
+
+    fn dispatch_key_var(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+        key: &crate::ground_value::GroundValue,
+    ) -> Result<Var, FatalError> {
+        if let Some(id) = plan.prepared_key_id(key) {
+            return state.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
+                incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("dispatch prepared operand {:?} is missing from its owning plan", id),
+                )
+            });
+        }
+        lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)
+    }
+
     fn atom_id(&self, name: &str) -> u32 {
         *self.atom_ids.get(name).expect("required atom should be interned")
+    }
+
+    fn ensure_quoted_span_atoms(&mut self) {
+        for atom in [
+            super::super::source::META_SPAN_KEY,
+            super::super::source::META_SPAN_START_KEY,
+            super::super::source::META_SPAN_LENGTH_KEY,
+            super::super::source::META_SPAN_VERSION_KEY,
+        ] {
+            if !self.atom_ids.contains_key(atom) {
+                self.atom_ids.insert(atom.to_string(), self.atom_ids.len() as u32);
+            }
+        }
     }
 
     fn native_callable_boundary_for_construction(
@@ -3571,7 +3720,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Var, FatalError> {
         let var = match value {
             NativeBoundValue::Absent if ty.is_some_and(|ty| self.ty_is_exact_empty_list(ty)) => {
-                ctx.emit_let(Prim::MakeList(Vec::new(), None)).0
+                ctx.emit_let(Prim::MakeList(Vec::new(), None, None)).0
             }
             NativeBoundValue::Absent => {
                 return Err(incomplete_native_program(
@@ -4238,6 +4387,20 @@ enum NativeBoundValue {
     Transport { shape: ShapeId, lanes: Vec<Var> },
 }
 
+fn share_native_value(ctx: &mut NativeFnCtx, value: Option<&NativeBoundValue>) {
+    match value {
+        Some(NativeBoundValue::Runtime(var)) => {
+            ctx.emit_let(Prim::Share(*var));
+        }
+        Some(NativeBoundValue::Transport { lanes, .. }) => {
+            for lane in lanes {
+                ctx.emit_let(Prim::Share(*lane));
+            }
+        }
+        Some(NativeBoundValue::Absent) | None => {}
+    }
+}
+
 impl NativeBoundValue {
     fn runtime_lane(&self) -> Option<Var> {
         match self {
@@ -4303,16 +4466,16 @@ fn native_block_param_reprs(
 struct DispatchState {
     dispatch_inputs: Vec<Var>,
     forwarded_args: Vec<Var>,
-    pinned: Vec<Var>,
+    bindings: DispatchBindings<Var>,
     values: HashMap<SubjectId, Var>,
 }
 
 impl DispatchState {
-    fn new(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, pinned: Vec<Var>) -> Self {
+    fn new(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
         Self {
             dispatch_inputs,
             forwarded_args,
-            pinned,
+            bindings,
             values: HashMap::new(),
         }
     }
@@ -4922,20 +5085,6 @@ fn incomplete_native_program(
     );
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
-}
-
-/// The `SubjectId` a bitstring field is projected into, so an extracted value
-/// can be published under the name the rest of the plan reads it by.
-fn bitstring_field_subject(plan: &PatternDispatchPlan<Ty>, source: SubjectId, index: u32) -> Option<SubjectId> {
-    plan.matrix.subjects.iter().find_map(|subject| match &subject.source {
-        crate::dispatch_matrix::SubjectSource::Projection(projection)
-            if projection.source == source
-                && projection.kind == crate::dispatch_matrix::ProjectionKind::BitstringField(index) =>
-        {
-            Some(subject.id)
-        }
-        _ => None,
-    })
 }
 
 fn dispatch_bit_type(kind: crate::dispatch_matrix::BitstringFieldKind) -> crate::ast::BitType {

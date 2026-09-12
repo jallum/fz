@@ -12,6 +12,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
+use super::super::SourceOwner;
 use super::super::body::{
     CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
@@ -52,12 +53,6 @@ struct CallEmission {
 struct ActivationContribution {
     key: ActivationKey,
     inputs: Vec<Ty>,
-}
-
-#[derive(Debug, Clone)]
-struct CoalescedCallEmission {
-    call: CallEmission,
-    observations: usize,
 }
 
 /// Analyzes one rooted function activation against its lowered body.
@@ -227,7 +222,7 @@ pub(super) fn analyze_activation(
     // Waits no longer bail: a waiting completion extends the job's standing
     // claims (it cannot retract), so partial evidence publishes safely and
     // the waits simply ride the final effects.
-    analysis_calls = coalesce_call_emissions(world, tel, activation, analysis_calls, &mut reads, &mut waits)?;
+    analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_activation_inputs = HashSet::new();
@@ -391,7 +386,7 @@ fn apply_step(
         LoweredStep::Tuple { value, items } => {
             let Some(items) = items
                 .iter()
-                .map(|item| value_ty(values, *item))
+                .map(|item| value_ty(values, item.value))
                 .collect::<Option<Vec<_>>>()
             else {
                 return Ok(());
@@ -399,12 +394,12 @@ fn apply_step(
             let tuple = world.types_mut().tuple(&items);
             values.insert(*value, tuple);
         }
-        LoweredStep::List { value, items, tail } => {
+        LoweredStep::List { value, items, tail, .. } => {
             if let Some(list) = list_ty(world, values, items, *tail) {
                 values.insert(*value, list);
             }
         }
-        LoweredStep::Map { value, entries } => {
+        LoweredStep::Map { value, entries, .. } => {
             if let Some(map) = map_ty(world, values, entries) {
                 values.insert(*value, map);
             }
@@ -803,17 +798,23 @@ fn analyze_tail(
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
             let mut merged = None;
             for (outcome, refined_inputs) in reachability.outcome_inputs {
-                let body_id = dispatch
-                    .plan
-                    .outcomes
+                let edge = dispatch.outcome(outcome);
+                let arm_entry = edge.target;
+                let params = edge
+                    .arguments
                     .iter()
-                    .find(|candidate| candidate.outcome == outcome)
-                    .expect("reachable dispatch outcome should have an arm")
-                    .body_id;
-                let arm_entry = *dispatch
-                    .arm_entries
-                    .get(body_id as usize)
-                    .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
+                    .map(|argument| {
+                        (
+                            argument.parameter,
+                            super::super::dispatch_reachability::project_subject(
+                                world.types_mut(),
+                                &dispatch.plan,
+                                &refined_inputs,
+                                argument.subject,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 let mut refined_values = values.clone();
                 for (input, ty) in inputs.iter().copied().zip(refined_inputs) {
                     refined_values.insert(input, ty);
@@ -824,7 +825,7 @@ fn analyze_tail(
                     entries,
                     arm_entry,
                     &refined_values,
-                    &[],
+                    &params,
                     reachable_entries,
                     value_types,
                     calls,
@@ -854,18 +855,33 @@ fn analyze_tail(
             // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
             let mut merged = None;
-            for clause in &receive.clauses {
-                let clause_entry = &entries[clause.entry.as_u32() as usize];
-                let clause_params = clause_entry
-                    .params
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
+            for (outcome, refined_inputs) in reachability.outcome_inputs {
+                let edge = receive
+                    .outcomes
                     .iter()
-                    .map(|param| (*param, any))
+                    .find(|edge| edge.outcome == outcome)
+                    .expect("winning receive edge");
+                let clause_params = edge
+                    .arguments
+                    .iter()
+                    .map(|argument| {
+                        (
+                            argument.parameter,
+                            super::super::dispatch_reachability::project_subject(
+                                world.types_mut(),
+                                &receive.dispatch,
+                                &refined_inputs,
+                                argument.subject,
+                            ),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let clause_ty = analyze_branch(
                     world,
                     tel,
                     entries,
-                    clause.entry,
+                    edge.target,
                     values,
                     &clause_params,
                     reachable_entries,
@@ -1032,7 +1048,7 @@ fn resolve_direct_call(
 /// materialization reads to resolve escaped callables, so a case that yields
 /// `add_a` on one arm and `add_b` on the other must publish both closure
 /// identities — `refine_widen` merges the arrows into an anonymous clause
-/// and is reserved for the activation-key plane (`merge_call_input_vec`).
+/// and belongs to activation-key canonicalization.
 fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
     for (&value, &ty) in observed {
         match merged.get(&value).copied() {
@@ -1048,26 +1064,17 @@ fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &Sema
     }
 }
 
-fn coalesce_call_emissions(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    caller: &ActivationKey,
-    calls: Vec<CallEmission>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<Vec<CallEmission>, FatalError> {
+fn coalesce_call_emissions(world: &mut World, calls: Vec<CallEmission>) -> Result<Vec<CallEmission>, FatalError> {
     let mut order = Vec::new();
-    let mut grouped = HashMap::<CallSiteKey, CoalescedCallEmission>::new();
+    let mut grouped = HashMap::<CallSiteKey, CallEmission>::new();
     for call in calls {
         match grouped.entry(call.key.clone()) {
             Entry::Vacant(entry) => {
                 order.push(call.key.clone());
-                entry.insert(CoalescedCallEmission { call, observations: 1 });
+                entry.insert(call);
             }
             Entry::Occupied(mut entry) => {
-                let grouped = entry.get_mut();
-                grouped.observations += 1;
-                merge_call_emission(world, &mut grouped.call, call)?;
+                merge_call_emission(world, entry.get_mut(), call)?;
             }
         }
     }
@@ -1077,18 +1084,7 @@ fn coalesce_call_emissions(
         let grouped = grouped
             .remove(&key)
             .expect("callsite order should resolve to a coalesced call");
-        if grouped.observations == 1 {
-            coalesced.push(grouped.call);
-            continue;
-        }
-        coalesced.push(rebuild_coalesced_call_emission(
-            world,
-            tel,
-            caller,
-            grouped.call,
-            reads,
-            waits,
-        )?);
+        coalesced.push(grouped);
     }
     Ok(coalesced)
 }
@@ -1096,6 +1092,8 @@ fn coalesce_call_emissions(
 /// One callsite reached down several rows or arms is ONE edge. The
 /// resolutions join on the same lattice the store uses: `Unresolved` is
 /// bottom, so an arm that resolved nothing never erases an arm that did.
+/// Activation contributions retain the original walked rows; the joined
+/// transport surface is not another call and supplies no new input evidence.
 fn merge_call_emission(
     world: &mut World,
     current: &mut CallEmission,
@@ -1113,158 +1111,6 @@ fn merge_call_emission(
     }
     current.activations.extend(observed.activations);
     Ok(())
-}
-
-fn rebuild_coalesced_call_emission(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    caller: &ActivationKey,
-    call: CallEmission,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<CallEmission, FatalError> {
-    let CallSiteResolution::Resolved(summary) = &call.resolution else {
-        return Ok(call);
-    };
-    let mut rebuilt_targets = Vec::new();
-    let mut rebuilt_return = None;
-    let mut rebuilt_activations = Vec::new();
-
-    for target in &summary.targets {
-        match target.callee.clone() {
-            SelectedCallee::Function(function) => {
-                // `surface_inputs` is the declared call surface only -- a
-                // closure target's real activation carries a leading
-                // capture-environment prefix that `surface_inputs` never
-                // names. Rebuilding from `surface_inputs` alone silently
-                // drops that prefix and hands `call_emission_for_function`
-                // an under-arity input vector, which mints a truncated
-                // activation. The prefix is EVIDENCE, and the target already
-                // recorded its full evidence vector in `activation_inputs` --
-                // the kept activation's KEY is not a substitute, because a
-                // convergence-collapsed key names a capture slot by an
-                // address var, and rebuilding from the key would publish
-                // key-language vars as activation-input evidence (fz-6gb).
-                // Every `Function` target records its evidence vector when it
-                // is built; a target without one has nothing to rebuild FROM,
-                // so keep the settled emission rather than minting an
-                // under-arity activation from surface inputs alone.
-                let Some(mut input_types) = target.activation_inputs.clone() else {
-                    return Ok(call);
-                };
-                let captures_len = input_types.len().saturating_sub(target.surface_inputs.len());
-                input_types.truncate(captures_len);
-                input_types.extend(target.surface_inputs.iter().copied());
-                let Some(rebuilt) = call_emission_for_function(
-                    world,
-                    tel,
-                    caller,
-                    call.key.clone(),
-                    function,
-                    input_types,
-                    reads,
-                    waits,
-                )?
-                else {
-                    return Ok(call);
-                };
-                let CallSiteResolution::Resolved(rebuilt_summary) = rebuilt.resolution else {
-                    return Ok(call);
-                };
-                for mut rebuilt_target in rebuilt_summary.targets {
-                    // The re-mint may only re-derive the SAME callee identity.
-                    // The walked targets that coalesced into this one all keyed
-                    // the same activation, so re-keying their joined inputs must
-                    // land on it again -- that is the activation key being a
-                    // join homomorphism over its own equivalence class, which
-                    // intern-time `A ∨ A = A` restores (fz-kdt.80). If this
-                    // fires, the published edge is about to name a callee no
-                    // walk ever read a `ReturnType` from.
-                    debug_assert_eq!(
-                        rebuilt_target.activation, target.activation,
-                        "the coalesced re-mint must re-derive the walked activation key"
-                    );
-                    if captures_len > 0 {
-                        rebuilt_target.surface_inputs.drain(..captures_len);
-                    }
-                    rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
-                    merge_call_targets(world, &mut rebuilt_targets, vec![rebuilt_target])?;
-                }
-                rebuilt_activations.extend(rebuilt.activations);
-            }
-            SelectedCallee::ProviderBoundary(_) => {
-                rebuilt_return = join_evidence(world, rebuilt_return, target.return_ty);
-                rebuilt_targets.push(target.clone());
-            }
-        }
-    }
-
-    rebuilt_activations.extend(call.activations);
-    Ok(CallEmission {
-        key: call.key,
-        resolution: CallSiteResolution::Resolved(CallSiteSummary {
-            targets: rebuilt_targets,
-            return_ty: rebuilt_return,
-        }),
-        activations: rebuilt_activations,
-    })
-}
-
-fn call_emission_for_function(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    caller: &ActivationKey,
-    key: CallSiteKey,
-    function: FunctionId,
-    input_types: Vec<Ty>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<Option<CallEmission>, FatalError> {
-    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
-        return Ok(None);
-    };
-    let (input_types, contract_return_ty) =
-        refine_function_call_surface(world, tel, function, input_types, key.callsite.span())?;
-    if shape == CalleeShape::Boundary {
-        // The earned dynamic edge: a boundary with no contract is `any`.
-        let return_ty = Some(contract_return_ty.unwrap_or_else(|| any_ty(world)));
-        return Ok(Some(CallEmission {
-            key,
-            resolution: CallSiteResolution::Resolved(CallSiteSummary {
-                targets: vec![CallTargetSummary {
-                    callee: SelectedCallee::ProviderBoundary(function),
-                    surface_inputs: input_types,
-                    activation: None,
-                    activation_inputs: None,
-                    extern_params: None,
-                    return_ty,
-                }],
-                return_ty,
-            }),
-            activations: Vec::new(),
-        }));
-    }
-    let (activation, return_ty) = prepare_function_call(world, caller, function, &input_types, reads);
-    let return_ty = refine_call_return(world, return_ty, contract_return_ty);
-    let activations = vec![ActivationContribution {
-        key: activation.clone(),
-        inputs: input_types.clone(),
-    }];
-    Ok(Some(CallEmission {
-        key,
-        resolution: CallSiteResolution::Resolved(CallSiteSummary {
-            targets: vec![CallTargetSummary {
-                callee: SelectedCallee::Function(function),
-                surface_inputs: input_types.clone(),
-                activation: Some(activation),
-                activation_inputs: Some(input_types),
-                extern_params: callee_extern_params(world, function),
-                return_ty,
-            }],
-            return_ty,
-        }),
-        activations,
-    }))
 }
 
 fn resolve_function_call(
@@ -1296,7 +1142,9 @@ fn resolve_function_call(
     let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
-    let (input_types, contract_return_ty) = refine_function_call_surface(world, tel, function, input_types, call_span)?;
+    let caller_owner = world.function_definition(caller.function).0.owner;
+    let (input_types, contract_return_ty) =
+        refine_function_call_surface(world, tel, function, input_types, caller_owner, call_span)?;
     if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
@@ -1441,8 +1289,9 @@ fn resolve_protocol_call(
             return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
+        let caller_owner = world.function_definition(caller.function).0.owner;
         let (refined_inputs, contract_return_ty) =
-            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span)?;
+            refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
         let (activation, observed_return) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1731,6 +1580,7 @@ fn refine_function_call_surface(
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: Vec<Ty>,
+    caller_owner: SourceOwner,
     violation_span: Span,
 ) -> Result<RefinedCallSurface, FatalError> {
     if !world.function_declares_contract(function) {
@@ -1740,7 +1590,15 @@ fn refine_function_call_surface(
         .function_contract(function)
         .cloned()
         .expect("a declared contract must be proven present before the call surface is refined");
-    apply_function_contract(world, tel, function, &contract, input_types, violation_span)
+    apply_function_contract(
+        world,
+        tel,
+        function,
+        &contract,
+        input_types,
+        caller_owner,
+        violation_span,
+    )
 }
 
 fn apply_function_contract(
@@ -1749,11 +1607,12 @@ fn apply_function_contract(
     function: FunctionId,
     contract: &FunctionContract,
     input_types: Vec<Ty>,
+    caller_owner: SourceOwner,
     violation_span: Span,
 ) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
     if !application.enforceable_satisfied
-        && function_contract_is_enforced(world, function, violation_span)
+        && function_contract_is_enforced(world, function, caller_owner)
         && spec_violation_is_actionable(world, &input_types)
     {
         return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
@@ -1776,11 +1635,11 @@ fn apply_function_contract(
 /// callable paired with another user's element type). The matcher verdict on
 /// that row is correct, but as a diagnostic it is false, and its span points
 /// into library source where the user can act on nothing. The gate retires
-/// when activation evidence becomes correlation-sound. The violation span is
-/// the callsite, so its source identifies the calling side.
-fn function_contract_is_enforced(world: &World, function: FunctionId, violation_span: Span) -> bool {
+/// when activation evidence becomes correlation-sound. The lexical source
+/// owner is carried separately from the callsite's exact source-version span.
+fn function_contract_is_enforced(world: &World, function: FunctionId, caller_owner: SourceOwner) -> bool {
     let (_source, surface) = world.function_definition(function);
-    surface.extern_abi.is_none() && !world.is_bootstrap(super::super::CodeId::from_source(violation_span.code_id))
+    surface.extern_abi.is_none() && !world.is_bootstrap(caller_owner)
 }
 
 fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
@@ -1798,12 +1657,14 @@ fn activation_contract_return(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
-    let violation_span = world.function_surface(function).span;
+    let (source, surface) = world.function_definition(function);
+    let violation_span = surface.span;
+    let caller_owner = source.owner;
     if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
     }
     let (_, contract_return_ty) =
-        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span)?;
+        refine_function_call_surface(world, tel, function, input_types.to_vec(), caller_owner, violation_span)?;
     Ok(contract_return_ty)
 }
 
@@ -1933,8 +1794,8 @@ fn wait_for_protocol_module(
     protocol: ModuleId,
     waits: &mut HashSet<FactKey>,
 ) {
-    if let Some(code_id) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(protocol) {
-        let indexed_fact = FactKey::CodeIndexed(code_id);
+    if let Some(source_owner) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(protocol) {
+        let indexed_fact = FactKey::CodeIndexed(source_owner);
         if !world.has_fact(&indexed_fact) {
             waits.insert(indexed_fact);
         }
@@ -2009,7 +1870,8 @@ fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool
 /// Published call-edge summaries live on the semantic/artifact plane, not the
 /// activation-key plane. They must preserve every shape the callsite can send,
 /// so later materialization can see the full semantic call surface. Key
-/// coarsening belongs in `ActivationInputs`, not in published call summaries.
+/// coarsening belongs to activation-key canonicalization; callee input
+/// contributions retain their original whole rows.
 fn merge_summary_input_vec(world: &mut World, current: &mut Vec<Ty>, observed: &[Ty]) {
     if current.len() < observed.len() {
         current.resize_with(observed.len(), || any_ty(world));
@@ -2307,6 +2169,65 @@ mod tests {
     use crate::compiler2::drive::ExecutionContext;
     use crate::compiler2::{DriveOutcome, ExecutableNeed};
     use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn analyze_activation_preserves_real_rows_without_publishing_their_cartesian_blend() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some("correlated_callee_contributions.fz".to_string()),
+            r#"
+fn sink(n, a, b), do: if n == 0, do: 0, else: sink(n - 1, a, b)
+fn relay(n, a, b), do: if n == 0, do: sink(n, a, b), else: relay(n - 1, a, b)
+fn main(), do: {relay(0, [1], [:left]), relay(0, [:right], [2])}
+"#
+            .to_string(),
+        );
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        assert!(matches!(
+            ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+
+        let int = world.types_mut().int();
+        let left = world.types_mut().atom_lit("left");
+        let right = world.types_mut().atom_lit("right");
+        let ints = world.types_mut().non_empty_list(int);
+        let lefts = world.types_mut().non_empty_list(left);
+        let rights = world.types_mut().non_empty_list(right);
+        let rows = [vec![int, ints, lefts], vec![int, rights, ints]];
+        let relay = world.reference_function(ModuleId::GLOBAL, "relay", 3);
+        let sink = world.reference_function(ModuleId::GLOBAL, "sink", 3);
+        let relay_activation = world.activation_key(root, relay, &rows[0]);
+        let sink_activation = world.activation_key(root, sink, &rows[0]);
+        assert_eq!(relay_activation, world.activation_key(root, relay, &rows[1]));
+        assert_eq!(sink_activation, world.activation_key(root, sink, &rows[1]));
+
+        let effects = analyze_activation(&mut world, &tel, &relay_activation)
+            .expect("the real relay analysis should conclude with both correlated rows");
+        let sink_rows = effects
+            .activation_input_contributions
+            .iter()
+            .filter(|(key, _)| key == &sink_activation)
+            .map(|(_, inputs)| inputs.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sink_rows.len(),
+            rows.len(),
+            "a shared callee key must receive only the two walked rows, never their column-wise blend: {sink_rows:?}"
+        );
+        for row in &rows {
+            assert!(sink_rows.contains(row), "every real caller row must survive coalescing");
+        }
+        world.complete_job(Job::AnalyzeActivation(relay_activation), effects);
+        let published = world
+            .activation_input_alternatives(&sink_activation)
+            .expect("the conclusion should publish the callee's real evidence");
+        assert_eq!(published.rows().len(), rows.len());
+        for row in &rows {
+            assert!(published.rows().iter().any(|published| published.columns() == row));
+        }
+    }
 
     #[test]
     fn analyze_activation_emits_each_exact_callee_input_once_per_publisher() {

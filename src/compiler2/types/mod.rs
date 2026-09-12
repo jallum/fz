@@ -2031,7 +2031,12 @@ impl Types {
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::AsTyped);
+        let descr = runtime_envelope(
+            self,
+            ty,
+            RuntimeEnvelopePolarity::Positive,
+            RuntimeEnvelopePurpose::Projection,
+        );
         self.intern(descr)
     }
 
@@ -2062,7 +2067,12 @@ impl Types {
     /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
     /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::Identity);
+        let descr = runtime_envelope(
+            self,
+            ty,
+            RuntimeEnvelopePolarity::Positive,
+            RuntimeEnvelopePurpose::Predicate,
+        );
         self.intern(descr)
     }
 
@@ -3182,19 +3192,23 @@ impl RuntimeEnvelopePolarity {
     }
 }
 
-/// Whether the envelope keeps a callable's typing or reduces it to the one
-/// thing a runtime value tells about itself.
+/// The semantic evidence needed by a projection, or the observable surface
+/// from which a runtime type predicate is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CallableReading {
-    /// Leave the function axis as the lattice typed it.
-    AsTyped,
-    /// Reduce it to the CONSTRUCTION -- the literal's identity together with
-    /// its capture types, each capture reduced by this same reading -- and drop
-    /// the arrow, at every depth.
-    Identity,
+enum RuntimeEnvelopePurpose {
+    /// Preserve callable typing and recursively projectable record fields.
+    Projection,
+    /// Observe callable construction and struct identity, erasing arrows and
+    /// positive struct fields that a type predicate cannot inspect.
+    Predicate,
 }
 
-fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Descr {
+fn runtime_envelope(
+    types: &mut Types,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+    purpose: RuntimeEnvelopePurpose,
+) -> Descr {
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
@@ -3207,7 +3221,7 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
     // widens each capture by this same reading, so it names at least the
     // callables the clause it replaces named -- the direction a test must err
     // in, and the opposite of the direction a subtracted region may.
-    if callables == CallableReading::Identity
+    if purpose == RuntimeEnvelopePurpose::Predicate
         && polarity == RuntimeEnvelopePolarity::Positive
         && !descr.funcs.is_empty()
     {
@@ -3216,22 +3230,22 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
     descr.tuples = descr
         .tuples
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_tuple_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_tuple_sig))
         .collect();
     descr.lists = descr
         .lists
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_list_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_list_sig))
         .collect();
     descr.resources = descr
         .resources
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_resource_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_resource_sig))
         .collect();
     descr.maps = descr
         .maps
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_map_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, purpose, runtime_map_sig))
         .collect();
     descr
 }
@@ -3274,7 +3288,7 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                         types,
                         *capture,
                         RuntimeEnvelopePolarity::Positive,
-                        CallableReading::Identity,
+                        RuntimeEnvelopePurpose::Predicate,
                     )
                 })
                 .collect();
@@ -3293,8 +3307,13 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
     clauses
 }
 
-fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity, callables);
+fn runtime_envelope_ty(
+    types: &mut Types,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+    purpose: RuntimeEnvelopePurpose,
+) -> Ty {
+    let descr = runtime_envelope(types, ty, polarity, purpose);
     types.intern(descr)
 }
 
@@ -3302,17 +3321,17 @@ fn runtime_structural_conj<T>(
     types: &mut Types,
     conj: Conj<T>,
     polarity: RuntimeEnvelopePolarity,
-    callables: CallableReading,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, CallableReading) -> Option<T>,
+    purpose: RuntimeEnvelopePurpose,
+    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose) -> Option<T>,
 ) -> Option<Conj<T>> {
     let mut pos = Vec::with_capacity(conj.pos.len());
     for sig in conj.pos {
-        pos.push(transform(types, sig, polarity, callables)?);
+        pos.push(transform(types, sig, polarity, purpose)?);
     }
     let neg = conj
         .neg
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped(), callables))
+        .filter_map(|sig| transform(types, sig, polarity.flipped(), purpose))
         .collect();
     Some(Conj { pos, neg })
 }
@@ -3321,12 +3340,12 @@ fn runtime_tuple_sig(
     types: &mut Types,
     sig: TupleSig,
     polarity: RuntimeEnvelopePolarity,
-    callables: CallableReading,
+    purpose: RuntimeEnvelopePurpose,
 ) -> Option<TupleSig> {
     let elems = sig
         .elems
         .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity, callables))
+        .map(|ty| runtime_envelope_ty(types, ty, polarity, purpose))
         .collect::<Vec<_>>();
     (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
 }
@@ -3335,9 +3354,9 @@ fn runtime_list_sig(
     types: &mut Types,
     sig: ListSig,
     polarity: RuntimeEnvelopePolarity,
-    callables: CallableReading,
+    purpose: RuntimeEnvelopePurpose,
 ) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, callables));
+    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, purpose));
     match elem {
         Some(elem) if types.is_empty(&elem) && !sig.empty => None,
         Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
@@ -3349,9 +3368,9 @@ fn runtime_resource_sig(
     types: &mut Types,
     sig: ResourceSig,
     polarity: RuntimeEnvelopePolarity,
-    callables: CallableReading,
+    purpose: RuntimeEnvelopePurpose,
 ) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity, callables);
+    let payload = runtime_envelope_ty(types, sig.payload, polarity, purpose);
     (!types.is_empty(&payload)).then_some(ResourceSig { payload })
 }
 
@@ -3359,32 +3378,35 @@ fn runtime_map_sig(
     types: &mut Types,
     sig: sigs::MapSig,
     polarity: RuntimeEnvelopePolarity,
-    callables: CallableReading,
+    purpose: RuntimeEnvelopePurpose,
 ) -> Option<sigs::MapSig> {
-    match (&sig.tag, polarity) {
+    match (purpose, &sig.tag, polarity) {
         // A struct question observes the schema tag; its field layout is owned
         // by the settled schema and lowered operation, not the question.
-        (MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => Some(sigs::MapSig {
-            tag: sig.tag,
-            fields: BTreeMap::new(),
-        }),
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => {
+            Some(sigs::MapSig {
+                tag: sig.tag,
+                fields: BTreeMap::new(),
+            })
+        }
         // A shaped struct negative cannot be tested exactly. Dropping it
         // widens in the safe direction; a fieldless negative names the whole
         // family.
-        (MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) if sig.fields.is_empty() => Some(sig),
-        (MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
-        // Plain-map fields remain static projection evidence for map patterns,
-        // even though the runtime kind predicate itself is content-blind.
-        (MapTag::Plain, _) => {
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative)
+            if sig.fields.is_empty() =>
+        {
+            Some(sig)
+        }
+        (RuntimeEnvelopePurpose::Predicate, MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
+        // Semantic projection retains both record families' field evidence.
+        // Plain maps also retain it in the runtime test surface.
+        _ => {
             let fields = sig
                 .fields
                 .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, callables)))
+                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, purpose)))
                 .collect::<BTreeMap<_, _>>();
-            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig {
-                tag: MapTag::Plain,
-                fields,
-            })
+            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { tag: sig.tag, fields })
         }
     }
 }

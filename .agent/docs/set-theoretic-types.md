@@ -120,10 +120,11 @@ descriptors, recursively, which terminates because a descriptor can only name
 `Ty`s interned before it. It is injective — ties happen only between identical
 clauses — because the interner is keyed by `Descr`, so distinct ids have
 distinct structure; a comparator that could tie two DIFFERENT clauses would hand
-the survivor back to arrival order. Closure literals order by the owner's stable
-`Module.name/arity` label (`Types::name_callable`, filled in by `World` as it
-mints each function id) and structural address vars by their `AddrStep` path,
-never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
+the survivor back to arrival order. Closure literals order by an owner-registered
+shared denotation (`Types::define_callable_origin`): typed module/name/arity for a
+named function, or recursive owner plus structural occurrence for a generated
+one. The displayed label is only a projection. Structural address vars order by
+their `AddrStep` path, never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
 deliberate: a tie broken by two FREE type vars falls back to mint order, and
 intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
 order) is a second dimension this pass does not touch.
@@ -398,6 +399,15 @@ families, while `map_top` contains only plain maps. Runtime test envelopes deriv
 the observable schema-tag question by clearing positive field constraints;
 positional tuple storage is derived later from the settled schema, never unioned
 into the semantic type. Unknown or ambiguous field projection stays `any`.
+
+The two runtime envelopes preserve different evidence through the same
+polarity-aware structural walk. `runtime_envelope` prepares semantic projection:
+it retains tagged-record fields and recursively widens unresolved field types,
+while preserving callable typing. `runtime_type_test_envelope` prepares an
+observable predicate: it keeps a struct's tag and a callable's construction
+identity, erasing positive struct fields and callable arrows. A shaped negative
+struct remains conservative on that predicate surface because a schema-only
+test cannot reject just the excluded field values.
 
 ## Proof gates
 
