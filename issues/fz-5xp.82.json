@@ -13,9 +13,15 @@
   "id": "fz-5xp.82",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Research found that zip/1 is not pure list work: its result tuple arity is the runtime number of input enumerables, but fz has no dynamic tuple constructor. fz-5xp.109 now owns that prerequisite and blocks this ticket. The oracle fixture is red first for the library surface; work on the remaining functions can continue locally, but .82 cannot close until .109 lands.",
+      "timestamp": "2026-09-12T14:46:41Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Enum: complete the API up to what fz's capabilities allow",
   "type": "task",
-  "updated_at": "2026-09-12T14:46:40Z"
+  "updated_at": "2026-09-12T14:46:41Z"
 }
