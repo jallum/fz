@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-qds"
@@ -9,8 +9,8 @@
   "id": "fz-zwj",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Fixture readiness probes must support multi-digit file descriptors",
   "type": "bug",
-  "updated_at": "2026-09-12T18:37:37Z"
+  "updated_at": "2026-09-12T18:38:42Z"
 }
