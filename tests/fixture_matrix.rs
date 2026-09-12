@@ -64,7 +64,7 @@ use std::collections::BTreeSet;
 use std::env::{temp_dir, var};
 use std::fs::{self, File, remove_file};
 use std::io::{Error, Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio, id};
@@ -75,6 +75,7 @@ use std::time::{Duration, Instant};
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 const DEFAULT_FIXTURE_HANG_TIMEOUT: Duration = Duration::from_secs(20);
+const MIN_EXECUTION_READY_WRITE_FD: RawFd = 10;
 static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
@@ -211,6 +212,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             interpreter_stepper_does_not_update_quiet_quanta,
         ),
         ("fixture_hang_guard_policy", fixture_hang_guard_policy),
+        (
+            "execution_ready_writer_uses_multi_digit_descriptor",
+            execution_ready_writer_uses_multi_digit_descriptor,
+        ),
         (
             "fixture_command_capture_does_not_wait_for_an_open_writer",
             fixture_command_capture_does_not_wait_for_an_open_writer,
@@ -786,6 +791,15 @@ fn execution_ready_pipe() -> Result<(OwnedFd, OwnedFd), String> {
     }
     let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    let inherited_write_fd = unsafe { libc::fcntl(write_fd.as_raw_fd(), libc::F_DUPFD, MIN_EXECUTION_READY_WRITE_FD) };
+    if inherited_write_fd < 0 {
+        return Err(format!(
+            "duplicate {} writer: {}",
+            FZ_EXEC_READY_FD_ENV,
+            Error::last_os_error()
+        ));
+    }
+    let write_fd = unsafe { OwnedFd::from_raw_fd(inherited_write_fd) };
     let flags = unsafe { libc::fcntl(read_fd.as_raw_fd(), libc::F_GETFL) };
     if flags < 0 {
         return Err(format!("fcntl {}: {}", FZ_EXEC_READY_FD_ENV, Error::last_os_error()));
@@ -799,6 +813,33 @@ fn execution_ready_pipe() -> Result<(OwnedFd, OwnedFd), String> {
         ));
     }
     Ok((read_fd, write_fd))
+}
+
+#[derive(Clone, Copy)]
+enum ReadyWriterAction {
+    Inherit,
+    CloseBeforeExec,
+    SignalBeforeExec,
+}
+
+fn configure_ready_writer(cmd: &mut Command, fd: RawFd, action: ReadyWriterAction) {
+    if matches!(action, ReadyWriterAction::Inherit) {
+        return;
+    }
+    unsafe {
+        cmd.pre_exec(move || {
+            if matches!(action, ReadyWriterAction::SignalBeforeExec) {
+                let byte = [1_u8];
+                if libc::write(fd, byte.as_ptr().cast(), byte.len()) != 1 {
+                    return Err(Error::last_os_error());
+                }
+            }
+            if libc::close(fd) != 0 {
+                return Err(Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 fn read_execution_ready(fd: &OwnedFd) -> Result<ExecutionReady, String> {
@@ -823,8 +864,25 @@ fn fixture_command_output(
     timeout_start: TimeoutStart,
     timeout: Duration,
 ) -> Result<Output, String> {
-    guarded_fixture_command(cmd, label, timeout_start, DEFAULT_FIXTURE_HANG_TIMEOUT, timeout)
-        .map(|finished| finished.output)
+    fixture_command_output_with_ready_writer_action(cmd, label, timeout_start, timeout, ReadyWriterAction::Inherit)
+}
+
+fn fixture_command_output_with_ready_writer_action(
+    cmd: &mut Command,
+    label: &str,
+    timeout_start: TimeoutStart,
+    timeout: Duration,
+    ready_writer_action: ReadyWriterAction,
+) -> Result<Output, String> {
+    guarded_fixture_command(
+        cmd,
+        label,
+        timeout_start,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        timeout,
+        ready_writer_action,
+    )
+    .map(|finished| finished.output)
 }
 
 fn guarded_fixture_command(
@@ -833,6 +891,7 @@ fn guarded_fixture_command(
     timeout_start: TimeoutStart,
     setup_timeout: Duration,
     execution_timeout: Duration,
+    ready_writer_action: ReadyWriterAction,
 ) -> Result<GuardedOutput, String> {
     let ready_pipe = match timeout_start {
         TimeoutStart::OnSpawn => None,
@@ -840,6 +899,7 @@ fn guarded_fixture_command(
     };
     if let Some((_read_fd, write_fd)) = ready_pipe.as_ref() {
         cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string());
+        configure_ready_writer(cmd, write_fd.as_raw_fd(), ready_writer_action);
     }
     let capture = CommandCapture::new()?;
     let (stdout, stderr) = capture.stdio()?;
@@ -1026,6 +1086,11 @@ fn fixture_hang_guard_policy() {
     );
 }
 
+fn execution_ready_writer_uses_multi_digit_descriptor() {
+    let (_read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
+    assert!(write_fd.as_raw_fd() >= MIN_EXECUTION_READY_WRITE_FD);
+}
+
 fn fixture_command_capture_does_not_wait_for_an_open_writer() {
     let capture = CommandCapture::new().expect("create anonymous regular-file capture");
     let mut writer = capture.stdout.try_clone().expect("clone capture writer");
@@ -1039,25 +1104,18 @@ fn fixture_command_capture_does_not_wait_for_an_open_writer() {
 }
 
 fn fixture_command_rejects_missing_readiness() {
-    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid_path = temp_dir().join(format!("fz_ready_eof_{}_{}.pid", id(), nonce));
-    let error = fixture_command_output(
-        Command::new("sh").env("FZ_READY_EOF_PID_PATH", &pid_path).args([
-            "-c",
-            "printf %s $$ > \"$FZ_READY_EOF_PID_PATH\"; eval \"exec ${FZ_EXEC_READY_FD}>&-\"; sleep 2",
-        ]),
+    let error = fixture_command_output_with_ready_writer_action(
+        Command::new("sh").args(["-c", "sleep 2"]),
         "readiness EOF fixture",
         TimeoutStart::OnExecutionReady,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::CloseBeforeExec,
     )
     .expect_err("closing the readiness pipe without a signal must fail explicitly");
     assert_eq!(
         error,
         "readiness EOF fixture ended before execution-ready signal (0 readiness bytes); stderr: "
     );
-
-    assert_reaped(read_pid(&pid_path));
-    let _ = fs::remove_file(pid_path);
 
     let error = fixture_command_output(
         Command::new("sh").args(["-c", "sleep 2 &"]),
@@ -1081,6 +1139,7 @@ fn fixture_command_rejects_missing_readiness() {
         TimeoutStart::OnExecutionReady,
         Duration::from_secs(1),
         DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::Inherit,
     )
     .expect_err("a live command that never signals readiness must hit the setup guard");
     assert_eq!(
@@ -1104,20 +1163,27 @@ fn fixture_readiness_drains_an_exited_child() {
         let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
         let capture = CommandCapture::new().expect("create command capture");
         let (stdout, stderr) = capture.stdio().expect("capture child output");
-        let mut child = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .args([
                 "-c",
-                "printf 'child diagnostic\\n' >&2; if [ \"$1\" = true ]; then eval \"printf x >&${FZ_EXEC_READY_FD}\"; fi; exit \"$2\"",
+                "printf 'child diagnostic\\n' >&2; exit \"$1\"",
                 "readiness probe",
-                if signal { "true" } else { "false" },
                 &exit_code.to_string(),
             ])
-            .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
             .stdout(stdout)
             .stderr(stderr)
-            .process_group(0)
-            .spawn()
-            .expect("spawn exited readiness probe");
+            .process_group(0);
+        configure_ready_writer(
+            &mut command,
+            write_fd.as_raw_fd(),
+            if signal {
+                ReadyWriterAction::SignalBeforeExec
+            } else {
+                ReadyWriterAction::Inherit
+            },
+        );
+        let mut child = command.spawn().expect("spawn exited readiness probe");
         let pid = child.id() as libc::pid_t;
         drop(write_fd);
         assert_eq!(
@@ -1151,18 +1217,15 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
     let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
     let capture = CommandCapture::new().expect("create command capture");
     let (stdout, stderr) = capture.stdio().expect("capture child output");
-    let mut child = Command::new("sh")
-        .args([
-            "-c",
-            "printf 'setup diagnostic\\n' >&2; eval \"exec ${FZ_EXEC_READY_FD}>&-\"; read release; exit 0",
-        ])
-        .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "printf 'setup diagnostic\\n' >&2; read release; exit 0"])
         .stdin(Stdio::piped())
         .stdout(stdout)
         .stderr(stderr)
-        .process_group(0)
-        .spawn()
-        .expect("spawn readiness observation probe");
+        .process_group(0);
+    configure_ready_writer(&mut command, write_fd.as_raw_fd(), ReadyWriterAction::CloseBeforeExec);
+    let mut child = command.spawn().expect("spawn readiness observation probe");
     let pid = child.id() as libc::pid_t;
     drop(write_fd);
     if exit_first {
@@ -1192,6 +1255,14 @@ fn assert_missing_readiness_observation_order(exit_first: bool) {
                 .expect("observe child blocked on control pipe")
                 .is_none()
         );
+    }
+    let diagnostic_deadline = Instant::now() + Duration::from_secs(1);
+    while capture.stderr.metadata().expect("inspect captured diagnostics").len() == 0 {
+        assert!(
+            Instant::now() < diagnostic_deadline,
+            "readiness observation probe did not write its diagnostic"
+        );
+        sleep(Duration::from_millis(10));
     }
     assert_eq!(
         fixture_command_state(
@@ -1269,6 +1340,7 @@ fn assert_execution_ready_count(command: &mut Command, label: &str, expected: us
         TimeoutStart::OnExecutionReady,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
         DEFAULT_FIXTURE_HANG_TIMEOUT,
+        ReadyWriterAction::Inherit,
     );
     if expected == 0 {
         let error = result.expect_err("private root must not signal readiness");

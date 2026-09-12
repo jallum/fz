@@ -148,6 +148,9 @@ once after discovery, before it starts its per-test child processes. Closing
 the readiness pipe, exiting, or holding it open past the setup guard without
 that signal is a harness failure; the runner terminates the command group and
 reports the missing boundary.
+The readiness descriptor is opaque: commands that need to control it must use
+descriptor syscalls rather than shell redirection grammar, which does not cover
+every valid descriptor number.
 
 `FixtureCommandState` owns the readiness verdict: zero bytes plus either pipe
 EOF or leader exit is `MissingExecutionReady`. Both observations produce
