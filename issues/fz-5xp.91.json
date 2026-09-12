@@ -16,11 +16,15 @@
     {
       "text": "Draft PR: https://github.com/jallum/fz/pull/136 (stacked on #135).",
       "timestamp": "2026-09-11T21:54:56Z"
+    },
+    {
+      "text": "Remote CI is green: lint and the coverage-backed test job passed on draft PR #136.",
+      "timestamp": "2026-09-12T12:50:30Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] String.contains?/2 and split/2 disagree with Elixir on an empty pattern",
   "type": "task",
-  "updated_at": "2026-09-11T21:54:56Z"
+  "updated_at": "2026-09-12T12:50:30Z"
 }
