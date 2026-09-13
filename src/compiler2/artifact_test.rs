@@ -308,7 +308,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         variadic: true,
         ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::I64),
         abi: ExternAbi::C,
-        runtime_binding: None,
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {
@@ -500,7 +499,6 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         variadic: false,
         ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::I64),
         abi: ExternAbi::C,
-        runtime_binding: None,
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {

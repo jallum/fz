@@ -72,7 +72,7 @@ and SchemaRegistry. `NumericMode` selects the semantic question:
   * `Strict` is STRUCTURAL IDENTITY: `===`, a pinned match, a map key,
     `Enum.member?/2`, `--`, and every kind of pattern matching. `1` and `1.0`
     are different values, as are the two signed floating zeros. Entry points `fz_value_eq_ref`, `interp_value_eq`,
-    and IR `BinOp::Identical`/`NotIdentical`.
+    and IR `BinOp::Identical`.
 
 The IR ops are the load-bearing part. One `BinOp::Eq` used to serve both, with
 the question decided by a `widen_numerics` boolean that each lowering CALL SITE
@@ -110,12 +110,11 @@ catches as a latent miscompile (fz-5xp.64).
 
 **Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
 real C functions, while `src/extern_contract.rs` owns their exact physical
-contracts and the resolved comparison capability. A source declaration must
-first resolve to that exact ABI, parameter list, and return shape; only the
-bootstrap comparison declaration carries the capability into native lowering.
-Neither interpreter nor native code discovers behavior from a symbol spelling
-or suffix. The interpreter calls the real export through the ordinary FFI path,
-and arithmetic exports remain ordinary calls in native code too.
+contracts. A source declaration must resolve to that exact ABI, parameter list,
+and return shape. Neither interpreter nor native code discovers behavior from a
+symbol spelling or suffix. The interpreter calls the real export through the
+ordinary FFI path, and both arithmetic and comparison exports remain ordinary
+calls in native code too.
 
 Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
 The runtime returns initialized values and a canonical status word; Kernel's

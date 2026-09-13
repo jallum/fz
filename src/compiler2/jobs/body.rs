@@ -1609,15 +1609,13 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         )
         .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
         let symbol = extern_symbol_from_name(&self.surface.name);
-        let runtime_binding = validate_runtime_symbol_shape(symbol, abi, &params, ret)
-            .map_err(|message| self.extern_abi_error(message))?;
+        validate_runtime_symbol_shape(symbol, abi, &params, ret).map_err(|message| self.extern_abi_error(message))?;
         Ok(LoweredExtern {
             abi,
             symbol: symbol.to_string(),
             params,
             variadic: self.surface.variadic,
             ret,
-            runtime_binding: self.declared_by_runtime_library().then_some(runtime_binding).flatten(),
             return_ty: semantic_contract.result,
             semantic_contract,
         })

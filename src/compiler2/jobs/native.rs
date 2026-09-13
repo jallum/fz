@@ -146,7 +146,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 variadic: signature.variadic,
                 ret: signature.ret,
                 abi: signature.abi,
-                runtime_binding: signature.runtime_binding,
             });
         }
 

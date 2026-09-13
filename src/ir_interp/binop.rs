@@ -38,7 +38,6 @@ pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue
         BinOp::Eq => Ok(interp_bool_value(interp_operator_eq(proc, a, b)?)),
         BinOp::Neq => Ok(interp_bool_value(!interp_operator_eq(proc, a, b)?)),
         BinOp::Identical => Ok(interp_bool_value(interp_value_eq(proc, a, b)?)),
-        BinOp::NotIdentical => Ok(interp_bool_value(!interp_value_eq(proc, a, b)?)),
         BinOp::Lt => float_cmp!(<),
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),

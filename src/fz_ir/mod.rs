@@ -384,8 +384,6 @@ pub struct ExternDecl {
     pub variadic: bool,
     pub ret: ExternReturn,
     pub abi: ExternAbi,
-    /// Validated physical runtime capability, carried from source resolution.
-    pub runtime_binding: Option<crate::extern_contract::RuntimeNativeBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -419,7 +417,6 @@ pub enum BinOp {
     /// caller -- so a guard, which reached the matching lowering, answered
     /// `same?(1, 1.0)` as `:different` where Elixir says `:equal` (fz-5xp.24).
     Identical,
-    NotIdentical,
     Lt,
     Le,
     Gt,
@@ -1241,7 +1238,6 @@ impl fmt::Display for BinOp {
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
             BinOp::Identical => "===",
-            BinOp::NotIdentical => "!==",
             BinOp::Lt => "<",
             BinOp::Le => "<=",
             BinOp::Gt => ">",

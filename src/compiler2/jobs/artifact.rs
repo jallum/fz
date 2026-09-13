@@ -2007,7 +2007,6 @@ mod tests {
                 params: Vec::new(),
                 variadic: false,
                 ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
-                runtime_binding: None,
                 return_ty: nil,
                 semantic_contract: ResolvedSpecDecl {
                     params: Vec::new(),

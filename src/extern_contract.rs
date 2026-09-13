@@ -43,49 +43,6 @@ pub struct RuntimeSymbol {
 pub struct RuntimePhysicalContract {
     pub params: &'static [ExternTy],
     pub ret: ExternReturn,
-    pub native_binding: Option<RuntimeNativeBinding>,
-}
-
-/// A native replacement is an optimization capability granted only after the
-/// source declaration has resolved to this exact physical runtime contract.
-/// It is intentionally data from the runtime inventory, never parsed from a
-/// source spelling or linker symbol at the codegen site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeNativeBinding {
-    Comparison(RuntimeComparison),
-}
-
-/// The comparison operation a validated runtime export may lower directly.
-///
-/// These are intentionally separate from `BinOp`: the variant preserves the
-/// runtime export's physical lane contract, so native lowering never infers an
-/// operation from a linker name or a suffix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeComparison {
-    Eq,
-    Neq,
-    Identical,
-    NotIdentical,
-    LtII,
-    LtFF,
-    LtIF,
-    LtFI,
-    LtBB,
-    LeII,
-    LeFF,
-    LeIF,
-    LeFI,
-    LeBB,
-    GtII,
-    GtFF,
-    GtIF,
-    GtFI,
-    GtBB,
-    GeII,
-    GeFF,
-    GeIF,
-    GeFI,
-    GeBB,
 }
 
 impl RuntimeSymbol {
@@ -97,21 +54,11 @@ impl RuntimeSymbol {
         }
     }
 
-    const fn physical(
-        name: &'static str,
-        abi: ExternAbi,
-        params: &'static [ExternTy],
-        ret: ExternReturn,
-        native_binding: Option<RuntimeNativeBinding>,
-    ) -> Self {
+    const fn physical(name: &'static str, abi: ExternAbi, params: &'static [ExternTy], ret: ExternReturn) -> Self {
         Self {
             name,
             abi,
-            physical: Some(RuntimePhysicalContract {
-                params,
-                ret,
-                native_binding,
-            }),
+            physical: Some(RuntimePhysicalContract { params, ret }),
         }
     }
 }
@@ -138,24 +85,24 @@ pub const RUNTIME_SYMBOLS: &[RuntimeSymbol] = &[
     // Allocating helpers reach the process heap, so they take the process.
     // These are the `extern "fz"` declarations in the runtime library.
     RuntimeSymbol::abi("fz_atom_to_binary", ExternAbi::Fz),
-    RuntimeSymbol::physical("fz_binary_concat", ExternAbi::Fz, BB, BINARY, None),
-    RuntimeSymbol::physical("fz_dbg_value", ExternAbi::Fz, A, ANY, None),
+    RuntimeSymbol::physical("fz_binary_concat", ExternAbi::Fz, BB, BINARY),
+    RuntimeSymbol::physical("fz_dbg_value", ExternAbi::Fz, A, ANY),
     RuntimeSymbol::abi("fz_float_to_binary", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_integer_to_binary", ExternAbi::Fz),
-    RuntimeSymbol::physical("fz_panic", ExternAbi::Fz, A, NEVER, None),
+    RuntimeSymbol::physical("fz_panic", ExternAbi::Fz, A, NEVER),
     RuntimeSymbol::abi("fz_process_heap_alloc_stats", ExternAbi::Fz),
-    RuntimeSymbol::physical("fz_self", ExternAbi::Fz, &[], WORD, None),
-    RuntimeSymbol::physical("fz_make_resource", ExternAbi::Fz, IA, ANY, None),
-    RuntimeSymbol::physical("fz_spawn", ExternAbi::Fz, A, WORD, None),
-    RuntimeSymbol::physical("fz_send", ExternAbi::Fz, IA, ANY, None),
+    RuntimeSymbol::physical("fz_self", ExternAbi::Fz, &[], WORD),
+    RuntimeSymbol::physical("fz_make_resource", ExternAbi::Fz, IA, ANY),
+    RuntimeSymbol::physical("fz_spawn", ExternAbi::Fz, A, WORD),
+    RuntimeSymbol::physical("fz_send", ExternAbi::Fz, IA, ANY),
     // Plain C symbols the runtime exports for the interpreter to call.
     // fz-5xp.8 — the total term order. Takes the process because atoms order
     // by NAME, and the name table lives on the node.
-    RuntimeSymbol::physical("fz_value_cmp_ref", ExternAbi::Fz, AA, WORD, None),
+    RuntimeSymbol::physical("fz_value_cmp_ref", ExternAbi::Fz, AA, WORD),
     RuntimeSymbol::abi("fz_binary_downcase", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_binary_to_atom", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_binary_upcase", ExternAbi::Fz),
-    RuntimeSymbol::physical("fz_bitstring_byte_size", ExternAbi::C, A, WORD, None),
+    RuntimeSymbol::physical("fz_bitstring_byte_size", ExternAbi::C, A, WORD),
     RuntimeSymbol::abi("fz_bitstring_is_binary", ExternAbi::C),
     RuntimeSymbol::abi("fz_bitstring_valid_utf8", ExternAbi::C),
     RuntimeSymbol::abi("fz_bitstring_utf8_prefix", ExternAbi::C),
@@ -170,202 +117,52 @@ pub const RUNTIME_SYMBOLS: &[RuntimeSymbol] = &[
     RuntimeSymbol::abi("fz_map_entry_key", ExternAbi::C),
     RuntimeSymbol::abi("fz_map_entry_value", ExternAbi::C),
     RuntimeSymbol::abi("fz_resource_test_print_dtor", ExternAbi::C),
-    RuntimeSymbol::physical("fz_make_ref", ExternAbi::C, &[], WORD, None),
-    RuntimeSymbol::physical("fz_op_add_ii", ExternAbi::C, II, INT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_add_if", ExternAbi::C, IF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_add_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_sub_ii", ExternAbi::C, II, INT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_sub_if", ExternAbi::C, IF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_sub_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_sub_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_neg_i", ExternAbi::C, I, INT_RESULT, None),
-    RuntimeSymbol::physical(
-        "fz_op_neg_f",
-        ExternAbi::C,
-        F,
-        ExternReturn::Scalar(ExternTy::F64),
-        None,
-    ),
-    RuntimeSymbol::physical("fz_op_mul_ii", ExternAbi::C, II, INT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_mul_if", ExternAbi::C, IF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_mul_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_div_ii", ExternAbi::C, II, INT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_div_ii_to_float", ExternAbi::C, II, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_div_if", ExternAbi::C, IF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_div_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_div_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_rem_ii", ExternAbi::C, II, INT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_rem_if", ExternAbi::C, IF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_rem_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
-    RuntimeSymbol::physical("fz_op_rem_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
-    RuntimeSymbol::physical(
-        "fz_op_eq",
-        ExternAbi::Fz,
-        AA,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::Eq)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_neq",
-        ExternAbi::Fz,
-        AA,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::Neq)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_identical",
-        ExternAbi::Fz,
-        AA,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::Identical)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_not_identical",
-        ExternAbi::Fz,
-        AA,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::NotIdentical)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lt_ii",
-        ExternAbi::C,
-        II,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lt_ff",
-        ExternAbi::C,
-        FF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lt_if",
-        ExternAbi::C,
-        IF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lt_fi",
-        ExternAbi::C,
-        FI,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lt_bb",
-        ExternAbi::Fz,
-        BB,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtBB)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lte_ii",
-        ExternAbi::C,
-        II,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LeII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lte_ff",
-        ExternAbi::C,
-        FF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LeFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lte_if",
-        ExternAbi::C,
-        IF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LeIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lte_fi",
-        ExternAbi::C,
-        FI,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LeFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_lte_bb",
-        ExternAbi::Fz,
-        BB,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LeBB)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gt_ii",
-        ExternAbi::C,
-        II,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GtII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gt_ff",
-        ExternAbi::C,
-        FF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GtFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gt_if",
-        ExternAbi::C,
-        IF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GtIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gt_fi",
-        ExternAbi::C,
-        FI,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GtFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gt_bb",
-        ExternAbi::Fz,
-        BB,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GtBB)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gte_ii",
-        ExternAbi::C,
-        II,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GeII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gte_ff",
-        ExternAbi::C,
-        FF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GeFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gte_if",
-        ExternAbi::C,
-        IF,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GeIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gte_fi",
-        ExternAbi::C,
-        FI,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GeFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_gte_bb",
-        ExternAbi::Fz,
-        BB,
-        BOOL,
-        Some(RuntimeNativeBinding::Comparison(RuntimeComparison::GeBB)),
-    ),
+    RuntimeSymbol::physical("fz_make_ref", ExternAbi::C, &[], WORD),
+    RuntimeSymbol::physical("fz_op_add_ii", ExternAbi::C, II, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_add_if", ExternAbi::C, IF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_add_ff", ExternAbi::C, FF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_sub_ii", ExternAbi::C, II, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_sub_if", ExternAbi::C, IF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_sub_fi", ExternAbi::C, FI, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_sub_ff", ExternAbi::C, FF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_neg_i", ExternAbi::C, I, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_neg_f", ExternAbi::C, F, ExternReturn::Scalar(ExternTy::F64)),
+    RuntimeSymbol::physical("fz_op_mul_ii", ExternAbi::C, II, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_mul_if", ExternAbi::C, IF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_mul_ff", ExternAbi::C, FF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_div_ii", ExternAbi::C, II, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_div_ii_to_float", ExternAbi::C, II, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_div_if", ExternAbi::C, IF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_div_fi", ExternAbi::C, FI, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_div_ff", ExternAbi::C, FF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_rem_ii", ExternAbi::C, II, INT_RESULT),
+    RuntimeSymbol::physical("fz_op_rem_if", ExternAbi::C, IF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_rem_fi", ExternAbi::C, FI, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_rem_ff", ExternAbi::C, FF, FLOAT_RESULT),
+    RuntimeSymbol::physical("fz_op_eq", ExternAbi::Fz, AA, BOOL),
+    RuntimeSymbol::physical("fz_op_neq", ExternAbi::Fz, AA, BOOL),
+    RuntimeSymbol::physical("fz_op_identical", ExternAbi::Fz, AA, BOOL),
+    RuntimeSymbol::physical("fz_op_not_identical", ExternAbi::Fz, AA, BOOL),
+    RuntimeSymbol::physical("fz_op_lt_ii", ExternAbi::C, II, BOOL),
+    RuntimeSymbol::physical("fz_op_lt_ff", ExternAbi::C, FF, BOOL),
+    RuntimeSymbol::physical("fz_op_lt_if", ExternAbi::C, IF, BOOL),
+    RuntimeSymbol::physical("fz_op_lt_fi", ExternAbi::C, FI, BOOL),
+    RuntimeSymbol::physical("fz_op_lt_bb", ExternAbi::Fz, BB, BOOL),
+    RuntimeSymbol::physical("fz_op_lte_ii", ExternAbi::C, II, BOOL),
+    RuntimeSymbol::physical("fz_op_lte_ff", ExternAbi::C, FF, BOOL),
+    RuntimeSymbol::physical("fz_op_lte_if", ExternAbi::C, IF, BOOL),
+    RuntimeSymbol::physical("fz_op_lte_fi", ExternAbi::C, FI, BOOL),
+    RuntimeSymbol::physical("fz_op_lte_bb", ExternAbi::Fz, BB, BOOL),
+    RuntimeSymbol::physical("fz_op_gt_ii", ExternAbi::C, II, BOOL),
+    RuntimeSymbol::physical("fz_op_gt_ff", ExternAbi::C, FF, BOOL),
+    RuntimeSymbol::physical("fz_op_gt_if", ExternAbi::C, IF, BOOL),
+    RuntimeSymbol::physical("fz_op_gt_fi", ExternAbi::C, FI, BOOL),
+    RuntimeSymbol::physical("fz_op_gt_bb", ExternAbi::Fz, BB, BOOL),
+    RuntimeSymbol::physical("fz_op_gte_ii", ExternAbi::C, II, BOOL),
+    RuntimeSymbol::physical("fz_op_gte_ff", ExternAbi::C, FF, BOOL),
+    RuntimeSymbol::physical("fz_op_gte_if", ExternAbi::C, IF, BOOL),
+    RuntimeSymbol::physical("fz_op_gte_fi", ExternAbi::C, FI, BOOL),
+    RuntimeSymbol::physical("fz_op_gte_bb", ExternAbi::Fz, BB, BOOL),
 ];
 
 pub fn runtime_symbol_abi(symbol: &str) -> Option<ExternAbi> {
@@ -389,12 +186,12 @@ pub fn validate_runtime_symbol_shape(
     abi: ExternAbi,
     params: &[ExternTy],
     ret: ExternReturn,
-) -> Result<Option<RuntimeNativeBinding>, String> {
+) -> Result<(), String> {
     let Some(entry) = RUNTIME_SYMBOLS.iter().find(|entry| entry.name == symbol) else {
-        return Ok(None);
+        return Ok(());
     };
     let Some(physical) = entry.physical else {
-        return Ok(None);
+        return Ok(());
     };
     if entry.abi != abi || physical.params != params || physical.ret != ret {
         return Err(format!(
@@ -402,7 +199,7 @@ pub fn validate_runtime_symbol_shape(
             entry.abi, physical.params, physical.ret, abi, params, ret
         ));
     }
-    Ok(physical.native_binding)
+    Ok(())
 }
 
 /// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
@@ -438,10 +235,7 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ExternAbi, ExternReturn, ExternTy, RuntimeComparison, RuntimeNativeBinding, extern_ty_from_name,
-        validate_runtime_symbol_shape,
-    };
+    use super::{ExternAbi, ExternReturn, ExternTy, extern_ty_from_name, validate_runtime_symbol_shape};
 
     #[test]
     fn boolean_is_the_extern_source_type_name() {
@@ -457,7 +251,7 @@ mod tests {
                 &[ExternTy::I64, ExternTy::I64],
                 ExternReturn::Pair([ExternTy::I64, ExternTy::Bool]),
             ),
-            Ok(None)
+            Ok(())
         );
         assert_eq!(
             validate_runtime_symbol_shape(
@@ -466,7 +260,7 @@ mod tests {
                 &[ExternTy::Binary, ExternTy::Binary],
                 ExternReturn::Scalar(ExternTy::Bool),
             ),
-            Ok(Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtBB)))
+            Ok(())
         );
         assert_eq!(
             validate_runtime_symbol_shape(
@@ -475,7 +269,7 @@ mod tests {
                 &[ExternTy::I64, ExternTy::Any],
                 ExternReturn::Scalar(ExternTy::Any),
             ),
-            Ok(None)
+            Ok(())
         );
         let error =
             validate_runtime_symbol_shape("fz_panic", ExternAbi::Fz, &[], ExternReturn::Scalar(ExternTy::Never))
@@ -495,7 +289,7 @@ mod tests {
             &[ExternTy::Binary, ExternTy::Binary],
             ExternReturn::Scalar(ExternTy::Bool),
         )
-        .expect_err("a bare C binary pointer declaration must not acquire the ref comparison capability");
+        .expect_err("a bare C binary pointer declaration must not pass the ref comparison contract");
         assert!(error.contains("fz_op_lt_bb") && error.contains("extern \"fz\""));
     }
 }

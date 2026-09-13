@@ -2,7 +2,6 @@
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
-use crate::extern_contract::{RuntimeComparison, RuntimeNativeBinding};
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
     Var,
@@ -909,7 +908,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq | BinOp::Identical | BinOp::NotIdentical => {
+                BinOp::Eq | BinOp::Neq | BinOp::Identical => {
                     lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -933,10 +932,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         },
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
-            let arg_vars: Vec<Var> = args.iter().map(|arg| arg.var).collect();
-            if let Some(RuntimeNativeBinding::Comparison(binding)) = decl.runtime_binding {
-                return lower_runtime_comparison(body, t, value_types, var_env, runtime, binding, &arg_vars, dest_var);
-            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,
@@ -1544,9 +1539,9 @@ fn raw_scalar_vs_dynamic(
 /// value_eq_ref for the fully heterogeneous fallback.
 /// The OP says which of the two questions is being asked. `Eq`/`Neq` are the
 /// `==` operator, which compares numbers by value, so `1 == 1.0` is true.
-/// `Identical`/`NotIdentical` are structural identity -- `===`, and what every
-/// kind of matching asks -- for which `1` and `1.0` are different values and
-/// the value-disjointness fold applies.
+/// `Identical` is structural identity -- `===`, and what every kind of matching
+/// asks -- for which `1` and `1.0` are different values and the
+/// value-disjointness fold applies.
 ///
 /// This used to be a `widen_numerics: bool` that each CALL SITE set from what
 /// it knew about its caller, which is how a guard came to ask the matching
@@ -1885,239 +1880,6 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
-/// fz-5xp.18 — the typed comparison lanes carried by a validated runtime
-/// binding. The binding's identity, not a symbol suffix, selects this shape.
-///
-/// Ordering is a partial function: `Kernel` declares a clause for each pair it
-/// can order and no `any`/`any` default, so an unsupported combination has no
-/// matching clause and is refused at compile time rather than answered wrongly
-/// at run time. Equality is total and keeps its structural default.
-///
-/// `ii` and `ff` compare raw lanes directly. `if`/`fi` call the shared exact
-/// numeric comparator without boxing. `bb` asks the runtime for byte order.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CmpOperands {
-    IntInt,
-    FloatFloat,
-    IntFloat,
-    FloatInt,
-    BinaryBinary,
-}
-
-fn lower_runtime_comparison<M: cranelift_module::Module, T: Types<Ty = Ty>>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    binding: RuntimeComparison,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let [left, right] = args else {
-        return Err(CodegenError::new("validated runtime comparison has the wrong arity"));
-    };
-    match binding {
-        RuntimeComparison::Eq => lower_eq_binop(
-            body,
-            t,
-            value_types,
-            var_env,
-            runtime,
-            BinOp::Eq,
-            *left,
-            *right,
-            dest_var,
-        ),
-        RuntimeComparison::Neq => lower_eq_binop(
-            body,
-            t,
-            value_types,
-            var_env,
-            runtime,
-            BinOp::Neq,
-            *left,
-            *right,
-            dest_var,
-        ),
-        RuntimeComparison::Identical => lower_eq_binop(
-            body,
-            t,
-            value_types,
-            var_env,
-            runtime,
-            BinOp::Identical,
-            *left,
-            *right,
-            dest_var,
-        ),
-        RuntimeComparison::NotIdentical => lower_eq_binop(
-            body,
-            t,
-            value_types,
-            var_env,
-            runtime,
-            BinOp::NotIdentical,
-            *left,
-            *right,
-            dest_var,
-        ),
-        RuntimeComparison::LtII => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::IntInt, args, dest_var)
-        }
-        RuntimeComparison::LtFF => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Lt,
-            CmpOperands::FloatFloat,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::LtIF => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::IntFloat, args, dest_var)
-        }
-        RuntimeComparison::LtFI => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::FloatInt, args, dest_var)
-        }
-        RuntimeComparison::LtBB => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Lt,
-            CmpOperands::BinaryBinary,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::LeII => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::IntInt, args, dest_var)
-        }
-        RuntimeComparison::LeFF => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Le,
-            CmpOperands::FloatFloat,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::LeIF => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::IntFloat, args, dest_var)
-        }
-        RuntimeComparison::LeFI => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::FloatInt, args, dest_var)
-        }
-        RuntimeComparison::LeBB => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Le,
-            CmpOperands::BinaryBinary,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::GtII => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::IntInt, args, dest_var)
-        }
-        RuntimeComparison::GtFF => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Gt,
-            CmpOperands::FloatFloat,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::GtIF => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::IntFloat, args, dest_var)
-        }
-        RuntimeComparison::GtFI => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::FloatInt, args, dest_var)
-        }
-        RuntimeComparison::GtBB => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Gt,
-            CmpOperands::BinaryBinary,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::GeII => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::IntInt, args, dest_var)
-        }
-        RuntimeComparison::GeFF => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Ge,
-            CmpOperands::FloatFloat,
-            args,
-            dest_var,
-        ),
-        RuntimeComparison::GeIF => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::IntFloat, args, dest_var)
-        }
-        RuntimeComparison::GeFI => {
-            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::FloatInt, args, dest_var)
-        }
-        RuntimeComparison::GeBB => lower_typed_cmp(
-            body,
-            var_env,
-            runtime,
-            BinOp::Ge,
-            CmpOperands::BinaryBinary,
-            args,
-            dest_var,
-        ),
-    }
-}
-
-fn lower_typed_cmp<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    op: BinOp,
-    kinds: CmpOperands,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let cmp = match kinds {
-        CmpOperands::IntInt => {
-            let icc = int_cc_for(op)?;
-            let left = body.as_raw_i64(var_env, args[0].0);
-            let right = body.as_raw_i64(var_env, args[1].0);
-            body.b.ins().icmp(icc, left, right)
-        }
-        CmpOperands::FloatFloat => {
-            let fcc = float_cc_for(op)?;
-            let left = body.as_raw_f64(var_env, args[0].0);
-            let right = body.as_raw_f64(var_env, args[1].0);
-            body.b.ins().fcmp(fcc, left, right)
-        }
-        CmpOperands::IntFloat | CmpOperands::FloatInt => {
-            let ordering =
-                emit_mixed_numeric_cmp(body, var_env, runtime, args[0], args[1], kinds == CmpOperands::IntFloat);
-            body.b.ins().icmp_imm(int_cc_for(op)?, ordering, 0)
-        }
-        CmpOperands::BinaryBinary => {
-            let icc = int_cc_for(op)?;
-            let left = body.tagged_var(var_env, args[0].0);
-            let right = body.tagged_var(var_env, args[1].0);
-            let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
-            let process = body.process_arg();
-            let call = body.b.ins().call(cmp_ref, &[process, left, right]);
-            let ordering = body.b.inst_results(call)[0];
-            let zero = body.b.ins().iconst(types::I64, 0);
-            body.b.ins().icmp(icc, ordering, zero)
-        }
-    };
-    if body.cache.if_only_conds.contains(&dest_var.0) {
-        return Ok(LowerOut::Condition(cmp));
-    }
-    Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
-}
-
 fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -2139,30 +1901,6 @@ fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
     } else {
         body.b.ins().ineg(ordering)
     }
-}
-
-fn int_cc_for(op: BinOp) -> Result<IntCC, CodegenError> {
-    Ok(match op {
-        BinOp::Eq => IntCC::Equal,
-        BinOp::Neq => IntCC::NotEqual,
-        BinOp::Lt => IntCC::SignedLessThan,
-        BinOp::Le => IntCC::SignedLessThanOrEqual,
-        BinOp::Gt => IntCC::SignedGreaterThan,
-        BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
-        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-    })
-}
-
-fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
-    Ok(match op {
-        BinOp::Eq => FloatCC::Equal,
-        BinOp::Neq => FloatCC::NotEqual,
-        BinOp::Lt => FloatCC::LessThan,
-        BinOp::Le => FloatCC::LessThanOrEqual,
-        BinOp::Gt => FloatCC::GreaterThan,
-        BinOp::Ge => FloatCC::GreaterThanOrEqual,
-        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-    })
 }
 
 /// Generic extern fallback: marshals each arg per its declared `ExternTy`,

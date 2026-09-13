@@ -10,8 +10,7 @@ The pieces:
 
 - `ExternDecl` (`src/fz_ir/mod.rs`) — the static shape of one door: the
   `symbol`, fixed `params` wire types, a `variadic` flag, the structural
-  `ExternReturn`, the `abi`, and (for an exact validated comparison export) an
-  optional native comparison capability.
+  `ExternReturn`, and the `abi`.
 - `ExternAbi` (`src/fz_ir/mod.rs`) — `C` or `Fz` (below).
 - `ExternTy` — the C wire alphabet (below).
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param) or
@@ -71,9 +70,9 @@ does for an AOT binary's own link line. Without it a linker drops a
 `#[unsafe(no_mangle)]` runtime function that no Rust code calls — compiled fz
 code names it by symbol, not by Rust path — and it is then not in the process
 for `dlsym` to find. With it, `fz_extern_symbol_addr` finds fz's own exports
-the same way it finds `sqrt`. Native code may replace an exact comparison call,
-but the arithmetic exports stay reachable for interpreter execution, JIT
-resolution, and AOT linking. Not exporting by default is what made
+the same way it finds `sqrt`. The arithmetic and comparison exports stay
+reachable for interpreter execution, JIT resolution, and AOT linking. Not
+exporting by default is what made
 `fz_bitstring_is_binary` resolve on macOS and die on Linux with
 `can't resolve symbol` while the whole six-target local gate was green
 (fz-5xp.58).
@@ -117,6 +116,21 @@ today is in the C standard library.
 
 A symbol that resolves only on the development platform is the recurring shape
 here — see the JIT symbol table above.
+
+## Comparison exports are ordinary calls
+
+`<`, `<=`, `>`, `>=`, `==`, `!=`, `===` and `!==` are ordinary `Kernel`
+functions. Each ordering has one typed clause per operand pair it can order —
+integer/integer, float/float, integer/float, float/integer, binary/binary —
+whose body calls the matching `fz_op_*` extern declaration; `==` and its
+siblings have one `any`/`any` clause each calling `fz_op_eq`, `fz_op_neq`,
+`fz_op_identical` or `fz_op_not_identical`.
+
+Every one of those declarations crosses its door the same way every other
+declaration does: `lower_extern_generic` on the native doors, the ordinary FFI
+path under the interpreter. Arithmetic already worked this way, and comparison
+now does too — no door recognizes a comparison export by name or replaces the
+call with an instruction.
 
 ## The `fz` ABI is reserved to the runtime library
 

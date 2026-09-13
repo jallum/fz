@@ -80,9 +80,6 @@ pub struct LoweredExtern {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternReturn,
-    /// Granted only to an exact runtime declaration resolved in the bootstrap
-    /// library; native codegen must never infer it from the symbol spelling.
-    pub runtime_binding: Option<crate::extern_contract::RuntimeNativeBinding>,
     pub return_ty: Ty,
     pub semantic_contract: ResolvedSpecDecl<Ty>,
 }

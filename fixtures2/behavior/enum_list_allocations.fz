@@ -37,9 +37,11 @@
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;
-# - native `run` and `build` retain `scalar_box_allocs = 3` for the three
-#   `dbg`'d result scalars; the interpreter retains nine while it materializes
-#   its generic helper dispatch;
+# - every path allocates `scalar_box_allocs = 9`: three for the `dbg`'d result
+#   scalars, and two per `Enum.member?/2` comparison, because a comparison
+#   operator's `fz_op_*` export takes its operands as value refs and an
+#   unboxed integer has to be boxed to cross that door. fz-5xp.20 owns the
+#   general direct-Fz inlining rule that would take those six back;
 # - final list/struct/map heap headline is `400`.
 #
 # This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
