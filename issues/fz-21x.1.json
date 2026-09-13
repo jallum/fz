@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T21:26:28Z",
+  "description": "Delete-only step 1 of the extern door collapse. (a) fz_map_count/fz_map_entry_key/fz_map_entry_value intercepts in ir_interp/extern_call.rs: the generic path marshals Any and I64 identically. (b) Dead rows: fz_matcher_map_get in runtime_import_types (no export, no consumer); fz_dbg_value_ref and fz_list_cons_ref in the JIT registry (no import, no manifest); fz_map_put_atom in the manifest and interp book (no source declaration; its only caller is ir_interp/prim.rs, a direct Rust call). (c) stderr_fault_hook (src/exec/runtime.rs) and aot_fault_hook (runtime/src/aot_shim.rs) are the same function; keep one in the runtime crate. (d) Seven take_callback_error checks in call_lowered_extern become one post-call step. (e) ExternDecl.fz_name has no consumer. (f) sig1 hardcodes CallConv::SystemV; use the module's make_signature like runtime_import_sig_for_module. (g) externs.md names an ExternMarshal::Ascribed variant that does not exist; guides/pattern-matching.html names fz_matcher_map_get, the export is fz_matcher_map_get_ref. Proof: full workspace gate green; no behaviour change.",
+  "id": "fz-21x.1",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Debris sweep: delete interp name intercepts, dead symbol rows, duplicate fault hook, dead fz_name, hardcoded SystemV sig1",
+  "type": "task",
+  "updated_at": "2026-09-13T21:26:28Z"
+}
