@@ -413,9 +413,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             .compile_native_backend(&program, super::native_codegen::JitBackend::new())
             .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let tel = &self.telemetry;
-        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel)
-            .with_module(&program.module)
-            .with_output(self.output.as_ref());
+        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_output(self.output.as_ref());
         let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
         // A fault-halted root must not report success (fz-bdk). The exit

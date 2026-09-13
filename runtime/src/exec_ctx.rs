@@ -2,27 +2,23 @@
 //!
 //! `ExecCtx` is hung off every `Process` (via `Process.ctx`) so that the
 //! per-task FFI fns (BIFs) reach scheduler services, the output context, and
-//! the IR module through an **explicit pointer** rather than thread-local
+//! runtime services through an **explicit pointer** rather than thread-local
 //! singletons. Whichever scheduler owns the `Process` — the JIT `Runtime`, the
 //! interpreter, or the AOT shim — builds one `ExecCtx` and points its
 //! processes' `ctx` at it.
 //!
 //! The runtime crate cannot name the binary's `Runtime`, `Telemetry`, or
-//! `fz_ir::Module` types (the staticlib does not link against the codegen
-//! crate — see `scheduler_hooks`), so the scheduler handle, output context,
-//! and module are type-erased here and re-narrowed by the binary-side
+//! types (the staticlib does not link against the codegen crate — see
+//! `scheduler_hooks`), so the scheduler handle and output context are
+//! type-erased here and re-narrowed by the binary-side
 //! callbacks, the same bridging the hook fn-pointers already do.
 //!
-//! This is the dispatch table that currently lives in the `CURRENT_RUNTIME`,
-//! `CURRENT_TEL`, `CURRENT_MODULE` thread-locals and the per-thread hook
-//! slots — relocated into a per-context value. Per-context, not per-thread, is
-//! what lets two schedulers be live at once on one worker without clobbering
-//! each other.
+//! This dispatch table replaces the old per-thread scheduler-hook slots with a
+//! per-context value. Per-context, not per-thread, is what lets two schedulers
+//! be live at once on one worker without clobbering each other.
 
 use crate::process::Process;
-use crate::scheduler_hooks::{
-    MakeResourceHook, OutputHook, SendHook, SpawnHook, SpawnOptHook, TimerCancelHook, TimerScheduleHook,
-};
+use crate::scheduler_hooks::{FaultHook, OutputHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook};
 use std::ptr::{null, null_mut};
 
 /// The execution-context dispatch table for a running task. See module docs.
@@ -37,14 +33,10 @@ pub struct ExecCtx {
     pub scheduler: *mut (),
     /// Type-erased scheduler-owned context that receives `dbg`/print bytes.
     pub output_context: *const (),
-    /// Type-erased `*const fz_ir::Module` for `make_resource` dtor resolution.
-    pub module: *const (),
-
     pub spawn: Option<SpawnHook>,
-    pub spawn_opt: Option<SpawnOptHook>,
     pub send: Option<SendHook>,
+    pub fault: Option<FaultHook>,
     pub output: Option<OutputHook>,
-    pub make_resource: Option<MakeResourceHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
 }
@@ -56,12 +48,10 @@ impl ExecCtx {
         Self {
             scheduler: null_mut(),
             output_context: null(),
-            module: null(),
             spawn: None,
-            spawn_opt: None,
             send: None,
+            fault: None,
             output: None,
-            make_resource: None,
             timer_schedule: None,
             timer_cancel: None,
         }

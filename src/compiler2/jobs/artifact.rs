@@ -1661,8 +1661,6 @@ fn resolve_auto_variadic_marshal(
 fn local_effects(body: &LoweredBody, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
     match body {
         LoweredBody::Extern { signature } => EffectSummary {
-            reads_allocation_stats: signature.symbol == "fz_process_heap_alloc_stats",
-            scheduler_visible: matches!(signature.symbol.as_str(), "fz_send" | "fz_spawn" | "fz_spawn_opt"),
             observable: true,
             halts: signature.ret == crate::fz_ir::ExternTy::Never,
             ..EffectSummary::default()
@@ -1994,7 +1992,60 @@ mod tests {
         CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
     };
     use crate::compiler2::{ActivationKey, FunctionId};
+    use crate::fz_ir::{ExternAbi, ExternTy};
     use crate::telemetry::ConfiguredTelemetry;
+    use crate::type_expr::ResolvedSpecDecl;
+
+    #[test]
+    fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
+        let mut world = World::new();
+        let nil = world.types_mut().nil();
+        let extern_body = |symbol: &str| LoweredBody::Extern {
+            signature: super::super::super::body::LoweredExtern {
+                abi: ExternAbi::C,
+                symbol: symbol.to_string(),
+                params: Vec::new(),
+                variadic: false,
+                ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
+                runtime_binding: None,
+                return_ty: nil,
+                semantic_contract: ResolvedSpecDecl {
+                    params: Vec::new(),
+                    result: nil,
+                    constraints: HashMap::new(),
+                },
+            },
+        };
+        let expected_local = EffectSummary {
+            observable: true,
+            ..EffectSummary::default()
+        };
+        let expected_transitive = EffectSummary {
+            allocates: true,
+            observable: true,
+            ..EffectSummary::default()
+        };
+
+        for symbol in [
+            "ordinary_foreign_function",
+            "fz_process_heap_alloc_stats",
+            "fz_send",
+            "fz_spawn",
+        ] {
+            let local = local_effects(&extern_body(symbol), &HashMap::new());
+            assert_eq!(local, expected_local, "`{symbol}` must use generic extern effects");
+
+            let mut caller = EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
+            };
+            caller.union_with(local);
+            assert_eq!(
+                caller, expected_transitive,
+                "callers must not acquire an effect from `{symbol}` by spelling"
+            );
+        }
+    }
 
     #[test]
     fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {

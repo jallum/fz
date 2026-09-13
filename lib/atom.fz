@@ -1,7 +1,7 @@
 defmodule Atom do
   @moduledoc "Functions for working with atoms."
 
-  extern "fz" def fz_atom_to_binary(atom) :: binary
+  extern "fz" defp fz_atom_to_binary(atom) :: binary
 
   # The atom's name, so `nil` gives "nil". The empty string Elixir produces for
   # `nil` comes from `String.Chars.Atom`, not from here.

@@ -57,7 +57,7 @@ def main() do
   assert(receive_fields(99) == 99)
 
   parent = self()
-  child = spawn(fn () -> sender(parent) end, 4096)
+  child = spawn(fn () -> sender(parent) end)
   send(child, :go)
   assert(receive_parked() == {[4, 5], 0})
 end

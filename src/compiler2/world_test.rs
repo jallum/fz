@@ -1,12 +1,63 @@
 use super::facts::FactUse;
 use super::keying::{BodyKeying, DispatchDemand, InputDemand};
-use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
+use super::{
+    DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
+};
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+#[test]
+fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let owner = world.submit_code(
+        Some("private-extern.fz".to_string()),
+        "defmodule PrivateForeign do\n  extern \"C\" defp abs(integer) :: integer\n  def call_abs(value), do: abs(value)\nend\n"
+            .to_string(),
+    );
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("PrivateForeign").unwrap());
+    assert!(world.demand(Job::DefineModule(module)));
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let interface = world.module_interface(module);
+    assert!(
+        !interface
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("abs", 1))
+    );
+    let wrapper = interface
+        .callables()
+        .iter()
+        .find(|callable| callable.matches_name_arity("call_abs", 1))
+        .expect("public wrapper")
+        .function;
+    let namespace = world
+        .pending_function_source(wrapper)
+        .expect("wrapper source")
+        .namespace;
+    let NamespaceSymbol::Function(private) = world
+        .lookup_namespace(namespace, "abs")
+        .expect("lexical private extern")
+    else {
+        panic!("private extern must be an ordinary function binding")
+    };
+    assert_eq!(world.function_ref(private).name(), "abs");
+    assert_eq!(world.function_ref(private).arity, 1);
+    assert!(world.pending_function_source(private).is_some());
+    let _ = owner;
+}
 
 #[test]
 fn completion_claims_belong_directly_to_the_job_that_read_their_ground() {

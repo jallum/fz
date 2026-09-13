@@ -209,7 +209,49 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
         ("fz_op_div_ii_to_float", ir_runtime::fz_op_div_ii_to_float as *const u8),
         ("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8),
         ("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8),
+        ("fz_fmod", ir_runtime::fz_fmod as *const u8),
         ("fz_op_rem_ff", ir_runtime::fz_op_rem_ff as *const u8),
+        ("fz_op_add_ii", ir_runtime::fz_op_add_ii as *const u8),
+        ("fz_op_add_if", ir_runtime::fz_op_add_if as *const u8),
+        ("fz_op_add_ff", ir_runtime::fz_op_add_ff as *const u8),
+        ("fz_op_sub_ii", ir_runtime::fz_op_sub_ii as *const u8),
+        ("fz_op_sub_if", ir_runtime::fz_op_sub_if as *const u8),
+        ("fz_op_sub_fi", ir_runtime::fz_op_sub_fi as *const u8),
+        ("fz_op_sub_ff", ir_runtime::fz_op_sub_ff as *const u8),
+        ("fz_op_mul_ii", ir_runtime::fz_op_mul_ii as *const u8),
+        ("fz_op_mul_if", ir_runtime::fz_op_mul_if as *const u8),
+        ("fz_op_mul_ff", ir_runtime::fz_op_mul_ff as *const u8),
+        ("fz_op_div_ii", ir_runtime::fz_op_div_ii as *const u8),
+        ("fz_op_div_if", ir_runtime::fz_op_div_if as *const u8),
+        ("fz_op_div_fi", ir_runtime::fz_op_div_fi as *const u8),
+        ("fz_op_div_ff", ir_runtime::fz_op_div_ff as *const u8),
+        ("fz_op_rem_ii", ir_runtime::fz_op_rem_ii as *const u8),
+        ("fz_op_rem_if", ir_runtime::fz_op_rem_if as *const u8),
+        ("fz_op_rem_fi", ir_runtime::fz_op_rem_fi as *const u8),
+        ("fz_op_eq", ir_runtime::fz_op_eq as *const u8),
+        ("fz_op_neq", ir_runtime::fz_op_neq as *const u8),
+        ("fz_op_identical", ir_runtime::fz_op_identical as *const u8),
+        ("fz_op_not_identical", ir_runtime::fz_op_not_identical as *const u8),
+        ("fz_op_lt_ii", ir_runtime::fz_op_lt_ii as *const u8),
+        ("fz_op_lt_ff", ir_runtime::fz_op_lt_ff as *const u8),
+        ("fz_op_lt_if", ir_runtime::fz_op_lt_if as *const u8),
+        ("fz_op_lt_fi", ir_runtime::fz_op_lt_fi as *const u8),
+        ("fz_op_lt_bb", ir_runtime::fz_op_lt_bb as *const u8),
+        ("fz_op_lte_ii", ir_runtime::fz_op_lte_ii as *const u8),
+        ("fz_op_lte_ff", ir_runtime::fz_op_lte_ff as *const u8),
+        ("fz_op_lte_if", ir_runtime::fz_op_lte_if as *const u8),
+        ("fz_op_lte_fi", ir_runtime::fz_op_lte_fi as *const u8),
+        ("fz_op_lte_bb", ir_runtime::fz_op_lte_bb as *const u8),
+        ("fz_op_gt_ii", ir_runtime::fz_op_gt_ii as *const u8),
+        ("fz_op_gt_ff", ir_runtime::fz_op_gt_ff as *const u8),
+        ("fz_op_gt_if", ir_runtime::fz_op_gt_if as *const u8),
+        ("fz_op_gt_fi", ir_runtime::fz_op_gt_fi as *const u8),
+        ("fz_op_gt_bb", ir_runtime::fz_op_gt_bb as *const u8),
+        ("fz_op_gte_ii", ir_runtime::fz_op_gte_ii as *const u8),
+        ("fz_op_gte_ff", ir_runtime::fz_op_gte_ff as *const u8),
+        ("fz_op_gte_if", ir_runtime::fz_op_gte_if as *const u8),
+        ("fz_op_gte_fi", ir_runtime::fz_op_gte_fi as *const u8),
+        ("fz_op_gte_bb", ir_runtime::fz_op_gte_bb as *const u8),
         ("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8),
         ("fz_float_to_binary", ir_runtime::fz_float_to_binary as *const u8),
         ("fz_bs_reader_init_ref", ir_runtime::fz_bs_reader_init_ref as *const u8),
@@ -338,12 +380,11 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
             "fz_closure_set_capture_atom",
             ir_runtime::fz_closure_set_capture_atom as *const u8,
         ),
-        ("fz_spawn_ref", ir_runtime::fz_spawn_ref as *const u8),
-        ("fz_spawn_opt_ref", ir_runtime::fz_spawn_opt_ref as *const u8),
-        ("fz_self_raw", ir_runtime::fz_self_raw as *const u8),
-        ("fz_make_ref_raw", ir_runtime::fz_make_ref_raw as *const u8),
-        ("fz_make_resource_ref", ir_runtime::fz_make_resource_ref as *const u8),
-        ("fz_send_ref", ir_runtime::fz_send_ref as *const u8),
+        ("fz_spawn", ir_runtime::fz_spawn as *const u8),
+        ("fz_self", ir_runtime::fz_self as *const u8),
+        ("fz_make_ref", ir_runtime::fz_make_ref as *const u8),
+        ("fz_make_resource", ir_runtime::fz_make_resource as *const u8),
+        ("fz_send", ir_runtime::fz_send as *const u8),
         // utf8 brand support.
         (
             "fz_bitstring_is_binary",
@@ -396,7 +437,16 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     // JIT-leg resource lifecycle tests). Production paths see no
     // extra symbols.
     #[cfg(test)]
-    builder.symbol("_resource_test_dtor", crate::ir_interp::tests_support_test_dtor_addr());
+    {
+        builder.symbol("_resource_test_dtor", crate::ir_interp::tests_support_test_dtor_addr());
+        builder.symbol(
+            "_test_integer_boolean_pair",
+            crate::ir_interp::tests_support_integer_boolean_pair_addr(),
+        );
+        for (name, address) in crate::ir_interp::tests_support_scalar_pair_symbols() {
+            builder.symbol(name, address);
+        }
+    }
 }
 
 impl Backend for JitBackend {

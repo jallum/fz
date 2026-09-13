@@ -1671,7 +1671,7 @@ fn make_resource_fires_destructor_at_heap_drop() {
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "make_resource_fires_destructor_at_heap_drop");
-    // TODO: JIT-execute with Runtime::with_module; assert dtor_fired == 1 and dtor_last_payload == 42
+    // TODO: JIT-execute; assert dtor_fired == 1 and dtor_last_payload == 42
 }
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: aliased resource fires destructor exactly once despite multiple references
@@ -1690,7 +1690,7 @@ fn aliased_resource_fires_destructor_exactly_once() {
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "aliased_resource_fires_destructor_exactly_once");
-    // TODO: JIT-execute with Runtime::with_module; assert dtor_fired == 1 despite three aliases
+    // TODO: JIT-execute; assert dtor_fired == 1 despite three aliases
 }
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: two distinct resources each fire their destructor exactly once
@@ -1709,5 +1709,5 @@ fn two_distinct_resources_each_fire_destructor_once() {
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "two_distinct_resources_each_fire_destructor_once");
-    // TODO: JIT-execute with Runtime::with_module; assert dtor_fired == 2
+    // TODO: JIT-execute; assert dtor_fired == 2
 }

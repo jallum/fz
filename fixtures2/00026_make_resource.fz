@@ -1,5 +1,5 @@
 
-extern "C" def _resource_test_dtor(integer) :: nil
+extern "C" defp _resource_test_dtor(integer) :: nil
 
 def main() do
   make_resource(42, fn (x) -> _resource_test_dtor(x) end)

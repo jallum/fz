@@ -697,8 +697,8 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
     let mut candidates = HashSet::new();
     let mut other_uses = HashSet::new();
     for block in &function.blocks {
-        for IrStmt::Let(_, prim) in &block.stmts {
-            prim.collect_used_vars(&mut other_uses);
+        for stmt in &block.stmts {
+            stmt.prim().collect_used_vars(&mut other_uses);
         }
         match &block.terminator {
             IrTerm::CallClosure {
@@ -802,7 +802,8 @@ fn align_ir_callsite_identities(left: &IrFn, right: &mut IrFn) {
     };
     for (left_block, right_block) in left.blocks.iter().zip(&mut right.blocks) {
         for (left_stmt, right_stmt) in left_block.stmts.iter().zip(&mut right_block.stmts) {
-            let (IrStmt::Let(_, left_prim), IrStmt::Let(_, right_prim)) = (left_stmt, right_stmt);
+            let left_prim = left_stmt.prim();
+            let right_prim = right_stmt.prim_mut();
             match (left_prim, right_prim) {
                 (IrPrim::Extern(left, ..), IrPrim::Extern(right, ..))
                 | (IrPrim::MakeFnRef(left, ..), IrPrim::MakeFnRef(right, ..))
@@ -1445,8 +1446,6 @@ pub enum AbiValueRepr {
 pub struct EffectSummary {
     pub allocates: bool,
     pub observable: bool,
-    pub reads_allocation_stats: bool,
-    pub scheduler_visible: bool,
     pub halts: bool,
     pub calls_opaque: bool,
 }
@@ -1456,8 +1455,6 @@ impl EffectSummary {
         let before = *self;
         self.allocates |= other.allocates;
         self.observable |= other.observable;
-        self.reads_allocation_stats |= other.reads_allocation_stats;
-        self.scheduler_visible |= other.scheduler_visible;
         self.halts |= other.halts;
         self.calls_opaque |= other.calls_opaque;
         *self != before
@@ -1528,6 +1525,10 @@ fn native_stmts_equal(left: &IrStmt, right: &IrStmt) -> bool {
         (IrStmt::Let(left_var, left_prim), IrStmt::Let(right_var, right_prim)) => {
             left_var == right_var && native_prims_equal(left_prim, right_prim)
         }
+        (IrStmt::LetMany(left_vars, left_prim), IrStmt::LetMany(right_vars, right_prim)) => {
+            left_vars == right_vars && native_prims_equal(left_prim, right_prim)
+        }
+        _ => false,
     }
 }
 

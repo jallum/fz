@@ -1,19 +1,24 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
 use crate::extern_contract::runtime_symbol_abi;
-use crate::fz_ir::{ExternAbi, ExternTy, Module};
-use crate::telemetry::Telemetry;
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::extern_variadic::{
     fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
 };
+use fz_runtime::fz_panic;
 use fz_runtime::ir_runtime::{
     fz_atom_to_binary, fz_binary_concat, fz_binary_downcase, fz_binary_to_atom, fz_binary_upcase,
     fz_bitstring_byte_size, fz_bitstring_is_binary, fz_bitstring_utf8_prefix, fz_bitstring_valid_utf8,
-    fz_brand_bitstring_as_utf8, fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref_raw, fz_map_count,
-    fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom, fz_map_put_atom_ref,
-    fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_div_ii_to_float, fz_op_neg_f, fz_op_neg_i,
-    fz_process_heap_alloc_stats, fz_value_cmp_ref,
+    fz_brand_bitstring_as_utf8, fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref, fz_make_resource,
+    fz_map_count, fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom,
+    fz_map_put_atom_ref, fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_add_ff, fz_op_add_if, fz_op_add_ii,
+    fz_op_div_ff, fz_op_div_fi, fz_op_div_if, fz_op_div_ii, fz_op_div_ii_to_float, fz_op_eq, fz_op_gt_bb, fz_op_gt_ff,
+    fz_op_gt_fi, fz_op_gt_if, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_fi, fz_op_gte_if, fz_op_gte_ii,
+    fz_op_identical, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_fi, fz_op_lt_if, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff,
+    fz_op_lte_fi, fz_op_lte_if, fz_op_lte_ii, fz_op_mul_ff, fz_op_mul_if, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i,
+    fz_op_neq, fz_op_not_identical, fz_op_rem_ff, fz_op_rem_fi, fz_op_rem_if, fz_op_rem_ii, fz_op_sub_ff, fz_op_sub_fi,
+    fz_op_sub_if, fz_op_sub_ii, fz_process_heap_alloc_stats, fz_self, fz_send, fz_spawn, fz_value_cmp_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
@@ -26,66 +31,6 @@ use std::ptr::null_mut;
 use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-
-/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects once it knows
-/// both operand kinds. Numeric lanes use the shared exact comparison without
-/// boxing; composite values use the borrowed runtime term comparator.
-///
-/// Only ORDERING has typed intrinsics. Equality is total, so `Kernel` keeps a
-/// single `fz_op_eq`/`fz_op_neq` and a single `===`/`!==`, handled above.
-fn interp_typed_cmp_extern(symbol: &str) -> Option<crate::fz_ir::BinOp> {
-    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
-    if !matches!(suffix, "ii" | "ff" | "if" | "fi" | "bb") {
-        return None;
-    }
-    match op {
-        "lt" => Some(crate::fz_ir::BinOp::Lt),
-        "lte" => Some(crate::fz_ir::BinOp::Le),
-        "gt" => Some(crate::fz_ir::BinOp::Gt),
-        "gte" => Some(crate::fz_ir::BinOp::Ge),
-        _ => None,
-    }
-}
-
-fn eval_interp_operator_extern(
-    runtime: &mut IrInterpRuntime,
-    symbol: &str,
-    args: &[AnyValue],
-) -> Result<Option<AnyValue>, String> {
-    if let Some(op) = interp_typed_cmp_extern(symbol) {
-        if args.len() != 2 {
-            return Err(format!("{symbol}/2 got {} args", args.len()));
-        }
-        let proc = runtime.cur_proc();
-        let ordering = interp_cmp(proc, args[0], args[1])?;
-        let answer = match op {
-            crate::fz_ir::BinOp::Lt => ordering < 0,
-            crate::fz_ir::BinOp::Le => ordering <= 0,
-            crate::fz_ir::BinOp::Gt => ordering > 0,
-            crate::fz_ir::BinOp::Ge => ordering >= 0,
-            other => return Err(format!("{symbol} is not a comparison: {other:?}")),
-        };
-        return Ok(Some(super::value::interp_bool_value(answer)));
-    }
-    // Operator equality widens numeric values; structural identity stays strict.
-    if matches!(symbol, "fz_op_identical" | "fz_op_not_identical") {
-        if args.len() != 2 {
-            return Err(format!("{symbol}/2 got {} args", args.len()));
-        }
-        let same = super::binop::interp_value_eq(runtime.cur_proc(), args[0], args[1])?;
-        let answer = if symbol == "fz_op_identical" { same } else { !same };
-        return Ok(Some(super::value::interp_bool_value(answer)));
-    }
-    if matches!(symbol, "fz_op_eq" | "fz_op_neq") {
-        if args.len() != 2 {
-            return Err(format!("{symbol}/2 got {} args", args.len()));
-        }
-        let equal = super::binop::interp_operator_eq(runtime.cur_proc(), args[0], args[1])?;
-        let answer = if symbol == "fz_op_eq" { equal } else { !equal };
-        return Ok(Some(super::value::interp_bool_value(answer)));
-    }
-    Ok(None)
-}
 
 fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
     let fixed = fixed
@@ -116,6 +61,11 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
                 .as_float()
                 .ok_or_else(|| "extern float arg must be Float".to_string())?,
         ),
+        ExternTy::Bool => ArgWord::Int(match value {
+            AnyValue::Atom(id) if id == fz_runtime::any_value::FALSE_ATOM_ID => 0,
+            AnyValue::Atom(id) if id == fz_runtime::any_value::TRUE_ATOM_ID => 1,
+            _ => return Err("extern boolean arg must be false or true".to_string()),
+        }),
         ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),
         ExternTy::CString => ArgWord::Int((unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64),
@@ -126,113 +76,25 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
     })
 }
 
-// The typed arithmetic `Kernel` selects once it knows both operand kinds.
-//
-// Each one's Rust signature is EXACTLY its declared wire types, because that is
-// what the C ABI reads: a `float` parameter arrives in the float register bank.
-// These used to take and return `u64` and bit-pun the floats, which worked only
-// while the interpreter's dispatcher bit-punned them too -- two disagreements
-// that cancelled. Once the dispatcher started passing a float as a float, a
-// shim still reading the integer bank got garbage.
-unsafe extern "C" fn fz_op_add_ii(a: u64, b: u64) -> u64 {
-    ((a as i64) + (b as i64)) as u64
+#[derive(Debug)]
+pub(super) enum ExternCallValue {
+    Scalar(AnyValue),
+    Pair([AnyValue; 2]),
 }
 
-unsafe extern "C" fn fz_op_add_if(a: u64, b: f64) -> f64 {
-    ((a as i64) as f64) + b
-}
-
-unsafe extern "C" fn fz_op_add_ff(a: f64, b: f64) -> f64 {
-    a + b
-}
-
-unsafe extern "C" fn fz_op_sub_ii(a: u64, b: u64) -> u64 {
-    ((a as i64) - (b as i64)) as u64
-}
-
-unsafe extern "C" fn fz_op_sub_if(a: u64, b: f64) -> f64 {
-    ((a as i64) as f64) - b
-}
-
-unsafe extern "C" fn fz_op_sub_fi(a: f64, b: u64) -> f64 {
-    a - ((b as i64) as f64)
-}
-
-unsafe extern "C" fn fz_op_sub_ff(a: f64, b: f64) -> f64 {
-    a - b
-}
-
-unsafe extern "C" fn fz_op_mul_ii(a: u64, b: u64) -> u64 {
-    ((a as i64) * (b as i64)) as u64
-}
-
-unsafe extern "C" fn fz_op_mul_if(a: u64, b: f64) -> f64 {
-    ((a as i64) as f64) * b
-}
-
-unsafe extern "C" fn fz_op_mul_ff(a: f64, b: f64) -> f64 {
-    a * b
-}
-
-unsafe extern "C" fn fz_op_div_ii(a: u64, b: u64) -> u64 {
-    ((a as i64) / (b as i64)) as u64
-}
-
-unsafe extern "C" fn fz_op_div_if(a: u64, b: f64) -> f64 {
-    ((a as i64) as f64) / b
-}
-
-unsafe extern "C" fn fz_op_div_fi(a: f64, b: u64) -> f64 {
-    a / ((b as i64) as f64)
-}
-
-unsafe extern "C" fn fz_op_div_ff(a: f64, b: f64) -> f64 {
-    a / b
-}
-
-unsafe extern "C" fn fz_op_rem_ii(a: u64, b: u64) -> u64 {
-    ((a as i64) % (b as i64)) as u64
-}
-
-unsafe extern "C" fn fz_op_rem_if(a: u64, b: f64) -> f64 {
-    ((a as i64) as f64) % b
-}
-
-unsafe extern "C" fn fz_op_rem_fi(a: f64, b: u64) -> f64 {
-    a % ((b as i64) as f64)
-}
-
-unsafe extern "C" fn fz_op_rem_ff(a: f64, b: f64) -> f64 {
-    a % b
-}
-
-pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
+pub(super) fn call_lowered_extern(
     runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    transport: &crate::compiler2::transport::TransportStore,
-    tel: &T,
-    program: &crate::compiler2::BackendProgram,
-    module: &Module,
     signature: &LoweredExtern,
     marshals: Option<&[ExternTy]>,
     args: &[AnyValue],
-) -> Result<AnyValue, String> {
-    if let Some(value) = eval_interp_operator_extern(runtime, signature.symbol.as_str(), args)? {
-        return Ok(value);
-    }
+) -> Result<ExternCallValue, String> {
     match signature.symbol.as_str() {
-        "fz_panic" => {
-            if args.len() != 1 {
-                return Err(format!("fz_panic/1 got {} args", args.len()));
-            }
-            return Err(format!("fz panic: {}", args[0].render(runtime.cur_proc())));
-        }
         "fz_map_count" => {
             if args.len() != 1 {
                 return Err(format!("fz_map_count/1 got {} args", args.len()));
             }
             let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            return Ok(AnyValue::Int(fz_map_count(ref_word)));
+            return Ok(ExternCallValue::Scalar(AnyValue::Int(fz_map_count(ref_word))));
         }
         "fz_map_entry_key" => {
             if args.len() != 2 {
@@ -242,7 +104,7 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
             let index = args[1]
                 .as_i64()
                 .ok_or_else(|| "fz_map_entry_key/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_map_entry_key(map_ref, index));
+            return interp_value_from_extern_ref_word(fz_map_entry_key(map_ref, index)).map(ExternCallValue::Scalar);
         }
         "fz_map_entry_value" => {
             if args.len() != 2 {
@@ -252,55 +114,7 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
             let index = args[1]
                 .as_i64()
                 .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index));
-        }
-        "fz_spawn" | "fz_spawn_opt" => {
-            if args.is_empty() {
-                return Err(format!("{}/1+ got 0 args", signature.symbol));
-            }
-            let (fn_id, captured) = super::binop::unpack_callable(args[0], runtime.cur_proc())?;
-            let (target, inputs) = super::backend::construction_wrapper_invocation(
-                runtime,
-                types,
-                transport,
-                program,
-                module,
-                fn_id,
-                &captured,
-                &[],
-            )?;
-            let pid = runtime.spawn_backend(target, inputs)?;
-            return Ok(AnyValue::Int(pid as i64));
-        }
-        "fz_self" => {
-            return Ok(AnyValue::Int(unsafe { &*runtime.cur_proc() }.pid as i64));
-        }
-        "fz_make_ref" => {
-            let id = fz_make_ref_raw();
-            return Ok(AnyValue::Int(id as i64));
-        }
-        "fz_send" => {
-            if args.len() != 2 {
-                return Err(format!("fz_send/2 got {} args", args.len()));
-            }
-            let receiver = args[0].as_i64().ok_or_else(|| "send/2: pid must be Int".to_string())? as u32;
-            runtime.send_opaque(types, transport, tel, program, module, &receiver, args[1])?;
-            return Ok(args[1]);
-        }
-        "fz_make_resource" => {
-            if args.len() != 2 {
-                return Err(format!("fz_make_resource/2 got {} args", args.len()));
-            }
-            let payload = args[0]
-                .as_i64()
-                .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
-            return super::make_resource_in_current_process(
-                runtime.cur_proc(),
-                module,
-                payload,
-                args[1].value(runtime.cur_proc())?,
-            )
-            .map(interp_value_from_slot);
+            return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index)).map(ExternCallValue::Scalar);
         }
         _ => {}
     }
@@ -335,7 +149,11 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
             .zip(arg_tys.iter().copied())
             .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::int))
             .collect::<Result<_, _>>()?;
-        let ret = match (signature.ret, fixed, variadic) {
+        let ret_ty = signature
+            .ret
+            .scalar_ty()
+            .ok_or_else(|| format!("variadic extern `{}` cannot return an aggregate", signature.symbol))?;
+        let ret = match (ret_ty, fixed, variadic) {
             (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => unsafe {
                 fz_call_var_i64_cstring_i64_i64_to_i64(
                     fp,
@@ -350,14 +168,18 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
             _ => {
                 return Err(format!(
                     "unsupported variadic extern shape: {}",
-                    format_extern_shape(signature.ret, fixed, variadic)
+                    format_extern_shape(ret_ty, fixed, variadic)
                 ));
             }
         };
-        return match signature.ret {
-            ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
-            ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
-            ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+        return match ret_ty {
+            ExternTy::I64 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
+            ExternTy::Bool => decode_bool_word(ret).map(ExternCallValue::Scalar),
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+                interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
+            }
+            ExternTy::Unit => Ok(ExternCallValue::Scalar(interp_nil_value())),
+            ExternTy::Never => Err(format!("extern `{}` declared Never returned", signature.symbol)),
             // Every dispatcher above returns `I64`; a float-returning variadic
             // is refused as an unsupported shape before reaching here. Reading
             // `ret` as float bits would be exactly the integer-bank mistake the
@@ -400,15 +222,65 @@ pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
     // back whatever happened to be there -- for `libc::sqrt` that was the
     // argument's own bits, which looked exactly like a plausible answer.
     match signature.ret {
-        ExternTy::F64 => Ok(AnyValue::Float(unsafe { dispatch_fn_returning_float(fp, &raw_args) })),
-        ExternTy::Unit | ExternTy::Never => {
+        ExternReturn::Scalar(ExternTy::F64) => {
+            let value = unsafe { dispatch_fn_returning_float(fp, &raw_args) };
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            Ok(ExternCallValue::Scalar(AnyValue::Float(value)))
+        }
+        ExternReturn::Scalar(ExternTy::Unit) => {
             unsafe { dispatch_fn_void(fp, &raw_args) };
-            Ok(interp_nil_value())
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            Ok(ExternCallValue::Scalar(interp_nil_value()))
         }
-        ExternTy::I64 => Ok(AnyValue::Int(unsafe { dispatch_fn_returning_int(fp, &raw_args) } as i64)),
-        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
-            interp_value_from_extern_ref_word(unsafe { dispatch_fn_returning_int(fp, &raw_args) })
+        ExternReturn::Scalar(ExternTy::Never) => {
+            unsafe { dispatch_fn_void(fp, &raw_args) };
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            Err(format!("extern `{}` declared Never returned", signature.symbol))
         }
+        ExternReturn::Scalar(ExternTy::I64) => {
+            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            Ok(ExternCallValue::Scalar(AnyValue::Int(value as i64)))
+        }
+        ExternReturn::Scalar(ExternTy::Bool) => {
+            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            decode_bool_word(value).map(ExternCallValue::Scalar)
+        }
+        ExternReturn::Scalar(ExternTy::Any | ExternTy::Binary | ExternTy::CString) => {
+            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
+        }
+        ExternReturn::Pair(fields) => {
+            let values = unsafe { dispatch_fn_returning_pair(fp, &raw_args, fields) }?;
+            if let Some(error) = runtime.take_callback_error() {
+                return Err(error);
+            }
+            Ok(ExternCallValue::Pair(values))
+        }
+    }
+}
+
+fn decode_bool_word(word: u64) -> Result<AnyValue, String> {
+    match word {
+        0 => Ok(interp_bool_value(false)),
+        1 => Ok(interp_bool_value(true)),
+        other => Err(format!(
+            "foreign boolean result must be the canonical word 0 or 1, got {other}"
+        )),
     }
 }
 
@@ -441,8 +313,8 @@ mod address_book_test {
     fn every_declared_runtime_symbol_resolves() {
         let missing: Vec<&str> = RUNTIME_SYMBOLS
             .iter()
-            .filter(|(name, abi)| resolve_symbol(name, *abi).is_err())
-            .map(|(name, _)| *name)
+            .filter(|entry| resolve_symbol(entry.name, entry.abi).is_err())
+            .map(|entry| entry.name)
             .collect();
         assert!(
             missing.is_empty(),
@@ -453,8 +325,9 @@ mod address_book_test {
 
     #[test]
     fn a_declaration_that_contradicts_the_runtime_is_refused() {
-        for (name, provided) in RUNTIME_SYMBOLS {
-            let lie = match provided {
+        for entry in RUNTIME_SYMBOLS {
+            let name = entry.name;
+            let lie = match entry.abi {
                 ExternAbi::C => ExternAbi::Fz,
                 ExternAbi::Fz => ExternAbi::C,
             };
@@ -509,13 +382,16 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
     }
 
     let native: Option<*const ()> = match name {
-        // fz_panic never returns, so it stays special-cased in call_extern
-        // above and must never be resolved as a plain symbol here. The process
-        // intrinsics that DO return a value are declared `extern "fz"` and go
-        // through the generic path, which supplies the leading process
-        // argument from the declaration.
+        // Runtime helpers declared `extern "fz"` go through the generic path,
+        // which supplies the leading process argument from the declaration.
         "fz_dbg_value" => Some(fz_dbg_value as *const ()),
+        "fz_panic" => Some(fz_panic as *const ()),
         "fz_process_heap_alloc_stats" => Some(fz_process_heap_alloc_stats as *const ()),
+        "fz_self" => Some(fz_self as *const ()),
+        "fz_make_ref" => Some(fz_make_ref as *const ()),
+        "fz_make_resource" => Some(fz_make_resource as *const ()),
+        "fz_spawn" => Some(fz_spawn as *const ()),
+        "fz_send" => Some(fz_send as *const ()),
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only
@@ -561,6 +437,30 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         "fz_op_rem_if" => Some(fz_op_rem_if as *const ()),
         "fz_op_rem_fi" => Some(fz_op_rem_fi as *const ()),
         "fz_op_rem_ff" => Some(fz_op_rem_ff as *const ()),
+        "fz_op_eq" => Some(fz_op_eq as *const ()),
+        "fz_op_neq" => Some(fz_op_neq as *const ()),
+        "fz_op_identical" => Some(fz_op_identical as *const ()),
+        "fz_op_not_identical" => Some(fz_op_not_identical as *const ()),
+        "fz_op_lt_ii" => Some(fz_op_lt_ii as *const ()),
+        "fz_op_lt_ff" => Some(fz_op_lt_ff as *const ()),
+        "fz_op_lt_if" => Some(fz_op_lt_if as *const ()),
+        "fz_op_lt_fi" => Some(fz_op_lt_fi as *const ()),
+        "fz_op_lt_bb" => Some(fz_op_lt_bb as *const ()),
+        "fz_op_lte_ii" => Some(fz_op_lte_ii as *const ()),
+        "fz_op_lte_ff" => Some(fz_op_lte_ff as *const ()),
+        "fz_op_lte_if" => Some(fz_op_lte_if as *const ()),
+        "fz_op_lte_fi" => Some(fz_op_lte_fi as *const ()),
+        "fz_op_lte_bb" => Some(fz_op_lte_bb as *const ()),
+        "fz_op_gt_ii" => Some(fz_op_gt_ii as *const ()),
+        "fz_op_gt_ff" => Some(fz_op_gt_ff as *const ()),
+        "fz_op_gt_if" => Some(fz_op_gt_if as *const ()),
+        "fz_op_gt_fi" => Some(fz_op_gt_fi as *const ()),
+        "fz_op_gt_bb" => Some(fz_op_gt_bb as *const ()),
+        "fz_op_gte_ii" => Some(fz_op_gte_ii as *const ()),
+        "fz_op_gte_ff" => Some(fz_op_gte_ff as *const ()),
+        "fz_op_gte_if" => Some(fz_op_gte_if as *const ()),
+        "fz_op_gte_fi" => Some(fz_op_gte_fi as *const ()),
+        "fz_op_gte_bb" => Some(fz_op_gte_bb as *const ()),
         "fz_map_delete" => Some(fz_map_delete as *const ()),
         "fz_map_from_kv" => Some(fz_map_from_kv as *const ()),
         "fz_map_put_ref" => Some(fz_map_put_ref as *const ()),
@@ -730,6 +630,81 @@ unsafe fn dispatch_fn_returning_float(fp: *const (), args: &[ArgWord]) -> f64 {
     dispatch_shapes!(fp, args, f64)
 }
 
+#[repr(C)]
+struct PairII {
+    first: u64,
+    second: u64,
+}
+
+#[repr(C)]
+struct PairIF {
+    first: u64,
+    second: f64,
+}
+
+#[repr(C)]
+struct PairFI {
+    first: f64,
+    second: u64,
+}
+
+#[repr(C)]
+struct PairFF {
+    first: f64,
+    second: f64,
+}
+
+#[cfg(test)]
+mod c_pair_layout_test {
+    use super::{PairFF, PairFI, PairIF, PairII};
+    use std::mem::{align_of, size_of};
+
+    #[test]
+    fn c_scalar_pair_carriers_are_two_eight_byte_fields() {
+        for (name, size, align) in [
+            ("word/word", size_of::<PairII>(), align_of::<PairII>()),
+            ("word/float", size_of::<PairIF>(), align_of::<PairIF>()),
+            ("float/word", size_of::<PairFI>(), align_of::<PairFI>()),
+            ("float/float", size_of::<PairFF>(), align_of::<PairFF>()),
+        ] {
+            assert_eq!(size, 16, "{name} C carrier size");
+            assert_eq!(align, 8, "{name} C carrier alignment");
+        }
+    }
+}
+
+unsafe fn dispatch_fn_returning_pair(
+    fp: *const (),
+    args: &[ArgWord],
+    fields: [ExternTy; 2],
+) -> Result<[AnyValue; 2], String> {
+    fn int_field(word: u64, ty: ExternTy) -> Result<AnyValue, String> {
+        match ty {
+            ExternTy::I64 => Ok(AnyValue::Int(word as i64)),
+            ExternTy::Bool => decode_bool_word(word),
+            _ => Err(format!("foreign integer return register cannot decode {ty:?}")),
+        }
+    }
+    match fields {
+        [ExternTy::F64, ExternTy::F64] => {
+            let pair = dispatch_shapes!(fp, args, PairFF);
+            Ok([AnyValue::Float(pair.first), AnyValue::Float(pair.second)])
+        }
+        [ExternTy::F64, second] => {
+            let pair = dispatch_shapes!(fp, args, PairFI);
+            Ok([AnyValue::Float(pair.first), int_field(pair.second, second)?])
+        }
+        [first, ExternTy::F64] => {
+            let pair = dispatch_shapes!(fp, args, PairIF);
+            Ok([int_field(pair.first, first)?, AnyValue::Float(pair.second)])
+        }
+        [first, second] => {
+            let pair = dispatch_shapes!(fp, args, PairII);
+            Ok([int_field(pair.first, first)?, int_field(pair.second, second)?])
+        }
+    }
+}
+
 unsafe fn dispatch_fn_void(fp: *const (), args: &[ArgWord]) {
     dispatch_shapes!(fp, args, ())
 }
@@ -743,6 +718,21 @@ unsafe fn dispatch_fn_void(fp: *const (), args: &[ArgWord]) {
 #[cfg(test)]
 pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
     tests_support::_resource_test_dtor as *const u8
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_integer_boolean_pair_addr() -> *const u8 {
+    tests_support::_test_integer_boolean_pair as *const u8
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_scalar_pair_symbols() -> Vec<(&'static str, *const u8)> {
+    tests_support::scalar_pair_symbols()
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_resolved_symbol_addr(name: &str, abi: ExternAbi) -> Result<*const (), String> {
+    resolve_symbol(name, abi)
 }
 
 /// fz-swt.10 — accessors for the test dtor counters, used by both the
@@ -778,6 +768,61 @@ pub(crate) mod tests_support {
     pub static DTOR_FIRED: AtomicUsize = AtomicUsize::new(0);
     pub static DTOR_LAST_PAYLOAD: AtomicU64 = AtomicU64::new(0);
 
+    pub unsafe extern "C" fn _test_never_returns() {}
+
+    #[repr(C)]
+    pub struct TestIntegerBooleanPair {
+        pub value: i64,
+        pub failed: u64,
+    }
+
+    pub unsafe extern "C" fn _test_integer_boolean_pair(value: i64) -> TestIntegerBooleanPair {
+        TestIntegerBooleanPair { value, failed: 0 }
+    }
+
+    #[repr(C)]
+    pub struct TestWordWordPair(pub u64, pub u64);
+    #[repr(C)]
+    pub struct TestWordFloatPair(pub u64, pub f64);
+    #[repr(C)]
+    pub struct TestFloatWordPair(pub f64, pub u64);
+    #[repr(C)]
+    pub struct TestFloatFloatPair(pub f64, pub f64);
+
+    macro_rules! pair_fn {
+        ($name:ident, $ret:ty, $value:expr) => {
+            pub unsafe extern "C" fn $name() -> $ret {
+                $value
+            }
+        };
+    }
+
+    pair_fn!(_test_pair_ii, TestWordWordPair, TestWordWordPair(1, 2));
+    pair_fn!(_test_pair_ib, TestWordWordPair, TestWordWordPair(1, 0));
+    pair_fn!(_test_pair_bi, TestWordWordPair, TestWordWordPair(1, 2));
+    pair_fn!(_test_pair_bb, TestWordWordPair, TestWordWordPair(0, 1));
+    pair_fn!(_test_pair_if, TestWordFloatPair, TestWordFloatPair(1, 2.5));
+    pair_fn!(_test_pair_bf, TestWordFloatPair, TestWordFloatPair(1, 2.5));
+    pair_fn!(_test_pair_fi, TestFloatWordPair, TestFloatWordPair(1.5, 2));
+    pair_fn!(_test_pair_fb, TestFloatWordPair, TestFloatWordPair(1.5, 0));
+    pair_fn!(_test_pair_ff, TestFloatFloatPair, TestFloatFloatPair(1.5, 2.5));
+    pair_fn!(_test_pair_bad_bool, TestWordWordPair, TestWordWordPair(7, 2));
+
+    pub fn scalar_pair_symbols() -> Vec<(&'static str, *const u8)> {
+        vec![
+            ("_test_pair_ii", _test_pair_ii as *const u8),
+            ("_test_pair_ib", _test_pair_ib as *const u8),
+            ("_test_pair_bi", _test_pair_bi as *const u8),
+            ("_test_pair_bb", _test_pair_bb as *const u8),
+            ("_test_pair_if", _test_pair_if as *const u8),
+            ("_test_pair_bf", _test_pair_bf as *const u8),
+            ("_test_pair_fi", _test_pair_fi as *const u8),
+            ("_test_pair_fb", _test_pair_fb as *const u8),
+            ("_test_pair_ff", _test_pair_ff as *const u8),
+            ("_test_pair_bad_bool", _test_pair_bad_bool as *const u8),
+        ]
+    }
+
     /// Counter-bumping dtor. Used by the fz-side test as the
     /// `&_resource_test_dtor/1` wrapped extern: bumps a global counter
     /// and records the payload it received. Verifies that the BIF stored
@@ -792,7 +837,11 @@ pub(crate) mod tests_support {
     pub fn lookup_test_symbol(name: &str) -> Option<*const ()> {
         match name {
             "_resource_test_dtor" => Some(_resource_test_dtor as *const ()),
-            _ => None,
+            "_test_never_returns" => Some(_test_never_returns as *const ()),
+            "_test_integer_boolean_pair" => Some(_test_integer_boolean_pair as *const ()),
+            name => scalar_pair_symbols()
+                .into_iter()
+                .find_map(|(candidate, address)| (name == candidate).then_some(address as *const ())),
         }
     }
 }

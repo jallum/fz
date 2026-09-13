@@ -9,8 +9,9 @@ the runtime FFI helpers that actually call out.
 The pieces:
 
 - `ExternDecl` (`src/fz_ir/mod.rs`) — the static shape of one door: the
-  `symbol`, fixed `params` wire types, a `variadic` flag, the return wire type
-  `ret`, and the `abi`.
+  `symbol`, fixed `params` wire types, a `variadic` flag, the structural
+  `ExternReturn`, the `abi`, and (for an exact validated runtime export) an
+  optional native replacement capability.
 - `ExternAbi` (`src/fz_ir/mod.rs`) — `C` or `Fz` (below).
 - `ExternTy` — the C wire alphabet (below).
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param),
@@ -28,15 +29,16 @@ into `ExternAbi` when the extern is lowered. Only two names exist; anything
 else is a `lower/unsupported` error, never a silent fall back:
 
 ```fz
-extern "C"  def libc::close(integer) :: integer            # a plain C symbol
-extern "fz" def fz_binary_concat(binary, binary) :: binary # an fz runtime helper
+extern "C"  defp libc::close(integer) :: integer            # a plain C symbol
+extern "fz" defp fz_binary_concat(binary, binary) :: binary # an fz runtime helper
 ```
 
-`def` is contextual here: it is still an ordinary identifier token, but the
-`extern` declaration grammar requires that spelling between the ABI and symbol;
-`fn` is anonymous-only and `defp` is not valid for an external declaration.
-The resulting quoted extern node and every downstream ABI/marshalling stage use
-one source spelling.
+An extern declaration must use `defp`. It binds as an ordinary private function
+in its module's lexical namespace and is absent from `ModuleInterface`; a public
+API exposes a documented, specified source wrapper instead. For example,
+`Kernel.<>/2` is public source while its body alone can call the private
+`fz_binary_concat/2` declaration. The resulting quoted extern node and every
+downstream ABI/marshalling stage use one source spelling.
 
 The ABI decides two things at once.
 
@@ -68,10 +70,10 @@ arm to add.
 
 The JIT's addresses are a TABLE, not a run of calls, so the set can be read
 back. `every_declared_runtime_symbol_is_reachable_from_compiled_code` reads it
-and requires each declared symbol to be reachable one of the only two ways
-there are: registered with the JIT, or lowered in place by native codegen and
-never resolved at all — the arithmetic shims, whose full set is
-`native_codegen::ARITH_SHIMS`. The table exists because it had already drifted:
+and requires every declared runtime symbol to be registered. Native code may
+also replace a call, but the real export remains reachable for interpreter
+execution, AOT linking, and a non-eligible ordinary declaration. The table
+exists because it had already drifted:
 `fz_bitstring_is_binary` was declared and never registered, and on macOS the
 JIT falls back to dlsym over the process image and finds the `no_mangle` export
 anyway. The whole six-target local gate was green while the same program died
@@ -100,7 +102,7 @@ scope, and then a fixed list of standard C libraries it opens itself
 (`STANDARD_C_LIBRARIES`). The list exists because the scope is not enough: on
 macOS the C library and the math library are one thing (libSystem) that every
 process already has, while elsewhere libm is separate and nothing references
-it, so `--as-needed` drops it and `extern "C" def libc::sqrt(float) :: float`
+it, so `--as-needed` drops it and `extern "C" defp libc::sqrt(float) :: float`
 fails with `dlsym: symbol sqrt not found` on Linux while passing on macOS
 (fz-5xp.59).
 
@@ -125,7 +127,7 @@ A declaration outside the bootstrap may not name it. The reason is not
 etiquette: the symbols the `fz` ABI can reach are the ones both doors ALSO
 claim by name in their own lowerings, and those two claim sets are not equal.
 `fz_op_add_ii` has a native rung and no interpreter one, so a foreign
-`extern "fz" def fz_op_add_ii` once answered `5` under `run` and a process
+`extern "fz" defp fz_op_add_ii` once answered `5` under `run` and a process
 pointer plus two under `interp`. `resolve_extern_abi` refuses it in the shared
 front end, which is the only place a refusal reaches every door identically.
 
@@ -148,34 +150,62 @@ together.
 All four checks are DEMAND-GATED. An extern that is declared and never called
 is never lowered, so none fires — the declaration compiles silently.
 
-The migration is PARTIAL, deliberately. `kernel.fz` still declares `fz_panic`,
-`fz_self`, `fz_send`, `fz_spawn`, `fz_spawn_opt`, `fz_make_ref` and
-`fz_make_resource` as `extern "C"`. Only `fz_panic` names a real symbol; the
-other six name nothing at all, and are lowered to `fz_self_raw`,
-`fz_send_ref`, `fz_spawn_ref`, `fz_spawn_opt_ref`, `fz_make_ref_raw` and
-`fz_make_resource_ref`, each of which takes a process,
-and the four `fz_op_*_bb` comparisons declare `binary` params that never become
-`*const u8`. Those are intrinsics wearing extern syntax: their lowerings emit
-something other than a call, so both doors still claim them by name and the
-declared ABI is not consulted. `ExternAbi` is therefore a true fact for the
-three symbols above and a placeholder for those. fz-5xp.29 and fz-5xp.30 carry
-the third declaration form that would retire the difference.
+Kernel's returning process operations are ordinary private extern declarations.
+`fz_self`, `fz_send`, `fz_spawn` and `fz_make_resource` declare the `fz` ABI,
+which supplies the current process before their source-visible arguments;
+`fz_make_ref` declares the plain `C` ABI. Their source and physical export names
+match, and every execution door follows the declaration rather than claiming
+those names in compiler lowering. `spawn/1` is the only process-spawn surface;
+there is no heap-hint variant or compatibility export.
+
+`Kernel.panic/1` likewise wraps a private `extern "fz" defp fz_panic(any) ::
+never`. Its arbitrary fz value stays borrowed from the current process while
+the physical export synchronously reports it through `ExecCtx`. The interpreter
+turns that report into an owned pending error before the call returns; native
+execution writes the same rendered reason to stderr. It never reuses the
+atom-only `Process.exit_fault` field, which belongs to compiler dispatch traps.
 
 ## The wire alphabet
 
 ```text
 I64       proven i64                       F64    proven f64
+Bool      canonical C `uint64_t`: false=0, true=1 (never an atom id or C _Bool)
 Any       one opaque fz value word         Unit   maps to 0 on return
 Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
           length). Under "fz": the tagged value ref.
 CString   under "C": *const u8 to the bytes with a guaranteed trailing NUL.
           Under "fz": the tagged value ref.
-Never     diverges
+Never     no return lane; returning is a runtime contract violation
 ```
+
+### Fixed C scalar-pair results
+
+An `extern "C"` result written as a fixed two-field tuple of `integer`,
+`float`, and/or `boolean` is a `#[repr(C)]`/C struct returned by value. The
+fields stay in their existing tuple transport lanes: the boundary does not
+first allocate an fz tuple or turn either field into `Any`. All nine semantic
+pairs are supported. The interpreter selects one of four concrete carriers
+(word/word, word/float, float/word, float/float) through its existing
+argument-shape dispatcher and rejects any boolean word other than 0 or 1.
+
+The full declared pair determines the physical signature even when a caller
+ignores a field. x86-64 uses each field's natural integer/SSE return bank. On
+Linux and Darwin AArch64 only `{float, float}` uses `[F64, F64]`; every other
+pair uses `[I64, I64]`, with float bitcasts at the adapter. The target module's
+default call convention is authoritative. Larger/nested aggregates and
+aggregate arguments are rejected at the shared extern boundary.
 
 Compiler2 maps each declared `extern_params` name to its `ExternTy` (an unknown
 name defaults to `Any`) and lowers the declared return to `ret` plus the
 fz-visible return type.
+
+`Never` is a generic return policy, not a recognized symbol. After any foreign
+call declared `Never`, the interpreter first consumes a pending context error
+and otherwise reports that the foreign function returned despite its contract.
+Native code emits a trap on the corresponding bottom-return path. Thus a
+foreign function cannot resume fz code even if its physical implementation
+returns, while the interpreter can surface a process error without unwinding or
+aborting its compiler host.
 
 ## Integers and floats ride different register banks
 
@@ -185,7 +215,7 @@ position travels in, and caller and callee must agree per position. This is the
 subsystem's load-bearing invariant, and every door used to break it:
 
 ```fz
-extern "C" def libc::sqrt(float) :: float
+extern "C" defp libc::sqrt(float) :: float
 libc::sqrt(9.0)        # 3.0
 ```
 
@@ -235,7 +265,7 @@ specialization, because one syntactic call can need different marshal classes in
 different contexts, so there is no single answer baked onto the declaration.
 
 ```fz
-extern "C" def libc::printf(fmt :: cstring, ...) :: integer
+extern "C" defp libc::printf(fmt :: cstring, ...) :: integer
 def main() do libc::printf("%d", 7) end
 ```
 
@@ -266,7 +296,7 @@ what makes an ordinary wrapper come back correctly:
 def dbg(x), do: fz_dbg_value(x)
 ```
 
-The body calls `extern "fz" def fz_dbg_value(any) :: any`, so the argument is
+The body calls `extern "fz" defp fz_dbg_value(any) :: any`, so the argument is
 boxed (the ABI adds the process alongside it, which the wrapper never sees) and the
 result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
 unboxes that word back to an `i64`. A repeated type variable means "same type",
@@ -300,7 +330,7 @@ through the staticlib link.
 flows from the boundary:
 
 ```fz
-extern "C" def fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 ```
 

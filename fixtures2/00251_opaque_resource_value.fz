@@ -4,7 +4,7 @@ defmodule R do
   def get_value(h), do: h.value
 end
 
-extern "C" def _resource_test_dtor(integer) :: nil
+extern "C" defp _resource_test_dtor(integer) :: nil
 def dwrap(x), do: _resource_test_dtor(x)
 
 def main() do

@@ -368,7 +368,7 @@ fn operator_sugars_desugar_to_stdlib_calls() {
         compiler.drive(),
         "operator sugars desugaring to stdlib calls should resolve",
     );
-    // TODO: assert ++ → List.concat/2, -- → List.subtract/2, <> → Kernel.fz_binary_concat/2, .. → Range.new/3, ..// → Range.new/3
+    // TODO: assert ++ → List.concat/2, -- → List.subtract/2, <> → Kernel.<>/2, .. → Range.new/3, ..// → Range.new/3
 }
 
 // Ported from src/frontend/macros_test.rs: `in` and `not in` desugar to Enum.member? at expansion time

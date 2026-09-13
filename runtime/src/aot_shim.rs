@@ -25,14 +25,13 @@
 //! selective-receive probe path. This matches the JIT's `run_until_idle`
 //! semantics.
 
-use crate::any_value::{AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
+use crate::any_value::{AnyValueRef, ValueKind};
 use crate::exec_ctx::ExecCtx;
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Heap, Schema, SchemaRegistry, deep_copy_any_value_ref};
 use crate::pinned_abi::{call1, call2};
 use crate::procbin::mso_drop_all_deferred;
 use crate::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::{
     ProbeOutcome, ScanOutcome, fire_after_timer, initial_scan, mint_entry_thunk, mint_main_inner, probe_sender,
 };
@@ -103,7 +102,7 @@ struct AotScheduler {
     timers: TimerWheel,
     /// Per-run dispatch table. Its handles (Runtime/tel/module) stay null —
     /// AOT has none — and `scheduler` points back at this struct. Every AOT
-    /// task points its `Process.ctx` here; the spawn/send/make_resource/timer
+    /// task points its `Process.ctx` here; the spawn/send/timer
     /// BIFs dispatch through it.
     ctx: ExecCtx,
 }
@@ -267,9 +266,6 @@ pub extern "C" fn fz_aot_setup(
     // stays reachable from `proc.ctx.scheduler` through the AOT C-main entry
     // sequence. `fz_aot_run_main` reclaims and drops it at teardown.
     //
-    // fz-4mk — the MakeResourceHook allocates a Resource carrying the dtor
-    // closure on the stub; the closure body fires as fz code at task-exit
-    // drain via `fz_drain_dtor_entry`.
     // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
     let mut tasks = HashMap::new();
     tasks.insert(1u32, proc_box);
@@ -289,10 +285,9 @@ pub extern "C" fn fz_aot_setup(
         timers: TimerWheel::new(),
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
+            fault: Some(aot_fault_hook),
             spawn: Some(aot_spawn_hook),
-            spawn_opt: Some(aot_spawn_opt_hook),
             send: Some(aot_send_hook),
-            make_resource: Some(aot_make_resource_hook),
             timer_schedule: Some(aot_timer_schedule_hook),
             timer_cancel: Some(aot_timer_cancel_hook),
             ..ExecCtx::empty()
@@ -309,36 +304,6 @@ pub extern "C" fn fz_aot_setup(
         (*proc_ptr).ctx = &mut (*sched).ctx;
         proc_ptr
     }
-}
-
-/// fz-4mk — AOT `MakeResourceHook` body. Validates that the dtor arg is
-/// a closure heap value, then allocates a fresh `Resource` on the current
-/// process's heap with the closure stashed on the stub. The real dtor
-/// body runs as fz code at scheduler-boundary drain via the
-/// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
-/// no-op so refcount→0 outside the drain doesn't double-fire.
-extern "C" fn aot_make_resource_hook(
-    process: *mut Process,
-    _module: *const (),
-    payload_raw: u64,
-    dtor_ref: u64,
-) -> u64 {
-    let dtor_ref = AnyValueRef::from_raw_word(dtor_ref).expect("fz_make_resource (AOT): dtor ref");
-    let dtor_closure = AnyValue::from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
-    let dtor_closure_bits = dtor_closure
-        .heap_object_word()
-        .expect("fz_make_resource (AOT): dtor arg is not a closure");
-    if closure_addr_from_tagged(dtor_closure_bits).is_none() {
-        eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
-        abort();
-    }
-    assert!(!process.is_null(), "fz_make_resource (AOT): no current process");
-    let heap = unsafe { &mut (*process).heap };
-    let handle = ResourceHandle::new(payload_raw, fz_resource_destructor_noop);
-    let stub = alloc_resource(heap, handle, dtor_closure);
-    AnyValueRef::from_heap_object(ValueKind::RESOURCE, stub.as_raw() as *const u8)
-        .expect("resource ref")
-        .raw_word()
 }
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
@@ -524,16 +489,6 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     pid
 }
 
-/// fz-siu.12: spawn_opt hook. v1 ignores min_heap_size; delegates to aot_spawn_hook.
-extern "C" fn aot_spawn_opt_hook(
-    sender: *mut Process,
-    scheduler: *mut (),
-    closure_bits: u64,
-    _min_heap_size: u32,
-) -> u32 {
-    aot_spawn_hook(sender, scheduler, closure_bits)
-}
-
 fn deep_copy_send_ref_for_aot(sender: &Process, receiver: &mut Process, msg: AnyValueRef) -> AnyValueRef {
     let mut forwarding = HashMap::new();
     deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
@@ -562,6 +517,10 @@ extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
     sched.timers.cancel(timer_id);
 }
 
+extern "C" fn aot_fault_hook(process: *mut Process, _context: *mut (), value_ref_word: u64) {
+    eprintln!("{}", crate::render_panic_message(process, value_ref_word));
+}
+
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
 /// Selective-receive arrivals route through `sched::probe_sender`, which
 /// flips a matched blocked receiver to Ready and enqueues it.
@@ -572,9 +531,11 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
     let wake = {
         let tasks = unsafe { &mut (*sched).tasks };
         let Some(task) = tasks.get_mut(&receiver_pid) else {
-            eprintln!("aot_send: no task with pid {}", receiver_pid);
-            abort();
+            return;
         };
+        if task.state == ProcessState::Exited {
+            return;
+        }
         let msg = if task.pid == unsafe { (*sender_ptr).pid } {
             deep_copy_self_send_ref_for_aot(task, msg)
         } else {

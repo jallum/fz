@@ -20,8 +20,8 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg,
-    ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim,
-    ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
+    ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId,
+    ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
@@ -147,6 +147,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 variadic: signature.variadic,
                 ret: signature.ret,
                 abi: signature.abi,
+                runtime_binding: signature.runtime_binding,
             });
         }
 
@@ -777,7 +778,52 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .expect("extern executable should have a declared ExternId");
         let marshal_plan = self.extern_marshals.get(&index).cloned().unwrap_or_default();
         let callsite = ctx.fresh_callsite();
-        let (value, stmt_idx) = ctx.emit_let(Prim::Extern(callsite, extern_id, extern_args));
+        let prim = Prim::Extern(callsite, extern_id, extern_args);
+        if let ExternReturn::Pair(fields) = signature.ret {
+            let (values, stmt_idx) = ctx.emit_let_many(2, prim);
+            let field_tys = self.world.types_mut().tuple_projections(&signature.return_ty, 2);
+            for (value, ty) in values.iter().copied().zip(field_tys) {
+                ctx.value_types.insert(value, ty);
+            }
+            for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
+                ctx.extern_marshals.insert(
+                    ExternMarshalSite {
+                        block: ctx.current_block,
+                        stmt_idx,
+                        arg_idx: arg_index,
+                    },
+                    marshal,
+                );
+            }
+            let shape = executable.abi.return_layout.layout.structural;
+            let ShapeDescr::Tuple(field_layouts) = self.world.shape(shape).clone() else {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("C extern pair {fields:?} has non-tuple return transport shape {shape:?}"),
+                ));
+            };
+            let lanes = values
+                .iter()
+                .copied()
+                .zip(field_layouts.iter().copied())
+                .filter_map(|(value, layout)| (self.world.layout_width(layout) != 0).then_some(value))
+                .collect::<Vec<_>>();
+            let value = NativeBoundValue::Transport { shape, lanes };
+            let mut return_lanes = Vec::new();
+            self.encode_runtime_value_for_layout(
+                &mut ctx,
+                executable,
+                None,
+                &value,
+                &executable.abi.return_layout.layout,
+                &mut return_lanes,
+            )?;
+            ctx.set_term(Term::ReturnLanes(return_lanes));
+            self.finish_native_fn(ctx);
+            return Ok(());
+        }
+        let (value, stmt_idx) = ctx.emit_let(prim);
         for (arg_index, marshal) in marshal_plan.iter().copied().enumerate() {
             ctx.extern_marshals.insert(
                 ExternMarshalSite {
@@ -788,7 +834,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 marshal,
             );
         }
-        let result = if matches!(signature.ret, ExternTy::Unit | ExternTy::Never) {
+        let result = if matches!(signature.ret, ExternReturn::Scalar(ExternTy::Unit | ExternTy::Never)) {
             let (nil, _) = ctx.emit_let(Prim::Const(Const::Nil));
             let _ = value;
             nil
@@ -4549,6 +4595,14 @@ impl NativeFnCtx {
         (var, idx)
     }
 
+    fn emit_let_many(&mut self, arity: usize, prim: Prim) -> (Vec<Var>, usize) {
+        let stmt_idx = self.stmt_counts.entry(self.current_block).or_insert(0);
+        let idx = *stmt_idx;
+        *stmt_idx += 1;
+        let vars = self.builder.let_many(self.current_block, arity, prim);
+        (vars, idx)
+    }
+
     fn fresh_callsite(&self) -> CallsiteIdent {
         CallsiteIdent::from_source(Span::DUMMY)
     }
@@ -5175,9 +5229,9 @@ mod tests {
             .blocks
             .iter()
             .flat_map(|block| &block.stmts)
-            .find_map(|statement| {
-                let crate::fz_ir::Stmt::Let(defined, prim) = statement;
-                (*defined == value).then_some(prim)
+            .find_map(|statement| match statement {
+                crate::fz_ir::Stmt::Let(defined, prim) => (*defined == value).then_some(prim),
+                crate::fz_ir::Stmt::LetMany(_, _) => None,
             })
     }
 

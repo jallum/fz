@@ -1746,8 +1746,6 @@ fn effects_text(effects: EffectSummary) -> String {
     let flags = [
         (effects.allocates, "allocates"),
         (effects.observable, "observable"),
-        (effects.reads_allocation_stats, "reads_allocation_stats"),
-        (effects.scheduler_visible, "scheduler_visible"),
         (effects.halts, "halts"),
         (effects.calls_opaque, "calls_opaque"),
     ];

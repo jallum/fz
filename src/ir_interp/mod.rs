@@ -6,11 +6,8 @@ use std::rc::Rc;
 
 use crate::compiler2::transport::ShapeId;
 use crate::exec::runtime::ExitRecord;
-use crate::fz_ir::Module;
-use fz_runtime::any_value::{ValueKind, closure_addr_from_tagged};
 use fz_runtime::heap::{Schema, SchemaRegistry};
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
 mod backend;
 mod binop;
@@ -23,8 +20,9 @@ pub(crate) use backend::{encode_macro_entry_inputs, run_backend_entry_on_process
 use binop::*;
 #[cfg(test)]
 pub(crate) use extern_call::{
-    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
-    tests_support_test_dtor_addr,
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset,
+    tests_support_integer_boolean_pair_addr, tests_support_lock, tests_support_resolved_symbol_addr,
+    tests_support_scalar_pair_symbols, tests_support_test_dtor_addr,
 };
 use prim::*;
 pub(crate) use value::AnyValue;
@@ -79,6 +77,7 @@ pub(crate) struct IrInterpRuntime {
     backend_parked: HashMap<u32, BackendParkRecord>,
     node: Rc<Node>,
     current_proc: *mut Process,
+    callback_error: Option<String>,
 }
 
 impl IrInterpRuntime {
@@ -93,6 +92,7 @@ impl IrInterpRuntime {
             backend_parked: HashMap::new(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
+            callback_error: None,
         }
     }
 
@@ -206,6 +206,16 @@ impl IrInterpRuntime {
     fn process_ref(&self, pid: u32) -> Option<&Process> {
         self.tasks.get(&pid).map(Box::as_ref)
     }
+
+    fn record_callback_error(&mut self, error: String) {
+        if self.callback_error.is_none() {
+            self.callback_error = Some(error);
+        }
+    }
+
+    pub(super) fn take_callback_error(&mut self) -> Option<String> {
+        self.callback_error.take()
+    }
 }
 
 fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
@@ -218,26 +228,4 @@ fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
         AnyValue::FnRef(..) => v.value(proc).expect("materialize fn ref halt value").raw() as i64,
         AnyValue::Ref(v) => v.raw_word() as i64,
     }
-}
-
-pub(crate) fn make_resource_in_current_process(
-    proc: *mut Process,
-    _module: &Module,
-    payload: i64,
-    dtor_closure: fz_runtime::any_value::AnyValue,
-) -> Result<fz_runtime::any_value::AnyValue, String> {
-    if dtor_closure.kind() != ValueKind::CLOSURE {
-        return Err("make_resource: dtor arg is not a closure".to_string());
-    }
-    dtor_closure
-        .heap_object_word()
-        .and_then(closure_addr_from_tagged)
-        .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
-    let handle = ResourceHandle::new(payload as u64, fz_resource_destructor_noop);
-    let heap = &mut unsafe { &mut *proc }.heap;
-    let stub = alloc_resource(heap, handle, dtor_closure);
-    Ok(fz_runtime::any_value::AnyValue::heap_ptr(
-        stub.as_raw(),
-        ValueKind::RESOURCE,
-    ))
 }
