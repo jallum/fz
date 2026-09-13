@@ -5,6 +5,7 @@
   ],
   "blocks": [
     "fz-5xp.20",
+    "fz-5xp.37",
     "fz-kdt.28"
   ],
   "created": "2026-09-07T07:45:11Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Validate every runtime-owned extern against one exact physical ABI manifest",
   "type": "bug",
-  "updated_at": "2026-09-13T14:39:27Z"
+  "updated_at": "2026-09-13T14:39:28Z"
 }
