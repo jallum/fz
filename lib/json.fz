@@ -64,8 +64,11 @@ defmodule Json do
   `invalid_byte` names the offending byte at `offset`, including trailing
   input left over after an otherwise complete value, malformed UTF-8, and
   unescaped control bytes inside a string. `unexpected_sequence` means a
-  `\\uXXXX` escape's four digits were not all hex; `sequence` is the six bytes
-  read for it, starting at the backslash.
+  `\\uXXXX` escape is not valid Unicode: its digits are not all hex, it is a
+  lone low surrogate, or a high surrogate is followed by a complete Unicode
+  escape that is not a low surrogate. `sequence` is the offending escape or
+  pair of escapes, starting at the backslash. A high surrogate without a
+  complete following Unicode escape is `unexpected_end`.
 
   ## Examples
 
@@ -86,6 +89,12 @@ defmodule Json do
 
       Json.decode(<<34, 10, 34>>)
       #=> {:error, {:invalid_byte, 1, 10}}
+
+      Json.decode("\\"\\\\uD83D\\\\uDE00\\"")
+      #=> {:ok, "😀"}
+
+      Json.decode("\\"\\\\uDE00\\"")
+      #=> {:error, {:unexpected_sequence, 1, "\\\\uDE00"}}
 
   """
   @spec decode(binary) :: {:ok, any} | {:error, any}
@@ -128,7 +137,9 @@ defmodule Json do
   # starts at the offending byte: the offset is the difference in lengths and
   # the byte is the first one left.
   @spec reason(any, binary) :: any
-  defp reason({:sequence, at}, input), do: {:unexpected_sequence, offset(at, input), String.take_bytes(at, 6)}
+  defp reason({:sequence, at, size}, input) do
+    {:unexpected_sequence, offset(at, input), String.take_bytes(at, size)}
+  end
   defp reason("", input), do: {:unexpected_end, Kernel.byte_size(input)}
   defp reason(rest, input), do: invalid_byte(rest, offset(rest, input))
 
@@ -337,12 +348,32 @@ defmodule Json do
   defp escaped(b, _acc, _at), do: {:error, b}
 
   # A bad `\uXXXX` is an unexpected_sequence, reported at the backslash's
-  # offset with the six-byte sequence, so it is the one failure that carries
-  # where it started rather than where it stopped. An unknown simple escape is
-  # an ordinary invalid_byte and needs none of this.
+  # offset with the six- or twelve-byte sequence, so it is the one failure that
+  # carries where it started rather than where it stopped. An unknown simple
+  # escape is an ordinary invalid_byte and needs none of this.
   @spec unicode(binary, binary, integer | :error, binary) :: any
-  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at}}
-  defp unicode(r, acc, cp, _at), do: string(r, acc <> utf8(cp))
+  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, 6}}
+  defp unicode(r, acc, cp, at) when cp >= 0xd800 and cp <= 0xdbff, do: unicode_high(r, acc, cp, at)
+  defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, 6}}
+  defp unicode(r, acc, cp, at), do: unicode_scalar(r, acc, Utf8.from_codepoint(cp), at, 6)
+
+  @spec unicode_high(binary, binary, integer, binary) :: any
+  defp unicode_high(<<"\\u", a, b, c, d, r :: binary>>, acc, high, at) do
+    unicode_low(r, acc, high, hex4(a, b, c, d), at)
+  end
+  defp unicode_high(_r, _acc, _high, _at), do: {:error, ""}
+
+  @spec unicode_low(binary, binary, integer, integer | :error, binary) :: any
+  defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, 12}}
+  defp unicode_low(r, acc, high, low, at) when low >= 0xdc00 and low <= 0xdfff do
+    codepoint = 0x10000 + (high - 0xd800) * 0x400 + (low - 0xdc00)
+    unicode_scalar(r, acc, Utf8.from_codepoint(codepoint), at, 12)
+  end
+  defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, 12}}
+
+  @spec unicode_scalar(binary, binary, {:ok, utf8} | {:error, :invalid_codepoint}, binary, integer) :: any
+  defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, acc <> Utf8.to_bytes(scalar))
+  defp unicode_scalar(_r, _acc, {:error, :invalid_codepoint}, at, size), do: {:error, {:sequence, at, size}}
 
   @spec hex4(integer, integer, integer, integer) :: integer | :error
   defp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
@@ -358,17 +389,6 @@ defmodule Json do
   defp hex(c) when c >= 97 and c <= 102, do: c - 87
   defp hex(c) when c >= 65 and c <= 70, do: c - 55
   defp hex(_c), do: :error
-
-  # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined, so
-  # a lone surrogate encodes as itself.
-  @spec utf8(integer) :: binary
-  defp utf8(cp) when cp < 128, do: <<cp>>
-  defp utf8(cp) when cp < 2048 do
-    <<192 + div(cp, 64), 128 + rem(cp, 64)>>
-  end
-  defp utf8(cp) do
-    <<224 + div(cp, 4096), 128 + rem(div(cp, 64), 64), 128 + rem(cp, 64)>>
-  end
 
   # `]` closes an empty array only at the start. After a comma a value is
   # required, so `[1,]` is an error.

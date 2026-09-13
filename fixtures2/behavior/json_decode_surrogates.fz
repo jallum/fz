@@ -1,0 +1,28 @@
+#---
+# purpose: "Json.decode/1 joins valid Unicode surrogate pairs and rejects unpaired surrogates in values and keys"
+# oracle: json_decode_surrogates.oracle.exs
+#---
+def main() do
+  # A representative pair plus both scalar-range boundaries made by pairs.
+  dbg(Json.decode("\"\\uD83D\\uDE00\""))
+  dbg(Json.decode("\"\\uD800\\uDC00\""))
+  dbg(Json.decode("\"\\uDBFF\\uDFFF\""))
+  dbg(Json.decode("{\"\\uD83D\\uDE00\":1}"))
+
+  # The code points immediately outside the surrogate range stay ordinary
+  # three-byte UTF-8 scalars.
+  dbg(Json.decode("\"\\uD7FF\""))
+  dbg(Json.decode("\"\\uE000\""))
+
+  dbg(Json.decode("\"\\uD83D\""))
+  dbg(Json.decode("\"\\uD83D\\u0041\""))
+  dbg(Json.decode("\"\\uD83D\\uD83D\""))
+  dbg(Json.decode("\"\\uD83D\\uZZZZ\""))
+  dbg(Json.decode("\"\\uD83Dx\""))
+  dbg(Json.decode("\"\\uDE00\""))
+  dbg(Json.decode("\"x\\uDE00\""))
+
+  dbg(Json.decode("{\"\\uD83D\":1}"))
+  dbg(Json.decode("{\"\\uDE00\":1}"))
+  dbg(Json.decode("{\"\\uD83D\\u0041\":1}"))
+end
