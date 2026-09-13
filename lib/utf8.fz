@@ -19,9 +19,9 @@ defmodule Utf8 do
 
   """
 
-  extern "C" def fz_bitstring_valid_utf8(any) :: integer
-  extern "C" def fz_bitstring_utf8_prefix(any) :: integer
-  extern "C" def fz_brand_bitstring_as_utf8(any) :: any
+  extern "C" defp fz_bitstring_valid_utf8(any) :: integer
+  extern "C" defp fz_bitstring_utf8_prefix(any) :: integer
+  extern "C" defp fz_brand_bitstring_as_utf8(any) :: any
 
   @doc """
   Returns whether `bytes` is byte-aligned, valid UTF-8.

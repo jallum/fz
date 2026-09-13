@@ -310,7 +310,9 @@ Behavioural fixtures call the same runtime library that user programs do
 (`Kernel.assert`/`refute`/`panic`, `Enum`, `Enumerable`, `Process`), so the
 assertion machinery a fixture uses is itself fz source under `lib/`.
 `assert`/`refute` route a failure through
-`Kernel.panic`, which calls the `fz_panic` extern; that is why a failed assertion
-is a nonzero exit on every path. A fixture that exercises a runtime-library
+`Kernel.panic`, whose private `fz_panic` foreign declaration reports the reason
+through the execution context and has a `never` return contract; that is why a
+failed assertion is a nonzero exit on every path without requiring the
+interpreter to abort its host. A fixture that exercises a runtime-library
 function both proves the function and (via budgets and allocation goldens) pins
 its compiled shape and allocation floor.

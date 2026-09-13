@@ -549,7 +549,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            113,
+            // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
+            // retains the public Kernel.<>/2 wrapper between source callers
+            // and the private fz_binary_concat/2 physical gateway.
+            114,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",

@@ -20,7 +20,7 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     s
 }
 
-pub(crate) fn runtime_import_sig(name: &str) -> Signature {
+fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]) {
     use types::{F64, I8, I32, I64};
     // Single source of every runtime import's wire ABI. Every arg/return is a
     // pointer-width-or-narrower word; the signature is just the type list.
@@ -28,14 +28,13 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
     // by-name intrinsic call path) both consult this — one place to keep in
     // step with the `extern "C"` bodies in ir_runtime.rs.
     let (params, rets): (&[ir::Type], &[ir::Type]) = match name {
-        // process intrinsics lowered by name (prim.rs)
+        // Runtime exports referenced by generated code.
         "fz_panic" => (&[I64, I64], &[]),
-        "fz_send_ref" => (&[I64, I64, I64], &[I64]),
-        "fz_self_raw" => (&[I64], &[I64]),
-        "fz_make_ref_raw" => (&[], &[I64]),
-        "fz_spawn_ref" => (&[I64, I64], &[I64]),
-        "fz_spawn_opt_ref" => (&[I64, I64, I64], &[I64]),
-        "fz_make_resource_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_send" => (&[I64, I64, I64], &[I64]),
+        "fz_self" => (&[I64], &[I64]),
+        "fz_make_ref" => (&[], &[I64]),
+        "fz_spawn" => (&[I64, I64], &[I64]),
+        "fz_make_resource" => (&[I64, I64, I64], &[I64]),
         // runtime FFI declared into RuntimeRefs
         "fz_alloc_frame" => (&[I64, I32, I32], &[I64]),
         "fz_halt_implicit_ref" => (&[I64, I64], &[]),
@@ -102,7 +101,10 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_int_float_cmp" => (&[I64, F64], &[I64]),
         "fz_value_cmp_raw_const" => (&[I64, I64, I32, I64, I32], &[I64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
-        "fz_op_rem_ff" => (&[F64, F64], &[F64]),
+        // Internal fallback for legacy `Prim::BinOp(Mod)`: source-facing
+        // `fz_op_rem_ff` is now the truthful `{float, boolean}` C aggregate
+        // export and must be declared only through its resolved extern shape.
+        "fz_fmod" => (&[F64, F64], &[F64]),
         "fz_value_eq_widening_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_raw_const" => (&[I64, I32, I64], &[I64]),
@@ -126,14 +128,26 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_get_halt_cont" => (&[I64, I64, I32], &[I64]),
         "fz_yield_mid_flight_report" => (&[I64, I64, I32, I32], &[I64]),
         "fz_yield_slow_path_begin" => (&[I64], &[]),
-        other => panic!("runtime_import_sig: unknown runtime import `{other}`"),
+        other => panic!("runtime import: unknown runtime import `{other}`"),
     };
-    sig1(params, rets)
+    (params, rets)
 }
 
-/// Declare a SystemV runtime FFI fn as an Import in `jmod`.
+/// Make a runtime import signature with the target module's default calling
+/// convention. Runtime exports use the platform C ABI; hard-coding SystemV
+/// makes an Apple AArch64 import incompatible with the same export reached
+/// through an ordinary resolved extern declaration.
+pub(crate) fn runtime_import_sig_for_module<M: ClModule>(jmod: &mut M, name: &str) -> Signature {
+    let (params, rets) = runtime_import_types(name);
+    let mut sig = jmod.make_signature();
+    sig.params.extend(params.iter().copied().map(AbiParam::new));
+    sig.returns.extend(rets.iter().copied().map(AbiParam::new));
+    sig
+}
+
+/// Declare a target-default runtime FFI fn as an Import in `jmod`.
 fn decl_import<M: ClModule>(jmod: &mut M, name: &str) -> Result<FuncId, CodegenError> {
-    let sig = runtime_import_sig(name);
+    let sig = runtime_import_sig_for_module(jmod, name);
     jmod.declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
@@ -225,7 +239,7 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         box_atom_for_any_id: val.box_atom_for_any_id,
         map_is_map_id: val.map_is_map_id,
         dynamic_float_arith_unsupported_id: arith.dynamic_float_arith_unsupported_id,
-        op_rem_ff_id: arith.op_rem_ff_id,
+        fmod_id: arith.fmod_id,
         value_eq_ref_id: arith.value_eq_ref_id,
         value_eq_widening_ref_id: arith.value_eq_widening_ref_id,
         value_cmp_ref_id: arith.value_cmp_ref_id,
@@ -451,7 +465,7 @@ fn declare_value_runtime<M: ClModule>(jmod: &mut M) -> Result<ValueRefs, Codegen
 
 struct ArithRefs {
     dynamic_float_arith_unsupported_id: FuncId,
-    op_rem_ff_id: FuncId,
+    fmod_id: FuncId,
     value_eq_ref_id: FuncId,
     value_eq_widening_ref_id: FuncId,
     value_cmp_ref_id: FuncId,
@@ -467,7 +481,7 @@ struct ArithRefs {
 fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, CodegenError> {
     Ok(ArithRefs {
         dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
-        op_rem_ff_id: decl_import(jmod, "fz_op_rem_ff")?,
+        fmod_id: decl_import(jmod, "fz_fmod")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
         value_eq_widening_ref_id: decl_import(jmod, "fz_value_eq_widening_ref")?,
         value_cmp_ref_id: decl_import(jmod, "fz_value_cmp_ref")?,
@@ -739,9 +753,10 @@ pub(crate) struct RuntimeRefs {
     pub(crate) box_atom_for_any_id: FuncId,
     pub(crate) map_is_map_id: FuncId,
     pub(crate) dynamic_float_arith_unsupported_id: FuncId,
-    /// fz-5xp.34 — float `%`. Cranelift has no `frem`, so the float lanes of
-    /// the `%` operator are a call where `+ - * /` are instructions.
-    pub(crate) op_rem_ff_id: FuncId,
+    /// fz-5xp.34 — the legacy `Prim::BinOp(Mod)` fallback. The source-facing
+    /// `fz_op_rem_ff` follows the aggregate extern path instead, so this is
+    /// deliberately the scalar implementation helper with no public ABI row.
+    pub(crate) fmod_id: FuncId,
     pub(crate) value_eq_ref_id: FuncId,
     /// fz-5xp.18 — `==` over two dynamic values, which widens numerics.
     /// Structural identity uses `value_eq_ref_id` and stays strict.

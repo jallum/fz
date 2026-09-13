@@ -59,7 +59,7 @@ pub(crate) use value::*;
 
 pub(crate) use crate::ir_codegen::{
     AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, RuntimeRefs, build_frame_schema,
-    declare_runtime_symbols, define_static_sharedbin, runtime_import_sig, sig1,
+    declare_runtime_symbols, define_static_sharedbin, runtime_import_sig_for_module,
 };
 
 pub(crate) fn compile_with_backend_native_program<

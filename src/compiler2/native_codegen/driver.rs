@@ -1,7 +1,7 @@
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
 use crate::diag::Diagnostics;
-use crate::fz_ir::{BlockId, FnId, Module, Prim, Stmt, Term};
+use crate::fz_ir::{BlockId, FnId, Module, Prim, Term};
 use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
@@ -32,8 +32,7 @@ fn collect_tuple_arities_and_register_schemas(
     for f in &module.fns {
         for blk in &f.blocks {
             for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                match prim {
+                match stmt.prim() {
                     Prim::MakeTuple(args) => {
                         tuple_arities.insert(args.len());
                     }

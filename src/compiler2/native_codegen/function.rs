@@ -1,7 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::fz_ir::{Block, FnIr, SourceInfo, Stmt, Term};
+use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt, Term};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
 use crate::types::{ClosureTypes, Types};
@@ -156,32 +156,53 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
             body.b.set_srcloc(span_to_srcloc(span));
-            let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env)?;
-            if !matches!(out, LowerOut::DeadUnit) {
-                let binding = match out {
-                    LowerOut::StrictConst(value) => {
-                        body.cache.static_scalar_consts.insert(v.0, value);
-                        let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
-                        CodegenValue::known(raw, value.kind())
-                    }
-                    LowerOut::Strict(value) => value,
-                    LowerOut::ValueRefWord(value) => CodegenValue::any_ref(value),
-                    LowerOut::ValueRef(value) => CodegenValue::any_ref(value),
-                    _ => {
-                        let repr = if out.is_raw_f64() {
-                            ArgRepr::RawF64
-                        } else if out.is_raw_i64() {
-                            ArgRepr::RawInt
-                        } else if out.is_condition() {
-                            ArgRepr::Condition
-                        } else {
-                            ArgRepr::ValueRef
+            match stmt {
+                Stmt::Let(v, prim) => {
+                    let out = lower_prim(&mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env)?;
+                    if !matches!(out, LowerOut::DeadUnit) {
+                        let binding = match out {
+                            LowerOut::StrictConst(value) => {
+                                body.cache.static_scalar_consts.insert(v.0, value);
+                                let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
+                                CodegenValue::known(raw, value.kind())
+                            }
+                            LowerOut::Strict(value) => value,
+                            LowerOut::ValueRefWord(value) => CodegenValue::any_ref(value),
+                            LowerOut::ValueRef(value) => CodegenValue::any_ref(value),
+                            _ => {
+                                let repr = if out.is_raw_f64() {
+                                    ArgRepr::RawF64
+                                } else if out.is_raw_i64() {
+                                    ArgRepr::RawInt
+                                } else if out.is_condition() {
+                                    ArgRepr::Condition
+                                } else {
+                                    ArgRepr::ValueRef
+                                };
+                                CodegenValue::from_abi_value(out.value(), repr)
+                            }
                         };
-                        CodegenValue::from_abi_value(out.value(), repr)
+                        var_env.insert(v.0, binding);
                     }
-                };
-                var_env.insert(v.0, binding);
+                }
+                Stmt::LetMany(vars, Prim::Extern(_, eid, args)) => {
+                    let decl = env.module.extern_by_id(*eid);
+                    let values = lower_extern_pair(&mut body, env.runtime, &var_env, decl, eid, args)?;
+                    if vars.len() != values.len() {
+                        return Err(CodegenError::new(format!(
+                            "extern `{}` produced {} result lanes for {} bindings",
+                            decl.symbol,
+                            values.len(),
+                            vars.len()
+                        )));
+                    }
+                    var_env.extend(vars.iter().map(|var| var.0).zip(values));
+                }
+                Stmt::LetMany(_, prim) => {
+                    return Err(CodegenError::new(format!(
+                        "multi-result lowering is unsupported for {prim:?}"
+                    )));
+                }
             }
         }
         // Terminator gets its own srcloc (often the same as the last

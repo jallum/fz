@@ -2,13 +2,14 @@
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
+use crate::extern_contract::{RuntimeArithmetic, RuntimeComparison, RuntimeNativeBinding};
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
     Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
-    self, BlockArg, InstBuilder, MemFlags,
+    self, BlockArg, InstBuilder, MemFlags, TrapCode,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -18,6 +19,7 @@ use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, st
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
+use target_lexicon::{Architecture, OperatingSystem, Triple};
 
 pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -659,6 +661,14 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
         ExternTy::F64 => body.as_raw_f64(var_env, var.0),
+        ExternTy::Bool => {
+            let atom = body.coerce_binding_to(
+                *var_env.get(&var.0).expect("bound extern boolean argument"),
+                ArgRepr::RawAtom,
+            );
+            let is_true = body.b.ins().icmp_imm(IntCC::Equal, atom, TRUE_ATOM_ID as i64);
+            body.b.ins().uextend(types::I64, is_true)
+        }
         ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
         ExternTy::Binary | ExternTy::CString => {
             let helper_id = match ty {
@@ -773,7 +783,11 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let fixed_count = decl.params.len();
     let fixed = &arg_tys[..fixed_count];
     let variadic = &arg_tys[fixed_count..];
-    let dispatcher = variadic_dispatcher(env.runtime, decl.ret, fixed, variadic)?;
+    let ret = decl
+        .ret
+        .scalar_ty()
+        .ok_or_else(|| CodegenError::new("variadic extern aggregate returns are unsupported"))?;
+    let dispatcher = variadic_dispatcher(env.runtime, ret, fixed, variadic)?;
     let symbol_ptr = emit_extern_symbol_name(
         body.b,
         body.jmod,
@@ -796,15 +810,23 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
 
     let dispatcher_fref = body.jmod.declare_func_in_func(dispatcher, body.b.func);
     let inst = body.b.ins().call(dispatcher_fref, &call_args);
-    if matches!(decl.ret, ExternTy::Unit | ExternTy::Never) {
+    if matches!(ret, ExternTy::Unit | ExternTy::Never) {
         if body.cache.used_vars.contains(&dest_var.0) {
             return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
         }
         return Ok(LowerOut::DeadUnit);
     }
     let raw = body.b.inst_results(inst)[0];
-    match decl.ret {
+    match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
+        ExternTy::Bool => {
+            let is_zero = body.b.ins().icmp_imm(IntCC::Equal, raw, 0);
+            let is_one = body.b.ins().icmp_imm(IntCC::Equal, raw, 1);
+            let canonical = body.b.ins().bor(is_zero, is_one);
+            body.b.ins().trapz(canonical, TrapCode::user(2).unwrap());
+            let value = body.b.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+            Ok(LowerOut::Strict(strict_bool(body.b, value)))
+        }
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
         // `variadic_dispatcher` accepts only `I64`-returning shapes, so the
         // dispatcher's result is an i64 whatever the declaration says. Tagging
@@ -919,88 +941,18 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             let arg_vars: Vec<Var> = args.iter().map(|arg| arg.var).collect();
-            if decl.symbol == "fz_panic" && args.len() == 1 {
-                return lower_extern_fz_panic(body, var_env, &arg_vars, dest_var);
+            if matches!(
+                decl.runtime_binding,
+                Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::NegF))
+            ) {
+                let [arg] = arg_vars.as_slice() else {
+                    return Err(CodegenError::new("validated float negation has the wrong arity"));
+                };
+                let value = body.as_raw_f64(var_env, arg.0);
+                return Ok(LowerOut::RawF64(body.b.ins().fneg(value)));
             }
-            if decl.symbol == "fz_send" && args.len() == 2 {
-                return lower_extern_fz_send(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(body);
-            }
-            if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(body);
-            }
-            if decl.symbol == "fz_spawn" && args.len() == 1 {
-                return lower_extern_fz_spawn(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                return lower_extern_fz_spawn_opt(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                return lower_extern_fz_make_resource(body, var_env, &arg_vars);
-            }
-            if let Some(op) = arith_shim_op(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, op, &arg_vars);
-            }
-            if decl.symbol == "fz_op_eq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Eq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Identical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::NotIdentical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_neq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Neq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_typed_cmp(body, var_env, runtime, op, kinds, &arg_vars, dest_var);
+            if let Some(RuntimeNativeBinding::Comparison(binding)) = decl.runtime_binding {
+                return lower_runtime_comparison(body, t, value_types, var_env, runtime, binding, &arg_vars, dest_var);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(
@@ -1452,7 +1404,7 @@ fn emit_float_rem<M: cranelift_module::Module>(
     left: ir::Value,
     right: ir::Value,
 ) -> ir::Value {
-    let fref = body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func);
+    let fref = body.jmod.declare_func_in_func(runtime.fmod_id, body.b.func);
     let inst = body.b.ins().call(fref, &[left, right]);
     body.b.inst_results(inst)[0]
 }
@@ -1492,7 +1444,7 @@ where
     // Typed fast paths: float and int. Float `%` is the one that is a CALL
     // rather than an instruction, so its funcref is declared up front — the
     // closure below is handed a builder, not the module.
-    let rem_fref = matches!(mop, BinOp::Mod).then(|| body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func));
+    let rem_fref = matches!(mop, BinOp::Mod).then(|| body.jmod.declare_func_in_func(runtime.fmod_id, body.b.func));
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
@@ -1950,80 +1902,8 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
-// fz "process intrinsics": externs the front end exposes but the runtime
-// implements as BIFs that need the running process (and/or bespoke arg
-// marshaling). Each marshals its args, then routes through `body.call_named`
-// — the one declare→call path — and wraps the result per its ABI. The process,
-// when needed, is the pinned register (`process_arg`), prepended here rather
-// than appearing in the fz extern decl.
-
-/// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
-fn lower_extern_fz_panic<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let value_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    body.call_named("fz_panic", &[process, value_ref]);
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
-    }
-    Ok(LowerOut::DeadUnit)
-}
-
-/// The arithmetic shims native codegen LOWERS IN PLACE rather than calls.
-///
-/// They are declared in `kernel.fz` and listed in `RUNTIME_SYMBOLS`, but no
-/// door ever resolves their address on the native path: this table is where
-/// the call becomes a machine instruction instead. It is a table rather than
-/// five `matches!` arms so that the set is nameable — `extern_contract`'s
-/// coverage test reads it to tell a symbol that needs no JIT registration
-/// from one that is simply missing (fz-5xp.58).
-pub(crate) const ARITH_SHIMS: &[(&str, BinOp)] = &[
-    ("fz_op_add_ii", BinOp::Add),
-    ("fz_op_add_if", BinOp::Add),
-    ("fz_op_add_ff", BinOp::Add),
-    ("fz_op_sub_ii", BinOp::Sub),
-    ("fz_op_sub_if", BinOp::Sub),
-    ("fz_op_sub_fi", BinOp::Sub),
-    ("fz_op_sub_ff", BinOp::Sub),
-    ("fz_op_mul_ii", BinOp::Mul),
-    ("fz_op_mul_if", BinOp::Mul),
-    ("fz_op_mul_ff", BinOp::Mul),
-    ("fz_op_div_ii", BinOp::Div),
-    ("fz_op_div_if", BinOp::Div),
-    ("fz_op_div_fi", BinOp::Div),
-    ("fz_op_div_ff", BinOp::Div),
-    ("fz_op_rem_ii", BinOp::Mod),
-    ("fz_op_rem_if", BinOp::Mod),
-    ("fz_op_rem_fi", BinOp::Mod),
-    ("fz_op_rem_ff", BinOp::Mod),
-];
-
-pub(crate) fn arith_shim_op(symbol: &str) -> Option<BinOp> {
-    ARITH_SHIMS.iter().find(|(name, _)| *name == symbol).map(|(_, op)| *op)
-}
-
-fn lower_extern_fz_op_arith<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    op: BinOp,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
-}
-
-/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects for an operand
-/// pair whose kinds it knows.
+/// fz-5xp.18 — the typed comparison lanes carried by a validated runtime
+/// binding. The binding's identity, not a symbol suffix, selects this shape.
 ///
 /// Ordering is a partial function: `Kernel` declares a clause for each pair it
 /// can order and no `any`/`any` default, so an unsupported combination has no
@@ -2041,26 +1921,173 @@ enum CmpOperands {
     BinaryBinary,
 }
 
-fn typed_cmp_extern(symbol: &str) -> Option<(BinOp, CmpOperands)> {
-    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
-    let kinds = match suffix {
-        "ii" => CmpOperands::IntInt,
-        "ff" => CmpOperands::FloatFloat,
-        "if" => CmpOperands::IntFloat,
-        "fi" => CmpOperands::FloatInt,
-        "bb" => CmpOperands::BinaryBinary,
-        _ => return None,
+fn lower_runtime_comparison<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
+    runtime: &RuntimeRefs,
+    binding: RuntimeComparison,
+    args: &[Var],
+    dest_var: Var,
+) -> Result<LowerOut, CodegenError> {
+    let [left, right] = args else {
+        return Err(CodegenError::new("validated runtime comparison has the wrong arity"));
     };
-    let op = match op {
-        "eq" => BinOp::Eq,
-        "neq" => BinOp::Neq,
-        "lt" => BinOp::Lt,
-        "lte" => BinOp::Le,
-        "gt" => BinOp::Gt,
-        "gte" => BinOp::Ge,
-        _ => return None,
-    };
-    Some((op, kinds))
+    match binding {
+        RuntimeComparison::Eq => lower_eq_binop(
+            body,
+            t,
+            value_types,
+            var_env,
+            runtime,
+            BinOp::Eq,
+            *left,
+            *right,
+            dest_var,
+        ),
+        RuntimeComparison::Neq => lower_eq_binop(
+            body,
+            t,
+            value_types,
+            var_env,
+            runtime,
+            BinOp::Neq,
+            *left,
+            *right,
+            dest_var,
+        ),
+        RuntimeComparison::Identical => lower_eq_binop(
+            body,
+            t,
+            value_types,
+            var_env,
+            runtime,
+            BinOp::Identical,
+            *left,
+            *right,
+            dest_var,
+        ),
+        RuntimeComparison::NotIdentical => lower_eq_binop(
+            body,
+            t,
+            value_types,
+            var_env,
+            runtime,
+            BinOp::NotIdentical,
+            *left,
+            *right,
+            dest_var,
+        ),
+        RuntimeComparison::LtII => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::IntInt, args, dest_var)
+        }
+        RuntimeComparison::LtFF => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Lt,
+            CmpOperands::FloatFloat,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::LtIF => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::IntFloat, args, dest_var)
+        }
+        RuntimeComparison::LtFI => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Lt, CmpOperands::FloatInt, args, dest_var)
+        }
+        RuntimeComparison::LtBB => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Lt,
+            CmpOperands::BinaryBinary,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::LeII => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::IntInt, args, dest_var)
+        }
+        RuntimeComparison::LeFF => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Le,
+            CmpOperands::FloatFloat,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::LeIF => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::IntFloat, args, dest_var)
+        }
+        RuntimeComparison::LeFI => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Le, CmpOperands::FloatInt, args, dest_var)
+        }
+        RuntimeComparison::LeBB => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Le,
+            CmpOperands::BinaryBinary,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::GtII => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::IntInt, args, dest_var)
+        }
+        RuntimeComparison::GtFF => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Gt,
+            CmpOperands::FloatFloat,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::GtIF => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::IntFloat, args, dest_var)
+        }
+        RuntimeComparison::GtFI => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Gt, CmpOperands::FloatInt, args, dest_var)
+        }
+        RuntimeComparison::GtBB => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Gt,
+            CmpOperands::BinaryBinary,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::GeII => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::IntInt, args, dest_var)
+        }
+        RuntimeComparison::GeFF => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Ge,
+            CmpOperands::FloatFloat,
+            args,
+            dest_var,
+        ),
+        RuntimeComparison::GeIF => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::IntFloat, args, dest_var)
+        }
+        RuntimeComparison::GeFI => {
+            lower_typed_cmp(body, var_env, runtime, BinOp::Ge, CmpOperands::FloatInt, args, dest_var)
+        }
+        RuntimeComparison::GeBB => lower_typed_cmp(
+            body,
+            var_env,
+            runtime,
+            BinOp::Ge,
+            CmpOperands::BinaryBinary,
+            args,
+            dest_var,
+        ),
+    }
 }
 
 fn lower_typed_cmp<M: cranelift_module::Module>(
@@ -2155,79 +2182,6 @@ fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
     })
 }
 
-/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
-/// forwards to `fz_send_ref`.
-fn lower_extern_fz_send<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let receiver = body.as_raw_i64(var_env, args[0].0);
-    let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
-    let mut msg_args = Vec::with_capacity(1);
-    body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
-    let msg_ref = msg_args[0];
-    let process = body.process_arg();
-    let inst = body.call_named("fz_send_ref", &[process, receiver, msg_ref]);
-    Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_self()`: the current process id from `fz_self_raw`.
-fn lower_extern_fz_self<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-) -> Result<LowerOut, CodegenError> {
-    let process = body.process_arg();
-    let inst = body.call_named("fz_self_raw", &[process]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_make_ref()`: a fresh opaque ref from `fz_make_ref_raw` (no process).
-fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-) -> Result<LowerOut, CodegenError> {
-    let inst = body.call_named("fz_make_ref_raw", &[]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
-fn lower_extern_fz_spawn<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let closure_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_spawn_ref", &[process, closure_ref]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_spawn_opt(closure, min_heap_size)`: `fz_spawn` plus a heap-size hint.
-fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let closure_ref = body.tagged_var(var_env, args[0].0);
-    let min_heap_size = body.as_raw_i64(var_env, args[1].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_spawn_opt_ref", &[process, closure_ref, min_heap_size]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_make_resource(payload, dtor)`: raw payload bits + destructor closure ref.
-fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let payload = *var_env.get(&args[0].0).expect("unbound make_resource payload");
-    let payload_raw = body.value_raw_int(payload);
-    let dtor_ref = body.tagged_var(var_env, args[1].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_make_resource_ref", &[process, payload_raw, dtor_ref]);
-    Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
-}
-
 /// Generic extern fallback: marshals each arg per its declared `ExternTy`,
 /// looks up (or caches) the FuncRef, and packages the return as
 /// RawI64 / RawF64 / ValueRef / nil / DeadUnit per the decl shape.
@@ -2253,16 +2207,24 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         ExternTy::F64 => types::F64,
         _ => types::I64,
     }));
-    let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+    let ret = decl.ret.scalar_ty().ok_or_else(|| {
+        CodegenError::new(format!(
+            "extern `{}` aggregate result reached scalar Prim::Extern lowering",
+            decl.symbol
+        ))
+    })?;
+    let returns_value = !matches!(ret, ExternTy::Unit | ExternTy::Never);
     let ret_tys: &[ir::Type] = if returns_value {
-        match decl.ret {
+        match ret {
             ExternTy::F64 => &[types::F64],
             _ => &[types::I64],
         }
     } else {
         &[]
     };
-    let sig = sig1(&param_tys, ret_tys);
+    let mut sig = body.jmod.make_signature();
+    sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
+    sig.returns.extend(ret_tys.iter().copied().map(ir::AbiParam::new));
     let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
         cached
     } else {
@@ -2304,8 +2266,16 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         // everything downstream that a raw f64 was a tagged value ref: the
         // consumer then unboxed it, and the result was an unbox helper applied
         // to an f64 that failed Cranelift verification.
-        return Ok(match decl.ret {
+        return Ok(match ret {
             ExternTy::I64 => LowerOut::RawI64(raw),
+            ExternTy::Bool => {
+                let is_zero = body.b.ins().icmp_imm(IntCC::Equal, raw, 0);
+                let is_one = body.b.ins().icmp_imm(IntCC::Equal, raw, 1);
+                let canonical = body.b.ins().bor(is_zero, is_one);
+                body.b.ins().trapz(canonical, TrapCode::user(2).unwrap());
+                let value = body.b.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+                LowerOut::Strict(strict_bool(body.b, value))
+            }
             ExternTy::F64 => LowerOut::RawF64(raw),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
             // Spelled out rather than defaulted: the defect above WAS a wire
@@ -2319,6 +2289,301 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+pub(crate) fn lower_extern_pair<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    decl: &ExternDecl,
+    eid: &ExternId,
+    args: &[ExternArg],
+) -> Result<Vec<CodegenValue>, CodegenError> {
+    if let Some(RuntimeNativeBinding::Arithmetic(binding)) = decl.runtime_binding
+        && let Some(values) = lower_runtime_arithmetic_pair(body, var_env, binding, args)?
+    {
+        return Ok(values);
+    }
+    lower_extern_pair_call(body, runtime, var_env, decl, eid, args)
+}
+
+fn lower_extern_pair_call<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    decl: &ExternDecl,
+    eid: &ExternId,
+    args: &[ExternArg],
+) -> Result<Vec<CodegenValue>, CodegenError> {
+    let crate::fz_ir::ExternReturn::Pair(fields) = decl.ret else {
+        return Err(CodegenError::new(format!(
+            "extern `{}` reached pair lowering with scalar result {:?}",
+            decl.symbol, decl.ret
+        )));
+    };
+    if decl.abi != crate::fz_ir::ExternAbi::C || decl.variadic {
+        return Err(CodegenError::new(format!(
+            "extern `{}` pair results require one fixed `C` declaration",
+            decl.symbol
+        )));
+    }
+    if args.len() != decl.params.len() {
+        return Err(CodegenError::new(format!(
+            "extern `{}` codegen: arg count {} != param count {}",
+            decl.symbol,
+            args.len(),
+            decl.params.len()
+        )));
+    }
+    let mut sig = body.jmod.make_signature();
+    sig.params.extend(
+        decl.params
+            .iter()
+            .map(|ty| ir::AbiParam::new(if *ty == ExternTy::F64 { types::F64 } else { types::I64 })),
+    );
+    let physical = c_pair_return_types(body.jmod.isa().triple(), fields)?;
+    sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
+        cached
+    } else {
+        let func_id = body
+            .jmod
+            .declare_function(&decl.symbol, Linkage::Import, &sig)
+            .map_err(|error| CodegenError::new(format!("declare extern `{}`: {error}", decl.symbol)))?;
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(*eid, fref);
+        fref
+    };
+    let call_args = args
+        .iter()
+        .zip(decl.params.iter().copied())
+        .map(|(arg, ty)| marshal_extern_arg(body, runtime, var_env, arg.var, ty, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    let call = body.b.ins().call(fref, &call_args);
+    let results = body.b.inst_results(call).to_vec();
+    results
+        .into_iter()
+        .zip(physical)
+        .zip(fields)
+        .map(|((value, physical), semantic)| decode_pair_result(body, value, physical, semantic))
+        .collect()
+}
+
+/// Native replacement for one exact runtime binding. `None` retains the one
+/// fmod-backed real call that Cranelift cannot express; every returned pair
+/// otherwise stays in scalar result/status lanes.
+fn lower_runtime_arithmetic_pair<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    binding: RuntimeArithmetic,
+    args: &[ExternArg],
+) -> Result<Option<Vec<CodegenValue>>, CodegenError> {
+    let arity_error = || {
+        CodegenError::new(format!(
+            "validated runtime arithmetic {binding:?} has wrong arity {}",
+            args.len()
+        ))
+    };
+    let integer_pair = |body: &mut CodegenFn<'_, '_, '_, M>, result: ir::Value, failed: ir::Value| {
+        vec![CodegenValue::RawInt(result), strict_bool(body.b, failed)]
+    };
+    let float_pair = |body: &mut CodegenFn<'_, '_, '_, M>, result: ir::Value| {
+        let magnitude = body.b.ins().fabs(result);
+        let infinity = body.b.ins().f64const(f64::INFINITY);
+        let finite = body.b.ins().fcmp(FloatCC::LessThan, magnitude, infinity);
+        let failed = body.b.ins().icmp_imm(IntCC::Equal, finite, 0);
+        // The transport contract deliberately initializes the value lane on
+        // failure too. `arithmetic_result/1` discards it today, but callers
+        // may destructure an ordinary private extern result before applying
+        // policy, so returning an Infinity/NaN here would diverge from the
+        // real runtime export.
+        let zero = body.b.ins().f64const(0.0);
+        let initialized = body.b.ins().select(finite, result, zero);
+        vec![CodegenValue::RawF64(initialized), strict_bool(body.b, failed)]
+    };
+    match binding {
+        RuntimeArithmetic::NegI => {
+            let [arg] = args else { return Err(arity_error()) };
+            let zero = body.b.ins().iconst(types::I64, 0);
+            let value = body.as_raw_i64(var_env, arg.var.0);
+            let (result, overflowed) = body.b.ins().ssub_overflow(zero, value);
+            Ok(Some(integer_pair(body, result, overflowed)))
+        }
+        RuntimeArithmetic::AddII | RuntimeArithmetic::SubII | RuntimeArithmetic::MulII => {
+            let [left, right] = args else { return Err(arity_error()) };
+            let left = body.as_raw_i64(var_env, left.var.0);
+            let right = body.as_raw_i64(var_env, right.var.0);
+            let inst = match binding {
+                RuntimeArithmetic::AddII => body.b.ins().sadd_overflow(left, right),
+                RuntimeArithmetic::SubII => body.b.ins().ssub_overflow(left, right),
+                RuntimeArithmetic::MulII => body.b.ins().smul_overflow(left, right),
+                _ => unreachable!(),
+            };
+            let (result, overflowed) = inst;
+            Ok(Some(integer_pair(body, result, overflowed)))
+        }
+        RuntimeArithmetic::DivII | RuntimeArithmetic::RemII => {
+            let [left, right] = args else { return Err(arity_error()) };
+            let left = body.as_raw_i64(var_env, left.var.0);
+            let right = body.as_raw_i64(var_env, right.var.0);
+            Ok(Some(emit_checked_integer_division(
+                body,
+                left,
+                right,
+                binding == RuntimeArithmetic::RemII,
+            )))
+        }
+        RuntimeArithmetic::AddIF
+        | RuntimeArithmetic::AddFF
+        | RuntimeArithmetic::SubIF
+        | RuntimeArithmetic::SubFI
+        | RuntimeArithmetic::SubFF
+        | RuntimeArithmetic::MulIF
+        | RuntimeArithmetic::MulFF
+        | RuntimeArithmetic::DivIIToFloat
+        | RuntimeArithmetic::DivIF
+        | RuntimeArithmetic::DivFI
+        | RuntimeArithmetic::DivFF => {
+            let [left, right] = args else { return Err(arity_error()) };
+            let left = as_known_numeric_f64(var_env, body.b, left.var.0);
+            let right = as_known_numeric_f64(var_env, body.b, right.var.0);
+            let result = match binding {
+                RuntimeArithmetic::AddIF | RuntimeArithmetic::AddFF => body.b.ins().fadd(left, right),
+                RuntimeArithmetic::SubIF | RuntimeArithmetic::SubFI | RuntimeArithmetic::SubFF => {
+                    body.b.ins().fsub(left, right)
+                }
+                RuntimeArithmetic::MulIF | RuntimeArithmetic::MulFF => body.b.ins().fmul(left, right),
+                RuntimeArithmetic::DivIIToFloat
+                | RuntimeArithmetic::DivIF
+                | RuntimeArithmetic::DivFI
+                | RuntimeArithmetic::DivFF => body.b.ins().fdiv(left, right),
+                _ => unreachable!(),
+            };
+            Ok(Some(float_pair(body, result)))
+        }
+        RuntimeArithmetic::RemIF | RuntimeArithmetic::RemFI | RuntimeArithmetic::RemFF => Ok(None),
+        RuntimeArithmetic::NegF => Err(CodegenError::new("scalar float negation reached pair lowering")),
+    }
+}
+
+/// Branch around Cranelift's trapping integer divide/remainder instructions.
+/// The join carries the actual result and status separately, including the
+/// unusual successful `MIN_I64 rem -1` zero.
+fn emit_checked_integer_division<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    left: ir::Value,
+    right: ir::Value,
+    remainder: bool,
+) -> Vec<CodegenValue> {
+    let failed = body.b.create_block();
+    let checked = body.b.create_block();
+    let special_rem = remainder.then(|| body.b.create_block());
+    let normal = body.b.create_block();
+    let join = body.b.create_block();
+    body.b.append_block_param(join, types::I64);
+    body.b.append_block_param(join, types::I8);
+    let no_args: Vec<BlockArg> = Vec::new();
+    let is_zero = body.b.ins().icmp_imm(IntCC::Equal, right, 0);
+    let is_min = body.b.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
+    let is_negative_one = body.b.ins().icmp_imm(IntCC::Equal, right, -1);
+    let min_negative_one = body.b.ins().band(is_min, is_negative_one);
+    let unsafe_division = if remainder {
+        is_zero
+    } else {
+        body.b.ins().bor(is_zero, min_negative_one)
+    };
+    body.b.ins().brif(unsafe_division, failed, &no_args, checked, &no_args);
+
+    body.b.switch_to_block(failed);
+    body.b.seal_block(failed);
+    let zero = body.b.ins().iconst(types::I64, 0);
+    let true_flag = body.b.ins().iconst(types::I8, 1);
+    body.b
+        .ins()
+        .jump(join, &[BlockArg::Value(zero), BlockArg::Value(true_flag)]);
+
+    body.b.switch_to_block(checked);
+    body.b.seal_block(checked);
+    if let Some(special_rem) = special_rem {
+        body.b
+            .ins()
+            .brif(min_negative_one, special_rem, &no_args, normal, &no_args);
+        body.b.switch_to_block(special_rem);
+        body.b.seal_block(special_rem);
+        let zero = body.b.ins().iconst(types::I64, 0);
+        let false_flag = body.b.ins().iconst(types::I8, 0);
+        body.b
+            .ins()
+            .jump(join, &[BlockArg::Value(zero), BlockArg::Value(false_flag)]);
+    } else {
+        body.b.ins().jump(normal, &no_args);
+    }
+
+    body.b.switch_to_block(normal);
+    body.b.seal_block(normal);
+    let result = if remainder {
+        body.b.ins().srem(left, right)
+    } else {
+        body.b.ins().sdiv(left, right)
+    };
+    let false_flag = body.b.ins().iconst(types::I8, 0);
+    body.b
+        .ins()
+        .jump(join, &[BlockArg::Value(result), BlockArg::Value(false_flag)]);
+
+    body.b.switch_to_block(join);
+    body.b.seal_block(join);
+    let result = body.b.block_params(join);
+    vec![CodegenValue::RawInt(result[0]), strict_bool(body.b, result[1])]
+}
+
+fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+    let natural = |field| if field == ExternTy::F64 { types::F64 } else { types::I64 };
+    match triple.architecture {
+        Architecture::X86_64 | Architecture::X86_64h => Ok(fields.map(natural)),
+        Architecture::Aarch64(_)
+            if matches!(
+                triple.operating_system,
+                OperatingSystem::Linux | OperatingSystem::Darwin(_)
+            ) =>
+        {
+            if fields == [ExternTy::F64, ExternTy::F64] {
+                Ok([types::F64, types::F64])
+            } else {
+                Ok([types::I64, types::I64])
+            }
+        }
+        Architecture::Aarch64(_) => Err(CodegenError::new(format!(
+            "C scalar-pair returns are unsupported on target {triple}; only Linux and Darwin AArch64 are verified"
+        ))),
+        ref architecture => Err(CodegenError::new(format!(
+            "C scalar-pair returns are unsupported on target architecture {architecture}"
+        ))),
+    }
+}
+
+fn decode_pair_result<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: ir::Value,
+    physical: ir::Type,
+    semantic: ExternTy,
+) -> Result<CodegenValue, CodegenError> {
+    Ok(match semantic {
+        ExternTy::I64 => CodegenValue::RawInt(value),
+        ExternTy::F64 if physical == types::F64 => CodegenValue::RawF64(value),
+        ExternTy::F64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlags::new(), value)),
+        ExternTy::Bool => {
+            let is_zero = body.b.ins().icmp_imm(IntCC::Equal, value, 0);
+            let is_one = body.b.ins().icmp_imm(IntCC::Equal, value, 1);
+            let canonical = body.b.ins().bor(is_zero, is_one);
+            body.b.ins().trapz(canonical, TrapCode::user(2).unwrap());
+            let condition = body.b.ins().icmp_imm(IntCC::NotEqual, value, 0);
+            strict_bool(body.b, condition)
+        }
+        other => {
+            return Err(CodegenError::new(format!("{other:?} is not a scalar C pair field")));
+        }
+    })
 }
 
 fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32, CodegenError> {
@@ -2431,4 +2696,60 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
         }
     }
     Ok(cl_ptr)
+}
+
+#[cfg(test)]
+mod c_pair_abi_test {
+    use super::*;
+    use std::str::FromStr;
+
+    fn classify(target: &str, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+        c_pair_return_types(&Triple::from_str(target).expect("valid target triple"), fields)
+    }
+
+    #[test]
+    fn x86_64_uses_each_field_natural_return_bank_on_linux_and_darwin() {
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"] {
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::Bool]).unwrap(),
+                [types::I64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::F64]).unwrap(),
+                [types::I64, types::F64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::Bool]).unwrap(),
+                [types::F64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::F64]).unwrap(),
+                [types::F64, types::F64]
+            );
+        }
+    }
+
+    #[test]
+    fn aarch64_only_uses_float_banks_for_a_float_hfa() {
+        for target in ["aarch64-unknown-linux-gnu", "aarch64-apple-darwin"] {
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::F64]).unwrap(),
+                [types::F64, types::F64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::F64]).unwrap(),
+                [types::I64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::Bool]).unwrap(),
+                [types::I64, types::I64]
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_target_abi_is_refused_before_emitting_a_call() {
+        assert!(classify("aarch64-pc-windows-msvc", [ExternTy::F64, ExternTy::I64]).is_err());
+        assert!(classify("riscv64gc-unknown-linux-gnu", [ExternTy::I64, ExternTy::I64]).is_err());
+    }
 }

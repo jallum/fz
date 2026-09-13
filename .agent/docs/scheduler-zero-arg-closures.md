@@ -243,9 +243,9 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
   (`src/exec/runtime_test.rs`) — a sender-side hit bypasses the mailbox and
   copies only the projected payload needed by the winning clause into the
   receiver-owned outcome closure.
-- `cargo test --test fixture_matrix spawn` — selects `spawn2_basic` and
-  `spawn_with_captures`: a spawned task resumed as an entry thunk through
-  `fz_resume`, the same verb a continuation uses.
+- `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
+  resumed as an entry thunk through `fz_resume`, the same verb a continuation
+  uses.
 - `reduction_budget_resets_and_spends` / `reset_reduction_budget_clears_yield_reasons`
   (`runtime/src/process_test.rs`) — budget reset/spend and yield-reason clearing.
 - `coexistence` (`src/ir_interp/tests/coexistence.rs`) — two interpreters run on

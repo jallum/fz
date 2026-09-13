@@ -632,12 +632,17 @@ fn parse_function_form(
                 .map_value("variadic")?
                 .ok_or_else(|| QuotedSourceError::new("quoted extern is missing `variadic`"))?,
         )?;
+        let is_private = decode_bool(
+            &details
+                .map_value("private")?
+                .ok_or_else(|| QuotedSourceError::new("quoted extern is missing `private`"))?,
+        )?;
         return Ok(FunctionForm {
             source,
             name,
             arity,
             is_macro: false,
-            is_private: false,
+            is_private,
             variadic,
             span,
         });
@@ -933,7 +938,7 @@ fn parse_function_head_key_inner(
 fn is_definable_operator(name: &str) -> bool {
     matches!(
         name,
-        "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>"
+        "+" | "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>"
     )
 }
 

@@ -1,15 +1,15 @@
 #---
-# purpose: "runtime fz_binary_concat joins byte-aligned binaries across inline and ProcBin storage"
+# purpose: "public <> joins byte-aligned binaries across inline and ProcBin storage"
 # oracle: oracle.exs
 #---
 #
-# Exercises the runtime BIF that will back the `<>` operator desugar. The small
+# Exercises the public `<>` wrapper over the runtime binary-concat export. The small
 # case stays inline; the long case crosses the shared-binary threshold and
 # therefore returns through the ProcBin path.
 def main() do
-  small = Kernel.fz_binary_concat("foo", "bar")
+  small = "foo" <> "bar"
   long_left = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  long = Kernel.fz_binary_concat(long_left, "bbbb")
+  long = long_left <> "bbbb"
 
   dbg(small)
   dbg(long)

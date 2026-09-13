@@ -22,6 +22,29 @@ pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BuiltinOpaque {
+    Pid,
+    Ref,
+    CPointer,
+}
+
+impl BuiltinOpaque {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pid => "pid",
+            Self::Ref => "ref",
+            Self::CPointer => "cpointer",
+        }
+    }
+}
+
+impl std::fmt::Display for BuiltinOpaque {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Semantic specialization-key slot.
 ///
 /// `Some(ty)` participates in key coverage. `None` is an arity-bearing,
@@ -87,8 +110,15 @@ pub trait Types {
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
+    fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Self::Ty;
+    fn pid(&mut self) -> Self::Ty {
+        self.builtin_opaque(BuiltinOpaque::Pid)
+    }
+    fn reference(&mut self) -> Self::Ty {
+        self.builtin_opaque(BuiltinOpaque::Ref)
+    }
     fn cpointer(&mut self) -> Self::Ty {
-        self.opaque_of("cpointer")
+        self.builtin_opaque(BuiltinOpaque::CPointer)
     }
     fn resource(&mut self, payload: Self::Ty) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
@@ -230,6 +260,10 @@ pub trait Types {
     /// "is this value an opaque, and which one?" (opaque-arithmetic
     /// rejection, opaque-visibility checks).
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String>;
+
+    /// Return the closed builtin identity of a pure builtin opaque. A user
+    /// opaque with the same rendered spelling does not satisfy this query.
+    fn builtin_opaque_singleton(&self, a: &Self::Ty) -> Option<BuiltinOpaque>;
 
     /// If `a` is a single brand mint with no other axes — i.e. a single
     /// element on the `brands` axis with every other axis empty —

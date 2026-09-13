@@ -70,9 +70,9 @@
 # The `dbg(:dtor_closed)` is the witness that the dtor body fully
 # executed — under the old extracted-Prim::Extern path it would have
 # been silently dead code.
-extern "C" def libc::creat(path :: cstring, mode :: integer) :: integer
-extern "C" def libc::close(integer) :: integer
-extern "C" def libc::unlink(cstring) :: integer
+extern "C" defp libc::creat(path :: cstring, mode :: integer) :: integer
+extern "C" defp libc::close(integer) :: integer
+extern "C" defp libc::unlink(cstring) :: integer
 
 defmodule File do
   @type t :: opaque resource(integer)

@@ -46,7 +46,6 @@ import Kernel, only: [
   self: 0,
   send: 2,
   spawn: 1,
-  spawn: 2,
   to_string: 1
 ]
 

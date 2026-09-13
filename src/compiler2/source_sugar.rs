@@ -123,7 +123,7 @@ fn rewrite_operator(
     let rewritten = match op {
         "++" => remote_call(&builder, "List.concat", meta, &[left, right])?,
         "--" => remote_call(&builder, "List.subtract", meta, &[left, right])?,
-        "<>" => remote_call(&builder, "Kernel.fz_binary_concat", meta, &[left, right])?,
+        "<>" => remote_call(&builder, "Kernel.<>", meta, &[left, right])?,
         ".." => remote_call(&builder, "Range.new", meta, &[left, right, builder.int(1)])?,
         "//" => {
             let Some((first, last)) = range_parts(&args[0], sources)? else {

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::fz_ir::{ExternAbi, ExternTy};
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
@@ -79,7 +79,10 @@ pub struct LoweredExtern {
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub variadic: bool,
-    pub ret: ExternTy,
+    pub ret: ExternReturn,
+    /// Granted only to an exact runtime declaration resolved in the bootstrap
+    /// library; native codegen must never infer it from the symbol spelling.
+    pub runtime_binding: Option<crate::extern_contract::RuntimeNativeBinding>,
     pub return_ty: Ty,
     pub semantic_contract: ResolvedSpecDecl<Ty>,
 }

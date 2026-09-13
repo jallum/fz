@@ -84,6 +84,17 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
+        self.expand_cursor_with_root_sugar(owner, cursor, scope, depth, true)
+    }
+
+    fn expand_cursor_with_root_sugar(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+        allow_root_sugar: bool,
+    ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         if depth > MAX_MACRO_EXPANSION_DEPTH {
             return Err(emit_job_diagnostic(
                 self.telemetry(),
@@ -122,10 +133,11 @@ pub(crate) trait QuotedExpansionCtx {
             {
                 return Ok(ExpandedValue::Complete(snippet.root()));
             }
-            if let Some(rewritten) =
-                rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow()).map_err(|error| {
-                    emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
-                })?
+            if allow_root_sugar
+                && let Some(rewritten) = rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow())
+                    .map_err(|error| {
+                        emit_internal_surface_error(self.telemetry(), format!("source sugar rewrite failed: {error}"))
+                    })?
             {
                 return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
                     ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
@@ -213,7 +225,27 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
         if is_scope_definition_head(&head) {
-            return Ok(None);
+            let mut expanded = Vec::with_capacity(args.len());
+            for (index, arg) in args.iter().enumerate() {
+                let value = self.expand_cursor_with_root_sugar(owner, arg, scope, depth, index != 0)?;
+                match value {
+                    ExpandedValue::Complete(value) => expanded.push(value),
+                    ExpandedValue::Blocked(effects) => return Ok(Some(ExpandedValue::Blocked(effects))),
+                }
+            }
+            if expanded.iter().copied().eq(args.iter().map(QuotedSourceCursor::root)) {
+                return Ok(Some(ExpandedValue::Complete(cursor.root())));
+            }
+            let builder = owner.builder();
+            let tail = builder.list(&expanded).map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted definition rebuild failed: {error}"))
+            })?;
+            let rebuilt = builder
+                .tuple(&[node.head.root(), node.meta.root(), tail])
+                .map_err(|error| {
+                    emit_internal_surface_error(self.telemetry(), format!("quoted definition rebuild failed: {error}"))
+                })?;
+            return Ok(Some(ExpandedValue::Complete(rebuilt)));
         }
         let symbol = {
             let world = self.world();

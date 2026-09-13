@@ -1,4 +1,4 @@
-extern "C" def _resource_test_dtor(integer) :: nil
+extern "C" defp _resource_test_dtor(integer) :: nil
 def dwrap(x), do: _resource_test_dtor(x)
 def main() do
   a = make_resource(11, &dwrap/1)

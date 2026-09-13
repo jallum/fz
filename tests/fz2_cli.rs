@@ -1547,6 +1547,70 @@ fn run_and_built_binary_report_runtime_dispatch_faults() {
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }
 
+/// Arithmetic is total at the foreign boundary; the single Kernel policy
+/// helper turns its status lane into the currently-approved loud `:badarith`
+/// endpoint.  Each invocation is a child process so that this intentionally
+/// fatal policy is proven without taking down the test harness.  The result is
+/// deliberately unused: DCE must not erase a failed checked operation.
+#[test]
+fn interp_run_and_built_binary_report_unused_arithmetic_failure() {
+    let source = "def main() do\n  dbg(:before)\n  div(1, 0)\n  dbg(:after)\nend\n";
+    let src_path = unique_temp_path("fz2_badarith", ".fz");
+    write(&src_path, source).expect("write arithmetic-failure source");
+
+    for command in ["interp", "run"] {
+        let output = run_fz2_without_color(&[OsStr::new(command), src_path.as_os_str()]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "fz2 {command} must exit nonzero after bad arithmetic; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains(":before") && !stdout.contains(":after"),
+            "fz2 {command} must not continue after the arithmetic helper panics: {stdout:?}"
+        );
+        assert!(
+            stderr.contains("badarith"),
+            "fz2 {command} must report the Kernel arithmetic reason: {stderr:?}"
+        );
+    }
+
+    let out_bin = unique_temp_path("fz2_badarith_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        src_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build should compile dynamic arithmetic failure; stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(&out_bin)
+        .output()
+        .expect("run built arithmetic-failure binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "built arithmetic-failure binary must exit nonzero; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(":before") && !stdout.contains(":after"),
+        "built binary must not continue after arithmetic failure: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("badarith"),
+        "built binary must report the Kernel arithmetic reason: {stderr:?}"
+    );
+
+    let _ = remove_file(&src_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 #[test]
 fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";

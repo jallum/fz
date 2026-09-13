@@ -5,7 +5,7 @@
 #
 # Exercises the user-facing operator spellings after compiler2 source-sugar
 # normalization. List operators become source `List` helper calls, binary
-# concatenation becomes the Kernel primitive wrapper call, and range literals
+# concatenation becomes the public Kernel operator wrapper call, and range literals
 # construct the source `Range` struct.
 def main() do
   dbg([1, 2] ++ [3, 4])

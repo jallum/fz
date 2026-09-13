@@ -1,6 +1,6 @@
 //! Function-local liveness classification for native codegen.
 
-use crate::fz_ir::{FnIr, Stmt, Term, Var};
+use crate::fz_ir::{FnIr, Term, Var};
 use std::collections::HashSet;
 
 /// Returns `(if_only_conds, all_used)` in a single pass.
@@ -15,8 +15,7 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
     let mut other_uses: HashSet<Var> = HashSet::new();
     for block in &f.blocks {
         for stmt in &block.stmts {
-            let Stmt::Let(_, prim) = stmt;
-            prim.collect_used_vars(&mut other_uses);
+            stmt.prim().collect_used_vars(&mut other_uses);
         }
         match &block.terminator {
             Term::If { cond, .. } => {

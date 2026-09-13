@@ -108,18 +108,28 @@ giving the operators a catch-all makes every comparison callsite with an
 unresolved operand blind to the dispatcher, which the blind-escape census
 catches as a latent miscompile (fz-5xp.64).
 
-**Arithmetic** — no single owner, and that is deliberate. The typed shim NAMES
-are the shared fact: `fz_op_add_ii`, `_if`, `_ff` and so on say which lanes they
-take, so each door implements the same typed operation rather than re-deriving
-which operation applies. Native lowers them in place (`ARITH_SHIMS` in
-`native_codegen/prim.rs`); the interpreter has private Rust shims
-(`ir_interp/extern_call.rs`). They agree because the name carries the types.
+**Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
+real C functions, while `src/extern_contract.rs` owns their exact physical
+contracts and, where appropriate, a native optimization capability. A source
+declaration must first resolve to that exact ABI, parameter list, and return
+shape; only the bootstrap runtime declaration then carries the capability into
+native lowering. Neither interpreter nor native code discovers behavior from a
+symbol spelling or suffix. The interpreter calls the real export through the
+ordinary FFI path. Native may replace a validated binding with scalar CLIF;
+ordinary same-named declarations remain real calls.
+
+Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
+The runtime returns initialized values and a canonical status word; Kernel's
+sole `arithmetic_error/0` helper turns `true` into the temporary `panic(:badarith)`
+policy. Binary and general-value comparisons use the ref-carrying `fz` ABI, so
+they retain process/schema context rather than pretending a C byte pointer has
+a length.
 
 `%` is the one operator with no Elixir counterpart to be checked against —
 Elixir has no `%`, and its `rem/2` is integer-only. fz's `%` is C's `fmod`, so
 the result takes the sign of the dividend, and its float lanes are a CALL rather
-than an instruction because Cranelift has no `frem`: `fz_op_rem_ff` lives in the
-runtime crate so the AOT door can link it (fz-5xp.34).
+than an instruction because Cranelift has no `frem`: the real
+`fz_op_rem_{if,fi,ff}` exports retain that one fmod-backed call on native paths.
 
 **Runtime type tests** — owner `RuntimeTestAxis` (`src/runtime_type_predicate.rs`),
 one axis table with three lowerings that must each be taught, and the design we

@@ -36,7 +36,8 @@ use crate::types::{
 use bits::BasicBits;
 
 pub use crate::types::{
-    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, TypeVarId,
+    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
+    Sigma, TypeVarId,
 };
 
 pub use arrow_match::ArrowMatch;
@@ -328,7 +329,15 @@ impl Types {
     }
 
     pub fn cpointer(&mut self) -> Ty {
-        self.opaque_of("cpointer")
+        self.builtin_opaque(BuiltinOpaque::CPointer)
+    }
+
+    pub fn pid(&mut self) -> Ty {
+        self.builtin_opaque(BuiltinOpaque::Pid)
+    }
+
+    pub fn reference(&mut self) -> Ty {
+        self.builtin_opaque(BuiltinOpaque::Ref)
     }
 
     pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
@@ -822,6 +831,10 @@ impl Types {
 
     pub fn opaque_of(&mut self, name: &str) -> Ty {
         self.intern(Descr::opaque_of(name))
+    }
+
+    pub fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Ty {
+        self.intern(Descr::builtin_opaque(builtin))
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
@@ -1508,6 +1521,10 @@ impl Types {
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_opaque_singleton().map(String::from)
+    }
+
+    pub fn builtin_opaque_singleton(&self, a: &Ty) -> Option<BuiltinOpaque> {
+        self.descr(a).as_builtin_opaque_singleton()
     }
 
     /// Classifies the resolved protocol-domain markers carried by a contract.
@@ -2394,6 +2411,10 @@ impl SharedTypes for Types {
         Types::opaque_of(self, name)
     }
 
+    fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Self::Ty {
+        Types::builtin_opaque(self, builtin)
+    }
+
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::list_element_type(self, a)
     }
@@ -2490,6 +2511,10 @@ impl SharedTypes for Types {
 
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String> {
         Types::opaque_singleton(self, a)
+    }
+
+    fn builtin_opaque_singleton(&self, a: &Self::Ty) -> Option<BuiltinOpaque> {
+        Types::builtin_opaque_singleton(self, a)
     }
 
     #[cfg(test)]
@@ -2866,7 +2891,7 @@ fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Named(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
@@ -3005,7 +3030,7 @@ fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<Module
     } else {
         FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
             OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
-            OpaqueTag::Named(_) => None,
+            OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
         }))
     };
     nominal.union(&structs)

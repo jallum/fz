@@ -653,25 +653,68 @@ end
         .expanded_function_source(main)
         .expect("the demanded function should materialize staged expanded source");
     let tokens = quoted_tokens(&expanded.source);
-    for sugar in ["|>", "&", "++", "--", "<>", "..", "//", "not in"] {
+    for sugar in ["|>", "&", "++", "--", "..", "//", "not in"] {
         assert!(
             !tokens.iter().any(|token| token == sugar),
             "expanded function source should not retain source-only sugar `{sugar}`; tokens={tokens:?}",
         );
     }
-    for rewritten in [
-        "case",
-        "List",
-        "concat",
-        "subtract",
-        "Kernel",
-        "fz_binary_concat",
-        "Range",
-        "new",
-    ] {
+    for rewritten in ["case", "List", "concat", "subtract", "Kernel", "<>", "Range", "new"] {
         assert!(
             tokens.iter().any(|token| token == rewritten),
             "expanded function source should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
         );
     }
+    assert!(
+        !tokens.iter().any(|token| token == "fz_binary_concat"),
+        "expanded caller source should name the public Kernel.<> wrapper, not its private physical gateway; tokens={tokens:?}",
+    );
+}
+
+#[test]
+fn definition_heads_are_not_source_sugar_but_their_bodies_are() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    let code = world.submit_code(
+        Some("operator-definition-expansion.fz".to_string()),
+        "defmodule Join do\n  def left <> right, do: left <> right\nend\n".to_string(),
+    );
+
+    assert!(matches!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(world.demand(Job::ScopeCode(code)));
+    assert!(matches!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let join_module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("Join").unwrap());
+    assert!(world.demand(Job::DefineModule(join_module)));
+    assert!(matches!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+
+    let join = world.reference_function(join_module, "<>", 2);
+    assert!(world.demand(Job::DefineFunction(join)));
+    assert!(matches!(
+        super::drive::ExecutionContext::with_product_sessions(&mut world, &tel, &mut sessions).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(world.function_defined_revision(join).is_some());
+
+    let expanded = world
+        .expanded_function_source(join)
+        .expect("the demanded operator definition should retain expanded source");
+    let tokens = quoted_tokens(&expanded.source);
+    assert_eq!(
+        tokens.iter().filter(|token| token.as_str() == "<>").count(),
+        2,
+        "the definition head stays symbolic while its body becomes the remote Kernel.<> call; tokens={tokens:?}",
+    );
+    assert!(tokens.iter().any(|token| token == "Kernel"));
+    assert!(!tokens.iter().any(|token| token == "fz_binary_concat"));
 }

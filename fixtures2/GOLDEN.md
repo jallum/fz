@@ -93,7 +93,7 @@ conversion arc):
 `utf8_equality`, `utf8_pattern_match`, `keyword_lists`,
 `guard_calls_pure_user_fn`, `map_three_path_parity`, `nested_tuple_producer`,
 `relay`, `multi_relay`, `three_process_chain`, `concurrency_ping_pong`,
-`actor_ring`, `spawn2_basic`, `spawn_with_captures`. Template:
+`actor_ring`, `spawn_with_captures`. Template:
 `make_ref_distinct`.
 
 **Expect-failure (negative claims):** `assert_abort_message` (a failed `assert`

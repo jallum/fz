@@ -19,6 +19,7 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::extern_contract::{
     explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
+    validate_runtime_symbol_shape,
 };
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
@@ -350,6 +351,64 @@ fn extern_wire_ty(
         types.instantiate(semantic_ty, constraints)
     };
     ty_to_extern_ty(types, &upper_bound)
+}
+
+fn extern_return_wire(
+    types: &mut super::super::types::Types,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &super::super::types::Ty,
+    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
+    abi: crate::fz_ir::ExternAbi,
+) -> Result<crate::fz_ir::ExternReturn, String> {
+    let resolved = if constraints.is_empty() {
+        *semantic_ty
+    } else {
+        types.instantiate(semantic_ty, constraints)
+    };
+    let tuple_arity = {
+        let predicate = types.runtime_type_predicate(&resolved);
+        let arities = predicate.tuples.arities();
+        (!arities.cofinite && arities.values.len() == 1)
+            .then(|| arities.values.iter().next().copied())
+            .flatten()
+    };
+    if let Some(arity) = tuple_arity {
+        if abi != crate::fz_ir::ExternAbi::C {
+            return Err("fixed scalar-pair returns are supported only by the `C` ABI".to_string());
+        }
+        if arity != 2 {
+            return Err(format!(
+                "C extern aggregate returns require exactly two scalar fields, found tuple arity {arity}"
+            ));
+        }
+        let fields = types.tuple_projections(&resolved, 2);
+        let fields: [crate::fz_ir::ExternTy; 2] = fields
+            .iter()
+            .map(|field| ty_to_extern_ty(types, field))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("two tuple projections");
+        if fields.iter().any(|field| {
+            !matches!(
+                field,
+                crate::fz_ir::ExternTy::I64 | crate::fz_ir::ExternTy::F64 | crate::fz_ir::ExternTy::Bool
+            )
+        }) {
+            return Err(format!(
+                "C extern aggregate return fields must be integer, float, or boolean, found {fields:?}"
+            ));
+        }
+        return Ok(crate::fz_ir::ExternReturn::Pair(fields));
+    }
+    if types.max_tuple_arity(&resolved) != 0 {
+        return Err("C extern aggregate return must resolve to one exact two-field tuple".to_string());
+    }
+    Ok(crate::fz_ir::ExternReturn::Scalar(extern_wire_ty(
+        types,
+        body,
+        semantic_ty,
+        constraints,
+    )))
 }
 
 fn collect_local_dispatch_requirements(
@@ -1515,25 +1574,31 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     ),
                 )
             })?;
-        let params = self
+        let params: Vec<_> = self
             .surface
             .extern_param_tokens
             .iter()
             .zip(semantic_contract.params.iter())
             .map(|(body, ty)| extern_wire_ty(self.world.types_mut(), body, ty, &semantic_contract.constraints))
             .collect();
-        let ret = extern_wire_ty(
+        let ret = extern_return_wire(
             self.world.types_mut(),
             &self.surface.extern_ret_tokens,
             &semantic_contract.result,
             &semantic_contract.constraints,
-        );
+            abi,
+        )
+        .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
+        let symbol = extern_symbol_from_name(&self.surface.name);
+        let runtime_binding = validate_runtime_symbol_shape(symbol, abi, &params, ret)
+            .map_err(|message| self.extern_abi_error(message))?;
         Ok(LoweredExtern {
             abi,
-            symbol: extern_symbol_from_name(&self.surface.name).to_string(),
+            symbol: symbol.to_string(),
             params,
             variadic: self.surface.variadic,
             ret,
+            runtime_binding: self.declared_by_runtime_library().then_some(runtime_binding).flatten(),
             return_ty: semantic_contract.result,
             semantic_contract,
         })
