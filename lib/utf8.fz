@@ -32,7 +32,7 @@ defmodule Utf8 do
       #=> false
 
   """
-  @spec valid?(binary) :: bool
+  @spec valid?(binary) :: boolean
   def valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
 
   @doc """

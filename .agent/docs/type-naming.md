@@ -110,7 +110,7 @@ accretes at the semantic tier the same way any reached function does.
 A name in type position first checks a single table before anything else runs:
 `resolve.rs`'s `CONSTRUCTORS`, a `&[ConstructorEntry]` mapping a builtin name to
 its arity and its `Types`-minting function. This is the one authoritative
-source for every builtin type-constructor name — scalars (`integer`, `bool`,
+source for every builtin type-constructor name — scalars (`integer`, `boolean`,
 `atom`, `map`, …) and the two parametric constructors (`list`, `resource`)
 alike — and `classify_name` (`resolve.rs`) tries it before checking bound type
 variables or the `TypeDefined` namespace. There is no separate nullary-only

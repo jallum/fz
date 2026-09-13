@@ -117,7 +117,7 @@ defmodule Range do
       #=> false
 
   """
-  @spec member?(integer, integer, integer, any) :: bool
+  @spec member?(integer, integer, integer, any) :: boolean
   # A range holds integers, so nothing else is in it. Without the fallthrough
   # the arithmetic below reached a float and aborted the process on the native
   # doors: `Enum.member?(1..5, 3.0)` is false, not a crash.
@@ -208,11 +208,11 @@ defmodule Range do
   defp reverse([], acc), do: acc
   defp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
-  @spec done?(integer, integer, integer) :: bool
+  @spec done?(integer, integer, integer) :: boolean
   defp done?(last, step, current) when step > 0, do: current > last
   defp done?(last, _step, current), do: current < last
 
-  @spec contains?(integer, integer, integer, integer) :: bool
+  @spec contains?(integer, integer, integer, integer) :: boolean
   defp contains?(first, last, step, value) when step > 0, do: value >= first and value <= last
   defp contains?(first, last, _step, value), do: value <= first and value >= last
 end
