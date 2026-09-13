@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-13T03:07:24Z",
@@ -7,8 +7,8 @@
   "id": "fz-k6d",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Align the boolean type constructor with Elixir",
   "type": "task",
-  "updated_at": "2026-09-13T03:07:24Z"
+  "updated_at": "2026-09-13T03:07:30Z"
 }
