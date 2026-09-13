@@ -2,7 +2,6 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-5xp.27",
-    "fz-5xp.30",
     "fz-tfn.64",
     "fz-tfn.67"
   ],
@@ -22,5 +21,5 @@
   "status": "in_progress",
   "title": "Keep callable identity through quoted source; delete canonical-name re-resolution",
   "type": "bug",
-  "updated_at": "2026-09-12T23:01:49Z"
+  "updated_at": "2026-09-13T02:42:54Z"
 }
