@@ -11162,14 +11162,32 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
-    let (compiler, program) = driven_backend_program(fixture);
+    let (mut compiler, program) = driven_backend_program(fixture);
+    let kernel = compiler
+        .world_mut()
+        .reference_module(ModuleName::parse_dotted("Kernel").expect("Kernel module name"));
+    let arithmetic_result = compiler.world_mut().reference_function(kernel, "arithmetic_result", 1);
     let plans = artifact_plans(compiler.world(), &program);
+    let forwarded_callsite_plans = plans
+        .iter()
+        .filter(|plan| {
+            !matches!(
+                plan.site,
+                PlanSite::Entry { executable }
+                    if program.executables()[executable].key.activation.function == arithmetic_result
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        plans.is_empty(),
-        "{fixture} passes a known closure at every call site, so nothing may be left for a \
-         runtime test; {} plan(s) still dispatch: {:?}",
-        plans.len(),
-        plans.iter().map(|plan| plan.site.to_string()).collect::<Vec<_>>(),
+        forwarded_callsite_plans.is_empty(),
+        "{fixture} passes a known closure at every call site, so its callsites and ordinary \
+         function entries other than Kernel.arithmetic_result/1 need no runtime test; {} plan(s) \
+         still dispatch: {:?}",
+        forwarded_callsite_plans.len(),
+        forwarded_callsite_plans
+            .iter()
+            .map(|plan| plan.site.to_string())
+            .collect::<Vec<_>>(),
     );
 
     let types = compiler.world().types();
@@ -11899,8 +11917,14 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// identity semantics only because guards happen to be strict -- and says
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
+/// fz-5xp.30: `entry` 159 -> 179 plans, 151 -> 171 unreadable.
+/// `Kernel.arithmetic_result/1` remains an ordinary generic Fz call, so the
+/// twenty census specializations that call it each materialize its status-pair
+/// entry dispatch. They all ask `Region::TupleArity`, which this census counts
+/// as unreadable; the readable denominator stays 8 and every blind population
+/// is unchanged.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 159, 151), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 179, 171), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13595,8 +13619,11 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
+    // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
+    // statistics now traverse ordinary Kernel arithmetic and its generic
+    // result/status helper; all five extra activations are rooted and reached.
     assert!(
-        activations.len() <= 17,
+        activations.len() <= 22,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -19568,7 +19595,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
         assert!(!names.contains("foo"));
         assert!(
-            frontier.len() <= 17,
+            frontier.len() <= 22,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));
