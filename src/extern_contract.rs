@@ -165,7 +165,6 @@ pub const RUNTIME_SYMBOLS: &[RuntimeSymbol] = &[
     RuntimeSymbol::abi("fz_map_put_ref", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_map_put_int", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_map_put_float", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_map_put_atom", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_map_put_atom_ref", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_map_count", ExternAbi::C),
     RuntimeSymbol::abi("fz_map_entry_key", ExternAbi::C),

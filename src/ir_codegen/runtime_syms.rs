@@ -11,17 +11,6 @@ use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::{FuncId, Linkage, Module as ClModule};
 
-pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
-    let mut s = Signature::new(CallConv::SystemV);
-    for p in params {
-        s.params.push(AbiParam::new(*p));
-    }
-    for r in rets {
-        s.returns.push(AbiParam::new(*r));
-    }
-    s
-}
-
 fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]) {
     use types::{F64, I8, I32, I64};
     // Single source of each compiler-private direct import's wire ABI. Every
@@ -103,7 +92,6 @@ fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]
         "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
         "fz_value_eq_raw_const" => (&[I64, I32, I64], &[I64]),
         "fz_matcher_eq_bytes" => (&[I64, I64, I64], &[I32]),
-        "fz_matcher_map_get" => (&[I64, I64], &[I64]),
         "fz_matcher_map_get_ref" => (&[I64, I64, I64], &[I64]),
         "fz_alloc_closure" => (&[I64, I32, I32, I32, I32, I64], &[I64]),
         "fz_closure_code_ref" => (&[I64], &[I64]),
@@ -133,7 +121,12 @@ fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]
 /// through an ordinary resolved extern declaration.
 pub(crate) fn runtime_import_sig_for_module<M: ClModule>(jmod: &mut M, name: &str) -> Signature {
     let (params, rets) = runtime_import_types(name);
-    let mut sig = jmod.make_signature();
+    import_sig(jmod, params, rets)
+}
+
+/// An import signature in the target's default calling convention.
+pub(crate) fn import_sig<M: ClModule>(module: &mut M, params: &[ir::Type], rets: &[ir::Type]) -> Signature {
+    let mut sig = module.make_signature();
     sig.params.extend(params.iter().copied().map(AbiParam::new));
     sig.returns.extend(rets.iter().copied().map(AbiParam::new));
     sig

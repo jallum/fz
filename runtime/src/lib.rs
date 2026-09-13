@@ -59,6 +59,14 @@ pub fn render_panic_message(process: *mut Process, msg_ref: u64) -> String {
     format!("fz panic: {}", render_value(process, value))
 }
 
+/// The fault hook for a process whose host has no error channel of its own:
+/// render the panic to stderr and let the `never` contract stop the process.
+pub const STDERR_FAULT_HOOK: crate::scheduler_hooks::FaultHook = stderr_fault_hook;
+
+extern "C" fn stderr_fault_hook(process: *mut Process, _context: *mut (), value_ref_word: u64) {
+    eprintln!("{}", render_panic_message(process, value_ref_word));
+}
+
 /// Report a process panic through the execution context. The physical export
 /// returns so the interpreter can propagate its owned error without unwinding
 /// across C; the source `never` contract supplies the non-continuation policy.
