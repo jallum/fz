@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T23:13:46Z",
+  "description": "Step 3.5 of the extern door collapse (consistency follow-up to fz-21x.4, approved 2026-09-13). Ordering operators have a typed clause per numeric pair whose export takes raw integers/floats, so operands cross unboxed; ==, !=, ===, !== have one any/any clause each whose export takes value refs, so unboxed integers are boxed to be compared (enum_list_allocations native scalar boxes 3 -\u003e 9 after fz-21x.4). Add, for each of the four: typed clauses ii, ff, if, fi ahead of the retained any/any fallback. Mixed identity is source-only (=== on integer/float is false, !== true). Twelve new C exports via the existing numeric_bool_export! macro: fz_op_eq_{ii,ff,if,fi}, fz_op_neq_{ii,ff,if,fi}, fz_op_identical_{ii,ff}, fz_op_not_identical_{ii,ff}, each (raw, raw) -\u003e boolean; twelve Kernel declarations. Semantics: float equality is plain float comparison (0.0 == -0.0 true); float identity is total_cmp equality (0.0 === -0.0 false); mixed equality uses compare_int_float. Proof: equality_widening_and_identity, guard_equality, mixed_numeric_comparison fixtures on three doors; enum_list_allocations back to 3 scalar boxes on native and interp; report every pin that moves.",
+  "id": "fz-21x.5",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Give equality and identity the typed numeric clause family ordering already has",
+  "type": "task",
+  "updated_at": "2026-09-13T23:13:46Z"
+}
