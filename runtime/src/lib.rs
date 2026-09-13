@@ -79,6 +79,3 @@ pub extern "C" fn fz_panic(process: *mut Process, msg_ref: u64) {
     let ctx = unsafe { &*ctx };
     (ctx.fault.expect("fz_panic: fault callback installed"))(process, ctx.scheduler, msg_ref);
 }
-
-#[cfg(test)]
-mod export_test;

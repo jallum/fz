@@ -220,17 +220,19 @@ readings of the threshold remain and are different questions:
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 
-**Where a foreign symbol lives** — owner `fz_extern_symbol_addr`
-(`runtime/src/extern_variadic.rs`). The interpreter's `resolve_symbol` fallback
-and its variadic path call it, and the JIT is built with it as its
-`symbol_lookup_fn` rather than cranelift's own dlsym. The AOT door is answered
-by the linker instead, which is a fourth place and why `-lm` is hardcoded:
-fz-5xp.61.
+**Where a symbol lives** — owner `fz_extern_symbol_addr`
+(`runtime/src/extern_variadic.rs`), for fz's own exports and foreign ones
+alike. The interpreter's `resolve_symbol` and its variadic path call it, and
+the JIT is built with it as its `symbol_lookup_fn` rather than cranelift's own
+dlsym. Neither door keeps an address table: the compiler's binaries and test
+binaries export dynamically (`build.rs`), so fz's own exports are in the
+process to be found. The AOT door is answered by the linker instead, which is a
+fourth place and why `-lm` is hardcoded: fz-5xp.61.
 
-**Which runtime symbols exist, and their ABI** — owner `RUNTIME_SYMBOLS`
-(`src/extern_contract.rs`). Reachability from compiled code is held by a test
-rather than by construction, because an address table has to exist somewhere:
-see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
+**Which runtime symbols have a declared ABI** — owner `RUNTIME_SYMBOLS`
+(`src/extern_contract.rs`). The convention a symbol is called with is a
+semantic rule, not a property of the linked image, and a declaration that
+contradicts it is refused: see `abi_refusal_test`.
 
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid

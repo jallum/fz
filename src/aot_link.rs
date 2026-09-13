@@ -141,8 +141,10 @@ pub(crate) fn link_aot_artifact<T: RawSpanTelemetry>(
         // fz-5xp.59 — a `float` extern names libm (`sqrt`, `pow`, `jn`), which
         // on macOS is part of libSystem and needs no flag. Elsewhere it is a
         // separate library, and `-rdynamic` puts the program's own exports in
-        // the dynamic symbol table so a variadic extern resolved through
-        // `dlsym(RTLD_DEFAULT, ..)` can find them.
+        // the dynamic symbol table so a symbol resolved through
+        // `dlsym(RTLD_DEFAULT, ..)` can find them. This is not the only place
+        // that has to say it: the compiler's own executables and test binaries
+        // need the same treatment, which `build.rs` gives them.
         cc.arg("-lm").arg("-rdynamic");
     }
 

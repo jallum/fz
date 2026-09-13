@@ -16183,7 +16183,7 @@ fn compiler2_kernel_make_resource_is_one_typed_private_fz_extern() {
     assert_eq!(
         crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_resource", ExternAbi::Fz).unwrap(),
         fz_runtime::ir_runtime::fz_make_resource as *const (),
-        "the interpreter address book must resolve the exact physical export",
+        "the interpreter must resolve the exact physical export",
     );
 
     let native_program = native.last(root).program;
@@ -16318,10 +16318,8 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
         "the removed runtime leaf has no Kernel identity",
     );
     assert!(
-        !crate::ir_codegen::runtime_symbol_addrs()
-            .iter()
-            .any(|(name, _)| *name == "fz_spawn_opt_ref"),
-        "the JIT registry must not preserve the removed physical export",
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_spawn_opt_ref", ExternAbi::C).is_err(),
+        "the removed physical export must not still be reachable",
     );
     for (name, arity) in [("fz_spawn", 1), ("fz_send", 2)] {
         assert!(

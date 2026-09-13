@@ -59,27 +59,24 @@ not interchangeable, though — see the register banks below.
 
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
-allocating primitive is a Rust function, a declaration, a row in
-`extern_contract.rs::RUNTIME_SYMBOLS`, and an address for each door that needs
-one: `ir_codegen/backend.rs::runtime_symbol_addrs` for the JIT, and
-`ir_interp/extern_call.rs::resolve_symbol` for the interpreter, which cannot
-rely on dlsym reaching a statically-linked rlib. AOT needs no address row for a
-runtime-crate export, which is `#[unsafe(no_mangle)]` and reachable through the
-staticlib link. There is no lowering function to write and no interpreter match
-arm to add.
+allocating primitive is a Rust function, a declaration, and a row in
+`extern_contract.rs::RUNTIME_SYMBOLS` for its convention. There is no lowering
+function to write, no interpreter match arm to add, and no address table on
+either door.
 
-The JIT's addresses are a TABLE, not a run of calls, so the set can be read
-back. `every_declared_runtime_symbol_is_reachable_from_compiled_code` reads it
-and requires every declared runtime symbol to be registered. Native code may
-replace an exact comparison call, but arithmetic exports remain reachable for
-interpreter execution, JIT resolution, and AOT linking. The table exists
-because it had already drifted:
-`fz_bitstring_is_binary` was declared and never registered, and on macOS the
-JIT falls back to dlsym over the process image and finds the `no_mangle` export
-anyway. The whole six-target local gate was green while the same program died
-on Linux with `can't resolve symbol` (fz-5xp.58). A symbol missing from that
-table is a landmine that only goes off on one platform, so a test has to hold
-it rather than a convention.
+Neither door needs one because the compiler's executables export their symbols
+dynamically. `build.rs` passes `-Wl,-export_dynamic` on macOS and `-rdynamic`
+elsewhere to the binaries and test binaries, exactly as `aot_link.rs` already
+does for an AOT binary's own link line. Without it a linker drops a
+`#[unsafe(no_mangle)]` runtime function that no Rust code calls — compiled fz
+code names it by symbol, not by Rust path — and it is then not in the process
+for `dlsym` to find. With it, `fz_extern_symbol_addr` finds fz's own exports
+the same way it finds `sqrt`. Native code may replace an exact comparison call,
+but the arithmetic exports stay reachable for interpreter execution, JIT
+resolution, and AOT linking. Not exporting by default is what made
+`fz_bitstring_is_binary` resolve on macOS and die on Linux with
+`can't resolve symbol` while the whole six-target local gate was green
+(fz-5xp.58).
 
 There is no variadic form of the `fz` ABI: every variadic call goes through a
 fixed-arity C dispatcher, which has nowhere to put the implicit process
@@ -88,10 +85,10 @@ door's lowering.
 
 ### A foreign symbol has to be in the process to be found
 
-`fz_extern_symbol_addr` is the ONE resolver for a foreign symbol, and every
-runtime door goes through it: the interpreter's `resolve_symbol` fallback and
-its variadic path call it, and the JIT is built with it as its
-`symbol_lookup_fn` rather than cranelift's own `dlsym`. That matters because
+`fz_extern_symbol_addr` is the ONE resolver for a symbol, fz's own exports
+included, and every runtime door goes through it: the interpreter's
+`resolve_symbol` and its variadic path call it, and the JIT is built with it as
+its `symbol_lookup_fn` rather than cranelift's own `dlsym`. That matters because
 the question had THREE answers, each a separate `dlsym(RTLD_DEFAULT, ..)`, and
 they disagreed one at a time: teaching the resolver to open libm fixed the
 variadic path, routing the JIT through it fixed `run`, and `resolve_symbol`'s
@@ -144,8 +141,8 @@ records the convention the runtime ACTUALLY provides each of its own symbols
 with, and a declaration that contradicts it is refused. `fz_dbg_value` is
 `fn(*mut Process, u64)`; declaring it `extern "C"` reached it as `fn(u64)`, and
 the same shape on `fz_process_heap_alloc_stats` segfaulted the JIT and AOT
-doors. `address_book_test` holds that table and the interpreter's address book
-together.
+doors. `abi_refusal_test` holds that refusal for every symbol the
+table claims, in both directions of the lie.
 
 All four checks are DEMAND-GATED. An extern that is declared and never called
 is never lowered, so none fires — the declaration compiles silently.

@@ -6,21 +6,6 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::extern_variadic::{
     fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
 };
-use fz_runtime::fz_panic;
-use fz_runtime::ir_runtime::{
-    fz_atom_to_binary, fz_binary_concat, fz_binary_downcase, fz_binary_to_atom, fz_binary_upcase,
-    fz_bitstring_byte_size, fz_bitstring_is_binary, fz_bitstring_utf8_prefix, fz_bitstring_valid_utf8,
-    fz_brand_bitstring_as_utf8, fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref, fz_make_resource,
-    fz_map_count, fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom_ref,
-    fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_add_ff, fz_op_add_if, fz_op_add_ii, fz_op_div_ff,
-    fz_op_div_fi, fz_op_div_if, fz_op_div_ii, fz_op_div_ii_to_float, fz_op_eq, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_fi,
-    fz_op_gt_if, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_fi, fz_op_gte_if, fz_op_gte_ii, fz_op_identical,
-    fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_fi, fz_op_lt_if, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_fi,
-    fz_op_lte_if, fz_op_lte_ii, fz_op_mul_ff, fz_op_mul_if, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq,
-    fz_op_not_identical, fz_op_rem_ff, fz_op_rem_fi, fz_op_rem_if, fz_op_rem_ii, fz_op_sub_ff, fz_op_sub_fi,
-    fz_op_sub_if, fz_op_sub_ii, fz_process_heap_alloc_stats, fz_self, fz_send, fz_spawn, fz_value_cmp_ref,
-};
-use fz_runtime::resource::fz_resource_test_print_dtor;
 #[cfg(not(unix))]
 use std::ffi::c_void;
 use std::ffi::{CString, c_char};
@@ -271,29 +256,14 @@ fn abi_mismatch(name: &str, declared: ExternAbi, provided: ExternAbi) -> String 
     )
 }
 
-/// Every symbol the runtime declares a convention for must be one the
-/// interpreter can actually reach. The convention and the address are separate
-/// structures -- one is pure data the front end reads, the other needs the
-/// linked Rust items -- so this is where they are held together. Drift becomes
-/// a test failure instead of a `dlsym: symbol not found` at run time.
+/// A declaration that contradicts the runtime is refused. The convention a
+/// symbol is called with is a semantic rule, not a property of the linked
+/// image, so it is held here rather than left to whatever the address turns
+/// out to be.
 #[cfg(test)]
-mod address_book_test {
+mod abi_refusal_test {
     use super::*;
     use crate::extern_contract::RUNTIME_SYMBOLS;
-
-    #[test]
-    fn every_declared_runtime_symbol_resolves() {
-        let missing: Vec<&str> = RUNTIME_SYMBOLS
-            .iter()
-            .filter(|entry| resolve_symbol(entry.name, entry.abi).is_err())
-            .map(|entry| entry.name)
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "the runtime declares a convention for these symbols but the interpreter cannot \
-             resolve them, so the two structures have drifted: {missing:?}",
-        );
-    }
 
     #[test]
     fn a_declaration_that_contradicts_the_runtime_is_refused() {
@@ -307,44 +277,27 @@ mod address_book_test {
                 .err()
                 .unwrap_or_else(|| panic!("`{name}` declared `{lie}` should not resolve"));
             // Specifically the mismatch, not some other refusal that happens to
-            // fire first -- otherwise a `Fz` lie could pass on the dlsym guard's
+            // fire first -- otherwise a `Fz` lie could pass on the guard's
             // "runtime provides no such symbol" message and leave the mismatch
-            // check itself untested.
+            // check itself untested. That is why the claimed convention is
+            // consulted before the `fz`-ABI refusal.
             assert!(
                 error.contains(name) && error.contains("provides it with"),
                 "`{name}` declared `{lie}` should be refused AS A MISMATCH: {error}",
             );
         }
     }
-
-    /// The reverse direction -- an address present with no declared convention
-    /// -- is refused rather than transmuted. It is unreachable while the two
-    /// structures agree, which is what the tests above hold. This pins the
-    /// premise: a symbol fz owns but does NOT claim gets no check at all, which
-    /// is fz-5xp.32.
-    #[test]
-    fn a_runtime_symbol_outside_the_table_is_unclaimed() {
-        assert!(
-            runtime_symbol_abi("fz_alloc_frame").is_none(),
-            "fz-5xp.32: the claim set is deliberately not yet closed; if this now \
-             resolves, the table grew and the foreign-declaration hole may be closed",
-        );
-    }
 }
 
 /// The address to call for a declared extern symbol.
 ///
-/// Checks the built-in address book first: the runtime's own symbols are
-/// registered there so the interpreter finds them even when the runtime is
-/// statically linked and `dlsym(RTLD_DEFAULT)` cannot reach them. Falls back
-/// to dlsym only for the C ABI -- an address found by name says nothing about
-/// whether the function wants a process word.
+/// One resolver answers for every symbol: `fz_extern_symbol_addr` reads the
+/// runtime's own export table first, then the loaded image, then the standard
+/// C libraries. What this door adds is the convention check. An address found
+/// by name says nothing about whether the function wants a process word, so
+/// the `fz` ABI is reserved to symbols the runtime claims in `RUNTIME_SYMBOLS`
+/// -- and where it claims one, its answer is the only one allowed.
 pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), String> {
-    // Address book: the runtime symbols the interpreter must be able to reach.
-    // These Rust functions are linked into the binary; using their address
-    // directly avoids relying on dlsym visibility, which is unreliable for
-    // statically-linked rlibs. Their CONVENTIONS live in `runtime_symbol_abi`,
-    // which the front end consults too, so there is one answer per symbol.
     #[cfg(test)]
     if let Some(fp) = tests_support::lookup_test_symbol(name) {
         return match abi {
@@ -353,130 +306,22 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         };
     }
 
-    let native: Option<*const ()> = match name {
-        // Runtime helpers declared `extern "fz"` go through the generic path,
-        // which supplies the leading process argument from the declaration.
-        "fz_dbg_value" => Some(fz_dbg_value as *const ()),
-        "fz_panic" => Some(fz_panic as *const ()),
-        "fz_process_heap_alloc_stats" => Some(fz_process_heap_alloc_stats as *const ()),
-        "fz_self" => Some(fz_self as *const ()),
-        "fz_make_ref" => Some(fz_make_ref as *const ()),
-        "fz_make_resource" => Some(fz_make_resource as *const ()),
-        "fz_spawn" => Some(fz_spawn as *const ()),
-        "fz_send" => Some(fz_send as *const ()),
-        // fz-swt.11 — fixture/test dtor exported from the runtime crate.
-        // Bound here so interp-leg invocations of fixtures using this
-        // symbol (e.g. when `fz interp` is run by hand on the AOT-only
-        // fixture) reach the same Rust fn the AOT-linked binary uses.
-        "fz_resource_test_print_dtor" => Some(fz_resource_test_print_dtor as *const ()),
-        // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
-        // interp leg of the matrix can resolve them without relying on
-        // dlsym; statically-linked rlibs don't expose these via
-        // RTLD_DEFAULT on Linux.
-        // fz-5xp.8 — the total term order, which the cross-type comparison
-        // clauses in `Kernel` are written in terms of.
-        "fz_value_cmp_ref" => Some(fz_value_cmp_ref as *const ()),
-        "fz_binary_downcase" => Some(fz_binary_downcase as *const ()),
-        "fz_binary_to_atom" => Some(fz_binary_to_atom as *const ()),
-        "fz_binary_upcase" => Some(fz_binary_upcase as *const ()),
-        "fz_bitstring_byte_size" => Some(fz_bitstring_byte_size as *const ()),
-        "fz_bitstring_is_binary" => Some(fz_bitstring_is_binary as *const ()),
-        "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
-        "fz_bitstring_utf8_prefix" => Some(fz_bitstring_utf8_prefix as *const ()),
-        "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),
-        "fz_binary_concat" => Some(fz_binary_concat as *const ()),
-        "fz_atom_to_binary" => Some(fz_atom_to_binary as *const ()),
-        "fz_integer_to_binary" => Some(fz_integer_to_binary as *const ()),
-        "fz_float_to_binary" => Some(fz_float_to_binary as *const ()),
-        "fz_op_add_ii" => Some(fz_op_add_ii as *const ()),
-        "fz_op_add_if" => Some(fz_op_add_if as *const ()),
-        "fz_op_add_ff" => Some(fz_op_add_ff as *const ()),
-        "fz_op_sub_ii" => Some(fz_op_sub_ii as *const ()),
-        "fz_op_sub_if" => Some(fz_op_sub_if as *const ()),
-        "fz_op_sub_fi" => Some(fz_op_sub_fi as *const ()),
-        "fz_op_sub_ff" => Some(fz_op_sub_ff as *const ()),
-        "fz_op_neg_i" => Some(fz_op_neg_i as *const ()),
-        "fz_op_neg_f" => Some(fz_op_neg_f as *const ()),
-        "fz_op_mul_ii" => Some(fz_op_mul_ii as *const ()),
-        "fz_op_mul_if" => Some(fz_op_mul_if as *const ()),
-        "fz_op_mul_ff" => Some(fz_op_mul_ff as *const ()),
-        "fz_op_div_ii" => Some(fz_op_div_ii as *const ()),
-        "fz_op_div_ii_to_float" => Some(fz_op_div_ii_to_float as *const ()),
-        "fz_op_div_if" => Some(fz_op_div_if as *const ()),
-        "fz_op_div_fi" => Some(fz_op_div_fi as *const ()),
-        "fz_op_div_ff" => Some(fz_op_div_ff as *const ()),
-        "fz_op_rem_ii" => Some(fz_op_rem_ii as *const ()),
-        "fz_op_rem_if" => Some(fz_op_rem_if as *const ()),
-        "fz_op_rem_fi" => Some(fz_op_rem_fi as *const ()),
-        "fz_op_rem_ff" => Some(fz_op_rem_ff as *const ()),
-        "fz_op_eq" => Some(fz_op_eq as *const ()),
-        "fz_op_neq" => Some(fz_op_neq as *const ()),
-        "fz_op_identical" => Some(fz_op_identical as *const ()),
-        "fz_op_not_identical" => Some(fz_op_not_identical as *const ()),
-        "fz_op_lt_ii" => Some(fz_op_lt_ii as *const ()),
-        "fz_op_lt_ff" => Some(fz_op_lt_ff as *const ()),
-        "fz_op_lt_if" => Some(fz_op_lt_if as *const ()),
-        "fz_op_lt_fi" => Some(fz_op_lt_fi as *const ()),
-        "fz_op_lt_bb" => Some(fz_op_lt_bb as *const ()),
-        "fz_op_lte_ii" => Some(fz_op_lte_ii as *const ()),
-        "fz_op_lte_ff" => Some(fz_op_lte_ff as *const ()),
-        "fz_op_lte_if" => Some(fz_op_lte_if as *const ()),
-        "fz_op_lte_fi" => Some(fz_op_lte_fi as *const ()),
-        "fz_op_lte_bb" => Some(fz_op_lte_bb as *const ()),
-        "fz_op_gt_ii" => Some(fz_op_gt_ii as *const ()),
-        "fz_op_gt_ff" => Some(fz_op_gt_ff as *const ()),
-        "fz_op_gt_if" => Some(fz_op_gt_if as *const ()),
-        "fz_op_gt_fi" => Some(fz_op_gt_fi as *const ()),
-        "fz_op_gt_bb" => Some(fz_op_gt_bb as *const ()),
-        "fz_op_gte_ii" => Some(fz_op_gte_ii as *const ()),
-        "fz_op_gte_ff" => Some(fz_op_gte_ff as *const ()),
-        "fz_op_gte_if" => Some(fz_op_gte_if as *const ()),
-        "fz_op_gte_fi" => Some(fz_op_gte_fi as *const ()),
-        "fz_op_gte_bb" => Some(fz_op_gte_bb as *const ()),
-        "fz_map_delete" => Some(fz_map_delete as *const ()),
-        "fz_map_from_kv" => Some(fz_map_from_kv as *const ()),
-        "fz_map_put_ref" => Some(fz_map_put_ref as *const ()),
-        "fz_map_put_int" => Some(fz_map_put_int as *const ()),
-        "fz_map_put_float" => Some(fz_map_put_float as *const ()),
-        "fz_map_put_atom_ref" => Some(fz_map_put_atom_ref as *const ()),
-        "fz_map_count" => Some(fz_map_count as *const ()),
-        "fz_map_entry_key" => Some(fz_map_entry_key as *const ()),
-        "fz_map_entry_value" => Some(fz_map_entry_value as *const ()),
-        _ => None,
-    };
-    if let Some(fp) = native {
-        // Defence-in-depth around the transmute below. `resolve_extern_abi`
-        // already refused a declaration that disagrees with the runtime, in
-        // the shared front end so that every door refuses it; this is the last
-        // gate before an address becomes a concrete fn type.
-        match runtime_symbol_abi(name) {
-            Some(provided) if provided != abi => return Err(abi_mismatch(name, abi, provided)),
-            Some(_) => {}
-            None => {
-                return Err(format!(
-                    "extern `{name}` is in the interpreter's address table but the runtime \
-                     declares no convention for it"
-                ));
-            }
+    // Defence-in-depth around the transmute the caller performs.
+    // `resolve_extern_abi` already refused a declaration that disagrees with
+    // the runtime, in the shared front end so that every door refuses it; this
+    // is the last gate before an address becomes a concrete fn type.
+    match runtime_symbol_abi(name) {
+        Some(provided) if provided != abi => return Err(abi_mismatch(name, abi, provided)),
+        Some(_) => {}
+        None if abi.takes_process() => {
+            return Err(format!(
+                "extern `{}` declares the `fz` ABI, but the fz runtime provides no such symbol",
+                name
+            ));
         }
-        return Ok(fp);
+        None => {}
     }
-    // Fallback: dlsym for user-declared externs not in the native table. Only
-    // the C ABI can be satisfied this way -- an address found by name says
-    // nothing about whether the function wants a process word, and the `fz`
-    // ABI is reserved to the runtime library, whose symbols are all in the
-    // table above.
-    if abi.takes_process() {
-        return Err(format!(
-            "extern `{}` declares the `fz` ABI, but the fz runtime provides no such symbol",
-            name
-        ));
-    }
-    // Through `fz_extern_symbol_addr`, not a raw dlsym: it is the ONE place
-    // that knows where a foreign symbol can live, including the standard C
-    // libraries it opens when the loaded scope does not already have them.
-    // A raw `dlsym(RTLD_DEFAULT, ..)` here made this door the odd one out --
-    // `libc::sqrt` resolved on the JIT and failed on interp (fz-5xp.59).
+
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
     let addr = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
     if addr == 0 {
