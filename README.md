@@ -15,8 +15,8 @@ whole-program compiler with types can do with them.
 What that means in practice: fz reads like Elixir, runs the actor model
 you already know, and compiles — through a set-theoretic type system, a
 Cranelift JIT, and an AOT path — to native code. One IR powers three
-execution modes (AOT executable, JIT, interpreter) -- and soon a REPL, 
-and a fixture matrix forces them to agree.
+execution modes (AOT executable, JIT, interpreter), and a fixture matrix
+keeps them honest.
 
 ```elixir
 def add(a, b), do: a + b
@@ -27,11 +27,11 @@ end
 ```
 
 Having full control of the stack buys some flexibility in interesting
-places: When you write `receive` in fz, the receiver's pattern is
-compiled into a matcher that can also run on the sender's heap, and only
-the values the receiver actually bound cross the process boundary.
-Everything else stays on the cutting room floor. Same Elixir-shaped
-program, same semantics; the machine does less work.
+places: When you write `receive` in fz, the receiver's pattern becomes a
+matcher. On the paths that can inspect a newly sent message before delivery,
+it can move just the values the receiver bound. Everything else stays on the
+cutting-room floor. Same Elixir-shaped program, same mailbox semantics; the
+machine has less to carry.
 
 The same control buys another trick we think you'll like: the compiler
 builds values directly into their final position and reuses list cells
@@ -92,23 +92,22 @@ sequenced behind getting the local semantics right first.
 
 Elixir compiles to BEAM bytecode. fz has its own compiler and its own
 native runtime, written in Rust: an interpreter, a Cranelift-based
-JIT, an AOT path that produces real executables, and a REPL — all
-sharing one IR.
+JIT, and an AOT path that produces real executables — all sharing one IR.
 
 The compiler doesn't exist for its own sake. It exists so we can do
 things the BEAM's interpreter structurally couldn't — and the two
 tricks teased above are both deliberate payoffs of owning the whole
 stack, from source to machine code:
 
-- **Running a receiver's matcher on the sender's heap**, so only the
-  values a `receive` actually asked for ever cross the process boundary.
+- **Matching a newly sent message before mailbox delivery**, so the JIT and
+  interpreter can move only the values a parked `receive` actually asked for.
   (*Selective receive, sharpened*, below.)
 - **Building values straight into their final position**, so textbook
-  functional code allocates almost nothing — no reference counting, no
-  annotations. (*All of it together: quicksort*, below.)
+  functional code allocates almost nothing — no list-cell reference counting,
+  no annotations. (*All of it together: quicksort*, below.)
 
-Both keep BEAM semantics exactly. The compiler just moves work ahead of
-time so the machine does less of it at runtime.
+Both preserve the language's selective-mailbox semantics. The compiler just
+moves work to the places where the machine can do less of it at runtime.
 
 ---
 
@@ -224,9 +223,10 @@ def main() do
 end
 ```
 
-When a value is sent across processes, it is deep-copied into the
-recipient's heap. There are no shared references because there are no
-references — only values.
+When a value crosses processes, the recipient gets its own heap representation.
+The language exposes no mutable aliases: values are values, not a shared
+whiteboard. Large binaries and resources may retain immutable shared backing
+storage under the hood; that is a lifetime detail, not a way to share mutation.
 
 ### Selective receive, sharpened
 
@@ -278,37 +278,35 @@ mailbox for later."* The behaviour is identical to BEAM's. What's
 different is how the runtime gets there.
 
 When the receiver writes `receive do {:reply, ^ref_b, v} -> v end`,
-the compiler lowers that pattern into a tiny matcher program: a
-constant-time decision tree that knows exactly which shapes the
-receiver will accept and which pieces of those shapes (`v`) it wants
-to bind. The compiler also wraps the winning clause's body and its
-captured bindings into a continuation — a closure ready to run. This
-matcher can be used to scan the mailbox, but it can also be run on
-the **sending** side.
+the compiler lowers that pattern into a small matcher program. It knows which
+shapes the receiver will accept and which pieces of those shapes (`v`) it wants
+to bind. The compiler also prepares the winning clause's body and captured
+bindings as a continuation — a closure ready to run. The matcher scans an
+existing mailbox, and the JIT and interpreter can also use it while a send is
+arriving.
 
 So when `send(...)` runs:
 
-- **If the message matches**, the matcher builds the resumption
-  closure on the sender's heap with the bound values baked in. That
-  closure — and *only* that closure — gets deep-copied into the
-  receiver's heap. The parts of the message the receiver didn't name
-  (the `:reply` tag, the matched ref, anything else) stay on the
-  cutting room floor in the sender's heap and get collected normally.
-  The receiver wakes up, the trampoline tail-calls the closure, and
-  the clause body runs with exactly the values it asked for already
-  in place — no rescan, no rebinding, no branch selection on the
-  receiver side.
+- **If the message matches**, the JIT and interpreter copy the bound values
+  into the receiver's heap, then build the resumption closure there. The parts
+  of the message the receiver did not name (the `:reply` tag, the matched ref,
+  anything else) need not take the trip. The receiver wakes up, the trampoline
+  tail-calls the closure, and the clause body runs with its bindings already in
+  place — no rescan, no rebinding, no branch selection on the receiver side.
 - **If the message doesn't match the parked receiver**, BEAM
   semantics still apply: the message gets enqueued at the end of the
   mailbox (a later `receive` might want it), and the parked receiver
   stays parked. What we *don't* do is wake the receiver up just to
   look at a message we already know it would reject.
 
-That's the trick: compilation lets us turn "send the whole message,
-then match it on arrival" into "match first, then send only what was
-asked for" — while keeping BEAM mailbox semantics intact. The
-receiver told us, by writing a `receive`, exactly what it cared
-about; the sender does the work on its own time and its own heap.
+The AOT path takes the simpler route today: it copies the message into the
+receiver's heap before probing the parked matcher. It gets the same observable
+mailbox result; the projected-transport shortcut is work still to bring across.
+
+That's the trick: on the JIT and interpreter, compilation lets us turn
+"send the whole message, then match it on arrival" into "match first, then
+move only what was asked for" — while keeping mailbox semantics intact. The
+receiver told us, by writing a `receive`, exactly what it cared about.
 
 The receiver gets concierge treatment.
 
@@ -367,19 +365,17 @@ struct_allocs    = 0      # no {lo, hi} tuple ever hits the heap
 closure_allocs   = 0      # no continuation closures on the fast path
 ```
 
-Here's what we like: **no reference counting, no borrowing annotations.**
-Koka-style reuse leans on runtime refcounts; Rust-style reuse leans on
-lifetimes and `&` in your source. fz does neither — the source is the
-same direct functional code, with no `unique`, no linearity, no "this
-list is mine." The compiler proves it statically; the runtime pays one
-bit. You get the readability of pure functional code with the memory
-profile of a hand-tuned loop.
+Here's what we like: **no reference counting to reuse list cells, and no
+borrowing annotations.** Koka-style reuse leans on runtime refcounts;
+Rust-style reuse leans on lifetimes and `&` in your source. fz does neither
+for this list optimization — the source is the same direct functional code,
+with no `unique`, no linearity, no "this list is mine." The compiler finds a
+candidate; the runtime pays one alias bit before it relinks. You get the
+readability of pure functional code with the memory profile of a hand-tuned
+loop.
 
-This is the JIT and the AOT compiler doing their job — turning the
-program you'd actually ship into native code that allocates like you
-hand-tuned it. (The interpreter and REPL run the same code to the same
-answers; they're there to keep us honest, not to win the allocation
-game.) ([the full walkthrough](guides/quicksort-without-temporaries.html))
+The three execution paths agree on this fixture's allocation result; the JIT
+and AOT are the native doors you would ship. ([the full walkthrough](guides/quicksort-without-temporaries.html))
 
 The same machinery now applies through the standard library too. The
 runtime-library `Enum.sort/1` is a merge sort with a default comparator
@@ -535,10 +531,10 @@ Run through the interpreter:
 fz2 interp fixtures2/behavior/quicksort.fz
 ```
 
-Start the REPL:
+Run source-defined tests:
 
 ```sh
-fz repl
+fz2 test fixtures2/behavior/sample_tests.fz
 ```
 
 Run the whole test suite:
@@ -549,14 +545,12 @@ cargo test --workspace
 
 Fixture tests run small `.fz` programs and compare their output
 across every execution path that applies (JIT, interpreter, AOT
-executable, REPL script mode). A fixture is more than a sample file
+executable). A fixture is more than a sample file
 — it is a tiny promise about the language. If quicksort works in
 the JIT but not in AOT, the fixture matrix catches it.
 
-The fixture catalog lives in [fixtures/index.md](fixtures/index.md);
-fixture conventions — how each fixture pins its claim, and the compiler
-dump-budget mechanism — are explained in
-[fixtures/GOLDEN.md](fixtures/GOLDEN.md).
+Fixture conventions — how each fixture pins its claim — are explained in
+[fixtures2/GOLDEN.md](fixtures2/GOLDEN.md).
 
 ### Pre-commit hook
 
@@ -577,27 +571,29 @@ git config core.hooksPath .githooks
 
 ## What's in the box today
 
-- integers, floats, atoms, booleans, `nil`, tuples, lists, maps,
-  binaries, UTF-8 strings
+- integers, floats, atoms, booleans, `nil`, tuples, lists, maps, binaries,
+  and UTF-8 brands for validated text
 - immutable values
 - set-theoretic types with `@type` and `@spec` declarations
 - pattern matching (function clauses, `case`, `with`, `receive`)
 - multi-clause functions and guards
-- modules, imports, simple macros
+- modules, imports, simple macros, structs, and protocols
 - first-class functions and closures
 - processes: `spawn`, `self`, `send`, `receive`, refs, selective
   receive with sender-side matching
-- a working interpreter, JIT (Cranelift), AOT path, and REPL
+- a working interpreter, JIT (Cranelift), AOT path, and source-test runner
 - C externs with marshal classes and resource destructors
+- a growing runtime library: `Enum`, `List`, `Map`, `Keyword`, `Range`,
+  `String`, `Utf8`, `Json`, and `Process`
 - destination planning + reusable-cons transport: textbook functional code
-  compiled to near-zero-allocation native code (JIT/AOT), no reference
-  counting, no borrow annotations
+  compiled to near-zero-allocation native code (JIT/AOT), with no borrow
+  annotations
 
 ---
 
 ## Status
 
-fz is early. The compiler, the runtime, four execution paths, the type
+fz is early. The compiler, the runtime, three execution paths, the type
 system, the sender-side matcher, and the destination-planning /
 reusable-cons path that gives native code its near-zero-allocation
 profile are all working today — but the language is small, the standard
@@ -617,7 +613,7 @@ What's next, roughly in order:
   `defn` ceremony, BLAS/MKL via externs
 - **Autodiff** over fz IR
 
-The current focus is keeping the four execution paths in lockstep and
+The current focus is keeping the three execution paths in lockstep and
 teaching the compiler to turn more obvious functional code into
 efficient native code. Every other goal sits on top of that one.
 
