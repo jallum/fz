@@ -16,11 +16,15 @@
     {
       "text": "Draft PR: https://github.com/jallum/fz/pull/135 (stacked on #134). Remote lint and test checks are green.",
       "timestamp": "2026-09-11T21:24:43Z"
+    },
+    {
+      "text": "Rebased on origin/main at 06c1b0ff. Utf8.scalar?/1 and Utf8.encode_codepoint/2 now declare the canonical boolean result/argument type rather than removed bool. Commit 95cf97055 is the rewritten PR head. Focused decode/UTF-8 fixtures, final workspace gate, and GitHub lint/test are green.",
+      "timestamp": "2026-09-13T17:10:50Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Json.decode emits invalid UTF-8 for Unicode surrogate escapes",
   "type": "bug",
-  "updated_at": "2026-09-13T16:33:20Z"
+  "updated_at": "2026-09-13T17:10:50Z"
 }
