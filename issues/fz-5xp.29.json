@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-5xp.32"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-12T15:38:19Z",
   "close_reason": "Superseded by the atomic implementation boundary fz-5xp.30; all valid acceptance criteria moved into that description.",
   "created": "2026-09-07T06:39:06Z",
@@ -15,5 +13,5 @@
   "status": "closed",
   "title": "Rejected intrinsic subsystem; retained FFI work belongs to fz-5xp.30",
   "type": "task",
-  "updated_at": "2026-09-13T14:39:07Z"
+  "updated_at": "2026-09-13T14:39:26Z"
 }

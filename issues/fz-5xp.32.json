@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-5xp.29",
     "fz-5xp.30"
   ],
   "blocks": [],
@@ -14,5 +13,5 @@
   "status": "open",
   "title": "Validate every runtime-owned extern against one exact physical ABI manifest",
   "type": "bug",
-  "updated_at": "2026-09-13T14:39:05Z"
+  "updated_at": "2026-09-13T14:39:26Z"
 }
