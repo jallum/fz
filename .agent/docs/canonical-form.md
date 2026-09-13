@@ -66,6 +66,10 @@ makes "same rendering implies equivalent" true by construction:
   `{list(int), []} | {[], non_empty_list(int)}` with
   `{list(int), []} | {[], list(int)}`: one union carved two ways, where neither
   clause contains the other and so no pairwise subsumption can see it;
+- **collapse a ground one-coordinate tuple difference** — a rectangle minus a
+  contained rectangle becomes the same rectangle with that coordinate
+  subtracted, only when every coordinate is ground, so type-variable polarity
+  and its runtime envelope remain unchanged;
 - **drop subsumed clauses** — a clause covered by the union of the survivors
   adds nothing;
 - **normalize list clauses from their denotation** — a `ListSig` denotes `[]`

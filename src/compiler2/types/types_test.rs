@@ -2093,6 +2093,28 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
 mod tuple_dnf_hygiene {
     use super::*;
 
+    /// A tuple difference whose cover differs in one coordinate is still one
+    /// rectangle. Keeping the negated cover as a separate clause makes the
+    /// same set intern apart from its direct coordinate-difference form.
+    #[test]
+    fn tuple_difference_normalizes_a_single_coordinate_cover() {
+        let mut t = Types::new();
+        let any = t.any();
+        let false_ = t.bool_lit(false);
+        let true_ = t.bool_lit(true);
+        let boolean = t.union(false_, true_);
+
+        let all_booleans = t.tuple(&[any, boolean]);
+        let false_booleans = t.tuple(&[any, false_]);
+        let through_difference = t.difference(all_booleans, false_booleans);
+        let direct = t.tuple(&[any, true_]);
+
+        assert_eq!(
+            through_difference, direct,
+            "the interning boundary must give equivalent tuple forms one identity"
+        );
+    }
+
     /// The clause product of two overlapping tuple unions yields the same
     /// merged clause from symmetric pairs; idempotence collapses them and
     /// absorption drops the clause the wider survivors already contain.
