@@ -174,7 +174,7 @@ pub(super) fn call_lowered_extern(
         };
         return match ret_ty {
             ExternTy::I64 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
-            ExternTy::Bool => decode_bool_word(ret).map(ExternCallValue::Scalar),
+            ExternTy::Bool => Ok(ExternCallValue::Scalar(decode_bool_word(ret))),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
                 interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
             }
@@ -255,7 +255,7 @@ pub(super) fn call_lowered_extern(
             if let Some(error) = runtime.take_callback_error() {
                 return Err(error);
             }
-            decode_bool_word(value).map(ExternCallValue::Scalar)
+            Ok(ExternCallValue::Scalar(decode_bool_word(value)))
         }
         ExternReturn::Scalar(ExternTy::Any | ExternTy::Binary | ExternTy::CString) => {
             let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
@@ -274,14 +274,8 @@ pub(super) fn call_lowered_extern(
     }
 }
 
-fn decode_bool_word(word: u64) -> Result<AnyValue, String> {
-    match word {
-        0 => Ok(interp_bool_value(false)),
-        1 => Ok(interp_bool_value(true)),
-        other => Err(format!(
-            "foreign boolean result must be the canonical word 0 or 1, got {other}"
-        )),
-    }
+fn decode_bool_word(word: u64) -> AnyValue {
+    interp_bool_value(word != 0)
 }
 
 /// How many machine words the `dispatch_fn_*` family can forward. They
@@ -681,7 +675,7 @@ unsafe fn dispatch_fn_returning_pair(
     fn int_field(word: u64, ty: ExternTy) -> Result<AnyValue, String> {
         match ty {
             ExternTy::I64 => Ok(AnyValue::Int(word as i64)),
-            ExternTy::Bool => decode_bool_word(word),
+            ExternTy::Bool => Ok(decode_bool_word(word)),
             _ => Err(format!("foreign integer return register cannot decode {ty:?}")),
         }
     }

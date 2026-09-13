@@ -353,6 +353,24 @@ fn extern_wire_ty(
     ty_to_extern_ty(types, &upper_bound)
 }
 
+fn extern_param_wire(
+    types: &mut super::super::types::Types,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &super::super::types::Ty,
+    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
+    abi: crate::fz_ir::ExternAbi,
+) -> Result<crate::fz_ir::ExternTy, String> {
+    let resolved = if constraints.is_empty() {
+        *semantic_ty
+    } else {
+        types.instantiate(semantic_ty, constraints)
+    };
+    if abi == crate::fz_ir::ExternAbi::C && types.max_tuple_arity(&resolved) != 0 {
+        return Err("C extern aggregate arguments are unsupported; pass an opaque value reference or define an exact scalar C signature".to_string());
+    }
+    Ok(extern_wire_ty(types, body, semantic_ty, constraints))
+}
+
 fn extern_return_wire(
     types: &mut super::super::types::Types,
     body: &crate::ast::TypeExprBody,
@@ -1579,8 +1597,9 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             .extern_param_tokens
             .iter()
             .zip(semantic_contract.params.iter())
-            .map(|(body, ty)| extern_wire_ty(self.world.types_mut(), body, ty, &semantic_contract.constraints))
-            .collect();
+            .map(|(body, ty)| extern_param_wire(self.world.types_mut(), body, ty, &semantic_contract.constraints, abi))
+            .collect::<Result<_, _>>()
+            .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
         let ret = extern_return_wire(
             self.world.types_mut(),
             &self.surface.extern_ret_tokens,

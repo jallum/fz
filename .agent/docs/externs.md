@@ -10,8 +10,8 @@ The pieces:
 
 - `ExternDecl` (`src/fz_ir/mod.rs`) — the static shape of one door: the
   `symbol`, fixed `params` wire types, a `variadic` flag, the structural
-  `ExternReturn`, the `abi`, and (for an exact validated runtime export) an
-  optional native replacement capability.
+  `ExternReturn`, the `abi`, and (for an exact validated comparison export) an
+  optional native comparison capability.
 - `ExternAbi` (`src/fz_ir/mod.rs`) — `C` or `Fz` (below).
 - `ExternTy` — the C wire alphabet (below).
 - `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param),
@@ -71,9 +71,9 @@ arm to add.
 The JIT's addresses are a TABLE, not a run of calls, so the set can be read
 back. `every_declared_runtime_symbol_is_reachable_from_compiled_code` reads it
 and requires every declared runtime symbol to be registered. Native code may
-also replace a call, but the real export remains reachable for interpreter
-execution, AOT linking, and a non-eligible ordinary declaration. The table
-exists because it had already drifted:
+replace an exact comparison call, but arithmetic exports remain reachable for
+interpreter execution, JIT resolution, and AOT linking. The table exists
+because it had already drifted:
 `fz_bitstring_is_binary` was declared and never registered, and on macOS the
 JIT falls back to dlsym over the process image and finds the `no_mangle` export
 anyway. The whole six-target local gate was green while the same program died
@@ -169,7 +169,7 @@ atom-only `Process.exit_fault` field, which belongs to compiler dispatch traps.
 
 ```text
 I64       proven i64                       F64    proven f64
-Bool      canonical C `uint64_t`: false=0, true=1 (never an atom id or C _Bool)
+Bool      C `uint64_t`: false=0, true=any nonzero word (never an atom id or C _Bool)
 Any       one opaque fz value word         Unit   maps to 0 on return
 Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
           length). Under "fz": the tagged value ref.
@@ -186,7 +186,8 @@ fields stay in their existing tuple transport lanes: the boundary does not
 first allocate an fz tuple or turn either field into `Any`. All nine semantic
 pairs are supported. The interpreter selects one of four concrete carriers
 (word/word, word/float, float/word, float/float) through its existing
-argument-shape dispatcher and rejects any boolean word other than 0 or 1.
+argument-shape dispatcher and decodes a boolean field as false for zero and
+true for any nonzero word. Source boolean arguments remain canonical 0 or 1.
 
 The full declared pair determines the physical signature even when a caller
 ignores a field. x86-64 uses each field's natural integer/SSE return bank. On

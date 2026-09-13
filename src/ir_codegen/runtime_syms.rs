@@ -1,10 +1,12 @@
-//! Runtime FFI symbol declarations shared by JIT and AOT backends.
+//! Compiler-private runtime helper imports shared by JIT and AOT backends.
 //!
-//! Sole owner of each runtime fn's wire ABI; changing one signature
-//! requires updating the FFI body in ir_runtime.rs AND the matching
-//! entry here.
+//! This module owns only the direct helpers emitted by compiler lowering.
+//! Source-visible runtime `extern` declarations are validated by
+//! `extern_contract` and lower through the generalized extern path.
 
 use super::*;
+use crate::extern_contract::{runtime_physical_contract, runtime_symbol_abi};
+use crate::fz_ir::{ExternReturn, ExternTy};
 use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::{FuncId, Linkage, Module as ClModule};
@@ -22,19 +24,12 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
 
 fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]) {
     use types::{F64, I8, I32, I64};
-    // Single source of every runtime import's wire ABI. Every arg/return is a
-    // pointer-width-or-narrower word; the signature is just the type list.
-    // `decl_import` (JIT/AOT declaration) and `CodegenFn::call_named` (the
-    // by-name intrinsic call path) both consult this — one place to keep in
-    // step with the `extern "C"` bodies in ir_runtime.rs.
+    // Single source of each compiler-private direct import's wire ABI. Every
+    // arg/return is a pointer-width-or-narrower word; the signature is just
+    // the type list. `decl_import` (JIT/AOT declaration) and
+    // `CodegenFn::call_named` (the by-name intrinsic call path) both consult
+    // this table.
     let (params, rets): (&[ir::Type], &[ir::Type]) = match name {
-        // Runtime exports referenced by generated code.
-        "fz_panic" => (&[I64, I64], &[]),
-        "fz_send" => (&[I64, I64, I64], &[I64]),
-        "fz_self" => (&[I64], &[I64]),
-        "fz_make_ref" => (&[], &[I64]),
-        "fz_spawn" => (&[I64, I64], &[I64]),
-        "fz_make_resource" => (&[I64, I64, I64], &[I64]),
         // runtime FFI declared into RuntimeRefs
         "fz_alloc_frame" => (&[I64, I32, I32], &[I64]),
         "fz_halt_implicit_ref" => (&[I64, I64], &[]),
@@ -97,7 +92,6 @@ fn runtime_import_types(name: &str) -> (&'static [ir::Type], &'static [ir::Type]
         "fz_box_float_for_any" => (&[I64, F64], &[I64]),
         "fz_box_atom_for_any" => (&[I64, I64], &[I64]),
         "fz_map_is_map" => (&[I64], &[I8]),
-        "fz_value_cmp_ref" => (&[I64, I64, I64], &[I64]),
         "fz_int_float_cmp" => (&[I64, F64], &[I64]),
         "fz_value_cmp_raw_const" => (&[I64, I64, I32, I64, I32], &[I64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
@@ -150,6 +144,36 @@ fn decl_import<M: ClModule>(jmod: &mut M, name: &str) -> Result<FuncId, CodegenE
     let sig = runtime_import_sig_for_module(jmod, name);
     jmod.declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
+}
+
+/// Declare the scalar runtime import used directly by compiler lowering from
+/// the same physical contract that validates its source-visible `extern`.
+fn declare_manifest_scalar_import<M: ClModule>(jmod: &mut M, name: &str) -> Result<FuncId, CodegenError> {
+    let physical = runtime_physical_contract(name)
+        .ok_or_else(|| CodegenError::new(format!("declare {name}: missing physical contract")))?;
+    let ExternReturn::Scalar(ret) = physical.ret else {
+        return Err(CodegenError::new(format!(
+            "declare {name}: aggregate return belongs to generalized extern lowering"
+        )));
+    };
+    let lane = |ty| match ty {
+        ExternTy::F64 => types::F64,
+        ExternTy::I64 | ExternTy::Bool | ExternTy::Any | ExternTy::Binary | ExternTy::CString => types::I64,
+        ExternTy::Unit | ExternTy::Never => unreachable!("non-value extern lane"),
+    };
+    let mut sig = jmod.make_signature();
+    let abi =
+        runtime_symbol_abi(name).ok_or_else(|| CodegenError::new(format!("declare {name}: missing manifest ABI")))?;
+    if abi.takes_process() {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.params
+        .extend(physical.params.iter().copied().map(lane).map(AbiParam::new));
+    if !matches!(ret, ExternTy::Unit | ExternTy::Never) {
+        sig.returns.push(AbiParam::new(lane(ret)));
+    }
+    jmod.declare_function(name, Linkage::Import, &sig)
+        .map_err(|e| CodegenError::new(format!("declare {name}: {e}")))
 }
 
 /// Declare every fz runtime FFI fn as an Import in the given Cranelift
@@ -484,7 +508,7 @@ fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, Codegen
         fmod_id: decl_import(jmod, "fz_fmod")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
         value_eq_widening_ref_id: decl_import(jmod, "fz_value_eq_widening_ref")?,
-        value_cmp_ref_id: decl_import(jmod, "fz_value_cmp_ref")?,
+        value_cmp_ref_id: declare_manifest_scalar_import(jmod, "fz_value_cmp_ref")?,
         int_float_cmp_id: decl_import(jmod, "fz_int_float_cmp")?,
         value_cmp_raw_const_id: decl_import(jmod, "fz_value_cmp_raw_const")?,
         value_eq_raw_const_id: decl_import(jmod, "fz_value_eq_raw_const")?,

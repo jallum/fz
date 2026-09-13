@@ -245,6 +245,7 @@ defmodule Kernel do
   # unboxed `{result, boolean}` pair. This is the sole source-level policy
   # point: every failed arithmetic operation reaches the existing loud panic
   # endpoint through `arithmetic_error/0` until language exceptions replace it.
+  @spec arithmetic_error() :: never
   defp arithmetic_error(), do: panic(:badarith)
   @spec arithmetic_result({t, boolean}) :: t when t: any
   defp arithmetic_result({result, false}), do: result
