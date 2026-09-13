@@ -14,9 +14,15 @@
   "id": "fz-5xp.32",
   "labels": [],
   "parent": "fz-5xp",
+  "comments": [
+    {
+      "text": "Superseded by fz-21x.6 (2026-09-13): the manifest is deleted rather than completed; the extern declaration is the authority and the fixture matrix is the proof.",
+      "timestamp": "2026-09-13T23:42:19Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "Validate every runtime-owned extern against one exact physical ABI manifest",
   "type": "bug",
-  "updated_at": "2026-09-13T23:42:18Z"
+  "updated_at": "2026-09-13T23:42:19Z"
 }
