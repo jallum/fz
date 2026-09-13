@@ -98,7 +98,7 @@ defmodule List do
       #=> true
 
   """
-  @spec member?([a], any) :: bool
+  @spec member?([a], any) :: boolean
   def member?([], _value), do: false
   def member?([head | tail], value) do
     if head === value, do: true, else: member?(tail, value)

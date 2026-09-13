@@ -108,7 +108,7 @@ struct ConstructorEntry {
 #[rustfmt::skip]
 const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "nil",      arity: Arity::Fixed(0), build: |t, _| t.nil() },
-    ConstructorEntry { name: "bool",     arity: Arity::Fixed(0), build: |t, _| t.bool() },
+    ConstructorEntry { name: "boolean",  arity: Arity::Fixed(0), build: |t, _| t.bool() },
     ConstructorEntry { name: "integer",  arity: Arity::Fixed(0), build: |t, _| t.int() },
     ConstructorEntry { name: "float",    arity: Arity::Fixed(0), build: |t, _| t.float() },
     ConstructorEntry { name: "cpointer", arity: Arity::Fixed(0), build: |t, _| t.cpointer() },

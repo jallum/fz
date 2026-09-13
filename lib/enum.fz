@@ -136,7 +136,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec member?(Enumerable.t(a), a) :: bool
+  @spec member?(Enumerable.t(a), a) :: boolean
   def member?(enumerable, value), do: member_result(Enumerable.member?(enumerable, value), enumerable, value)
 
   @doc """
@@ -396,7 +396,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec all?(Enumerable.t(a)) :: bool
+  @spec all?(Enumerable.t(a)) :: boolean
   def all?(enumerable), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(entry) end)
 
   @doc """
@@ -411,7 +411,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec all?(Enumerable.t(a), (a) -> any) :: bool
+  @spec all?(Enumerable.t(a), (a) -> any) :: boolean
   def all?(enumerable, fun), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(fun.(entry)) end)
 
   @doc """
@@ -426,7 +426,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec any?(Enumerable.t(a)) :: bool
+  @spec any?(Enumerable.t(a)) :: boolean
   def any?(enumerable), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(entry) end)
 
   @doc """
@@ -441,7 +441,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec any?(Enumerable.t(a), (a) -> any) :: bool
+  @spec any?(Enumerable.t(a), (a) -> any) :: boolean
   def any?(enumerable, fun), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(fun.(entry)) end)
 
   @doc """
@@ -453,7 +453,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec empty?(Enumerable.t(a)) :: bool
+  @spec empty?(Enumerable.t(a)) :: boolean
   def empty?(enumerable), do: reduce_while(enumerable, true, fn (_entry, _acc) -> {:halt, false} end)
 
   @doc """
@@ -745,7 +745,7 @@ defmodule Enum do
   # eleven-element sort. The numeric clauses keep the inline compare the
   # operators already have; only the pairs `<=` cannot express reach the
   # comparator.
-  @spec default_order(any, any) :: bool
+  @spec default_order(any, any) :: boolean
   defp default_order(left :: integer, right :: integer), do: left <= right
   defp default_order(left :: float, right :: float), do: left <= right
   defp default_order(left, right), do: Kernel.compare(left, right) <= 0
@@ -777,7 +777,7 @@ defmodule Enum do
       #=> [3, 2, 1]
 
   """
-  @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
+  @spec sort(Enumerable.t(a), (a, a) -> boolean) :: [a]
   def sort(enumerable, sorter), do: sort_list(to_list(enumerable), sorter)
 
   @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
@@ -809,7 +809,7 @@ defmodule Enum do
   @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer
   defp count_result({:ok, count}, _enumerable), do: count
   defp count_result({:error, _module}, enumerable), do: count(enumerable, fn (_entry) -> true end)
-  @spec member_result({:ok, bool} | {:error, any}, Enumerable.t(a), a) :: bool
+  @spec member_result({:ok, boolean} | {:error, any}, Enumerable.t(a), a) :: boolean
   defp member_result({:ok, found}, _enumerable, _value), do: found
   defp member_result({:error, _module}, enumerable, value) do
     reduce_while(enumerable, false, fn (entry, _found) ->
@@ -905,12 +905,12 @@ defmodule Enum do
     [separator, mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
-  @spec all_value_step(any) :: {:cont, bool} | {:halt, bool}
+  @spec all_value_step(any) :: {:cont, boolean} | {:halt, boolean}
   defp all_value_step(value) do
     if value, do: {:cont, true}, else: {:halt, false}
   end
 
-  @spec any_value_step(any) :: {:cont, bool} | {:halt, bool}
+  @spec any_value_step(any) :: {:cont, boolean} | {:halt, boolean}
   defp any_value_step(value) do
     if value, do: {:halt, true}, else: {:cont, false}
   end
@@ -962,7 +962,7 @@ defmodule Enum do
   @spec drop_positive_finish({[a], integer}) :: [a]
   defp drop_positive_finish({acc, _amount}), do: reverse_list(acc)
 
-  @spec drop_while_finish({[a], bool}) :: [a]
+  @spec drop_while_finish({[a], boolean}) :: [a]
   defp drop_while_finish({acc, _dropping}), do: reverse_list(acc)
 
   @spec drop_every_finish({[a], integer}) :: [a]
@@ -982,7 +982,7 @@ defmodule Enum do
   @spec split_pair_finish({[a], [a]}) :: {[a], [a]}
   defp split_pair_finish({left, right}), do: {reverse_list(left), reverse_list(right)}
 
-  @spec sort_list([a], (a, a) -> bool) :: [a]
+  @spec sort_list([a], (a, a) -> boolean) :: [a]
   defp sort_list([], _sorter), do: []
   defp sort_list([single], _sorter), do: [single]
   defp sort_list(list, sorter) do
@@ -1007,7 +1007,7 @@ defmodule Enum do
   defp reverse_list([], acc), do: acc
   defp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 
-  @spec merge_sort_lists([a], [a], (a, a) -> bool) :: [a]
+  @spec merge_sort_lists([a], [a], (a, a) -> boolean) :: [a]
   defp merge_sort_lists([], right, _sorter), do: right
   defp merge_sort_lists(left, [], _sorter), do: left
   defp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do

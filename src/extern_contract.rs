@@ -110,7 +110,7 @@ pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
 
 pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
-        "any" | "atom" | "bool" => Some(ExternTy::Any),
+        "any" | "atom" | "boolean" => Some(ExternTy::Any),
         "integer" => Some(ExternTy::I64),
         "float" => Some(ExternTy::F64),
         "nil" => Some(ExternTy::Unit),
@@ -118,6 +118,16 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
         "binary" => Some(ExternTy::Binary),
         "cstring" => Some(ExternTy::CString),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExternTy, extern_ty_from_name};
+
+    #[test]
+    fn boolean_is_the_extern_source_type_name() {
+        assert_eq!(extern_ty_from_name("boolean"), Some(ExternTy::Any));
     }
 }
 

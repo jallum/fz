@@ -105,7 +105,7 @@ defmodule Map do
       #=> %{:a => 1, :c => 3}
 
   """
-  @spec filter(any, ({any, any}) -> bool) :: any
+  @spec filter(any, ({any, any}) -> boolean) :: any
   def filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
 
   @doc """
@@ -132,28 +132,28 @@ defmodule Map do
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   defp taken(_map, [], acc), do: reverse(acc, [])
   defp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
-  @spec take_one(any, any, [{any, any}], bool) :: [{any, any}]
+  @spec take_one(any, any, [{any, any}], boolean) :: [{any, any}]
   defp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
   defp take_one(_map, _k, acc, false), do: acc
 
   @spec dropped([{a, b}], [any], [{a, b}]) :: [{a, b}]
   defp dropped([], _keys, acc), do: reverse(acc, [])
   defp dropped([{k, v} | t], keys, acc), do: dropped(t, keys, drop_one({k, v}, keys, acc, key_listed?(keys, k)))
-  @spec drop_one({a, b}, [any], [{a, b}], bool) :: [{a, b}]
+  @spec drop_one({a, b}, [any], [{a, b}], boolean) :: [{a, b}]
   defp drop_one(_pair, _keys, acc, true), do: acc
   defp drop_one(pair, _keys, acc, false), do: [pair | acc]
 
-  @spec kept([{a, b}], ({a, b}) -> bool, [{a, b}]) :: [{a, b}]
+  @spec kept([{a, b}], ({a, b}) -> boolean, [{a, b}]) :: [{a, b}]
   defp kept([], _fun, acc), do: reverse(acc, [])
   defp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
-  @spec keep_one({a, b}, [{a, b}], bool) :: [{a, b}]
+  @spec keep_one({a, b}, [{a, b}], boolean) :: [{a, b}]
   defp keep_one(pair, acc, true), do: [pair | acc]
   defp keep_one(_pair, acc, false), do: acc
 
-  @spec key_listed?([any], any) :: bool
+  @spec key_listed?([any], any) :: boolean
   defp key_listed?([], _v), do: false
   defp key_listed?([h | t], v), do: key_listed_or?(h === v, t, v)
-  @spec key_listed_or?(bool, [any], any) :: bool
+  @spec key_listed_or?(boolean, [any], any) :: boolean
   defp key_listed_or?(true, _t, _v), do: true
   defp key_listed_or?(false, t, v), do: key_listed?(t, v)
 
@@ -216,7 +216,7 @@ defmodule Map do
   @spec get(any, any, any) :: any
   def get(map, key, default), do: get_or(map, key, default, has_key?(map, key))
 
-  @spec get_or(any, any, any, bool) :: any
+  @spec get_or(any, any, any, boolean) :: any
   defp get_or(map, key, _default, true), do: map[key]
   defp get_or(_map, _key, default, false), do: default
 
@@ -302,10 +302,10 @@ defmodule Map do
       #=> false
 
   """
-  @spec has_key?(any, any) :: bool
+  @spec has_key?(any, any) :: boolean
   def has_key?(map, key), do: has_key?(map, fz_map_count(map), 0, key)
 
-  @spec has_key?(any, integer, integer, any) :: bool
+  @spec has_key?(any, integer, integer, any) :: boolean
   defp has_key?(map, count, index, key) do
     if index >= count do
       false
@@ -403,7 +403,7 @@ defmodule Map do
       #=> false
 
   """
-  @spec member?(any, any) :: bool
+  @spec member?(any, any) :: boolean
   def member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
   def member?(_map, _value), do: false
 
@@ -463,7 +463,7 @@ defmodule Map do
   defp reduce_while_step(map, count, index, {:cont, acc}, reducer), do: reduce_while_cont(map, count, index + 1, acc, reducer)
   defp reduce_while_step(_map, _count, _index, {:halt, acc}, _reducer), do: acc
 
-  @spec member_pair?(any, integer, integer, any, any) :: bool
+  @spec member_pair?(any, integer, integer, any, any) :: boolean
   defp member_pair?(map, count, index, key, value) do
     if index >= count do
       false
