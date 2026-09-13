@@ -6,9 +6,15 @@
   "description": "## Goal\n\nMake `boolean` the sole source-level builtin type constructor, matching Elixir typespecs.\n\n## Observed state\n\n`src/compiler2/resolve.rs` registers `bool`; `boolean` is currently an unknown type name. The maintained `.fz` library uses `bool` in 70 `@spec` and extern annotations, so a registry-only rename would leave the runtime prelude unresolved. `.agent/docs/type-naming.md` documents the old spelling.\n\n## Scope\n\n- Rename the builtin registry entry from `bool` to `boolean`.\n- Migrate every maintained source-level type annotation in `lib/`.\n- Update the type-naming authority.\n- Add resolver coverage proving `boolean` denotes `Types::bool()` and `bool` is rejected, including the resource arity diagnostic witness.\n\n## Acceptance\n\n`boolean` resolves to the existing boolean `Ty`; `bool` does not resolve as a builtin; the maintained runtime library compiles with the canonical spelling; focused resolver tests and the relevant library/fixture gates pass.\n\n## Non-goals\n\nRust’s internal `bool` identifiers and runtime/telemetry tags remain implementation details, not source-language spelling.",
   "id": "fz-k6d",
   "labels": [],
+  "comments": [
+    {
+      "text": "Delivered in 783250dcc. `boolean` is now the source-level builtin and extern wire spelling; maintained Fz library annotations and the type-naming authority use it. The resolver and extern-contract tests prove the canonical spelling; the explicit `bool`-rejection test was removed by request.\n\nValidated: cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace --all-features (2088 compiler tests passed, 5 ignored; 708 fixture trials; 30 CLI; 266 runtime; metadata and doctests).",
+      "timestamp": "2026-09-13T03:17:16Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Align the boolean type constructor with Elixir",
   "type": "task",
-  "updated_at": "2026-09-13T03:07:30Z"
+  "updated_at": "2026-09-13T03:17:16Z"
 }
