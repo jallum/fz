@@ -20,11 +20,15 @@
     {
       "text": "Published draft PR #128: https://github.com/jallum/fz/pull/128. The ticket commit was rebased from be9fbf3d3 onto current main after the epic PR merged, so its review-only identity is now e422b1d9b. The tree change is unchanged: one commit, eight files. Focused JSON matrix is green on the exact PR head (18/18 across interp, JIT, and AOT).",
       "timestamp": "2026-09-11T14:51:33Z"
+    },
+    {
+      "text": "Rebased on origin/main at 06c1b0ff after the def/defp migration. The two JSON-key behavior fixtures now use def main/0, preserving the encoder contract across interp, JIT, and AOT. Commit d62cbed3a is the rewritten PR head. Focused JSON encoder matrix: 12/12; final workspace gate and GitHub lint/test are green.",
+      "timestamp": "2026-09-13T17:10:48Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] Json.encode! emits invalid JSON for a non-binary map key and halts without a message for an atom",
   "type": "task",
-  "updated_at": "2026-09-13T16:45:00Z"
+  "updated_at": "2026-09-13T17:10:48Z"
 }
