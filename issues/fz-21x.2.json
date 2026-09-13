@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T21:33:49Z",
+  "description": "Found by review of fz-21x.1. Three Cranelift functions whose ADDRESSES the runtime calls as extern \"C\" fn pointers are still declared with Signature::new(CallConv::SystemV) rather than the target module's make_signature: src/compiler2/native_codegen/receive.rs:53 (MatcherFn), src/ir_codegen/runtime_syms.rs (fz_drain_dtor_entry, dd_sig) with its body in native_codegen/driver.rs:308, and driver.rs:477 (fz_resume). Harmless today because each takes a few integer arguments, where SystemV and Apple AArch64 agree; the same latent mismatch that hardcoded SystemV imports had on Apple AArch64 (fixed for imports by runtime_import_sig_for_module and for the AOT driver signatures by fz-21x.1). Fix: build each through import_sig / make_signature; delete any CallConv::SystemV that remains outside a deliberately Tail-CC Local body. Proof: workspace gate green on both host triples.",
+  "id": "fz-21x.2",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 3,
+  "status": "open",
+  "title": "Remaining hardcoded SystemV signatures at C boundaries: MatcherFn, fz_drain_dtor_entry, fz_resume",
+  "type": "task",
+  "updated_at": "2026-09-13T21:33:49Z"
+}
