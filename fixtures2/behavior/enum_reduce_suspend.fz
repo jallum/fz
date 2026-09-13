@@ -1,46 +1,15 @@
 #---
 # purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
 #---
-#
-# # enum_reduce_suspend
-#
-# Pins the materialization boundary for `Enumerable.reduce_list/3` suspend:
-#
-# ```fz
-# Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x})
-# ```
-#
-# The suspend clause returns `{:suspended, acc, fn () -> ... end}`. That closure
-# is a source value, not an internal native continuation edge, so it remains a
-# real heap closure even as native call continuations become direct or lazy.
-#
-# Current contract, native `run`/`build`:
-#
-# - the three-element input list allocates three cons cells;
-# - the returned suspend function allocates one closure (`closure_allocs = 1`,
-#   `closure_bytes = 48`);
-# - one protocol-control struct is allocated (`struct_allocs = 1`,
-#   `struct_bytes = 48`);
-# - the accumulator is never boxed (`scalar_box_allocs = 0`);
-# - the rendered function identity is `#fn<125/0>`.
-#
-# Current contract, `interp`:
-#
-# - same list-cons count as native;
-# - the suspended continuation is a real heap closure, same as native, but
-#   `interp` allocates a second closure (`closure_allocs = 2`,
-#   `closure_bytes = 64`). It allocates the same single protocol-control struct
-#   as native (`struct_allocs = 1`, `struct_bytes = 48`), because a tuple whose
-#   value layout does not carry `ValueRef` travels as its fields' lanes on both
-#   backends;
-# - the rendered function identity is `#fn<125/0>`. Its `/0` arity is a
-#   property of the source (`fn () -> ... end` takes no arguments).
 def main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
 
-  dbg(out)
   stats = Process.heap_alloc_stats()
+  dbg(case out do
+    {:suspended, acc, _resume} -> {:suspended, acc}
+    _ -> :unexpected
+  end)
   dbg({
     stats[:list_cons_allocs],
     stats[:list_cons_bytes],
@@ -51,4 +20,8 @@ def main() do
     stats[:scalar_box_allocs],
     stats[:scalar_box_bytes]
   })
+  dbg(case out do
+    {:suspended, _acc, resume} -> resume.()
+    _ -> :unexpected
+  end)
 end
