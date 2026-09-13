@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-13T22:34:20Z",
   "created": "2026-09-13T22:10:20Z",
   "description": "Step 2 of the extern door collapse. Measured on 2026-09-13 with a two-crate probe (dependency rlib with an unreferenced no_mangle export in its own object file; bin looks it up with dlsym(RTLD_DEFAULT)): without an export flag the export is dropped from the binary on both macOS and Linux and dlsym fails; with -Wl,-export_dynamic (macOS) or -rdynamic (Linux) the unreferenced export survives the link and dlsym finds it. So the two compiler-side name-\u003eaddress tables exist only because executables do not export their symbols by default; the AOT link already passes -rdynamic for the same reason (aot_link.rs). Change: the fz package build script passes the export flag for its bins and test binaries; fz_extern_symbol_addr is unchanged and now finds fz's own exports the way it finds sqrt. Deleted: runtime_symbol_addrs and the production rows of register_runtime_symbols (src/ir_codegen/backend.rs), the interpreter's name-\u003eaddress match and its 60-name use list (src/ir_interp/extern_call.rs), every_declared_runtime_symbol_is_reachable_from_compiled_code. Proof: nm shows fz_aot_setup present in fz2 after the flag; every_declared_runtime_symbol_resolves passes with the address book gone; full gate; Linux CI.",
   "id": "fz-21x.3",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Export the compiler's symbols dynamically; delete the JIT registry and the interpreter address book",
   "type": "task",
-  "updated_at": "2026-09-13T22:28:14Z"
+  "updated_at": "2026-09-13T22:34:20Z"
 }
