@@ -7917,14 +7917,19 @@ fn compiler2_c_extern_scalar_pairs_cover_every_semantic_field_pair_without_name_
 }
 
 #[test]
-fn compiler2_c_extern_scalar_pair_rejects_noncanonical_boolean_words() {
+fn compiler2_c_extern_scalar_pair_nonzero_boolean_is_true_in_interpreter() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/c_extern_scalar_pair_bad_boolean.fz".to_string()),
         text: concat!(
             "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
-            "def main(), do: _test_pair_bad_bool()\n",
+            "def main() do\n",
+            "  case _test_pair_bad_bool() do\n",
+            "    {true, 2} -> 42\n",
+            "    _ -> 0\n",
+            "  end\n",
+            "end\n",
         )
         .to_string(),
     });
@@ -7934,13 +7939,39 @@ fn compiler2_c_extern_scalar_pair_rejects_noncanonical_boolean_words() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let error = compiler
-        .run_root_interp(root)
-        .expect_err("invalid C boolean must fail the foreign contract");
-    assert!(
-        error.contains("foreign boolean result must be the canonical word 0 or 1, got 7"),
-        "unexpected invalid-boolean diagnostic: {error}",
-    );
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+}
+
+#[test]
+fn compiler2_jit_c_extern_scalar_pair_nonzero_boolean_is_true() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair_nonzero_boolean_jit.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
+            "def main() do\n",
+            "  case _test_pair_bad_bool() do\n",
+            "    {true, 2} -> 42\n",
+            "    _ -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "JIT nonzero C boolean handoff");
+    let program = native.last(root).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
 }
 
 #[test]
@@ -10444,6 +10475,43 @@ def main(), do: Weird.some_symbol(1)
     assert!(
         message.contains("`rust`") && message.contains("`C`") && message.contains("`fz`"),
         "the diagnostic should name the rejected ABI and every ABI that exists, got: {message}",
+    );
+}
+
+#[test]
+fn compiler2_c_extern_aggregate_argument_is_rejected_at_the_shared_boundary() {
+    let telemetry = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&telemetry, &[]);
+
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("c_extern_aggregate_argument.fz".to_string()),
+        text: r#"extern "C" defp foreign_pair({integer, integer}) :: integer
+
+def main(), do: foreign_pair({1, 2})
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a C aggregate argument must fail before any execution door can lower it: {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("C aggregate argument diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    assert!(
+        metadata_str(&diagnostic, "message").contains("aggregate arguments"),
+        "the shared diagnostic must identify the unsupported C aggregate boundary",
     );
 }
 
@@ -15665,10 +15733,6 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
             .any(|callable| callable.matches_name_arity("fz_op_rem_ff", 2)),
         "the runtime gateway is private source, not a Kernel interface leaf",
     );
-    assert!(
-        signature.runtime_binding.is_some(),
-        "the resolved Kernel declaration must carry its validated runtime capability",
-    );
     assert_eq!(
         crate::ir_interp::tests_support_resolved_symbol_addr("fz_op_rem_ff", ExternAbi::C).unwrap(),
         fz_runtime::ir_runtime::fz_op_rem_ff as *const (),
@@ -15706,6 +15770,145 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
         .run_root_interp(interp_root)
         .expect("interpreter should call the same declared C export");
     assert_eq!(interp_output.lines(), vec!["-1.5".to_string()]);
+}
+
+#[test]
+fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_and_forced_native_c_doors() {
+    let source = include_str!("../../fixtures2/00556_arithmetic_raw_pair_edges.fz");
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let mut interp = Compiler2::new(interp_tel);
+    interp.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/arithmetic_raw_pair_edges_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        interp.run_root_interp(interp_root),
+        Ok(42),
+        "the interpreter must expose each real C result/status lane at arithmetic boundaries",
+    );
+
+    let native_tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&native_tel);
+    let mut forced_c = Compiler2::new(native_tel);
+    forced_c.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/arithmetic_raw_pair_edges_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let native_root = forced_c.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut forced_c, native_root);
+    let program = native.last(native_root).program;
+    for symbol in [
+        "fz_op_neg_i",
+        "fz_op_add_ii",
+        "fz_op_sub_ii",
+        "fz_op_mul_ii",
+        "fz_op_div_ii",
+        "fz_op_rem_ii",
+        "fz_op_div_ff",
+        "fz_op_mul_ff",
+    ] {
+        assert!(
+            program
+                .module
+                .externs
+                .iter()
+                .any(|decl| decl.symbol == symbol && decl.abi == ExternAbi::C),
+            "the exact declaration of {symbol} must remain a real C call",
+        );
+    }
+    let compiled = jit_compile_native_program(&mut forced_c, &program);
+    assert_eq!(
+        compiled.run(forced_c.telemetry(), program.entry),
+        42,
+        "the forced native C calls must expose the same result/status lanes as interpreter calls",
+    );
+}
+
+#[test]
+fn compiler2_typed_kernel_arithmetic_helpers_call_real_pair_exports_in_the_native_path() {
+    use object::{BinaryFormat, Object, ObjectSymbol};
+
+    let source = r#"
+def main() do
+  integer = (-5 + 7) * 3
+  float = (integer + 0.5) / 2.0
+  if integer == 6 and float == 3.25, do: 42, else: 0
+end
+"#;
+    let telemetry = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&telemetry);
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("typed_kernel_arithmetic_generic_helpers.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let pair_exports = program
+        .module
+        .externs
+        .iter()
+        .filter_map(|decl| match (decl.abi, decl.ret) {
+            (ExternAbi::C, ExternReturn::Pair(_)) => Some(decl.symbol.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        ["fz_op_add_ii", "fz_op_mul_ii", "fz_op_add_if", "fz_op_div_ff"]
+            .iter()
+            .all(|symbol| pair_exports.contains(symbol)),
+        "the typed Kernel root must retain its resolved real C arithmetic declarations: {pair_exports:?}",
+    );
+
+    let (jit, entry) = compiler
+        .compile_root_jit(root)
+        .expect("compile typed arithmetic JIT root");
+    assert_eq!(
+        jit.run(compiler.telemetry(), entry),
+        42,
+        "JIT must execute the same real C arithmetic calls",
+    );
+
+    let artifact = compiler
+        .compile_root_aot(root, "typed_kernel_arithmetic_generic_helpers")
+        .expect("compile typed arithmetic AOT root");
+    let object = object::File::parse(artifact.object.as_slice()).expect("parse emitted arithmetic object");
+    let imports = object
+        .symbols()
+        .filter(|symbol| symbol.is_undefined())
+        .filter_map(|symbol| symbol.name().ok())
+        .collect::<BTreeSet<_>>();
+    let pair_imports = pair_exports
+        .iter()
+        .map(|symbol| match object.format() {
+            BinaryFormat::MachO => format!("_{symbol}"),
+            _ => (*symbol).to_string(),
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        pair_imports.iter().all(|symbol| imports.contains(symbol.as_str())),
+        "the shared native pair lowering must import every real C arithmetic export; pair={pair_imports:?} imports={imports:?}",
+    );
 }
 
 #[test]
@@ -18937,20 +19140,32 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
         self_calls.last().expect("self calls").summary.return_ty.is_some(),
         "the ascent should land on real return evidence",
     );
+    let recursive_result_records = callsites
+        .all()
+        .into_iter()
+        .filter(|record| {
+            record
+                .summary
+                .targets
+                .iter()
+                .any(|target| target.callee == SelectedCallee::Function(count_id))
+        })
+        .collect::<Vec<_>>();
 
     // Mid-ascent, not-yet-derived callee returns surface as ABSENT evidence
     // (return_ty None) — the honest snapshot the engine now records.
     assert!(
-        callsites.all().iter().any(|record| record.summary.return_ty.is_none()),
-        "some round must record absent return evidence",
+        recursive_result_records
+            .iter()
+            .any(|record| record.summary.return_ty.is_none()),
+        "some round must record absent return evidence for the source calls that target count/1",
     );
 
-    // The two lies are gone. Every function in this program returns, so the
-    // empty type may never appear as a return (the old absent-reads-as-none
-    // lie), and there are no boundaries or dynamic callables, so `any` may
-    // never appear either (the old wait-placeholder lie).
+    // The two lies are gone at the recursive source callsite. Kernel helper
+    // error paths may correctly return `never`; they are not an absent read of
+    // count/1's recursive result.
     let any = world.types_mut().any();
-    for record in callsites.all() {
+    for record in recursive_result_records {
         for target in &record.summary.targets {
             if let Some(ty) = target.return_ty {
                 assert!(

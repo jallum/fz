@@ -239,8 +239,9 @@ pub struct ExternMarshalSite {
 pub enum ExternTy {
     I64,
     F64,
-    /// Canonical C wire boolean: one `u64` word, restricted to 0 or 1.
-    /// This is neither Rust/C `bool` nor an fz atom id.
+    /// C wire boolean: one `u64` word, with zero false and nonzero true.
+    /// Source arguments are emitted as 0 or 1; this is neither Rust/C `bool`
+    /// nor an fz atom id.
     Bool,
     Any,   // opaque u64 fz value
     Unit,  // maps to 0 on return

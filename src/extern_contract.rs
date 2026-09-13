@@ -52,33 +52,7 @@ pub struct RuntimePhysicalContract {
 /// source spelling or linker symbol at the codegen site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeNativeBinding {
-    Arithmetic(RuntimeArithmetic),
     Comparison(RuntimeComparison),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeArithmetic {
-    NegI,
-    NegF,
-    AddII,
-    AddIF,
-    AddFF,
-    SubII,
-    SubIF,
-    SubFI,
-    SubFF,
-    MulII,
-    MulIF,
-    MulFF,
-    DivII,
-    DivIIToFloat,
-    DivIF,
-    DivFI,
-    DivFF,
-    RemII,
-    RemIF,
-    RemFI,
-    RemFF,
 }
 
 /// The comparison operation a validated runtime export may lower directly.
@@ -144,12 +118,18 @@ impl RuntimeSymbol {
 
 const I: &[ExternTy] = &[ExternTy::I64];
 const F: &[ExternTy] = &[ExternTy::F64];
+const A: &[ExternTy] = &[ExternTy::Any];
 const II: &[ExternTy] = &[ExternTy::I64, ExternTy::I64];
 const IF: &[ExternTy] = &[ExternTy::I64, ExternTy::F64];
 const FI: &[ExternTy] = &[ExternTy::F64, ExternTy::I64];
 const FF: &[ExternTy] = &[ExternTy::F64, ExternTy::F64];
 const BB: &[ExternTy] = &[ExternTy::Binary, ExternTy::Binary];
 const AA: &[ExternTy] = &[ExternTy::Any, ExternTy::Any];
+const IA: &[ExternTy] = &[ExternTy::I64, ExternTy::Any];
+const WORD: ExternReturn = ExternReturn::Scalar(ExternTy::I64);
+const ANY: ExternReturn = ExternReturn::Scalar(ExternTy::Any);
+const BINARY: ExternReturn = ExternReturn::Scalar(ExternTy::Binary);
+const NEVER: ExternReturn = ExternReturn::Scalar(ExternTy::Never);
 const INT_RESULT: ExternReturn = ExternReturn::Pair([ExternTy::I64, ExternTy::Bool]);
 const FLOAT_RESULT: ExternReturn = ExternReturn::Pair([ExternTy::F64, ExternTy::Bool]);
 const BOOL: ExternReturn = ExternReturn::Scalar(ExternTy::Bool);
@@ -158,24 +138,24 @@ pub const RUNTIME_SYMBOLS: &[RuntimeSymbol] = &[
     // Allocating helpers reach the process heap, so they take the process.
     // These are the `extern "fz"` declarations in the runtime library.
     RuntimeSymbol::abi("fz_atom_to_binary", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_binary_concat", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_dbg_value", ExternAbi::Fz),
+    RuntimeSymbol::physical("fz_binary_concat", ExternAbi::Fz, BB, BINARY, None),
+    RuntimeSymbol::physical("fz_dbg_value", ExternAbi::Fz, A, ANY, None),
     RuntimeSymbol::abi("fz_float_to_binary", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_integer_to_binary", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_panic", ExternAbi::Fz),
+    RuntimeSymbol::physical("fz_panic", ExternAbi::Fz, A, NEVER, None),
     RuntimeSymbol::abi("fz_process_heap_alloc_stats", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_self", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_make_resource", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_spawn", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_send", ExternAbi::Fz),
+    RuntimeSymbol::physical("fz_self", ExternAbi::Fz, &[], WORD, None),
+    RuntimeSymbol::physical("fz_make_resource", ExternAbi::Fz, IA, ANY, None),
+    RuntimeSymbol::physical("fz_spawn", ExternAbi::Fz, A, WORD, None),
+    RuntimeSymbol::physical("fz_send", ExternAbi::Fz, IA, ANY, None),
     // Plain C symbols the runtime exports for the interpreter to call.
     // fz-5xp.8 — the total term order. Takes the process because atoms order
     // by NAME, and the name table lives on the node.
-    RuntimeSymbol::abi("fz_value_cmp_ref", ExternAbi::Fz),
+    RuntimeSymbol::physical("fz_value_cmp_ref", ExternAbi::Fz, AA, WORD, None),
     RuntimeSymbol::abi("fz_binary_downcase", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_binary_to_atom", ExternAbi::Fz),
     RuntimeSymbol::abi("fz_binary_upcase", ExternAbi::Fz),
-    RuntimeSymbol::abi("fz_bitstring_byte_size", ExternAbi::C),
+    RuntimeSymbol::physical("fz_bitstring_byte_size", ExternAbi::C, A, WORD, None),
     RuntimeSymbol::abi("fz_bitstring_is_binary", ExternAbi::C),
     RuntimeSymbol::abi("fz_bitstring_valid_utf8", ExternAbi::C),
     RuntimeSymbol::abi("fz_bitstring_utf8_prefix", ExternAbi::C),
@@ -191,154 +171,34 @@ pub const RUNTIME_SYMBOLS: &[RuntimeSymbol] = &[
     RuntimeSymbol::abi("fz_map_entry_key", ExternAbi::C),
     RuntimeSymbol::abi("fz_map_entry_value", ExternAbi::C),
     RuntimeSymbol::abi("fz_resource_test_print_dtor", ExternAbi::C),
-    RuntimeSymbol::abi("fz_make_ref", ExternAbi::C),
-    RuntimeSymbol::physical(
-        "fz_op_add_ii",
-        ExternAbi::C,
-        II,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::AddII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_add_if",
-        ExternAbi::C,
-        IF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::AddIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_add_ff",
-        ExternAbi::C,
-        FF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::AddFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_sub_ii",
-        ExternAbi::C,
-        II,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::SubII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_sub_if",
-        ExternAbi::C,
-        IF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::SubIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_sub_fi",
-        ExternAbi::C,
-        FI,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::SubFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_sub_ff",
-        ExternAbi::C,
-        FF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::SubFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_neg_i",
-        ExternAbi::C,
-        I,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::NegI)),
-    ),
+    RuntimeSymbol::physical("fz_make_ref", ExternAbi::C, &[], WORD, None),
+    RuntimeSymbol::physical("fz_op_add_ii", ExternAbi::C, II, INT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_add_if", ExternAbi::C, IF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_add_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_sub_ii", ExternAbi::C, II, INT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_sub_if", ExternAbi::C, IF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_sub_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_sub_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_neg_i", ExternAbi::C, I, INT_RESULT, None),
     RuntimeSymbol::physical(
         "fz_op_neg_f",
         ExternAbi::C,
         F,
         ExternReturn::Scalar(ExternTy::F64),
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::NegF)),
+        None,
     ),
-    RuntimeSymbol::physical(
-        "fz_op_mul_ii",
-        ExternAbi::C,
-        II,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::MulII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_mul_if",
-        ExternAbi::C,
-        IF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::MulIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_mul_ff",
-        ExternAbi::C,
-        FF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::MulFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_div_ii",
-        ExternAbi::C,
-        II,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::DivII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_div_ii_to_float",
-        ExternAbi::C,
-        II,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::DivIIToFloat)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_div_if",
-        ExternAbi::C,
-        IF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::DivIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_div_fi",
-        ExternAbi::C,
-        FI,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::DivFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_div_ff",
-        ExternAbi::C,
-        FF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::DivFF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_rem_ii",
-        ExternAbi::C,
-        II,
-        INT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::RemII)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_rem_if",
-        ExternAbi::C,
-        IF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::RemIF)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_rem_fi",
-        ExternAbi::C,
-        FI,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::RemFI)),
-    ),
-    RuntimeSymbol::physical(
-        "fz_op_rem_ff",
-        ExternAbi::C,
-        FF,
-        FLOAT_RESULT,
-        Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::RemFF)),
-    ),
+    RuntimeSymbol::physical("fz_op_mul_ii", ExternAbi::C, II, INT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_mul_if", ExternAbi::C, IF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_mul_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_div_ii", ExternAbi::C, II, INT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_div_ii_to_float", ExternAbi::C, II, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_div_if", ExternAbi::C, IF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_div_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_div_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_rem_ii", ExternAbi::C, II, INT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_rem_if", ExternAbi::C, IF, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_rem_fi", ExternAbi::C, FI, FLOAT_RESULT, None),
+    RuntimeSymbol::physical("fz_op_rem_ff", ExternAbi::C, FF, FLOAT_RESULT, None),
     RuntimeSymbol::physical(
         "fz_op_eq",
         ExternAbi::Fz,
@@ -516,6 +376,15 @@ pub fn runtime_symbol_abi(symbol: &str) -> Option<ExternAbi> {
         .map(|entry| entry.abi)
 }
 
+/// The exact wire contract for a source-visible runtime export, when this
+/// manifest owns one. Compiler-private imports have no row here.
+pub fn runtime_physical_contract(symbol: &str) -> Option<RuntimePhysicalContract> {
+    RUNTIME_SYMBOLS
+        .iter()
+        .find(|entry| entry.name == symbol)
+        .and_then(|entry| entry.physical)
+}
+
 pub fn validate_runtime_symbol_shape(
     symbol: &str,
     abi: ExternAbi,
@@ -571,8 +440,8 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternAbi, ExternReturn, ExternTy, RuntimeArithmetic, RuntimeComparison, RuntimeNativeBinding,
-        extern_ty_from_name, validate_runtime_symbol_shape,
+        ExternAbi, ExternReturn, ExternTy, RuntimeComparison, RuntimeNativeBinding, extern_ty_from_name,
+        validate_runtime_symbol_shape,
     };
 
     #[test]
@@ -581,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_native_capabilities_require_the_full_declared_physical_shape() {
+    fn runtime_physical_contracts_validate_every_kernel_gateway() {
         assert_eq!(
             validate_runtime_symbol_shape(
                 "fz_op_add_ii",
@@ -589,7 +458,7 @@ mod tests {
                 &[ExternTy::I64, ExternTy::I64],
                 ExternReturn::Pair([ExternTy::I64, ExternTy::Bool]),
             ),
-            Ok(Some(RuntimeNativeBinding::Arithmetic(RuntimeArithmetic::AddII)))
+            Ok(None)
         );
         assert_eq!(
             validate_runtime_symbol_shape(
@@ -600,13 +469,26 @@ mod tests {
             ),
             Ok(Some(RuntimeNativeBinding::Comparison(RuntimeComparison::LtBB)))
         );
+        assert_eq!(
+            validate_runtime_symbol_shape(
+                "fz_send",
+                ExternAbi::Fz,
+                &[ExternTy::I64, ExternTy::Any],
+                ExternReturn::Scalar(ExternTy::Any),
+            ),
+            Ok(None)
+        );
+        let error =
+            validate_runtime_symbol_shape("fz_panic", ExternAbi::Fz, &[], ExternReturn::Scalar(ExternTy::Never))
+                .expect_err("a Kernel runtime gateway must not accept a missing physical argument");
+        assert!(error.contains("fz_panic") && error.contains("Any"));
         let error = validate_runtime_symbol_shape(
             "fz_op_add_ii",
             ExternAbi::C,
             &[ExternTy::I64, ExternTy::I64],
             ExternReturn::Scalar(ExternTy::I64),
         )
-        .expect_err("a scalar result must not acquire the aggregate arithmetic capability");
+        .expect_err("a scalar result must not pass the aggregate arithmetic contract");
         assert!(error.contains("fz_op_add_ii") && error.contains("result"));
         let error = validate_runtime_symbol_shape(
             "fz_op_lt_bb",

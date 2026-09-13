@@ -203,3 +203,77 @@ fn aot_kernel_make_resource_calls_the_private_runtime_export_and_drains_its_dtor
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout), ":before\ndtor:42\n");
 }
+
+#[cfg(unix)]
+#[test]
+fn aot_c_extern_nonzero_boolean_is_true() {
+    let source_path = unique_temp_path("fz_nonzero_boolean_aot", ".fz");
+    let out_bin = unique_temp_path("fz_nonzero_boolean_aot", ".bin");
+    write(
+        &source_path,
+        "extern \"C\" defp abs(integer) :: boolean\ndef main(), do: if abs(7), do: dbg(42), else: dbg(0)\n",
+    )
+    .expect("write nonzero Boolean fixture");
+
+    let build = run_with_args(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "aot nonzero Boolean build failed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&out_bin).output().expect("run nonzero Boolean aot binary");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("o"));
+    assert!(
+        run.status.success(),
+        "AOT nonzero Boolean binary failed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+}
+
+#[test]
+fn aot_raw_arithmetic_pair_edges_match_the_real_total_c_exports() {
+    let source_path = unique_temp_path("fz_arithmetic_raw_pair_edges_aot", ".fz");
+    let out_bin = unique_temp_path("fz_arithmetic_raw_pair_edges_aot", ".bin");
+    write(
+        &source_path,
+        include_str!("../fixtures2/00556_arithmetic_raw_pair_edges.fz"),
+    )
+    .expect("write arithmetic raw-pair fixture");
+
+    let build = run_with_args(&[
+        OsStr::new("build"),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "aot arithmetic raw-pair build failed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&out_bin)
+        .output()
+        .expect("run arithmetic raw-pair aot binary");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("o"));
+    assert!(
+        run.status.success(),
+        "AOT raw arithmetic pair fixture failed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+}

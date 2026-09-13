@@ -115,7 +115,7 @@ expects</em> (and vice versa for returns).</p>
 <tbody>
 <tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td>integer</td><td class="note">Use the integer payload directly.</td></tr>
 <tr><td class="cls">float</td><td class="shape">raw <code>f64</code></td><td>float</td><td class="note">Use the float payload directly.</td></tr>
-<tr><td class="cls">boolean</td><td class="shape">raw <code>uint64_t</code>, 0 or 1</td><td>true or false</td><td class="note">This is not C <code>_Bool</code> and not an fz atom id.</td></tr>
+<tr><td class="cls">boolean</td><td class="shape">raw <code>uint64_t</code></td><td>true or false</td><td class="note">A returned zero is false and any nonzero word is true; source arguments use 0 or 1. This is not C <code>_Bool</code> and not an fz atom id.</td></tr>
 <tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
 <tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
@@ -129,7 +129,8 @@ expects</em> (and vice versa for returns).</p>
 <code>float</code>, and <code>boolean</code>. It means a C <code>struct</code>
 returned by value, with fields in that order. fz keeps those fields in its
 ordinary tuple transport lanes; it does not first allocate an fz tuple just to
-cross the boundary. Boolean fields must be exactly 0 or 1.</p>
+cross the boundary. A boolean field is false for zero and true for any nonzero
+word.</p>
 
 <pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">checked_add</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> {<span class="ty">integer</span>, <span class="ty">boolean</span>}</pre>
 
