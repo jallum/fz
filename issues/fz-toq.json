@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T20:15:52Z",
+  "description": "Align the README and fixture conventions with the compiler's three execution paths; repair stale links; distinguish current receive transport behavior by backend; and scope reference-counting claims to list reuse.",
+  "id": "fz-toq",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Correct README claims about execution and transport",
+  "type": "task",
+  "updated_at": "2026-09-13T20:15:52Z"
+}
