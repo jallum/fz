@@ -10648,56 +10648,6 @@ def main(), do: Weird.fz_op_add_ii(2, 3)
 }
 
 #[test]
-fn compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi() {
-    // `fz_dbg_value` is really `fn(*mut Process, u64) -> u64`. A declaration
-    // saying otherwise is not a preference, it is a lie about a symbol the
-    // runtime owns, and it ends in a transmute: `extern "C"` reached it as
-    // `fn(u64) -> u64`, so the argument's ref word was read as the process
-    // pointer. Under `interp` that returned nil; under `run` and `build`,
-    // `fz_process_heap_alloc_stats` shaped the same way SEGFAULTED.
-    //
-    // So the refusal belongs where FIX A's does -- the shared front end. That
-    // is what lets this be one assertion instead of three: `drive` is the
-    // common ancestor of every door.
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("wrong_abi_for_runtime_symbol.fz".to_string()),
-        text: r#"defmodule Weird do
-  extern "C" defp fz_dbg_value(any) :: any
-end
-
-def main(), do: Weird.fz_dbg_value(:zz)
-"#
-        .to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    let outcome = compiler.drive();
-    assert!(
-        matches!(outcome, DriveOutcome::Fatal { .. }),
-        "a declaration contradicting the runtime must stop the compile: {outcome:?}",
-    );
-
-    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("ABI mismatch diagnostic");
-    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
-    let message = metadata_str(&diagnostic, "message");
-    assert!(
-        message.contains("fz_dbg_value") && message.contains("`fz` ABI"),
-        "the diagnostic should name the symbol and the convention the runtime actually \
-         provides, got: {message}",
-    );
-}
-
-#[test]
 fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -15848,7 +15798,7 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
         "the runtime gateway is private source, not a Kernel interface leaf",
     );
     assert_eq!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_op_rem_ff", ExternAbi::C).unwrap(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_op_rem_ff").unwrap(),
         fz_runtime::ir_runtime::fz_op_rem_ff as *const (),
         "the interpreter must resolve the real runtime export, not a private operation shim",
     );
@@ -16085,11 +16035,11 @@ fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_in
         assert_eq!(signature.ret, ExternTy::I64);
     }
     assert_eq!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_self", ExternAbi::Fz).unwrap(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_self").unwrap(),
         fz_runtime::ir_runtime::fz_self as *const (),
     );
     assert_eq!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_ref", ExternAbi::C).unwrap(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_ref").unwrap(),
         fz_runtime::ir_runtime::fz_make_ref as *const (),
     );
     let native_program = native.last(native_root).program;
@@ -16181,7 +16131,7 @@ fn compiler2_kernel_make_resource_is_one_typed_private_fz_extern() {
     assert_eq!(signature.params, vec![ExternTy::I64, ExternTy::Any]);
     assert_eq!(signature.ret, ExternTy::Any);
     assert_eq!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_resource", ExternAbi::Fz).unwrap(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_resource").unwrap(),
         fz_runtime::ir_runtime::fz_make_resource as *const (),
         "the interpreter must resolve the exact physical export",
     );
@@ -16245,7 +16195,7 @@ fn compiler2_kernel_panic_is_one_private_fz_never_extern() {
     assert_eq!(signature.params, vec![ExternTy::Any]);
     assert_eq!(signature.ret, ExternTy::Never);
     assert_eq!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_panic", ExternAbi::Fz).unwrap(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_panic").unwrap(),
         fz_runtime::fz_panic as *const (),
         "the interpreter must resolve the exact physical panic export",
     );
@@ -16318,7 +16268,7 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
         "the removed runtime leaf has no Kernel identity",
     );
     assert!(
-        crate::ir_interp::tests_support_resolved_symbol_addr("fz_spawn_opt_ref", ExternAbi::C).is_err(),
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_spawn_opt_ref").is_err(),
         "the removed physical export must not still be reachable",
     );
     for (name, arity) in [("fz_spawn", 1), ("fz_send", 2)] {
@@ -16356,7 +16306,7 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
             _ => unreachable!(),
         };
         assert_eq!(
-            crate::ir_interp::tests_support_resolved_symbol_addr(symbol, ExternAbi::Fz).unwrap(),
+            crate::ir_interp::tests_support_resolved_symbol_addr(symbol).unwrap(),
             expected,
             "the interpreter must resolve the exact physical {symbol} export",
         );

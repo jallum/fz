@@ -18,8 +18,7 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
-    validate_runtime_symbol_shape,
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
@@ -1478,31 +1477,22 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     /// The declared calling convention, or a diagnostic.
     ///
-    /// Four ways to get it wrong, and every one of them is refused HERE rather
-    /// than in a door's lowering, because a diagnostic raised in the shared
-    /// front end is the only kind every door raises identically. Each of these
-    /// was, at some point, a per-door check that protected fewer doors than it
-    /// appeared to.
+    /// Three ways to get it wrong, and every one of them is refused HERE
+    /// rather than in a door's lowering, because a diagnostic raised in the
+    /// shared front end is the only kind every door raises identically. Each
+    /// of these was, at some point, a per-door check that protected fewer
+    /// doors than it appeared to.
     ///
     /// 1. An unrecognised name must not fall back to C: the conventions
     ///    disagree about the implicit process argument and about what a
     ///    `binary` parameter is, so a wrong guess is a crash inside the callee.
     ///
-    /// 2. `"fz"` is reserved to the runtime library. It passes fz's own
-    ///    `*mut Process` and fz's internal value representation, which nothing
-    ///    outside the runtime can accept; worse, the symbols it can name are
-    ///    the ones both doors also claim by name in their lowerings, and those
-    ///    two claim sets are not equal, so a foreign declaration of one is a
-    ///    question the doors would answer differently.
+    /// 2. `"fz"` is reserved to the runtime library, because it passes fz's
+    ///    own `*mut Process` and fz's internal value representation. Both
+    ///    belong to the runtime, and a foreign function cannot accept either.
     ///
     /// 3. There is no variadic `"fz"`: a variadic call goes through a
     ///    fixed-arity C dispatcher with nowhere to put the process.
-    ///
-    /// 4. A declaration may not contradict what the runtime actually provides.
-    ///    `fz_dbg_value` is `fn(*mut Process, u64)` however it is declared, so
-    ///    an `extern "C"` one reached it as `fn(u64)` -- nil under `interp`,
-    ///    and for the same shape on `fz_process_heap_alloc_stats`, a segfault
-    ///    under `run` and `build`.
     fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
         let declared = self
             .surface
@@ -1534,18 +1524,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 "`{}` is variadic and declares the `fz` ABI; every variadic call goes through a \
                  fixed-arity C dispatcher, which has nowhere to put the implicit process argument",
                 self.surface.name
-            )));
-        }
-        let symbol = extern_symbol_from_name(&self.surface.name);
-        if let Some(provided) = runtime_symbol_abi(symbol)
-            && provided != abi
-        {
-            return Err(self.extern_abi_error(format!(
-                "`{}` names `{}`, which the fz runtime provides with the `{}` ABI, \
-                 but declares `extern \"{}\"`; the two disagree about the implicit process \
-                 argument and about how a binary is passed, so the call would reach the \
-                 symbol with arguments it never accepts",
-                self.surface.name, symbol, provided, abi
             )));
         }
         Ok(abi)
@@ -1609,7 +1587,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         )
         .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
         let symbol = extern_symbol_from_name(&self.surface.name);
-        validate_runtime_symbol_shape(symbol, abi, &params, ret).map_err(|message| self.extern_abi_error(message))?;
         Ok(LoweredExtern {
             abi,
             symbol: symbol.to_string(),

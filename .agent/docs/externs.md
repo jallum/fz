@@ -58,8 +58,7 @@ not interchangeable, though — see the register banks below.
 
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
-allocating primitive is a Rust function, a declaration, and a row in
-`extern_contract.rs::RUNTIME_SYMBOLS` for its convention. There is no lowering
+allocating primitive is a Rust function and a declaration. There is no lowering
 function to write, no interpreter match arm to add, and no address table on
 either door.
 
@@ -134,32 +133,28 @@ call with an instruction.
 
 ## The `fz` ABI is reserved to the runtime library
 
-A declaration outside the bootstrap may not name it. The reason is not
-etiquette: the symbols the `fz` ABI can reach are the ones both doors ALSO
-claim by name in their own lowerings, and those two claim sets are not equal.
-`fz_op_add_ii` has a native rung and no interpreter one, so a foreign
-`extern "fz" defp fz_op_add_ii` once answered `5` under `run` and a process
-pointer plus two under `interp`. `resolve_extern_abi` refuses it in the shared
-front end, which is the only place a refusal reaches every door identically.
+A declaration outside the bootstrap may not name it. Both things the
+convention carries belong to the runtime and to nothing else: the current
+`*mut Process`, passed ahead of every declared argument, and fz's internal
+value representation, which is what a `binary` or `cstring` parameter arrives
+as. A foreign function accepts neither, so a foreign declaration of `"fz"` is
+refused. `resolve_extern_abi` raises that in the shared front end, which is the
+only place a refusal reaches every door identically.
 
-For the same reason the interpreter's symbol table records the convention each
-Rust function ACTUALLY has, and refuses a declaration that disagrees. An
-address alone is not enough to call something: reaching `fz_dbg_value` from an
-`extern "C"` declaration transmuted an `fn(*mut Process, u64)` to an
-`fn(u64)`, read the argument's ref word as the process pointer, and returned.
+A variadic `extern "fz"` is refused for a related reason: a variadic call goes
+through a fixed-arity C dispatcher, which has nowhere to put the process.
 
-Two more checks follow from the same idea. A variadic `extern "fz"` is refused,
-because a variadic call goes through a fixed-arity C dispatcher with nowhere to
-put the process. And `extern_contract.rs::RUNTIME_SYMBOLS`
-records the convention the runtime ACTUALLY provides each of its own symbols
-with, and a declaration that contradicts it is refused. `fz_dbg_value` is
-`fn(*mut Process, u64)`; declaring it `extern "C"` reached it as `fn(u64)`, and
-the same shape on `fz_process_heap_alloc_stats` segfaulted the JIT and AOT
-doors. `abi_refusal_test` holds that refusal for every symbol the
-table claims, in both directions of the lie.
+Both checks are DEMAND-GATED. An extern that is declared and never called is
+never lowered, so neither fires — the declaration compiles silently.
 
-All four checks are DEMAND-GATED. An extern that is declared and never called
-is never lowered, so none fires — the declaration compiles silently.
+### The declaration is the authority
+
+An `extern` declaration says how its symbol is called: the convention, the
+parameter lanes, the result lane. Nothing second-guesses it, for a
+runtime-owned symbol any more than for `libc::close`. The proof that a library
+declaration is right is that fixtures call it on all three doors, where a wrong
+lane shows up as a wrong answer or a crash. A declaration that lies about a
+symbol is a wrong C prototype and is treated as one.
 
 Kernel's returning process operations are ordinary private extern declarations.
 `fz_self`, `fz_send`, `fz_spawn` and `fz_make_resource` declare the `fz` ABI,
@@ -364,10 +359,8 @@ native/JIT/AOT paths read it through the shared named-field runtime ABI.
 ```text
 cargo test --test fixture_matrix file_handle      # resource lifecycle + dtor
 cargo test --test fixture_matrix file_resource_lifecycle
-cargo test --lib address_book_test                # convention <-> address
 cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
 cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
-cargo test --lib compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi
 cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic
 cargo test --test fixture_matrix extern_float_lanes   # register banks, 3 doors
 ```

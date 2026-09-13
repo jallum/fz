@@ -1,7 +1,6 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
-use crate::extern_contract::runtime_symbol_abi;
-use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
+use crate::fz_ir::{ExternReturn, ExternTy};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::extern_variadic::{
     fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
@@ -157,7 +156,7 @@ pub(super) fn call_lowered_extern(
             args.len()
         ));
     }
-    let fp = resolve_symbol(&signature.symbol, signature.abi)?;
+    let fp = resolve_symbol(&signature.symbol)?;
     // An `extern "fz"` helper receives the current process as an implicit first
     // argument, declared rather than matched by name.
     let fz_abi = signature.abi.takes_process();
@@ -248,78 +247,16 @@ fn decode_bool_word(word: u64) -> AnyValue {
 /// the implicit process word.
 const MAX_INTERP_EXTERN_ARGS: usize = 4;
 
-fn abi_mismatch(name: &str, declared: ExternAbi, provided: ExternAbi) -> String {
-    format!(
-        "extern `{name}` is declared `extern \"{declared}\"` but the fz runtime provides it \
-         with the `{provided}` ABI; the two disagree about the implicit process argument \
-         and about how a binary is passed"
-    )
-}
-
-/// A declaration that contradicts the runtime is refused. The convention a
-/// symbol is called with is a semantic rule, not a property of the linked
-/// image, so it is held here rather than left to whatever the address turns
-/// out to be.
-#[cfg(test)]
-mod abi_refusal_test {
-    use super::*;
-    use crate::extern_contract::RUNTIME_SYMBOLS;
-
-    #[test]
-    fn a_declaration_that_contradicts_the_runtime_is_refused() {
-        for entry in RUNTIME_SYMBOLS {
-            let name = entry.name;
-            let lie = match entry.abi {
-                ExternAbi::C => ExternAbi::Fz,
-                ExternAbi::Fz => ExternAbi::C,
-            };
-            let error = resolve_symbol(name, lie)
-                .err()
-                .unwrap_or_else(|| panic!("`{name}` declared `{lie}` should not resolve"));
-            // Specifically the mismatch, not some other refusal that happens to
-            // fire first -- otherwise a `Fz` lie could pass on the guard's
-            // "runtime provides no such symbol" message and leave the mismatch
-            // check itself untested. That is why the claimed convention is
-            // consulted before the `fz`-ABI refusal.
-            assert!(
-                error.contains(name) && error.contains("provides it with"),
-                "`{name}` declared `{lie}` should be refused AS A MISMATCH: {error}",
-            );
-        }
-    }
-}
-
 /// The address to call for a declared extern symbol.
 ///
-/// One resolver answers for every symbol: `fz_extern_symbol_addr` reads the
-/// runtime's own export table first, then the loaded image, then the standard
-/// C libraries. What this door adds is the convention check. An address found
-/// by name says nothing about whether the function wants a process word, so
-/// the `fz` ABI is reserved to symbols the runtime claims in `RUNTIME_SYMBOLS`
-/// -- and where it claims one, its answer is the only one allowed.
-pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), String> {
+/// One resolver answers for every symbol: `fz_extern_symbol_addr` searches the
+/// loaded image, then the standard C libraries. The declaration is the
+/// authority on how that address is called -- its ABI, parameter lanes and
+/// result lane are what the caller transmutes to.
+pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
     #[cfg(test)]
     if let Some(fp) = tests_support::lookup_test_symbol(name) {
-        return match abi {
-            ExternAbi::C => Ok(fp),
-            ExternAbi::Fz => Err(abi_mismatch(name, abi, ExternAbi::C)),
-        };
-    }
-
-    // Defence-in-depth around the transmute the caller performs.
-    // `resolve_extern_abi` already refused a declaration that disagrees with
-    // the runtime, in the shared front end so that every door refuses it; this
-    // is the last gate before an address becomes a concrete fn type.
-    match runtime_symbol_abi(name) {
-        Some(provided) if provided != abi => return Err(abi_mismatch(name, abi, provided)),
-        Some(_) => {}
-        None if abi.takes_process() => {
-            return Err(format!(
-                "extern `{}` declares the `fz` ABI, but the fz runtime provides no such symbol",
-                name
-            ));
-        }
-        None => {}
+        return Ok(fp);
     }
 
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
@@ -547,8 +484,8 @@ pub(crate) fn tests_support_scalar_pair_symbols() -> Vec<(&'static str, *const u
 }
 
 #[cfg(test)]
-pub(crate) fn tests_support_resolved_symbol_addr(name: &str, abi: ExternAbi) -> Result<*const (), String> {
-    resolve_symbol(name, abi)
+pub(crate) fn tests_support_resolved_symbol_addr(name: &str) -> Result<*const (), String> {
+    resolve_symbol(name)
 }
 
 /// fz-swt.10 — accessors for the test dtor counters, used by both the

@@ -109,10 +109,9 @@ unresolved operand blind to the dispatcher, which the blind-escape census
 catches as a latent miscompile (fz-5xp.64).
 
 **Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
-real C functions, while `src/extern_contract.rs` owns their exact physical
-contracts. A source declaration must resolve to that exact ABI, parameter list,
-and return shape. Neither interpreter nor native code discovers behavior from a
-symbol spelling or suffix. The interpreter calls the real export through the
+real C functions, and the `Kernel` extern declarations own how they are called.
+Neither interpreter nor native code discovers behavior from a symbol spelling
+or suffix. The interpreter calls the real export through the
 ordinary FFI path, and both arithmetic and comparison exports remain ordinary
 calls in native code too.
 
@@ -227,11 +226,6 @@ dlsym. Neither door keeps an address table: the compiler's binaries and test
 binaries export dynamically (`build.rs`), so fz's own exports are in the
 process to be found. The AOT door is answered by the linker instead, which is a
 fourth place and why `-lm` is hardcoded: fz-5xp.61.
-
-**Which runtime symbols have a declared ABI** — owner `RUNTIME_SYMBOLS`
-(`src/extern_contract.rs`). The convention a symbol is called with is a
-semantic rule, not a property of the linked image, and a declaration that
-contradicts it is refused: see `abi_refusal_test`.
 
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid
