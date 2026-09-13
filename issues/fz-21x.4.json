@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T22:37:42Z",
+  "description": "Step 3 of the extern door collapse. Today native code replaces a comparison export with an inline compare because RUNTIME_SYMBOLS grants RuntimeNativeBinding::Comparison(RuntimeComparison::LtII ..) to the validated declaration; a 24-variant enum and a 170-line match un-flatten that back into (BinOp, CmpOperands). The key is a symbol string in a manifest that is being deleted. The by-construction key: the resolved callable identity of the operator itself. World derives once, by the same runtime-prelude resolution body lowering uses, which FunctionId each of \u003c, \u003c=, \u003e, \u003e=, ==, !=, ===, !== resolves to; native codegen, at a direct call whose callee is one of those identities and whose activation operand types form a supported pair (decided with Types predicates), emits Prim::BinOp(op, l, r), which already lowers with typed fast paths and the same widening/strict semantics as fz_op_eq/fz_op_identical. Ordering ops inline only for the five typed pairs Kernel declares, because Kernel has no any/any ordering clause and an unsupported pair must still fault. Deleted: RuntimeNativeBinding, RuntimeComparison, native_binding column, runtime_binding fields on LoweredExtern/ExternDecl, lower_runtime_comparison, lower_typed_cmp, CmpOperands. The fz_op_lt_* exports become ordinary C calls, reached only when a comparison is not statically typed. Proof: fixture matrix on three doors; a native program capture test showing no call edge to Kernel.\u003c/2 for typed integer operands; atom\u003catom still faults identically on interp and native.",
+  "id": "fz-21x.4",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Inline comparison operators at the call site by resolved callable identity; delete the manifest's comparison binding",
+  "type": "task",
+  "updated_at": "2026-09-13T22:37:42Z"
+}
