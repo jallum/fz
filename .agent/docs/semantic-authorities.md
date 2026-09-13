@@ -136,7 +136,17 @@ offsets nor a rendered type name participates in clause selection. Interpreter,
 local native dispatch, and receive dispatch consume this shared plan and use
 the existing named-field accessors.
 
-**Bitstring matching** — one runtime implementation, `fz_bs_read_field_bits`,
+**Bitstring field source semantics** — owned by the final quoted-source decoder in
+`compiler2/quoted_function.rs`. A raw field has the language's integer default,
+but quoted source represents an unsuffixed string field as the raw binary value:
+there is no `:: binary` node downstream can consult. The decoder therefore
+reifies that one source shape as `BitType::Binary`. Construction leaves its
+size absent so the writer consumes the whole source binary; matching adds the
+literal's byte length so a following field has a boundary. Backend lowering and
+the three runtime doors consume that spec and never reinterpret a value's
+carrier from the surrounding fields.
+
+Bitstring matching has one runtime implementation, `fz_bs_read_field_bits`,
 reached from every door. But the CLAUSE HEAD is lowered twice — once into a
 dispatch region to select the clause, once into body steps to bind — so each
 field is read twice: fz-5xp.56.
@@ -212,6 +222,23 @@ fz-5xp.61.
 (`src/extern_contract.rs`). Reachability from compiled code is held by a test
 rather than by construction, because an address table has to exist somewhere:
 see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
+
+**UTF-8 validity and prefix errors** — owner `utf8_prefix`
+(`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid
+width or the first byte offset at which that prefix becomes impossible. The
+whole-binary `fz_bitstring_valid_utf8` folds that decision over the input;
+`fz_bitstring_utf8_prefix` exposes one decision to `Utf8.next/1`, which returns
+a branded codepoint or the original suffix beginning at the offending byte.
+Parsers consume that suffix to recover a source offset. They do not carry a
+second UTF-8 table or validate a whole document before its syntax is parsed.
+
+**UTF-8 scalar encoding** — owner `encode_utf8` (`runtime/src/bitstr.rs`),
+reached by an fz `<<codepoint :: utf8>>` segment. `Utf8.from_codepoint/1` is
+the checked public constructor: it excludes negatives, the UTF-16 surrogate
+hole, and values above U+10FFFF before invoking that segment, then brands the
+result. A format parser such as `Json` owns its format-specific scalar syntax
+(including joining a UTF-16 surrogate pair) and hands the resulting integer to
+this constructor; it does not carry another UTF-8 encoder.
 
 **Text** — `String` (`lib/string.fz`) is plain fz over
 binaries, and declares three primitives of its own: `to_atom/1`, which reaches

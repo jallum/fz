@@ -1,0 +1,8 @@
+#---
+# purpose: "Json.encode!/1 rejects an invalid UTF-8 object key on every path"
+# expect: abort
+# oracle: json_encode_invalid_utf8_key.oracle.exs
+#---
+def main() do
+  Json.encode!(%{<<255>> => 1})
+end

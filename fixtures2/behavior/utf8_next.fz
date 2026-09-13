@@ -1,0 +1,9 @@
+#---
+# purpose: "Utf8.next/1 returns a branded codepoint or the suffix at the first impossible byte"
+#---
+def main() do
+  assert(Utf8.next("") == nil)
+  assert(Utf8.next(<<195, 169, 120>>) == {:ok, Utf8.from_bytes!(<<195, 169>>), "x"})
+  assert(Utf8.next(<<225, 128, 65>>) == {:error, "A"})
+  assert(Utf8.next(<<225, 128>>) == {:error, ""})
+end

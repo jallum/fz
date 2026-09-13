@@ -12,8 +12,8 @@ defmodule Json do
     * an object becomes a map with binary keys
 
   Decoding can fail, so there is both `decode/1` and `decode!/1`. Encoding
-  cannot fail for the values it accepts, so `encode!/1` is the only
-  spelling.
+  halts for unsupported values or invalid string binaries, so `encode!/1`
+  is the only spelling.
 
   ## Examples
 
@@ -62,9 +62,13 @@ defmodule Json do
 
   `unexpected_end` means the input ran out before a complete value.
   `invalid_byte` names the offending byte at `offset`, including trailing
-  input left over after an otherwise complete value. `unexpected_sequence`
-  means a `\\uXXXX` escape's four digits were not all hex; `sequence` is
-  the six bytes read for it, starting at the backslash.
+  input left over after an otherwise complete value, malformed UTF-8, and
+  unescaped control bytes inside a string. `unexpected_sequence` means a
+  `\\uXXXX` escape is not valid Unicode: its digits are not all hex, it is a
+  lone low surrogate, or a high surrogate is followed by a complete Unicode
+  escape that is not a low surrogate. `sequence` is the offending escape or
+  pair of escapes, starting at the backslash. A high surrogate without a
+  complete following Unicode escape is `unexpected_end`.
 
   ## Examples
 
@@ -79,6 +83,18 @@ defmodule Json do
 
       Json.decode("\\"a\\\\uZZZZb\\"")
       #=> {:error, {:unexpected_sequence, 2, "\\\\uZZZZ"}}
+
+      Json.decode(<<34, 255, 34>>)
+      #=> {:error, {:invalid_byte, 1, 255}}
+
+      Json.decode(<<34, 10, 34>>)
+      #=> {:error, {:invalid_byte, 1, 10}}
+
+      Json.decode("\\"\\\\uD83D\\\\uDE00\\"")
+      #=> {:ok, "😀"}
+
+      Json.decode("\\"\\\\uDE00\\"")
+      #=> {:error, {:unexpected_sequence, 1, "\\\\uDE00"}}
 
   """
   @spec decode(binary) :: {:ok, any} | {:error, any}
@@ -121,7 +137,9 @@ defmodule Json do
   # starts at the offending byte: the offset is the difference in lengths and
   # the byte is the first one left.
   @spec reason(any, binary) :: any
-  defp reason({:sequence, at}, input), do: {:unexpected_sequence, offset(at, input), String.take_bytes(at, 6)}
+  defp reason({:sequence, at, size}, input) do
+    {:unexpected_sequence, offset(at, input), String.take_bytes(at, size)}
+  end
   defp reason("", input), do: {:unexpected_end, Kernel.byte_size(input)}
   defp reason(rest, input), do: invalid_byte(rest, offset(rest, input))
 
@@ -136,19 +154,28 @@ defmodule Json do
   Encodes an fz value as a JSON binary, or halts.
 
   Accepts `true`, `false`, `nil`, an integer, a float, a binary, a list, or
-  a map. Any other value halts the process, so there is no plain
-  `encode/1`. Binaries must be byte-aligned; a non-byte-aligned bitstring
-  halts instead of being encoded as a JSON string. A map's keys are encoded
-  with `encode!/1` too, so a binary key becomes a quoted JSON string; other
-  key types will not produce valid JSON.
+  a map. Map keys may be binaries, atoms, integers, or floats; every key is
+  converted to a JSON string. Any other value or map key halts with a reason
+  containing the rejected term, so there is no plain `encode/1`. Binary
+  string values and binary keys must be byte-aligned, valid UTF-8. A
+  non-byte-aligned bitstring or an invalid UTF-8 binary halts with
+  `{:json_encode, :invalid_utf8, value}` instead of being encoded as a JSON
+  string. Quotes, backslashes, and every control byte are escaped in both
+  string values and object keys.
 
   ## Examples
 
       Json.encode!(%{"a" => 1, "b" => [1, 2, true, nil, "x"]})
       #=> "{\\"a\\":1,\\"b\\":[1,2,true,null,\\"x\\"]}"
 
+      Json.encode!(%{answer: 42})
+      #=> "{\\"answer\\":42}"
+
       Json.encode!(1.5)
       #=> "1.5"
+
+      Json.encode!(<<0, 10, 31>>)
+      #=> "\\\"\\\\u0000\\\\n\\\\u001F\\\""
 
   """
   @spec encode!(any) :: binary
@@ -157,19 +184,34 @@ defmodule Json do
   def encode!(nil), do: "null"
   def encode!(v :: integer), do: Integer.to_string(v)
   def encode!(v :: float), do: Float.to_string(v)
-  def encode!(v :: binary), do: "\"" <> escape(v, "") <> "\""
+  def encode!(v :: binary), do: encode_binary!(v, Utf8.from_bytes(v))
   def encode!(v :: [any]), do: "[" <> elements(v, "") <> "]"
   def encode!(v :: map), do: "{" <> pairs(Map.to_list(v), "") <> "}"
-  def encode!(_v), do: Kernel.panic("JSON.encode!: unsupported value")
+  def encode!(v), do: Kernel.panic({:json_encode, :unsupported_value, v})
+
+  @spec encode_binary!(binary, {:ok, utf8} | {:error, :invalid_utf8}) :: binary
+  defp encode_binary!(_v, {:ok, string}), do: "\"" <> escape(string, "") <> "\""
+  defp encode_binary!(v, {:error, :invalid_utf8}), do: Kernel.panic({:json_encode, :invalid_utf8, v})
 
   @spec escape(binary, binary) :: binary
   defp escape("", acc), do: acc
   defp escape(<<"\"", r :: binary>>, acc), do: escape(r, acc <> "\\\"")
   defp escape(<<"\\", r :: binary>>, acc), do: escape(r, acc <> "\\\\")
-  defp escape(<<"\n", r :: binary>>, acc), do: escape(r, acc <> "\\n")
-  defp escape(<<"\t", r :: binary>>, acc), do: escape(r, acc <> "\\t")
+  defp escape(<<8, r :: binary>>, acc), do: escape(r, acc <> "\\b")
+  defp escape(<<9, r :: binary>>, acc), do: escape(r, acc <> "\\t")
+  defp escape(<<10, r :: binary>>, acc), do: escape(r, acc <> "\\n")
+  defp escape(<<12, r :: binary>>, acc), do: escape(r, acc <> "\\f")
+  defp escape(<<13, r :: binary>>, acc), do: escape(r, acc <> "\\r")
+  defp escape(<<c, r :: binary>>, acc) when c < 32, do: escape(r, acc <> control_escape(c))
   defp escape(<<c, r :: binary>>, acc), do: escape(r, acc <> <<c>>)
   defp escape(_bits, _acc), do: Kernel.panic("JSON.encode!: binary is not byte-aligned")
+
+  @spec control_escape(integer) :: binary
+  defp control_escape(c), do: "\\u00" <> <<hex_digit(div(c, 16)), hex_digit(rem(c, 16))>>
+
+  @spec hex_digit(integer) :: integer
+  defp hex_digit(n) when n < 10, do: 48 + n
+  defp hex_digit(n), do: 55 + n
 
   @spec elements([any], binary) :: binary
   defp elements([], acc), do: acc
@@ -178,8 +220,15 @@ defmodule Json do
 
   @spec pairs([{any, any}], binary) :: binary
   defp pairs([], acc), do: acc
-  defp pairs([{k, v}], acc), do: acc <> encode!(k) <> ":" <> encode!(v)
-  defp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode!(k) <> ":" <> encode!(v) <> ",")
+  defp pairs([{k, v}], acc), do: acc <> encode_key!(k) <> ":" <> encode!(v)
+  defp pairs([{k, v} | t], acc), do: pairs(t, acc <> encode_key!(k) <> ":" <> encode!(v) <> ",")
+
+  @spec encode_key!(any) :: binary
+  defp encode_key!(key :: binary), do: encode!(key)
+  defp encode_key!(key :: atom), do: encode!(Atom.to_string(key))
+  defp encode_key!(key :: integer), do: encode!(Integer.to_string(key))
+  defp encode_key!(key :: float), do: encode!(Float.to_string(key))
+  defp encode_key!(key), do: Kernel.panic({:json_encode, :unsupported_key, key})
 
   @spec skip_ws(binary) :: binary
   defp skip_ws(<<" ", r :: binary>>), do: skip_ws(r)
@@ -277,8 +326,14 @@ defmodule Json do
   @spec string(binary, binary) :: any
   defp string(<<"\"", r :: binary>>, acc), do: {:ok, acc, r}
   defp string(b = <<"\\", r :: binary>>, acc), do: escaped(r, acc, b)
-  defp string(<<c, r :: binary>>, acc), do: string(r, acc <> <<c>>)
-  defp string(b, _acc), do: {:error, b}
+  defp string(b = <<c, _r :: binary>>, _acc) when c < 32, do: {:error, b}
+  defp string(<<c, r :: binary>>, acc) when c < 128, do: string(r, acc <> <<c>>)
+  defp string(b, acc), do: string_utf8(Utf8.next(b), acc)
+
+  @spec string_utf8({:ok, utf8, binary} | {:error, binary} | nil, binary) :: any
+  defp string_utf8({:ok, codepoint, rest}, acc), do: string(rest, acc <> Utf8.to_bytes(codepoint))
+  defp string_utf8({:error, rest}, _acc), do: {:error, rest}
+  defp string_utf8(nil, _acc), do: {:error, ""}
 
   @spec escaped(binary, binary, binary) :: any
   defp escaped(<<"\"", r :: binary>>, acc, _at), do: string(r, acc <> "\"")
@@ -293,12 +348,32 @@ defmodule Json do
   defp escaped(b, _acc, _at), do: {:error, b}
 
   # A bad `\uXXXX` is an unexpected_sequence, reported at the backslash's
-  # offset with the six-byte sequence, so it is the one failure that carries
-  # where it started rather than where it stopped. An unknown simple escape is
-  # an ordinary invalid_byte and needs none of this.
+  # offset with the six- or twelve-byte sequence, so it is the one failure that
+  # carries where it started rather than where it stopped. An unknown simple
+  # escape is an ordinary invalid_byte and needs none of this.
   @spec unicode(binary, binary, integer | :error, binary) :: any
-  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at}}
-  defp unicode(r, acc, cp, _at), do: string(r, acc <> utf8(cp))
+  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, 6}}
+  defp unicode(r, acc, cp, at) when cp >= 0xd800 and cp <= 0xdbff, do: unicode_high(r, acc, cp, at)
+  defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, 6}}
+  defp unicode(r, acc, cp, at), do: unicode_scalar(r, acc, Utf8.from_codepoint(cp), at, 6)
+
+  @spec unicode_high(binary, binary, integer, binary) :: any
+  defp unicode_high(<<"\\u", a, b, c, d, r :: binary>>, acc, high, at) do
+    unicode_low(r, acc, high, hex4(a, b, c, d), at)
+  end
+  defp unicode_high(_r, _acc, _high, _at), do: {:error, ""}
+
+  @spec unicode_low(binary, binary, integer, integer | :error, binary) :: any
+  defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, 12}}
+  defp unicode_low(r, acc, high, low, at) when low >= 0xdc00 and low <= 0xdfff do
+    codepoint = 0x10000 + (high - 0xd800) * 0x400 + (low - 0xdc00)
+    unicode_scalar(r, acc, Utf8.from_codepoint(codepoint), at, 12)
+  end
+  defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, 12}}
+
+  @spec unicode_scalar(binary, binary, {:ok, utf8} | {:error, :invalid_codepoint}, binary, integer) :: any
+  defp unicode_scalar(r, acc, {:ok, scalar}, _at, _size), do: string(r, acc <> Utf8.to_bytes(scalar))
+  defp unicode_scalar(_r, _acc, {:error, :invalid_codepoint}, at, size), do: {:error, {:sequence, at, size}}
 
   @spec hex4(integer, integer, integer, integer) :: integer | :error
   defp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
@@ -314,17 +389,6 @@ defmodule Json do
   defp hex(c) when c >= 97 and c <= 102, do: c - 87
   defp hex(c) when c >= 65 and c <= 70, do: c - 55
   defp hex(_c), do: :error
-
-  # UTF-8 for the basic multilingual plane. Surrogate pairs are not joined, so
-  # a lone surrogate encodes as itself.
-  @spec utf8(integer) :: binary
-  defp utf8(cp) when cp < 128, do: <<cp>>
-  defp utf8(cp) when cp < 2048 do
-    <<192 + div(cp, 64), 128 + rem(cp, 64)>>
-  end
-  defp utf8(cp) do
-    <<224 + div(cp, 4096), 128 + rem(div(cp, 64), 64), 128 + rem(cp, 64)>>
-  end
 
   # `]` closes an empty array only at the start. After a comma a value is
   # required, so `[1,]` is an error.

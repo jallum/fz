@@ -1,0 +1,7 @@
+IO.inspect(JSON.encode!(%{a: 1}))
+IO.inspect(JSON.encode!(%{nil => 1}))
+IO.inspect(JSON.encode!(%{true => 1}))
+IO.inspect(JSON.encode!(%{42 => 1}))
+IO.inspect(JSON.encode!(%{-45 => 1}))
+IO.inspect(JSON.encode!(%{2.5 => 1}))
+IO.inspect(JSON.encode!(%{"a\"b" => 1}))
