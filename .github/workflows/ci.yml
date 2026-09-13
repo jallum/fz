@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        if: github.event_name == 'pull_request'
+      - uses: dtolnay/rust-toolchain@stable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           components: llvm-tools-preview
       - uses: erlef/setup-beam@v1
@@ -39,10 +42,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov,cargo-audit
+          tool: cargo-audit
+      - uses: taiki-e/install-action@v2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          tool: cargo-llvm-cov
       - run: cargo audit
       - run: cargo test --workspace --doc
+      - name: Test workspace
+        if: github.event_name == 'pull_request'
+        run: cargo test --workspace --all-features
       - name: Generate coverage report
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           cargo llvm-cov \
             --all-features \
@@ -51,6 +62,7 @@ jobs:
             --json --summary-only \
             --output-path coverage.json
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           name: coverage-json
           path: coverage.json
