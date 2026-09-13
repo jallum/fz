@@ -7,13 +7,13 @@
   "closed_at": "2026-09-12T15:38:19Z",
   "close_reason": "Superseded by the atomic implementation boundary fz-5xp.30; all valid acceptance criteria moved into that description.",
   "created": "2026-09-07T06:39:06Z",
-  "description": "## Status\n\nInvalid architecture. The proposed typed-intrinsic subsystem is rejected: it would turn the ordinary runtime foreign boundary into compiler-owned hidden machinery.\n\nNo implementation from this ticket may land. Its former requirements are not absorbed by fz-5xp.30 as written before the redesign.\n\nfz-5xp.30 now owns only the truthful private FFI cutover: extern defp visibility, exact runtime export names, generic C and fz ABI lowering, typed ABI lanes, and spawn_opt deletion. Arithmetic and comparison declarations must be audited after that cutover: a real C export remains an ordinary private extern; a fake extern must move to the existing typed language or IR operator authority in a separately justified plan.",
+  "description": "## Disposition\n\nThis ticket is closed as a rejected architecture, not as a shipped intrinsic subsystem. Do not use its old implementation, revive intrinsic syntax, or make it a prerequisite for new work.\n\n## Current authority\n\nfz-5xp.30 owns the approved ordinary-private-extern cutover: source-owned semantic contracts, exact real runtime exports, typed scalar/boolean lanes, C scalar-pair aggregate returns adapted into existing Fz return lanes, total arithmetic, one arithmetic_error -\u003e panic(:badarith) helper, and validated native arithmetic substitution. Optimizing a call to a real export is allowed; inventing a source-name-driven pseudo-extern or a second semantic descriptor authority is not.\n\nfz-5xp.32 follows .30 to complete the physical export manifest. fz-5xp.20 then owns ordinary-wrapper inlining; fz-kdt.28 owns the later replacement of the fatal arithmetic helper with proper exceptions. Read those current descriptions, not historical comments or rejected PR #148, for execution instructions.\n\nThere is no remaining dependency from this rejected ticket to .32. No code, new commit, or implementation closure is required for this disposition update.",
   "id": "fz-5xp.29",
   "labels": [],
   "parent": "fz-5xp",
   "priority": 3,
   "status": "closed",
-  "title": "Absorbed into fz-5xp.30",
+  "title": "Rejected intrinsic subsystem; retained FFI work belongs to fz-5xp.30",
   "type": "task",
-  "updated_at": "2026-09-13T02:55:05Z"
+  "updated_at": "2026-09-13T14:39:07Z"
 }
