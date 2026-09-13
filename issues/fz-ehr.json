@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-13T00:19:50Z",
@@ -7,8 +7,8 @@
   "id": "fz-ehr",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "CI: run coverage on main instead of pull requests",
   "type": "task",
-  "updated_at": "2026-09-13T00:19:50Z"
+  "updated_at": "2026-09-13T00:19:57Z"
 }
