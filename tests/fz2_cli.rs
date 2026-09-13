@@ -31,21 +31,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1103,
+        runtime_demand_walks: 1112,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 600,
+        runtime_demand_walks: 611,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 225,
+        runtime_demand_walks: 234,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1133,7 +1133,7 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            aggregate_walks, 1928,
+            aggregate_walks, 1957,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -1887,8 +1887,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .collect();
     assert_eq!(
         quiesced.len(),
-        14,
-        "{fixture}: one derivation's co-outputs must share arbitration, below the former 34-event ceiling"
+        // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
+        // helper facts settle through the same arbiter and publish six more
+        // readiness-only steps.
+        20,
+        "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
     let mut wakes = Vec::new();
@@ -1919,18 +1922,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            ("Activation", 9),
-            ("ActivationAnalyzed", 10),
-            ("ActivationInputs", 9),
-            ("CallSiteSummary", 11),
-            ("CallSiteTargets", 11),
-            ("IncomingInputSlot", 23),
-            ("ReturnType", 10),
-            ("RuntimeDemand", 10),
-            ("RuntimeDemandInput", 9),
-            ("RuntimeDemandInputs", 10),
+            ("Activation", 13),
+            ("ActivationAnalyzed", 14),
+            ("ActivationInputs", 13),
+            ("CallSiteSummary", 15),
+            ("CallSiteTargets", 15),
+            ("IncomingInputSlot", 26),
+            ("ReturnType", 14),
+            ("RuntimeDemand", 14),
+            ("RuntimeDemandInput", 13),
+            ("RuntimeDemandInputs", 14),
         ]),
-        "certification must publish all exact co-output readiness transitions without changing values"
+        "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
 
     let mut wake_causes = BTreeSet::new();
@@ -2010,8 +2013,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert_eq!(
         wake_dispositions,
-        BTreeMap::from([("enqueued", 6)]),
-        "{fixture}: direct-fact readiness wake accounting moved"
+        // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
+        // their exact settled consumers.
+        BTreeMap::from([("enqueued", 9)]),
+        "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
     );
 
     let report = CausalReport::derive(&events);
@@ -2033,17 +2038,19 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // Co-output finality removes redundant executable-fact readiness work.
-            evaluations: 349,
-            runtime_demand_evaluations: 31,
-            initial: 174,
-            content_caused: 169,
-            readiness_caused: 6,
+            // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
+            // ordinary generic arithmetic result/status calls, whose facts
+            // add only attributed initial, content, and readiness work.
+            evaluations: 443,
+            runtime_demand_evaluations: 40,
+            initial: 222,
+            content_caused: 212,
+            readiness_caused: 9,
             uncaused: 0,
-            changed_outputs: 210,
-            unchanged_outputs: 139,
-            wakes: 177,
-            blocked_completions: 156,
+            changed_outputs: 269,
+            unchanged_outputs: 174,
+            wakes: 223,
+            blocked_completions: 197,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2088,10 +2095,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // Answers stay exact. Already-current queued work skips eight cache
-        // queries: three materialized, three shape, and two callable products.
-        (239, 239, 239, 0, 7, 0),
-        "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
+        // fz-5xp.30: the ordinary generic result/status boundary contributes
+        // forty-one settled, changed product generations; cache behavior is
+        // otherwise unchanged.
+        (280, 280, 280, 0, 7, 0),
+        "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
         report.uncaused.is_empty(),
