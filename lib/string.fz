@@ -52,9 +52,10 @@ defmodule String do
 
   Where Elixir's `split/3`, `replace/4`, `contains?/2` and friends accept
   a string, a list of strings, a regex, or a compiled pattern, the fz
-  versions here take a single binary. An empty pattern is also not
-  special-cased the way Elixir's are: `contains?/2` and `split/2` on `""`
-  report no match rather than matching everywhere.
+  versions here take a single binary. An empty pattern matches at every
+  grapheme boundary, including before and after the string. Since a grapheme
+  is currently one codepoint in fz, the combining-mark and emoji limitation
+  described above applies to this boundary too.
 
   ## Byte-level operations
 
@@ -475,8 +476,8 @@ defmodule String do
   @doc """
   Returns whether `s` contains `pattern`.
 
-  `pattern` is a single binary. Unlike Elixir, an empty pattern is not
-  treated as matching everywhere -- it reports no match.
+  `pattern` is a single binary. An empty pattern always matches, including
+  in an empty string.
 
   ## Examples
 
@@ -487,7 +488,7 @@ defmodule String do
       #=> false
 
       String.contains?("hello", "")
-      #=> false
+      #=> true
 
   """
   @spec contains?(binary, binary) :: bool
@@ -496,8 +497,8 @@ defmodule String do
   @doc """
   Returns the byte offset of the first occurrence of `pattern` in `s`.
 
-  Returns `-1` when `pattern` does not occur, and also when `pattern` is
-  `""`.
+  Returns `-1` when `pattern` does not occur. An empty pattern occurs at
+  byte offset `0`.
 
   ## Examples
 
@@ -507,12 +508,15 @@ defmodule String do
       String.index_of("hello", "zz")
       #=> -1
 
+      String.index_of("hello", "")
+      #=> 0
+
   """
   @spec index_of(binary, binary) :: integer
   def index_of(s, pattern), do: index_from(s, pattern, 0, byte_size(pattern))
 
   @spec index_from(binary, binary, integer, integer) :: integer
-  defp index_from(_s, _pattern, _at, 0), do: -1
+  defp index_from(_s, _pattern, at, 0), do: at
   defp index_from(s, pattern, at, n) do
     if byte_size(s) < n do
       -1
@@ -528,7 +532,8 @@ defmodule String do
   @doc """
   Returns how many non-overlapping times `pattern` occurs in `s`.
 
-  Returns `0` for `""`, rather than treating it as occurring everywhere.
+  An empty pattern occurs at every grapheme boundary, so its count is one
+  greater than the string's length.
 
   ## Examples
 
@@ -538,8 +543,12 @@ defmodule String do
       String.count("banana", "zz")
       #=> 0
 
+      String.count("hello", "")
+      #=> 6
+
   """
   @spec count(binary, binary) :: integer
+  def count(s, ""), do: length(s) + 1
   def count(s, pattern), do: count_from(s, pattern, 0, byte_size(pattern))
 
   @spec count_from(binary, binary, integer, integer) :: integer
@@ -557,8 +566,8 @@ defmodule String do
   Splits `s` on every occurrence of `pattern`.
 
   `pattern` is a single binary, not a list of patterns or a regex. When
-  `pattern` does not occur, the result is `[s]`; unlike Elixir, splitting
-  on `""` also returns `[s]` rather than the string's graphemes.
+  `pattern` does not occur, the result is `[s]`. An empty pattern splits at
+  every grapheme boundary, retaining an empty binary at either end.
 
   ## Examples
 
@@ -568,12 +577,15 @@ defmodule String do
       String.split("abc", ",")
       #=> ["abc"]
 
+      String.split("abc", "")
+      #=> ["", "a", "b", "c", ""]
+
   """
   @spec split(binary, binary) :: [binary]
+  def split(s, ""), do: [""] ++ graphemes(s) ++ [""]
   def split(s, pattern), do: split_from(s, pattern, byte_size(pattern))
 
   @spec split_from(binary, binary, integer) :: [binary]
-  defp split_from(s, _pattern, 0), do: [s]
   defp split_from(s, pattern, n) do
     index = index_of(s, pattern)
     if index < 0 do
@@ -586,14 +598,17 @@ defmodule String do
   @doc """
   Replaces every occurrence of `pattern` in `s` with `replacement`.
 
-  `pattern` is a single binary. Built from `split/2` and `join/2`, so an
-  empty `pattern` leaves `s` unchanged rather than inserting `replacement`
-  between every codepoint.
+  `pattern` is a single binary. An empty pattern inserts `replacement` at
+  every grapheme boundary. This function is built from `split/2` and
+  `join/2`, so both operations share exactly the same boundary rule.
 
   ## Examples
 
       String.replace("a-b-c", "-", "+")
       #=> "a+b+c"
+
+      String.replace("abc", "", "-")
+      #=> "-a-b-c-"
 
   """
   @spec replace(binary, binary, binary) :: binary
