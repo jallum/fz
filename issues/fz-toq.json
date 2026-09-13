@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-13T20:15:52Z",
@@ -7,8 +7,8 @@
   "id": "fz-toq",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Correct README claims about execution and transport",
   "type": "task",
-  "updated_at": "2026-09-13T20:15:52Z"
+  "updated_at": "2026-09-13T20:15:56Z"
 }
