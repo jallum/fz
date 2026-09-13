@@ -7,9 +7,15 @@
   "id": "fz-21x.3",
   "labels": [],
   "parent": "fz-21x",
+  "comments": [
+    {
+      "text": "User (2026-09-13): also delete the symbol-existence tests in this step (every_declared_runtime_symbol_resolves, a_runtime_symbol_outside_the_table_is_unclaimed, every_declared_runtime_symbol_is_reachable_from_compiled_code, runtime export_test.rs). A fixture or program that calls the extern is the existence proof on every door; those tests were a second copy. a_declaration_that_contradicts_the_runtime_is_refused stays until the manifest goes (it tests the abi rule).",
+      "timestamp": "2026-09-13T22:28:14Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Export the compiler's symbols dynamically; delete the JIT registry and the interpreter address book",
   "type": "task",
-  "updated_at": "2026-09-13T22:24:08Z"
+  "updated_at": "2026-09-13T22:28:14Z"
 }
