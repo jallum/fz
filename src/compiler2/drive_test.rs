@@ -1103,7 +1103,7 @@ fn executable_construction_and_runtime_demand_share_one_world_type_projection() 
         .expect("the shared-projection fixture should compile");
     let world = compiler.world();
 
-    let mut uses = Vec::new();
+    let mut uses_by_type = BTreeMap::new();
     for executable in executables {
         let facts = world
             .executable_facts(&executable)
@@ -1111,17 +1111,20 @@ fn executable_construction_and_runtime_demand_share_one_world_type_projection() 
         let demand_facts = facts.runtime_demand_facts(world.runtime_demand_type_projections());
         for &ty in facts.analysis().value_types.values() {
             if world.types().is_integer(&ty) {
-                uses.push(demand_facts.projection_identity(ty));
+                uses_by_type
+                    .entry(ty)
+                    .or_insert_with(Vec::new)
+                    .push(demand_facts.projection_identity(ty));
             }
         }
     }
-    assert!(
-        uses.len() >= 2,
-        "the fixture should exercise the same integer projection in multiple executable constructions",
-    );
+    let uses = uses_by_type
+        .into_values()
+        .find(|uses| uses.len() >= 2)
+        .expect("the fixture should exercise one exact interned integer type in multiple executable constructions");
     assert!(
         uses.iter().all(|projection| *projection == uses[0]),
-        "construction and formula views must borrow one World-owned projection for an interned type",
+        "construction and formula views must borrow one World-owned projection for the same interned type",
     );
 }
 
