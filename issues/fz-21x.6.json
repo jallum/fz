@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-13T23:42:17Z",
   "created": "2026-09-13T23:30:27Z",
   "description": "Step 4 of the extern door collapse (approved 2026-09-13: the manifest goes entirely, nothing replaces it). After fz-21x.3 (addresses by dynamic export) and fz-21x.4 (comparison binding deleted), RUNTIME_SYMBOLS restates the extern declaration's abi and lanes for the sole purpose of refusing a declaration that disagrees with the runtime. The declaration defines how the export is called; every lib extern is exercised by fixtures on three doors, so a wrong lane shows up there; a user declaration of a runtime symbol is trusted like any C prototype (fixtures such as 00556 declare fz_op_* themselves on purpose). Deleted: RUNTIME_SYMBOLS, RuntimeSymbol, RuntimePhysicalContract, runtime_symbol_abi, runtime_physical_contract, validate_runtime_symbol_shape, declare_manifest_scalar_import (fz_value_cmp_ref becomes an ordinary import-table row), the ABI-mismatch check in resolve_extern_abi and in the interpreter's resolve_symbol, and the tests runtime_physical_contracts_validate_every_kernel_gateway, abi_refusal_test, compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi. Kept: extern ABI name must parse; extern \"fz\" reserved to bootstrap; no variadic \"fz\". fz-5xp.32 closes as superseded. No namespace rule, no conformance test.",
   "id": "fz-21x.6",
   "labels": [],
   "parent": "fz-21x",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete the runtime symbol manifest",
   "type": "task",
-  "updated_at": "2026-09-13T23:30:28Z"
+  "updated_at": "2026-09-13T23:42:17Z"
 }
