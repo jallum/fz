@@ -45,7 +45,7 @@ defprotocol Enumerable do
   `Enum.member?/2` falls back to a reducing search when this returns
   `{:error, _}`.
   """
-  @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
+  @spec member?(t(a), a) :: {:ok, boolean} | {:error, any}
   def member?(enumerable, value)
 
   @doc """

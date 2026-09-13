@@ -246,7 +246,7 @@ defmodule Keyword do
       #=> false
 
   """
-  @spec has_key?(keyword(), atom) :: bool
+  @spec has_key?(keyword(), atom) :: boolean
   def has_key?([], _key), do: false
   def has_key?([{entry_key, _value} | tail], key) do
     if entry_key === key, do: true, else: has_key?(tail, key)
@@ -430,12 +430,12 @@ defmodule Keyword do
       #=> false
 
   """
-  @spec keyword?(any) :: bool
+  @spec keyword?(any) :: boolean
   def keyword?([]), do: true
   def keyword?([{key, _value} | tail]), do: atom_key?(key) and keyword?(tail)
   def keyword?(_other), do: false
 
-  @spec atom_key?(any) :: bool
+  @spec atom_key?(any) :: boolean
   defp atom_key?(_key :: atom), do: true
   defp atom_key?(_other), do: false
 end

@@ -27,7 +27,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
 
     let cases: &[(&str, ScalarBuilder)] = &[
         ("nil", |t| t.nil()),
-        ("bool", |t| t.bool()),
+        ("boolean", |t| t.bool()),
         ("integer", |t| t.int()),
         ("float", |t| t.float()),
         ("cpointer", |t| t.cpointer()),
@@ -159,7 +159,7 @@ fn resource_with_two_arguments_now_errors_instead_of_silently_dropping_the_secon
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
 
-    let error = resolve(&tel, &mut world, "resource(integer, bool)")
+    let error = resolve(&tel, &mut world, "resource(integer, boolean)")
         .expect_err("resource with two type arguments should now fail to resolve");
 
     assert_eq!(error.msg, "expected 0 to 1 type argument(s), got 2 `resource`");

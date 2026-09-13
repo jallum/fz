@@ -53,30 +53,30 @@ defmodule Kernel do
   # are written in terms of. Takes the process (the `fz` ABI) because atoms
   # order by name, not by the id they were interned with.
   extern "fz" def fz_value_cmp_ref(any, any) :: integer
-  extern "C" def fz_op_lt_ii(integer, integer) :: bool
-  extern "C" def fz_op_lt_ff(float, float) :: bool
-  extern "C" def fz_op_lt_bb(binary, binary) :: bool
-  extern "C" def fz_op_lte_ii(integer, integer) :: bool
-  extern "C" def fz_op_lte_ff(float, float) :: bool
-  extern "C" def fz_op_lte_bb(binary, binary) :: bool
-  extern "C" def fz_op_gt_ii(integer, integer) :: bool
-  extern "C" def fz_op_gt_ff(float, float) :: bool
-  extern "C" def fz_op_gt_bb(binary, binary) :: bool
-  extern "C" def fz_op_gte_ii(integer, integer) :: bool
-  extern "C" def fz_op_gte_ff(float, float) :: bool
-  extern "C" def fz_op_gte_bb(binary, binary) :: bool
-  extern "C" def fz_op_eq(any, any) :: bool
-  extern "C" def fz_op_neq(any, any) :: bool
-  extern "C" def fz_op_identical(any, any) :: bool
-  extern "C" def fz_op_not_identical(any, any) :: bool
-  extern "C" def fz_op_lt_if(integer, float) :: bool
-  extern "C" def fz_op_lt_fi(float, integer) :: bool
-  extern "C" def fz_op_lte_if(integer, float) :: bool
-  extern "C" def fz_op_lte_fi(float, integer) :: bool
-  extern "C" def fz_op_gt_if(integer, float) :: bool
-  extern "C" def fz_op_gt_fi(float, integer) :: bool
-  extern "C" def fz_op_gte_if(integer, float) :: bool
-  extern "C" def fz_op_gte_fi(float, integer) :: bool
+  extern "C" def fz_op_lt_ii(integer, integer) :: boolean
+  extern "C" def fz_op_lt_ff(float, float) :: boolean
+  extern "C" def fz_op_lt_bb(binary, binary) :: boolean
+  extern "C" def fz_op_lte_ii(integer, integer) :: boolean
+  extern "C" def fz_op_lte_ff(float, float) :: boolean
+  extern "C" def fz_op_lte_bb(binary, binary) :: boolean
+  extern "C" def fz_op_gt_ii(integer, integer) :: boolean
+  extern "C" def fz_op_gt_ff(float, float) :: boolean
+  extern "C" def fz_op_gt_bb(binary, binary) :: boolean
+  extern "C" def fz_op_gte_ii(integer, integer) :: boolean
+  extern "C" def fz_op_gte_ff(float, float) :: boolean
+  extern "C" def fz_op_gte_bb(binary, binary) :: boolean
+  extern "C" def fz_op_eq(any, any) :: boolean
+  extern "C" def fz_op_neq(any, any) :: boolean
+  extern "C" def fz_op_identical(any, any) :: boolean
+  extern "C" def fz_op_not_identical(any, any) :: boolean
+  extern "C" def fz_op_lt_if(integer, float) :: boolean
+  extern "C" def fz_op_lt_fi(float, integer) :: boolean
+  extern "C" def fz_op_lte_if(integer, float) :: boolean
+  extern "C" def fz_op_lte_fi(float, integer) :: boolean
+  extern "C" def fz_op_gt_if(integer, float) :: boolean
+  extern "C" def fz_op_gt_fi(float, integer) :: boolean
+  extern "C" def fz_op_gte_if(integer, float) :: boolean
+  extern "C" def fz_op_gte_fi(float, integer) :: boolean
 
   @doc """
   Aborts the current process with `msg` as the reason.
@@ -467,11 +467,11 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec integer < integer :: bool
-  @spec float < float :: bool
-  @spec integer < float :: bool
-  @spec float < integer :: bool
-  @spec binary < binary :: bool
+  @spec integer < integer :: boolean
+  @spec float < float :: boolean
+  @spec integer < float :: boolean
+  @spec float < integer :: boolean
+  @spec binary < binary :: boolean
   def (left :: integer) < (right :: integer), do: fz_op_lt_ii(left, right)
   def (left :: float) < (right :: float), do: fz_op_lt_ff(left, right)
   def (left :: integer) < (right :: float), do: fz_op_lt_if(left, right)
@@ -490,11 +490,11 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec integer <= integer :: bool
-  @spec float <= float :: bool
-  @spec integer <= float :: bool
-  @spec float <= integer :: bool
-  @spec binary <= binary :: bool
+  @spec integer <= integer :: boolean
+  @spec float <= float :: boolean
+  @spec integer <= float :: boolean
+  @spec float <= integer :: boolean
+  @spec binary <= binary :: boolean
   def (left :: integer) <= (right :: integer), do: fz_op_lte_ii(left, right)
   def (left :: float) <= (right :: float), do: fz_op_lte_ff(left, right)
   def (left :: integer) <= (right :: float), do: fz_op_lte_if(left, right)
@@ -515,11 +515,11 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec integer > integer :: bool
-  @spec float > float :: bool
-  @spec integer > float :: bool
-  @spec float > integer :: bool
-  @spec binary > binary :: bool
+  @spec integer > integer :: boolean
+  @spec float > float :: boolean
+  @spec integer > float :: boolean
+  @spec float > integer :: boolean
+  @spec binary > binary :: boolean
   def (left :: integer) > (right :: integer), do: fz_op_gt_ii(left, right)
   def (left :: float) > (right :: float), do: fz_op_gt_ff(left, right)
   def (left :: integer) > (right :: float), do: fz_op_gt_if(left, right)
@@ -537,11 +537,11 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec integer >= integer :: bool
-  @spec float >= float :: bool
-  @spec integer >= float :: bool
-  @spec float >= integer :: bool
-  @spec binary >= binary :: bool
+  @spec integer >= integer :: boolean
+  @spec float >= float :: boolean
+  @spec integer >= float :: boolean
+  @spec float >= integer :: boolean
+  @spec binary >= binary :: boolean
   def (left :: integer) >= (right :: integer), do: fz_op_gte_ii(left, right)
   def (left :: float) >= (right :: float), do: fz_op_gte_ff(left, right)
   def (left :: integer) >= (right :: float), do: fz_op_gte_if(left, right)
@@ -612,7 +612,7 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec any == any :: bool
+  @spec any == any :: boolean
   def left == right, do: fz_op_eq(left, right)
 
   @doc """
@@ -627,7 +627,7 @@ defmodule Kernel do
       #=> false
 
   """
-  @spec any != any :: bool
+  @spec any != any :: boolean
   def left != right, do: fz_op_neq(left, right)
 
   # `===` asks whether two values are the same value, where `==` compares
@@ -648,7 +648,7 @@ defmodule Kernel do
       #=> true
 
   """
-  @spec any === any :: bool
+  @spec any === any :: boolean
   def left === right, do: fz_op_identical(left, right)
 
   @doc """
@@ -664,6 +664,6 @@ defmodule Kernel do
       #=> false
 
   """
-  @spec any !== any :: bool
+  @spec any !== any :: boolean
   def left !== right, do: fz_op_not_identical(left, right)
 end

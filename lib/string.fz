@@ -132,10 +132,10 @@ defmodule String do
       #=> false
 
   """
-  @spec starts_with?(binary, binary) :: bool
+  @spec starts_with?(binary, binary) :: boolean
   def starts_with?(s, prefix), do: starts_with_size?(s, prefix, byte_size(prefix))
 
-  @spec starts_with_size?(binary, binary, integer) :: bool
+  @spec starts_with_size?(binary, binary, integer) :: boolean
   defp starts_with_size?(s, prefix, n) do
     if byte_size(s) < n do
       false
@@ -158,10 +158,10 @@ defmodule String do
       #=> false
 
   """
-  @spec ends_with?(binary, binary) :: bool
+  @spec ends_with?(binary, binary) :: boolean
   def ends_with?(s, suffix), do: ends_with_size?(s, suffix, byte_size(s), byte_size(suffix))
 
-  @spec ends_with_size?(binary, binary, integer, integer) :: bool
+  @spec ends_with_size?(binary, binary, integer, integer) :: boolean
   defp ends_with_size?(s, suffix, total, n) do
     if total < n do
       false
@@ -384,7 +384,7 @@ defmodule String do
   # This trims the Unicode whitespace set, not just ASCII, hence the table
   # below -- 25 codepoints. The other table this module relies on is case
   # mapping; see `upcase/1`.
-  @spec whitespace?(binary) :: bool
+  @spec whitespace?(binary) :: boolean
   defp whitespace?(" "), do: true
   defp whitespace?("\t"), do: true
   defp whitespace?("\n"), do: true
@@ -490,7 +490,7 @@ defmodule String do
       #=> false
 
   """
-  @spec contains?(binary, binary) :: bool
+  @spec contains?(binary, binary) :: boolean
   def contains?(s, pattern), do: index_of(s, pattern) >= 0
 
   @doc """
@@ -736,7 +736,7 @@ defmodule String do
       #=> false
 
   """
-  @spec valid?(binary) :: bool
+  @spec valid?(binary) :: boolean
   def valid?(s), do: Utf8.valid?(s)
 
   # Not `to_charlist/1`: Elixir's returns a charlist, a list of integers that
@@ -823,10 +823,10 @@ defmodule String do
       #=> false
 
   """
-  @spec printable?(binary) :: bool
+  @spec printable?(binary) :: boolean
   def printable?(s), do: valid?(s) and printable_bytes?(s)
 
-  @spec printable_bytes?(binary) :: bool
+  @spec printable_bytes?(binary) :: boolean
   defp printable_bytes?(<<c, rest :: binary>>) do
     if printable_byte?(c), do: printable_bytes?(rest), else: false
   end
@@ -836,7 +836,7 @@ defmodule String do
   # everything at or above 128 -- a multi-byte codepoint's bytes are all >=
   # 128, so a valid string's non-ASCII content passes by construction and
   # only the C0 controls are rejected.
-  @spec printable_byte?(integer) :: bool
+  @spec printable_byte?(integer) :: boolean
   defp printable_byte?(c) when c >= 32 and c < 127, do: true
   defp printable_byte?(c) when c >= 128, do: true
   defp printable_byte?(7), do: true
@@ -965,17 +965,17 @@ defmodule String do
   def chunk(""), do: []
   def chunk(s), do: chunk_run(s, valid_here?(s))
 
-  @spec valid_here?(binary) :: bool
+  @spec valid_here?(binary) :: boolean
   defp valid_here?(s) do
     size = codepoint_size(first_byte(s))
     candidate = take_bytes(s, size)
     byte_size(candidate) == size and valid?(candidate)
   end
 
-  @spec chunk_run(binary, bool) :: [binary]
+  @spec chunk_run(binary, boolean) :: [binary]
   defp chunk_run(s, wanted), do: chunk_split(s, wanted, "")
 
-  @spec chunk_split(binary, bool, binary) :: [binary]
+  @spec chunk_split(binary, boolean, binary) :: [binary]
   defp chunk_split(<<>>, _wanted, acc), do: [acc]
   defp chunk_split(s, wanted, acc) do
     if valid_here?(s) == wanted do
@@ -986,7 +986,7 @@ defmodule String do
     end
   end
 
-  @spec chunk_step(binary, bool) :: integer
+  @spec chunk_step(binary, boolean) :: integer
   defp chunk_step(_s, false), do: 1
   defp chunk_step(s, true), do: codepoint_size(first_byte(s))
 
