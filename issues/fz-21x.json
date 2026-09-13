@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-13T21:26:28Z",
+  "description": "Delete every table that restates an extern declaration. Proposal at ../extern-proposal.html (2026-09-13). Steps, in order: 1 debris sweep; 2 addresses from the loaded image (export-dynamic on the host, delete JIT registry + interp address book, Linux CI proof); 3 comparison inlining keyed on resolved Kernel clause identity; 4 delete the manifest (syn conformance test + fz_ symbol namespace reserved to bootstrap); 5 one wire alphabet mapping; 6 import table without *Refs ceremony; 7 one variadic dispatcher table, native variadic via imported symbol; 8 one arithmetic denotation for guards (decision: failed status =\u003e guard false); 9 docs + migration-proof test collapse. Supersedes fz-5xp.32.",
+  "id": "fz-21x",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Extern door collapse: the declaration is the definition",
+  "type": "epic",
+  "updated_at": "2026-09-13T21:26:28Z"
+}
