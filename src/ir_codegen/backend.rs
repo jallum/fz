@@ -354,6 +354,10 @@ pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
             ir_runtime::fz_bitstring_valid_utf8 as *const u8,
         ),
         (
+            "fz_bitstring_utf8_prefix",
+            ir_runtime::fz_bitstring_utf8_prefix as *const u8,
+        ),
+        (
             "fz_brand_bitstring_as_utf8",
             ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
         ),

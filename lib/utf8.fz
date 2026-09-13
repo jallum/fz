@@ -5,7 +5,8 @@ defmodule Utf8 do
   `utf8` is a brand on `binary`: the same bytes, tagged at the type level
   so a position declared `utf8` accepts only validated input and rejects a
   plain `binary`. `from_bytes!/1` and `from_bytes/1` mint that brand after
-  checking `valid?/1`; `to_bytes/1` drops back to the plain binary.
+  checking `valid?/1`; `next/1` validates one codepoint while retaining the
+  remaining source; `to_bytes/1` drops back to the plain binary.
 
   ## Examples
 
@@ -18,6 +19,7 @@ defmodule Utf8 do
   """
 
   extern "C" def fz_bitstring_valid_utf8(any) :: integer
+  extern "C" def fz_bitstring_utf8_prefix(any) :: integer
   extern "C" def fz_brand_bitstring_as_utf8(any) :: any
 
   @doc """
@@ -34,6 +36,50 @@ defmodule Utf8 do
   """
   @spec valid?(binary) :: bool
   def valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
+
+  @doc """
+  Validates and removes the first UTF-8 codepoint from `bytes`.
+
+  Returns `{:ok, codepoint, rest}` with a branded `utf8` codepoint,
+  `{:error, rest}` with `rest` beginning at the first offending byte, or
+  `nil` for an empty binary. An incomplete codepoint returns
+  `{:error, ""}`.
+
+  ## Examples
+
+      Utf8.next(<<195, 169, 120>>)
+      #=> {:ok, "é", "x"}
+
+      Utf8.next(<<225, 128, 65>>)
+      #=> {:error, "A"}
+
+  """
+  @spec next(binary) :: {:ok, utf8, binary} | {:error, binary} | nil
+  def next(""), do: nil
+  def next(bytes), do: next_result(bytes, fz_bitstring_utf8_prefix(bytes))
+
+  @spec next_result(binary, integer) :: {:ok, utf8, binary} | {:error, binary} | nil
+  defp next_result(bytes, status) do
+    if status > 0 do
+      next_valid(bytes, status)
+    else
+      next_nonpositive(bytes, status)
+    end
+  end
+
+  @spec next_nonpositive(binary, integer) :: {:error, binary} | nil
+  defp next_nonpositive(_bytes, 0), do: nil
+  defp next_nonpositive(bytes, status) do
+    offset = 0 - status - 1
+    <<_prefix :: binary-size(offset), rest :: binary>> = bytes
+    {:error, rest}
+  end
+
+  @spec next_valid(binary, integer) :: {:ok, utf8, binary}
+  defp next_valid(bytes, width) do
+    <<codepoint :: binary-size(width), rest :: binary>> = bytes
+    {:ok, fz_brand_bitstring_as_utf8(codepoint), rest}
+  end
 
   @doc """
   Brands `bytes` as `utf8`, or aborts.
