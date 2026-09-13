@@ -14,9 +14,9 @@ The pieces:
   optional native comparison capability.
 - `ExternAbi` (`src/fz_ir/mod.rs`) — `C` or `Fz` (below).
 - `ExternTy` — the C wire alphabet (below).
-- `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param),
-  `Ascribed(ty)` (`arg :: ty` at the call), or `Auto` (an un-ascribed variadic
-  argument awaiting resolution).
+- `ExternMarshal` — a per-argument decision: `Fixed(ty)` (a declared param) or
+  `Auto` (an un-ascribed variadic argument awaiting resolution; an `arg :: ty`
+  ascription at the call resolves it to a concrete `ExternTy` per site).
 - `LoweredExtern { abi, params, ret }` (`src/compiler2/body.rs`) — compiler2's
   lowered form: a `LoweredBody::Extern` carries the `ExternAbi`, the param wire
   types, and the return wire type, and lowering also computes the fz-visible

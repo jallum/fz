@@ -49,7 +49,7 @@
 # fz-puj.47 (X6) — receive matcher implementing Pattern::Map via PerRow.
 #
 # Map patterns route through PerRow (no Switch specialisation), so the
-# matcher dispatches via `fz_matcher_map_get(map, key) -> u64` per entry.
+# matcher dispatches via `fz_matcher_map_get_ref(process, map, key) -> u64` per entry.
 # A NIL_BITS return signals miss; otherwise the lookup result recurses
 # through compile_pattern against the value pattern.
 #

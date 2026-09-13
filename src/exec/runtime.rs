@@ -107,10 +107,6 @@ extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
     send_via::<T>(sender, scheduler, receiver_pid, msg_ref);
 }
 
-extern "C" fn stderr_fault_hook(process: *mut Process, _context: *mut (), value_ref_word: u64) {
-    eprintln!("{}", fz_runtime::render_panic_message(process, value_ref_word));
-}
-
 /// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
 /// by `fz_receive_park_matched` when the after-clause carries a real
 /// timeout. Routes through the execution context's scheduler handle to its
@@ -363,7 +359,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             output_context: output.as_ptr(),
             spawn: Some(spawn_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
-            fault: Some(stderr_fault_hook),
+            fault: Some(fz_runtime::STDERR_FAULT_HOOK),
             output: Some(OUTPUT_HOOK),
             timer_schedule: Some(timer_schedule_hook_thunk::<T>),
             timer_cancel: Some(timer_cancel_hook_thunk::<T>),

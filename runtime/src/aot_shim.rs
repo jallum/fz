@@ -285,7 +285,7 @@ pub extern "C" fn fz_aot_setup(
         timers: TimerWheel::new(),
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
-            fault: Some(aot_fault_hook),
+            fault: Some(crate::STDERR_FAULT_HOOK),
             spawn: Some(aot_spawn_hook),
             send: Some(aot_send_hook),
             timer_schedule: Some(aot_timer_schedule_hook),
@@ -515,10 +515,6 @@ extern "C" fn aot_timer_schedule_hook(scheduler: *mut (), pid: u32, after_ms: u6
 extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
     let sched = unsafe { &mut *(scheduler as *mut AotScheduler) };
     sched.timers.cancel(timer_id);
-}
-
-extern "C" fn aot_fault_hook(process: *mut Process, _context: *mut (), value_ref_word: u64) {
-    eprintln!("{}", crate::render_panic_message(process, value_ref_word));
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.

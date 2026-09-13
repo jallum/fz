@@ -378,8 +378,7 @@ impl std::fmt::Display for ExternAbi {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
-    pub fz_name: String,
-    /// C symbol name (same as fz_name for v1; override possible later).
+    /// The C symbol the declaration resolves to.
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub variadic: bool,

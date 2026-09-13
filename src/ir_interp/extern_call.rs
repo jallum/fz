@@ -11,13 +11,13 @@ use fz_runtime::ir_runtime::{
     fz_atom_to_binary, fz_binary_concat, fz_binary_downcase, fz_binary_to_atom, fz_binary_upcase,
     fz_bitstring_byte_size, fz_bitstring_is_binary, fz_bitstring_utf8_prefix, fz_bitstring_valid_utf8,
     fz_brand_bitstring_as_utf8, fz_dbg_value, fz_float_to_binary, fz_integer_to_binary, fz_make_ref, fz_make_resource,
-    fz_map_count, fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom,
-    fz_map_put_atom_ref, fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_add_ff, fz_op_add_if, fz_op_add_ii,
-    fz_op_div_ff, fz_op_div_fi, fz_op_div_if, fz_op_div_ii, fz_op_div_ii_to_float, fz_op_eq, fz_op_gt_bb, fz_op_gt_ff,
-    fz_op_gt_fi, fz_op_gt_if, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_fi, fz_op_gte_if, fz_op_gte_ii,
-    fz_op_identical, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_fi, fz_op_lt_if, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff,
-    fz_op_lte_fi, fz_op_lte_if, fz_op_lte_ii, fz_op_mul_ff, fz_op_mul_if, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i,
-    fz_op_neq, fz_op_not_identical, fz_op_rem_ff, fz_op_rem_fi, fz_op_rem_if, fz_op_rem_ii, fz_op_sub_ff, fz_op_sub_fi,
+    fz_map_count, fz_map_delete, fz_map_entry_key, fz_map_entry_value, fz_map_from_kv, fz_map_put_atom_ref,
+    fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_op_add_ff, fz_op_add_if, fz_op_add_ii, fz_op_div_ff,
+    fz_op_div_fi, fz_op_div_if, fz_op_div_ii, fz_op_div_ii_to_float, fz_op_eq, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_fi,
+    fz_op_gt_if, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_fi, fz_op_gte_if, fz_op_gte_ii, fz_op_identical,
+    fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_fi, fz_op_lt_if, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_fi,
+    fz_op_lte_if, fz_op_lte_ii, fz_op_mul_ff, fz_op_mul_if, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq,
+    fz_op_not_identical, fz_op_rem_ff, fz_op_rem_fi, fz_op_rem_if, fz_op_rem_ii, fz_op_sub_ff, fz_op_sub_fi,
     fz_op_sub_if, fz_op_sub_ii, fz_process_heap_alloc_stats, fz_self, fz_send, fz_spawn, fz_value_cmp_ref,
 };
 use fz_runtime::resource::fz_resource_test_print_dtor;
@@ -88,37 +88,6 @@ pub(super) fn call_lowered_extern(
     marshals: Option<&[ExternTy]>,
     args: &[AnyValue],
 ) -> Result<ExternCallValue, String> {
-    match signature.symbol.as_str() {
-        "fz_map_count" => {
-            if args.len() != 1 {
-                return Err(format!("fz_map_count/1 got {} args", args.len()));
-            }
-            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            return Ok(ExternCallValue::Scalar(AnyValue::Int(fz_map_count(ref_word))));
-        }
-        "fz_map_entry_key" => {
-            if args.len() != 2 {
-                return Err(format!("fz_map_entry_key/2 got {} args", args.len()));
-            }
-            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            let index = args[1]
-                .as_i64()
-                .ok_or_else(|| "fz_map_entry_key/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_map_entry_key(map_ref, index)).map(ExternCallValue::Scalar);
-        }
-        "fz_map_entry_value" => {
-            if args.len() != 2 {
-                return Err(format!("fz_map_entry_value/2 got {} args", args.len()));
-            }
-            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            let index = args[1]
-                .as_i64()
-                .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index)).map(ExternCallValue::Scalar);
-        }
-        _ => {}
-    }
-
     if signature.variadic {
         let arg_tys = marshals.ok_or_else(|| {
             format!(
@@ -192,6 +161,17 @@ pub(super) fn call_lowered_extern(
         };
     }
 
+    // Arity is enforced where the call is lowered; this guards the transmute
+    // below against a caller that bypassed lowering, where `zip` would
+    // silently truncate.
+    if args.len() != signature.params.len() {
+        return Err(format!(
+            "extern `{}` declares {} parameter(s) but was called with {} argument(s)",
+            signature.symbol,
+            signature.params.len(),
+            args.len()
+        ));
+    }
     let fp = resolve_symbol(&signature.symbol, signature.abi)?;
     // An `extern "fz"` helper receives the current process as an implicit first
     // argument, declared rather than matched by name.
@@ -217,58 +197,56 @@ pub(super) fn call_lowered_extern(
             MAX_INTERP_EXTERN_ARGS,
         ));
     }
-    // The declared RETURN picks the lane the answer comes back in. A float is
-    // returned in the float bank, so reading the integer return register gave
-    // back whatever happened to be there -- for `libc::sqrt` that was the
-    // argument's own bits, which looked exactly like a plausible answer.
+    let result = unsafe { call_declared_return(fp, &raw_args, signature) };
+    // A helper that reports through the execution context, such as
+    // `fz_panic`, leaves its error pending; that error is the answer whatever
+    // lane the call came back in.
+    if let Some(error) = runtime.take_callback_error() {
+        return Err(error);
+    }
+    result
+}
+
+/// The declared RETURN picks the lane the answer comes back in. A float is
+/// returned in the float bank, so reading the integer return register gave
+/// back whatever happened to be there -- for `libc::sqrt` that was the
+/// argument's own bits, which looked exactly like a plausible answer.
+///
+/// # Safety
+/// `fp` must be a function whose parameters travel in the banks `raw_args`
+/// names, in order, and whose return matches `signature.ret`.
+unsafe fn call_declared_return(
+    fp: *const (),
+    raw_args: &[ArgWord],
+    signature: &LoweredExtern,
+) -> Result<ExternCallValue, String> {
     match signature.ret {
         ExternReturn::Scalar(ExternTy::F64) => {
-            let value = unsafe { dispatch_fn_returning_float(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            let value = unsafe { dispatch_fn_returning_float(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Float(value)))
         }
         ExternReturn::Scalar(ExternTy::Unit) => {
-            unsafe { dispatch_fn_void(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            unsafe { dispatch_fn_void(fp, raw_args) };
             Ok(ExternCallValue::Scalar(interp_nil_value()))
         }
         ExternReturn::Scalar(ExternTy::Never) => {
-            unsafe { dispatch_fn_void(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            unsafe { dispatch_fn_void(fp, raw_args) };
             Err(format!("extern `{}` declared Never returned", signature.symbol))
         }
         ExternReturn::Scalar(ExternTy::I64) => {
-            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Int(value as i64)))
         }
         ExternReturn::Scalar(ExternTy::Bool) => {
-            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             Ok(ExternCallValue::Scalar(decode_bool_word(value)))
         }
         ExternReturn::Scalar(ExternTy::Any | ExternTy::Binary | ExternTy::CString) => {
-            let value = unsafe { dispatch_fn_returning_int(fp, &raw_args) };
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
         }
         ExternReturn::Pair(fields) => {
-            let values = unsafe { dispatch_fn_returning_pair(fp, &raw_args, fields) }?;
-            if let Some(error) = runtime.take_callback_error() {
-                return Err(error);
-            }
+            let values = unsafe { dispatch_fn_returning_pair(fp, raw_args, fields) }?;
             Ok(ExternCallValue::Pair(values))
         }
     }
@@ -460,7 +438,6 @@ pub(super) fn resolve_symbol(name: &str, abi: ExternAbi) -> Result<*const (), St
         "fz_map_put_ref" => Some(fz_map_put_ref as *const ()),
         "fz_map_put_int" => Some(fz_map_put_int as *const ()),
         "fz_map_put_float" => Some(fz_map_put_float as *const ()),
-        "fz_map_put_atom" => Some(fz_map_put_atom as *const ()),
         "fz_map_put_atom_ref" => Some(fz_map_put_atom_ref as *const ()),
         "fz_map_count" => Some(fz_map_count as *const ()),
         "fz_map_entry_key" => Some(fz_map_entry_key as *const ()),

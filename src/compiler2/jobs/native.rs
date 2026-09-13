@@ -141,7 +141,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             extern_ids.insert(index, id);
             extern_decls.push(ExternDecl {
                 id,
-                fz_name: world.function_ref(executable.key.activation.function).display_name(),
                 symbol: signature.symbol.clone(),
                 params: signature.params.clone(),
                 variadic: signature.variadic,
