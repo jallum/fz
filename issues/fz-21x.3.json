@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-13T22:10:20Z",
-  "description": "Step 2 of the extern door collapse. The proposal assumed dlsym alone could find runtime exports once the host binary exported its symbols dynamically. Measured: a runtime export nothing references (fz_aot_setup) is absent from the compiler binary on macOS, so the linker drops unreferenced exports before any dynamic-table question arises; the compiler's two hand-maintained address tables were the references keeping the symbols alive. The by-construction replacement: the runtime crate owns one RUNTIME_EXPORTS table (runtime/src/exports.rs) built by a macro from the export identifiers, so a row's name and address cannot disagree; runtime/src/export_test.rs holds it complete in both directions, including the macro-generated arithmetic and comparison exports. fz_extern_symbol_addr consults it before the loaded image, so it is the one resolver on every door. Deleted: runtime_symbol_addrs and register_runtime_symbols' production rows (src/ir_codegen/backend.rs), the interpreter's name-\u003eaddress match and its 60-name use list (src/ir_interp/extern_call.rs), every_declared_runtime_symbol_is_reachable_from_compiled_code. No linker flags, no platform-specific proof needed. Alternative if a zero-table shape is wanted later: linkme distributed_slice registration at each definition site, at the cost of a dependency and linker-section GC caveats.",
+  "description": "Step 2 of the extern door collapse. Measured on 2026-09-13 with a two-crate probe (dependency rlib with an unreferenced no_mangle export in its own object file; bin looks it up with dlsym(RTLD_DEFAULT)): without an export flag the export is dropped from the binary on both macOS and Linux and dlsym fails; with -Wl,-export_dynamic (macOS) or -rdynamic (Linux) the unreferenced export survives the link and dlsym finds it. So the two compiler-side name-\u003eaddress tables exist only because executables do not export their symbols by default; the AOT link already passes -rdynamic for the same reason (aot_link.rs). Change: the fz package build script passes the export flag for its bins and test binaries; fz_extern_symbol_addr is unchanged and now finds fz's own exports the way it finds sqrt. Deleted: runtime_symbol_addrs and the production rows of register_runtime_symbols (src/ir_codegen/backend.rs), the interpreter's name-\u003eaddress match and its 60-name use list (src/ir_interp/extern_call.rs), every_declared_runtime_symbol_is_reachable_from_compiled_code. Proof: nm shows fz_aot_setup present in fz2 after the flag; every_declared_runtime_symbol_resolves passes with the address book gone; full gate; Linux CI.",
   "id": "fz-21x.3",
   "labels": [],
   "parent": "fz-21x",
   "priority": 1,
   "status": "in_progress",
-  "title": "Runtime owns its export table; delete the JIT registry and the interpreter address book",
+  "title": "Export the compiler's symbols dynamically; delete the JIT registry and the interpreter address book",
   "type": "task",
-  "updated_at": "2026-09-13T22:10:39Z"
+  "updated_at": "2026-09-13T22:24:08Z"
 }
