@@ -10,11 +10,15 @@
     {
       "text": "Draft PR #161 (fz-tqd/guards-are-code), stacked on #158; first commit pins the four deferred proof fixtures.",
       "timestamp": "2026-09-14T11:18:15Z"
+    },
+    {
+      "text": "Branch fz-tqd/guards-are-code rebased onto main (f26264572, which includes #167 and #158 squash) as ebfff9946; tree byte-identical to the pre-rebase branch; PR #161 already targets main. Note for fz-21x.22: main's dispatch state now carries bound values (NativeBoundValue / BackendBoundValue), so bitstring field writes into state.values become Runtime(var).",
+      "timestamp": "2026-09-14T17:17:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "[EPIC] Guards are code: one guard function per clause, failure is false, the matcher calls it",
   "type": "epic",
-  "updated_at": "2026-09-14T11:18:15Z"
+  "updated_at": "2026-09-14T17:17:49Z"
 }
