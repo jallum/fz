@@ -4,14 +4,15 @@
     "fz-acn.3"
   ],
   "blocks": [],
+  "closed_at": "2026-09-14T18:57:22Z",
   "created": "2026-09-14T17:16:16Z",
   "description": "Folded into fz-acn.2. Elixir rejects `def take(n, \u003c\u003cs::binary-size(n), _::binary\u003e\u003e)` with \"undefined variable n\" (elixir_bitstring.erl:288-294: a size in a match reads the prematch or an earlier segment of the same binary); the defect is that fz reports it late with a backend string, not that the input is under-demanded. fz-acn.2 makes it an entry-planner diagnostic with a fixture.",
   "id": "fz-acn.9",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A pinned bitstring size in a clause head is required by no scanner; interp refuses the call",
   "type": "bug",
-  "updated_at": "2026-09-14T18:57:21Z"
+  "updated_at": "2026-09-14T18:57:22Z"
 }
