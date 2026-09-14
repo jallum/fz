@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T10:58:43Z",
+  "description": "Measured 2026-09-14 (scratchpad 8b_probe/alloc_body.fz): two calls of a function whose body computes `x + 1 \u003e 0` allocate 2 structs (struct_bytes 64) on interp and run; the same expression in a guard allocates 0, only because the guard evaluator bypasses Kernel `+` with an unchecked iadd. The struct is the `{value, failed}` pair: `fz_op_add_ii` returns it as a fixed C pair in two lanes, and it becomes a heap tuple when passed to `arithmetic_result/1` (`@spec arithmetic_result({t, boolean}) :: t`). enum_list_allocations pins the same thing as struct_allocs = 10 for ten `+`s.\n\nChange: a typed operand pair on an arithmetic operator lowers to the instruction form that reports its failure (overflow flag; the zero test for div and rem), the failed lane feeds a branch, and `arithmetic_result` IS that branch, so no tuple exists at any point on any door; a cross-kind pair (atom plus integer) lowers to the constant failure. The interpreter delivers the pair to `arithmetic_result` as its two lanes, the way a fixed C pair already arrives.\n\nWhy now: the effects fact (allocates/fails) judges allocation on the lowered body. As `+/2` stands it allocates, so no guard could call it. This is a prerequisite of that fact, not a follow-on.\n\nWhat goes away: the materialized pair; struct_allocs 10 -\u003e 0 and struct_bytes 320 -\u003e 0 in enum_list_allocations.\n\nProof (counts, not wall clock): heap-counter fixture where body `+` and guard `+` both show struct_allocs 0, three doors; enum_list_allocations golden moves only in those two counters; cross_kind_operators and the arithmetic oracle fixtures unchanged.",
+  "id": "fz-21x.21",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Arithmetic results ride in lanes: the {value, failed} pair is never a heap tuple",
+  "type": "task",
+  "updated_at": "2026-09-14T10:58:43Z"
+}
