@@ -1204,6 +1204,7 @@ fn collect_subject_inputs(plan: &PatternDispatchPlan<Ty>, subject: SubjectId, ou
     }
 }
 
+/// A pin the rows' prematch bound reads the input that delivers it.
 fn collect_pinned_input(plan: &PatternDispatchPlan<Ty>, pinned: PinnedValueId, out: &mut HashSet<usize>) {
     if let Some(input) = plan.pinned.get(pinned.0 as usize).and_then(|pinned| pinned.input) {
         out.insert(input as usize);

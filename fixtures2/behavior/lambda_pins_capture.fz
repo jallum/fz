@@ -1,0 +1,32 @@
+#---
+# purpose: "a lambda head pins a value it closed over"
+# oracle: oracle.exs
+#---
+#
+# # lambda_pins_capture
+#
+# A pin resolves against the bindings that existed before the pattern began.
+# A lambda head has such bindings: whatever the lambda closed over. Those
+# captures arrive as the generated function's leading inputs, so a pin in the
+# head is compared against the input that delivers the capture.
+#
+# Three shapes share that one rule:
+#
+#   * a single-clause lambda pinning a local;
+#   * a lambda returned from a function, pinning that function's parameter;
+#   * a multi-clause lambda, whose clause selection happens in the body rather
+#     than the head, so its pin resolves by name in the enclosing scope.
+def main() do
+  x = 1
+  same = fn ^x -> :same end
+  dbg(same.(1))
+
+  dbg(pick(2).(2))
+
+  choose = fn ^x -> :same
+              _ -> :other end
+  dbg(choose.(1))
+  dbg(choose.(9))
+end
+
+defp pick(x), do: fn ^x -> :same end

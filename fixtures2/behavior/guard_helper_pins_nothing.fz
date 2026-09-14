@@ -1,0 +1,24 @@
+#---
+# purpose: "a guard helper whose head pins is rejected at the helper, not at its caller"
+# expect: diagnostic
+#---
+#
+# # guard_helper_pins_nothing
+#
+# A helper reified into guard dispatch is an ordinary function: it is entered
+# with nothing bound before its patterns, so a pin in its head names a binding
+# that never existed. The helper's own plan is where that is found, so the
+# diagnostic lands on `samey/2` rather than on the guard that calls it, which
+# is the locus Elixir reports too.
+#
+# This head is reached only through a guard, never called directly, so nothing
+# but the guard-dispatch job ever builds a plan for it.
+def main() do
+  dbg(pick(1, 1))
+end
+
+defp samey(a, ^a), do: true
+defp samey(_, _), do: false
+
+defp pick(x, y) when samey(x, y), do: :same
+defp pick(_, _), do: :different

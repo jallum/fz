@@ -79,20 +79,65 @@ matrix:
 
 - `outcomes`: body id plus source bindings for the winning row.
 - `guards`: guard expressions and nested guard dispatch plans.
-- `pinned`: `^name` inputs captured from the surrounding scope.
+- `pinned`: names the patterns reach for but do not bind, each with the span
+  that reaches for it, how it reached (`^name`, a guard variable, a bitstring
+  size), and the input that delivers it when the rows carry a prematch.
 - `prepared_keys`: heap values, such as atom/binary/float map keys, materialized
   once outside the dispatch graph.
 
-Nested guard calls carry their own typed operand-binding edge. A child pin
-comes from an evaluated helper argument; a child prepared key
-names a caller `PreparedKeyId`. The source constructor lifts child keys into
-the parent's existing prepared operands, transitively through helpers. Receive
-therefore prepares constants before parking, not while probing messages. Only
-the root ABI decoder knows flattened offsets; child execution receives its own
-plan-local bindings. Caller demand follows the call operands, never child
-subject ordinals.
-Named helpers have no implicit lexical capture edge: an unresolved helper name
-is a construction diagnostic even when the caller has a same-spelled pin.
+## Pins Resolve Against The Prematch
+
+A pin names a binding that existed BEFORE the pattern began. Three spellings
+reach for one: `^name`, a guard variable the row's patterns do not bind, and a
+bitstring `size(name)` no earlier field of the same bitstring binds. All three
+become a `PatternPinnedInput`, distinguished by `PinnedKind` so a diagnostic
+can say which one it is.
+
+`SourcePatternRows::prematch` is that snapshot, and it has two shapes.
+
+- `Prematch::Lexical`, from `SourcePatternRows::lexical`: an enclosing scope
+  holds the earlier bindings. `case`, `with`, `receive` and `cond` all match
+  inside a body where that scope is live, as do the rows built to ask a
+  question about patterns rather than to execute them. Each pin keeps
+  `input: None` and travels to the lowerer, which resolves it by name.
+- `Prematch::Inputs`, from `SourcePatternRows::entry`: the earlier bindings
+  arrive as the leading inputs, and they are all there is. `entry_source_patterns`
+  passes a lambda's captures paired with the input that delivers each; a `def`
+  closes over nothing and passes an empty list. So `fn ^x -> ... end` pins the
+  input that delivers `x`, while a `def` head can pin nothing at all.
+
+`collect_pinned_names` resolves every pin against that snapshot, and
+`pin_for_name` resolves the ones bitstring sizes create on first use. Under
+`Inputs`, the producer then refuses every pin left unresolved — all of them at
+once, in one `SourcePatternError::UndefinedPins`, because Elixir reports every
+undefined name in a head rather than only the first. The diagnostics repeat
+Elixir's wording: `undefined variable ^NAME. No variable "NAME" has been
+defined before the current pattern` for a pin, `undefined variable "NAME"` for
+a guard name or a bitstring size.
+
+A reified guard helper is an ordinary function, so `guard_dispatch_from_surface`
+builds its rows with an empty `Inputs` list and a pin in the helper's head is
+refused while the helper's own plan is built. The diagnostic therefore lands on
+the helper, which is the locus Elixir names too, not on the guard that calls it.
+
+A lambda closes over the names its pins reach for: `lambda_free_names` collects
+the free names of a clause's parameters against the empty pre-pattern scope
+before binding them, so a pinned capture is captured. A bitstring size is the
+exception — `collect_pattern_free_names` walks a field's value but not its size
+expression, so a lambda whose field size names a capture does not yet close
+over it.
+
+Nested guard calls carry their own typed operand-binding edge, and a child
+prepared key names a caller `PreparedKeyId`. The source constructor lifts child
+keys into the parent's existing prepared operands, transitively through
+helpers. Receive therefore prepares constants before parking, not while probing
+messages. Only the root ABI decoder knows flattened offsets; child execution
+receives its own plan-local bindings. Caller demand follows the call operands,
+never child subject ordinals.
+Named helpers have no implicit lexical capture edge. A helper body names either
+something its own head bound or something that was never bound, and lowering
+the body says which, so an unresolved helper name is a construction diagnostic
+against the helper even when the caller has a same-spelled binding.
 
 `matrix.subjects` is the sole retained subject graph. Source-facing
 `PatternSubjectRef` values exist only during construction. Bitstring field

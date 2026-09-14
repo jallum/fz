@@ -1637,11 +1637,11 @@ impl ProgramCanon<'_> {
             }
             PatternGuardExpr::Dispatch {
                 inputs,
-                bindings,
+                prepared,
                 dispatch,
             } => {
                 out.enter("guard_dispatch");
-                out.put(&format!("bindings {bindings:?}"));
+                out.put(&format!("prepared {prepared:?}"));
                 for input in inputs {
                     self.guard_expr(out, input);
                 }

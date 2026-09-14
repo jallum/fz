@@ -1141,6 +1141,7 @@ fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<De
 fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [DispatchDemand]) {
     match guard {
         PatternGuardExpr::Const(_) => {}
+        // A pin the rows' prematch bound demands the input that delivers it.
         PatternGuardExpr::Pinned(id) => {
             if let Some(input) = plan.pinned.get(id.0 as usize).and_then(|pin| pin.input)
                 && let Some(demand) = mask.get_mut(input as usize)

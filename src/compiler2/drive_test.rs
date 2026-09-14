@@ -16839,7 +16839,7 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     );
     assert_eq!(**dispatch, dispatch.map_type_handle(&mut |ty| ty.clone()));
     let PatternGuardExpr::Dispatch {
-        bindings,
+        prepared,
         dispatch: child,
         ..
     } = &dispatch.guards[0]
@@ -16847,16 +16847,16 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
         panic!("relayed edge")
     };
     assert_eq!(
-        bindings.prepared,
-        [PreparedKeyId(1)],
+        prepared,
+        &[PreparedKeyId(1)],
         "helper key is caller key one, not caller key zero"
     );
-    let PatternGuardExpr::Dispatch { bindings, .. } = &child.bodies[0] else {
+    let PatternGuardExpr::Dispatch { prepared, .. } = &child.bodies[0] else {
         panic!("wanted edge")
     };
     assert_eq!(
-        bindings.prepared,
-        [PreparedKeyId(0)],
+        prepared,
+        &[PreparedKeyId(0)],
         "nested key is local to the intermediate helper"
     );
 
@@ -16864,10 +16864,10 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     let IrTerm::ReceiveMatched { dispatch, .. } = &mut invalid.module.fns[function].blocks[block].terminator else {
         unreachable!()
     };
-    let PatternGuardExpr::Dispatch { bindings, .. } = &mut std::sync::Arc::make_mut(dispatch).guards[0] else {
+    let PatternGuardExpr::Dispatch { prepared, .. } = &mut std::sync::Arc::make_mut(dispatch).guards[0] else {
         unreachable!()
     };
-    bindings.prepared[0] = PreparedKeyId(99);
+    prepared[0] = PreparedKeyId(99);
     assert_ne!(
         *program, invalid,
         "operand edges participate in native artifact equality"
@@ -16888,9 +16888,13 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     );
 }
 
+/// A named helper called from a guard has no lexical edge to its caller: it is
+/// an ordinary function, entered with nothing bound before its patterns. A name
+/// its own head does not bind was never bound, and that is found where the
+/// helper is built, even when the caller happens to hold the same spelling.
 #[test]
 fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
-    for (label, source) in [
+    for (site, source) in [
         (
             "receive",
             "def wanted(value), do: value == missing\ndef main() do\n receive do\n value when wanted(value) -> 42\n after\n 1000 -> 0\n end\nend\n",
@@ -16914,14 +16918,15 @@ fn compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        assert!(compiler.run_root_interp(root).is_err());
+        assert!(compiler.run_root_interp(root).is_err(), "{site} guard");
         let diagnostic = capture
             .last(&["fz", "diag", "error"])
             .expect("missing lexical pin diagnostic");
         assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNBOUND.0);
         assert_eq!(
             metadata_str(&diagnostic, "message"),
-            format!("compiler2 {label} guard references unknown name `missing`")
+            "compiler2 helper `wanted/1` references unknown guard name `missing`",
+            "the helper is where the unbound name is, whatever the {site} guard holds"
         );
     }
 }

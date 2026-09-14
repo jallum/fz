@@ -748,6 +748,10 @@ fn select_clause(
 ///
 /// Only binary keys need this. Ints, floats, atoms, booleans and nil are
 /// decided from the constant directly and never consult prepared values.
+///
+/// The pins come from the same call. Every pin an entry plan carries was bound
+/// before its patterns began and arrives as one of the plan's inputs; a pin
+/// without one is an undefined name the entry planner already refused.
 fn prepared_dispatch_keys(
     runtime: &mut IrInterpRuntime,
     module: &Module,
@@ -780,7 +784,7 @@ fn prepared_dispatch_keys(
                 pin.input
                     .and_then(|input| inputs.get(input as usize))
                     .and_then(BackendBoundValue::runtime_word)
-                    .ok_or_else(|| "entry dispatch pin has no runtime argument operand".to_string())
+                    .ok_or_else(|| format!("dispatch pin `{}` has no runtime argument operand", pin.name))
             })
             .collect::<Result<Vec<_>, _>>()?,
         prepared,
@@ -4200,15 +4204,15 @@ mod tests {
             layout,
         }]);
         let dispatch = ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows {
-                input_count: 1,
-                rows: vec![PatternRow {
+            pattern_dispatch_from_source(SourcePatternRows::lexical(
+                1,
+                vec![PatternRow {
                     patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
                     preconditions: Vec::new(),
                     guard: None,
                     body_id: 0,
                 }],
-            })
+            ))
             .unwrap(),
             vec![0],
         );
@@ -4308,9 +4312,9 @@ mod tests {
             layout,
         }]);
         let dispatch = ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows {
-                input_count: 1,
-                rows: vec![PatternRow {
+            pattern_dispatch_from_source(SourcePatternRows::lexical(
+                1,
+                vec![PatternRow {
                     patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
                         crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
                         crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
@@ -4319,7 +4323,7 @@ mod tests {
                     guard: None,
                     body_id: 0,
                 }],
-            })
+            ))
             .unwrap(),
             vec![0],
         );

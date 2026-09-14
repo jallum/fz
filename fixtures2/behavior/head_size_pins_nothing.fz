@@ -1,0 +1,18 @@
+#---
+# purpose: "a bitstring size naming a parameter rather than an earlier field is undefined"
+# expect: diagnostic
+#---
+#
+# # head_size_pins_nothing
+#
+# A bitstring field's size may name an earlier field of the same bitstring,
+# which binds it before the size is read. Any other name has to have been bound
+# before the pattern began, and a `def` head has nothing bound before it. So
+# `size(n)` naming a parameter of the same head reaches for a binding that does
+# not exist, and Elixir rejects the same head.
+def main() do
+  dbg(take(2, "hello"))
+end
+
+defp take(n, <<s :: binary-size(n), _ :: binary>>), do: s
+defp take(_, _), do: :none

@@ -3274,9 +3274,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             PatternGuardExpr::Dispatch {
                 inputs,
-                bindings,
+                prepared,
                 dispatch,
-            } => self.lower_guard_dispatch(ctx, plan, state, inputs, bindings, dispatch)?,
+            } => self.lower_guard_dispatch(ctx, plan, state, inputs, prepared, dispatch)?,
             PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(state, *pinned)?,
         })
     }
@@ -3287,7 +3287,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         parent_plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         inputs: &[PatternGuardExpr<Ty>],
-        bindings: &crate::dispatch_matrix::pattern::PatternGuardBindings,
+        prepared_keys: &[crate::dispatch_matrix::PreparedKeyId],
         dispatch: &crate::dispatch_matrix::pattern::PatternGuardDispatch<Ty>,
     ) -> Result<Var, FatalError> {
         let input_vars = inputs
@@ -3297,21 +3297,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
         let fail_b = ctx.builder.block(vec![]);
-        let pinned = bindings
-            .pinned
-            .iter()
-            .map(|id| {
-                input_vars.get(id.0 as usize).copied().ok_or_else(|| {
-                    incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!("guard argument {:?} is missing", id),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prepared = bindings
-            .prepared
+        let prepared = prepared_keys
             .iter()
             .map(|id| {
                 state.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
@@ -3323,8 +3309,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut dispatch_state =
-            DispatchState::from_words(input_vars, Vec::new(), DispatchBindings { pinned, prepared });
+        let mut dispatch_state = DispatchState::from_words(
+            input_vars,
+            Vec::new(),
+            DispatchBindings {
+                pinned: Vec::new(),
+                prepared,
+            },
+        );
         self.lower_guard_dispatch_node(
             ctx,
             &dispatch.plan,
@@ -3546,8 +3538,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             Some(BitstringFieldSize::Binding(subject)) => {
                 Some(BitSizeIr::Var(self.dispatch_subject_var(ctx, plan, state, *subject)?))
             }
-            // A size from the enclosing scope arrives as a PIN, the same way a
-            // pinned value does (fz-5xp.54).
+            // A size bound before the pattern began arrives as a PIN, the same
+            // way a pinned value does.
             Some(BitstringFieldSize::Pinned(pinned)) => Some(BitSizeIr::Var(self.dispatch_pinned_var(state, *pinned)?)),
         })
     }
@@ -3678,7 +3670,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
-    /// A pin is compared whole, so its operand is always one runtime word.
+    /// The operands a plan whose inputs are its arguments needs. Every pin such
+    /// a plan carries was bound before its patterns began and arrives as one of
+    /// those arguments; a pin without one is an undefined name the entry
+    /// planner already refused, so reaching here means the plan never went
+    /// through it. A pin is compared whole, so its operand is one runtime word.
     fn lower_argument_bindings(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3702,7 +3698,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             incomplete_native_program(
                                 self.telemetry,
                                 self.root_id,
-                                "entry dispatch pin has no runtime argument operand".to_string(),
+                                format!("dispatch pin `{}` has no runtime argument operand", pin.name),
                             )
                         })
                 })
@@ -5510,9 +5506,9 @@ mod tests {
         abi.value_layouts.insert(param, tuple_layout);
         abi.value_layouts.insert(result, scalar_layout);
         let dispatch = crate::compiler2::ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows {
-                input_count: 1,
-                rows: vec![PatternRow {
+            pattern_dispatch_from_source(SourcePatternRows::lexical(
+                1,
+                vec![PatternRow {
                     patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
                         crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
                         crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
@@ -5521,7 +5517,7 @@ mod tests {
                     guard: None,
                     body_id: 0,
                 }],
-            })
+            ))
             .unwrap(),
             vec![0],
         );

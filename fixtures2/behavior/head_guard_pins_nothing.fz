@@ -1,0 +1,20 @@
+#---
+# purpose: "a guard naming a name only a sibling clause binds is undefined"
+# expect: diagnostic
+#---
+#
+# # head_guard_pins_nothing
+#
+# A clause guard sees the names its own head binds. A sibling clause's
+# parameters are not in scope, and a `def` head has nothing bound before it, so
+# `when a > y` under a head that binds `y` reaches for a binding that does not
+# exist. Elixir rejects the same clause.
+#
+# The second clause here is live: the first clause only matches a literal, so
+# nothing prunes the guard away before it is read.
+def main() do
+  dbg(live(1, 0))
+end
+
+defp live(1, _), do: :one
+defp live(_, y) when a > y, do: :other

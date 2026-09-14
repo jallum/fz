@@ -536,7 +536,7 @@ where
         }
         PatternGuardExpr::Dispatch {
             inputs: dispatch_inputs,
-            bindings,
+            prepared,
             dispatch,
         } => {
             let values = dispatch_inputs
@@ -544,16 +544,9 @@ where
                 .map(|input| eval_dispatch_guard(runtime, module, plan, input, operands, state, type_match))
                 .collect::<Result<Vec<_>, _>>()?;
             let child_bindings = DispatchValues {
-                pinned: required(
-                    bindings
-                        .pinned
-                        .iter()
-                        .map(|id| values.get(id.0 as usize).copied())
-                        .collect::<Option<Vec<_>>>(),
-                )?,
+                pinned: Vec::new(),
                 prepared: required(
-                    bindings
-                        .prepared
+                    prepared
                         .iter()
                         .map(|id| operands.pinned.prepared.get(id.0 as usize).copied())
                         .collect::<Option<Vec<_>>>(),
@@ -811,10 +804,10 @@ pub(super) fn dispatch_bit_size_value(
             .and_then(BackendBoundValue::runtime_word)
             .and_then(|v| v.as_i64())
             .map(|n| (1, n as u32)),
-        // A size from the ENCLOSING SCOPE -- a function parameter, or anything
-        // bound before the `case`. It arrives as a PIN, which is the same
-        // mechanism `Pattern::Pinned` uses, because it is the same question: a
-        // name the pattern USES but does not BIND (fz-5xp.54).
+        // A size bound BEFORE THE PATTERN BEGAN, never a parameter of the same
+        // head. It arrives as a PIN, which is the same mechanism
+        // `Pattern::Pinned` uses, because it is the same question: a name the
+        // pattern USES but does not BIND.
         Some(BitstringFieldSize::Pinned(pin_id)) => load_pinned_dispatch_value(*pin_id, pinned)
             .and_then(|value| value.as_i64())
             .map(|n| (1, n as u32)),
@@ -862,9 +855,9 @@ mod tests {
     /// and that earlier read answers no differently.
     #[test]
     fn an_unresolvable_subject_misses_its_arity_question() {
-        let plan = pattern_dispatch_from_source(SourcePatternRows {
-            input_count: 1,
-            rows: vec![PatternRow {
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
                 patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
                     crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
                 ]))],
@@ -872,7 +865,7 @@ mod tests {
                 guard: None,
                 body_id: 0,
             }],
-        })
+        ))
         .expect("a one-field tuple head compiles");
         let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
         runtime.current_proc = runtime.process_ptr(1).unwrap();

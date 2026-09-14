@@ -567,6 +567,10 @@ fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
 }
 
+fn test_span(start: u32, end: u32) -> crate::source::Span {
+    crate::source::Span::new(crate::source::SourceVersion::from_index(0), start, end)
+}
+
 fn pattern_row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow<Ty> {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
@@ -626,11 +630,108 @@ fn has_region(plan: &pattern::PatternDispatchPlan<Ty>, pred: impl Fn(&Region<Ty>
         .any(|question| pred(&question.predicate.region))
 }
 
+/// A lambda head is entered with its captures already bound, delivered as the
+/// plan's leading inputs, so a pin there reads the input that carries its name.
+#[test]
+fn a_pin_resolves_to_the_input_that_delivers_its_name() {
+    let rows = vec![PatternRow::<Ty> {
+        patterns: vec![sp(Pattern::Var("x".to_string())), sp(Pattern::Pinned("x".to_string()))],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    }];
+
+    let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(2, rows, vec![("x".to_string(), 0)]))
+        .expect("a lambda head may pin what it closed over");
+
+    assert_eq!(plan.pinned.len(), 1);
+    assert_eq!(plan.pinned[0].name, "x");
+    assert_eq!(
+        plan.pinned[0].input,
+        Some(0),
+        "the pin reads the input that delivers the capture"
+    );
+}
+
+/// Matched inside a live scope, a pin names something no input carries. The
+/// plan says so and leaves the name for the lowerer to look up.
+#[test]
+fn a_lexical_pin_carries_no_input() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![
+            pattern_row(vec![Pattern::Pinned("want".to_string())], 0),
+            pattern_row(vec![Pattern::Wildcard], 1),
+        ],
+    ));
+
+    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(
+        plan.pinned[0].input, None,
+        "a lexical pin is resolved by name, not by ordinal"
+    );
+}
+
+/// A pin is a name the row does not bind. A guard variable the row's own
+/// patterns bind is an ordinary subject read.
+#[test]
+fn a_guard_variable_its_own_row_binds_is_not_a_pin() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![
+            pattern_row_with_guard_preconditions(
+                vec![Pattern::Var("x".to_string())],
+                0,
+                Expr::Var("x".to_string()),
+                Vec::new(),
+            ),
+            pattern_row(vec![Pattern::Wildcard], 1),
+        ],
+    ));
+
+    assert!(plan.pinned.is_empty(), "the guard reads a name its own head binds");
+    assert!(matches!(plan.guards[0], pattern::PatternGuardExpr::Subject(_)));
+}
+
+/// A `def` head is entered with nothing bound before it, so every name its
+/// patterns reach for is undefined. All of them are reported at once, each at
+/// the place that reached for it, the way Elixir reports a head.
+#[test]
+fn an_entry_pin_no_input_delivers_is_refused_with_every_undefined_name() {
+    let pin_span = test_span(10, 12);
+    let guard_span = test_span(20, 21);
+    let rows = vec![PatternRow::<Ty> {
+        patterns: vec![
+            Spanned::new(Pattern::Pinned("a".to_string()), pin_span),
+            sp(Pattern::Var("y".to_string())),
+        ],
+        preconditions: Vec::new(),
+        guard: Some(Spanned::new(Expr::Var("b".to_string()), guard_span)),
+        body_id: 0,
+    }];
+
+    let error = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(2, rows, Vec::new()))
+        .expect_err("a def head has nothing bound before its patterns");
+
+    let pattern::PatternDispatchError::SourcePattern(pattern::SourcePatternError::UndefinedPins(pins)) = error else {
+        panic!("undefined names in an entry head are refused as undefined pins, got {error:?}")
+    };
+    assert_eq!(
+        pins.iter()
+            .map(|pin| (pin.name.as_str(), pin.kind, pin.span))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a", pattern::PinnedKind::Pin, pin_span),
+            ("b", pattern::PinnedKind::GuardVar, guard_span),
+        ]
+    );
+}
+
 #[test]
 fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![
             pattern_row(vec![Pattern::Int(7)], 0),
             pattern_row(vec![Pattern::Atom("ok".to_string())], 1),
             pattern_row(vec![Pattern::Bool(false)], 2),
@@ -638,7 +739,7 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
             pattern_row(vec![Pattern::Binary(b"hi".to_vec())], 4),
             pattern_row(vec![Pattern::Wildcard], 5),
         ],
-    };
+    );
 
     let plan = pattern_plan(source_patterns);
 
@@ -679,9 +780,9 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         vec![sp(Pattern::Var("h".to_string()))],
         Some(Box::new(sp(Pattern::Var("t".to_string())))),
     );
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![
             pattern_row(
                 vec![Pattern::Tuple(vec![
                     sp(Pattern::Atom("ok".to_string())),
@@ -693,7 +794,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
             pattern_row(vec![Pattern::List(vec![], None)], 2),
             pattern_row(vec![Pattern::Wildcard], 3),
         ],
-    };
+    );
 
     let plan = pattern_plan(source_patterns);
 
@@ -754,16 +855,16 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
 
 #[test]
 fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![pattern_row(
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
             vec![Pattern::Map(vec![(
                 sp(Pattern::Atom("id".to_string())),
                 sp(Pattern::Nil),
             )])],
             0,
         )],
-    };
+    );
 
     let plan = pattern_plan(source_patterns);
 
@@ -802,9 +903,9 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 
 #[test]
 fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() {
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![pattern_row(
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
             vec![Pattern::Bitstring(vec![
                 BitField {
                     value: sp(Pattern::Var("n".to_string())),
@@ -827,7 +928,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
             ])],
             0,
         )],
-    };
+    );
 
     let plan = pattern_plan(source_patterns);
     let bitstring = plan
@@ -879,9 +980,9 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 
 #[test]
 fn pattern_dispatch_plan_carries_executable_payloads_directly() {
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![
             pattern_row(
                 vec![Pattern::Bitstring(vec![
                     BitField {
@@ -917,7 +1018,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
                 Vec::new(),
             ),
         ],
-    };
+    );
     let plan = pattern_plan(source_patterns);
 
     assert_eq!(plan.prepared_keys, vec![GroundValue::Atom("id".to_string())]);
@@ -967,9 +1068,9 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
 fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions() {
     let mut types = Types::new();
     let int = types.int();
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![
+    let source_patterns = SourcePatternRows::lexical(
+        1,
+        vec![
             pattern_row_with_guard_preconditions(
                 vec![Pattern::Pinned("want".to_string())],
                 0,
@@ -978,7 +1079,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
             ),
             pattern_row(vec![Pattern::Wildcard], 1),
         ],
-    };
+    );
 
     let plan = pattern_plan(source_patterns);
 
@@ -1008,10 +1109,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
 
 #[test]
 fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
-    let source_patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![pattern_row(vec![Pattern::Wildcard], 0)],
-    };
+    let source_patterns = SourcePatternRows::lexical(1, vec![pattern_row(vec![Pattern::Wildcard], 0)]);
 
     let plan = pattern_plan(source_patterns);
 

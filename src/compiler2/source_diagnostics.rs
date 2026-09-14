@@ -69,7 +69,7 @@ fn check_function_clauses(
             body_id: index as PatternBodyId,
         })
         .collect();
-    let source_patterns = SourcePatternRows { input_count, rows };
+    let source_patterns = SourcePatternRows::lexical(input_count, rows);
     if is_inexhaustive_with_resolver(&source_patterns, resolver) {
         diagnostics.push(function_head_warning(surface).expect("a checked function has a last clause"));
     }
@@ -223,7 +223,7 @@ fn check_match_clauses(
             body_id: index as PatternBodyId,
         })
         .collect();
-    let source_patterns = SourcePatternRows { input_count: 1, rows };
+    let source_patterns = SourcePatternRows::lexical(1, rows);
     if is_inexhaustive_with_resolver(&source_patterns, resolver) {
         diagnostics.push(inexhaustive_diag_at(
             span,

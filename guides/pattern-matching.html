@@ -185,6 +185,23 @@ compares the subject against the snapshot. For <code>receive</code>,
 that snapshot is the <code>pinned</code> array the ABI matcher takes as
 its second argument.</p>
 
+<p>A pin always names a binding that existed <em>before</em> the pattern
+began. A <code>def</code> head has none: its own parameters are bound
+<em>by</em> that pattern, not before it, and a sibling clause's
+parameters are not in scope at all. So all three of these are compile
+errors:</p>
+
+<pre><span class="kw">def</span> <span class="fn">same</span>(a, ^a)                                   <span class="com"># ^a: nothing named a was bound first</span>
+<span class="kw">def</span> <span class="fn">live</span>(_, y) <span class="kw">when</span> a &gt; y                       <span class="com"># a is bound by no clause</span>
+<span class="kw">def</span> <span class="fn">take</span>(n, &lt;&lt;s :: binary-size(n), _ :: binary&gt;&gt;)  <span class="com"># n is a parameter, not an earlier field</span></pre>
+
+<p>A <code>fn</code> head <em>does</em> have bindings before it &mdash;
+everything it closes over &mdash; so a lambda can pin a capture:</p>
+
+<pre>x = <span class="num">1</span>
+same = <span class="kw">fn</span> ^x -&gt; <span class="atm">:same</span> <span class="kw">end</span>
+same.(<span class="num">1</span>)                    <span class="com"># :same</span></pre>
+
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="share">4. We destructure once</h2>
 

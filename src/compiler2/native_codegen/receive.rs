@@ -1078,7 +1078,7 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
                 .ok_or_else(|| CodegenError::new(format!("bitstring size subject {:?} not available", subject)))?;
             Ok((1, strict_int_i32(body, value)?))
         }
-        // A size from the enclosing scope arrives as a PIN (fz-5xp.54).
+        // A size bound before the pattern began arrives as a PIN.
         Some(BitstringFieldSize::Pinned(pinned)) => {
             let value = load_pinned_dispatch_value(ctx, *pinned)?;
             Ok((1, strict_int_i32(body, value)?))
@@ -1215,14 +1215,14 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         }
         PatternGuardExpr::Dispatch {
             inputs,
-            bindings,
+            prepared,
             dispatch,
         } => {
             let values = inputs
                 .iter()
                 .map(|input| emit_dispatch_guard_expr(body, ctx, input, state))
                 .collect::<Result<Vec<_>, _>>()?;
-            emit_guard_dispatch(body, ctx, dispatch, bindings, values)?
+            emit_guard_dispatch(body, ctx, dispatch, prepared, values)?
         }
     })
 }
@@ -1231,7 +1231,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     parent: &DispatchCtx<'_>,
     dispatch: &ReceiveGuardDispatch,
-    bindings: &crate::dispatch_matrix::pattern::PatternGuardBindings,
+    prepared_keys: &[crate::dispatch_matrix::PreparedKeyId],
     inputs: Vec<ReceiveValue>,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = body.b.create_block();
@@ -1243,18 +1243,8 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         named_schema_ids: parent.named_schema_ids,
         outcomes: parent.outcomes,
         bindings: crate::compiler2::DispatchBindings {
-            pinned: bindings
-                .pinned
-                .iter()
-                .map(|id| {
-                    inputs
-                        .get(id.0 as usize)
-                        .copied()
-                        .ok_or_else(|| CodegenError::new(format!("guard argument {:?} is missing", id)))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            prepared: bindings
-                .prepared
+            pinned: Vec::new(),
+            prepared: prepared_keys
                 .iter()
                 .map(|id| {
                     parent.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
