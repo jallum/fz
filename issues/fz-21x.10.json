@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-21x.24"
+  ],
   "created": "2026-09-14T00:45:07Z",
   "description": "Found while landing fz-21x.9 (2026-09-13). src/compiler2/native_codegen/receive.rs keeps DispatchRuntimeHelpers (20 Option\u003cFuncId\u003e) and DispatchRuntimeRefs (20 Option\u003cFuncRef\u003e), a parallel declare-up-front table for the receive-dispatch body, which is emitted through a bare FunctionBuilder rather than a CodegenFn and so cannot use runtime_call!. Every Option is unconditionally Some (one caller). The helpers are now populated from the Rust items (dispatch_runtime_helpers in driver.rs), so no hand-written signature survives, but the two structs are the same idea runtime_syms.rs was. Fix: give DispatchCtx a RuntimeCaller (module + builder + per-body memo) and call helpers by item at each site; delete both structs and dispatch_runtime_helpers. No behaviour change; proof is the receive fixtures on three doors.",
   "id": "fz-21x.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Receive-dispatch body calls runtime helpers through two parallel 20-field tables",
   "type": "task",
-  "updated_at": "2026-09-14T00:45:07Z"
+  "updated_at": "2026-09-14T10:58:48Z"
 }
