@@ -15,11 +15,15 @@
     {
       "text": "RE-TESTED at 29b07acfa (after fz-kdt.127.1 + .2, 2026-09-02): STILL RED, unchanged in kind. refnest.fz: interp correct ({:a, 11} {:a, 30}); native refuses 'native cannot project captures out of a callable that names no function in Executable(... FunctionId(66) ...)' then 'native executable lowering failed for index 13'. refnest2.fz (pattern-destructured): interp 'backend executable 11 function 65 clause 0 failed before entry 0: backend value 0 is unbound'; native same refusal. Neither stage of 127 touched the nested-in-tuple capture projection; the closures here capture nothing, so the forwarder key still erases them to the bare arrow inside the tuple (capture-free literals erase whole), and the refusal is the transport/projection of a callable position INSIDE a tuple through an erased hop. Still this ticket's. Note for whoever picks it up: 127.2's anonymous literal closure[?](caps) also 'names no function' -- a capture-BEARING closure nested in a tuple through a forwarder would meet the same refusal one form later; add that variant to the reproducers.",
       "timestamp": "2026-09-02T23:59:33Z"
+    },
+    {
+      "text": "Draft PR https://github.com/jallum/fz/pull/169 (commit c423f52f7 on fz-kdt.137/closure-in-tuple-field off main f26264572). Two cold-review passes: one blocker (tuple used whole after destructure-and-call refused with a panic) fixed via layout_is_one_public_word; all must-fixes applied. Full gate green (lib 2134/0, matrix 765/0 single-threaded, oracle trial). Side ticket fz-b54 filed.",
+      "timestamp": "2026-09-14T20:51:47Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "P1: native loses callable identity and captures when invoking a closure projected from a tuple",
   "type": "task",
-  "updated_at": "2026-09-14T17:41:33Z"
+  "updated_at": "2026-09-14T20:51:47Z"
 }
