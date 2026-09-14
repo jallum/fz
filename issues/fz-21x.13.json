@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T02:10:13Z",
+  "description": "Step 8a. Kernel's \u003c, \u003c=, \u003e, \u003e= gain @spec any OP any and a final clause via compare/2 (the runtime rank table states the order once), the same shape == already has. The five binary clauses stay in kernel.fz commented out under a prominent NOTE/TODO: the runtime test a binary clause compiles to proves only bitstring, so the blind-escape census cannot justify a binary clause seated ahead of a catch-all (measured on fz-5xp.64); they return when the binary axis is precise. Their four runtime exports stay so restoring is the uncomment. Fixture cross_kind_operators (oracle-pinned, golden in scratchpad/8a) moves into fixtures2/behavior minus the === guard cases (8b). Census plan counts re-read; escapes must stay empty. Docs mirrors: semantic-authorities.md ordering paragraph, term_ordering.fz header, kernel.fz compare/2 comment.",
+  "id": "fz-21x.13",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Ordering operators total through compare/2; binary clauses commented out with the reason",
+  "type": "task",
+  "updated_at": "2026-09-14T02:10:13Z"
+}
