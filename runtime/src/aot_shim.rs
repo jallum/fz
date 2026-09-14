@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 /// AOT has no binary `Runtime` to hang an `ExecCtx` off (the staticlib does
 /// not link the codegen crate), so this struct *is* the AOT scheduler handle:
 /// it owns the task table, run-queue, timer wheel, pid counter, and the
-/// SystemV→Tail-CC shim addresses, and it carries the per-run `ExecCtx`
+/// C-convention to Tail-CC shim addresses, and it carries the per-run `ExecCtx`
 /// dispatch table inline. Its `ctx.scheduler` points back at the struct, so
 /// the spawn/send/timer hooks re-narrow that erased handle to `&mut
 /// AotScheduler` — exactly as the JIT hooks re-narrow `ExecCtx.scheduler` to
@@ -82,12 +82,12 @@ struct AotScheduler {
     halt_cont_bodies: [*const u8; 4],
     /// fz-sched.1 — cooperative run-queue. PIDs of processes ready to run.
     run_queue: VecDeque<u32>,
-    /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
+    /// fz-4mk.3b — `fz_drain_dtor_entry(closure, payload)` shim
     /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
     /// run-queue loop calls this once per pending dtor at task-exit; the
     /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
     drain_dtor_entry: *const u8,
-    /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
+    /// fz-xx8.1 — `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this to
     /// resume the task's `runnable` closure (a fresh entry thunk or a
     /// continuation); the shim reads the closure code pointer through the
@@ -630,8 +630,8 @@ pub extern "C" fn fz_aot_run_main(
 ///
 /// # Safety
 /// `proc` must be a process produced by `fz_aot_setup`. `addr` must be the
-/// address of `fz_drain_dtor_entry` emitted by compile_with_backend (SystemV
-/// `(closure: u64, payload: u64) -> i64`).
+/// address of `fz_drain_dtor_entry` emitted by compile_with_backend, as
+/// `extern "C" fn(closure: u64, payload: u64) -> i64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(proc: *mut Process, addr: *const u8) {
     unsafe { (*sched_of(proc)).drain_dtor_entry = addr };
@@ -644,8 +644,8 @@ pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(proc: *mut Process, addr: *
 ///
 /// # Safety
 /// `proc` must be a process produced by `fz_aot_setup`. `addr` must be the
-/// address of `fz_resume` emitted by compile_with_backend (SystemV
-/// `(cont: u64) -> i64`).
+/// address of `fz_resume` emitted by compile_with_backend, as
+/// `extern "C" fn(cont: u64) -> i64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_aot_set_resume_addr(proc: *mut Process, addr: *const u8) {
     unsafe { (*sched_of(proc)).resume_addr = addr };
@@ -683,7 +683,7 @@ fn drain_after_timers_aot(sched: *mut AotScheduler) {
 }
 
 /// Run one quantum for `pid`: pick dispatch branch by Process state,
-/// invoke the matching SystemV shim, then handle the post-quantum state
+/// invoke the matching shim, then handle the post-quantum state
 /// transition (re-enqueue / halt / mid-flight yield). Returns nothing;
 /// scheduler state is mutated in place.
 fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {

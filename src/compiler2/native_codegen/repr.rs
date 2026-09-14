@@ -189,7 +189,8 @@ pub(crate) fn take_param_binding(
 /// params + return. Each entry param's AbiParam type derives from its
 /// `ArgRepr` (RawF64 -> `f64`, RawInt/ValueRef -> `i64`); the return
 /// derives from `return_descr` the same way.
-pub(crate) fn build_fn_signature(
+pub(crate) fn build_fn_signature<M: cranelift_module::Module>(
+    module: &mut M,
     param_reprs: &[ArgRepr],
     is_native: bool,
     is_cont_fn: bool,
@@ -200,7 +201,7 @@ pub(crate) fn build_fn_signature(
     cont_extras_override: Option<usize>,
 ) -> Signature {
     if !is_native {
-        return build_uniform_sig();
+        return build_uniform_sig(module);
     }
     if is_cont_fn {
         return build_cont_sig(param_reprs, cont_extras_override);
@@ -213,9 +214,11 @@ pub(crate) fn build_fn_signature(
 /// Uniform fns always include host_ctx — the trampoline ABI is fixed at
 /// `(frame_ptr, host_ctx) -> i64`. The body produced by `compile_fn`
 /// allocates frame slots for entry params, emit_return writes into the
-/// cont frame and returns the cont frame ptr to the trampoline.
-fn build_uniform_sig() -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
+/// cont frame and returns the cont frame ptr to the trampoline. The host
+/// enters a uniform fn through that pointer, so the target names the
+/// convention.
+fn build_uniform_sig<M: cranelift_module::Module>(module: &mut M) -> Signature {
+    let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // frame_ptr
     sig.params.push(AbiParam::new(types::I64)); // host_ctx
     sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
@@ -233,7 +236,7 @@ fn build_uniform_sig() -> Signature {
 /// only, read from self+32+i*8.
 ///
 /// Uses the `Tail` calling convention so that recursive tail calls can
-/// lower to `return_call` (which the SystemV ABI does not permit).
+/// lower to `return_call` (which a C calling convention does not permit).
 /// Without TCO, count_100k_stays_bounded blows the stack.
 ///
 /// Native fn return canonicalized to i64 regardless of ret_repr.
@@ -254,7 +257,7 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
 /// return canonicalized to i64.
 ///
 /// Uses the `Tail` calling convention so that recursive tail calls can
-/// lower to `return_call` (which the SystemV ABI does not permit).
+/// lower to `return_call` (which a C calling convention does not permit).
 /// Without TCO, count_100k_stays_bounded blows the stack.
 ///
 /// Native fn return canonicalized to i64 regardless of ret_repr.

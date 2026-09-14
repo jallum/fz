@@ -4,9 +4,15 @@
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
-//! extern "C" fn(msg_ref: u64, pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32
+//! extern "C" fn(
+//!     process: *mut Process,
+//!     msg_ref: u64,
+//!     pinned: *const AnyValueRef,
+//!     out: *mut AnyValueRef,
+//! ) -> u32
 //! ```
 //!
+//! - `process`: the receiving process the dispatch runs under.
 //! - `msg_ref`: one-word tagged candidate message.
 //! - `pinned`: pointer to `AnyValueRef` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
@@ -32,7 +38,6 @@ use crate::fz_ir::{Module, ReceiveClause, Var};
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
-use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
@@ -47,10 +52,11 @@ type ReceiveEdgeEvidence = EdgeEvidence<RuntimeTypePredicate>;
 type ReceiveGuardExpr = PatternGuardExpr<RuntimeTypePredicate>;
 type ReceiveGuardDispatch = PatternGuardDispatch<RuntimeTypePredicate>;
 
-/// Cranelift signature for the receive dispatch fn family. Matches
-/// `fz_runtime::park::MatcherFn`.
-pub(crate) fn receive_dispatch_signature() -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
+/// Cranelift signature for the receive dispatch fn family. The runtime keeps a
+/// dispatch fn's address in a `fz_runtime::park::MatcherFn` pointer and calls
+/// it as a C function, so the target names the convention.
+pub(crate) fn receive_dispatch_signature<M: cranelift_module::Module>(module: &mut M) -> Signature {
+    let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
     sig.params.push(AbiParam::new(types::I64)); // msg_ref
     sig.params.push(AbiParam::new(types::I64)); // pinned_ptr
@@ -64,8 +70,9 @@ pub(crate) fn declare_receive_dispatch<M: cranelift_module::Module>(
     module: &mut M,
     name: &str,
 ) -> Result<FuncId, CodegenError> {
+    let sig = receive_dispatch_signature(module);
     module
-        .declare_function(name, Linkage::Local, &receive_dispatch_signature())
+        .declare_function(name, Linkage::Local, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
 
@@ -190,7 +197,8 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    let defined = emit_fn_body(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
+    let sig = receive_dispatch_signature(module);
+    let defined = emit_fn_body(module, fbctx, sig, dispatch_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);

@@ -55,7 +55,9 @@ or local join.
 
 ## fz_resume: the one verb
 
-`fz_resume(cont) -> i64` is a SystemV shim. It reads the closure's code pointer
+`fz_resume(cont) -> i64` is a shim in the target's C convention, since the
+scheduler holds its address in an `extern "C"` fn pointer. It reads the
+closure's code pointer
 (via `fz_closure_code_ref`) and tail-calls the body with the single argument
 `(self)`. Bound values, loop args, and continuation state already live in the
 closure's captures, so the shim signature is fixed regardless of what kind of

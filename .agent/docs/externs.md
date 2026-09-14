@@ -206,9 +206,12 @@ Calling a new helper is one `runtime_call!` and an import of its name. The AOT
 in `native_codegen/runtime_call.rs`.
 
 The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
-`fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so they
-keep written-out `Tail`/`SystemV` signatures. They are declared `Local` beside
-the code that emits them, as `LocalBodies` in `native_codegen/driver.rs`.
+`fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their
+signatures are written out where they are declared, `Local`, as `LocalBodies` in
+`native_codegen/driver.rs`. A body fz code enters is `Tail`; a body the host
+enters through an `extern "C"` fn pointer — `fz_drain_dtor_entry`, `fz_resume`,
+and each receive dispatch fn — is built with `Module::make_signature`, so the
+target names its convention just as it does for an imported helper.
 
 ## The wire alphabet
 

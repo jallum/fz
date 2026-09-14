@@ -111,10 +111,15 @@ fn build_per_spec_schemas(body_slots: &[Option<NativeCodegenBody<'_>>]) -> Vec<S
     schemas
 }
 
-/// Per-spec Cranelift Signature. Native fns get typed-arity i64s +
-/// host_ctx; uniform fns get (i64, i64) -> i64. Sentinel slots get the
-/// uniform sig — they're never declared.
-fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Signature> {
+/// Per-spec Cranelift Signature. A native fn gets its typed args plus the
+/// continuation, in `Tail`; a uniform fn gets the trampoline's
+/// `(frame_ptr, host_ctx) -> i64` in the target's C convention. A sentinel slot
+/// is never declared, so its signature is only a placeholder.
+fn build_fn_sigs<M: cranelift_module::Module>(
+    m: &mut M,
+    module: &Module,
+    surface: &NativeCodegenSurface<'_>,
+) -> Vec<Signature> {
     surface
         .body_slots
         .iter()
@@ -123,6 +128,7 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
                 let f = &module.fns[body_slot.fn_idx];
                 let is_native = surface.native_abi_fns.contains(&f.id);
                 build_fn_signature(
+                    m,
                     &surface.param_reprs[body_slot.codegen_id as usize],
                     is_native,
                     surface.cont_fns.contains(&f.id),
@@ -142,7 +148,7 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
 
 /// Collect zero-capture closure-target specs for static singletons.
 /// code_ptr is the body's func_addr directly (closure-target sig
-/// `(args, self, cont) tail`), not a SystemV stub. The singleton acts
+/// `(args, self, cont) tail`), not a C-convention stub. The singleton acts
 /// both as `self` for direct callers (zero-cap bodies ignore self) and
 /// as the closure handed to MakeClosure(fid, []) sites. See
 /// docs/cps-in-clif.md §8.2.
@@ -264,7 +270,9 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
 /// the four halt-cont bodies, the entry thunk, the main trampoline and the
 /// dtor-drain entry. They are declared `Local` with written-out signatures
 /// because they are not Rust functions — there is no item to read a signature
-/// off, and their calling conventions (Tail, SystemV) are chosen here.
+/// off, so their calling conventions are chosen here: `Tail` for the bodies fz
+/// code enters, and the target's C convention for the entry the host calls by
+/// address.
 #[derive(Clone, Copy)]
 pub(crate) struct LocalBodies {
     /// Halt-cont bodies, indexed by halt kind: ValueRef, RawInt, RawF64,
@@ -284,6 +292,7 @@ impl LocalBodies {
 }
 
 fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalBodies, CodegenError> {
+    let drain_sig = drain_dtor_entry_signature(m);
     let mut declare = |name: &str, sig: Signature| -> Result<FuncId, CodegenError> {
         m.declare_function(name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
@@ -316,10 +325,6 @@ fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalB
     let main_trampoline_id = declare("fz_main_trampoline", main_trampoline_sig)?;
 
     // The scheduler calls the drain entry per pending dtor at task exit.
-    let mut drain_sig = Signature::new(CallConv::SystemV);
-    drain_sig.params.push(AbiParam::new(types::I64));
-    drain_sig.params.push(AbiParam::new(types::I64));
-    drain_sig.returns.push(AbiParam::new(types::I64));
     let drain_dtor_entry_id = declare("fz_drain_dtor_entry", drain_sig)?;
 
     Ok(LocalBodies {
@@ -369,21 +374,28 @@ fn emit_main_trampoline<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_main_trampoline: {}", e)))
 }
 
-/// Emit fz_drain_dtor_entry. SystemV scheduler-callable shim that
-/// invokes a 1-arg resource dtor closure with its payload. Picks a
+/// The scheduler holds the drain entry's address in an `extern "C"` fn pointer
+/// and calls it once per pending dtor at task exit, so the target names the
+/// convention. Sig: `(closure:i64, payload_ref:i64) -> i64`.
+fn drain_dtor_entry_signature<M: cranelift_module::Module>(m: &mut M) -> Signature {
+    let mut sig = m.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // closure
+    sig.params.push(AbiParam::new(types::I64)); // payload_ref
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+/// Emit fz_drain_dtor_entry. The scheduler-callable shim that invokes a 1-arg
+/// resource dtor closure with its payload. Picks a
 /// Strict halt-cont via fz_get_halt_cont, reads the body addr through
 /// the closure ABI, and Tail-CC indirect-calls
 /// `(payload_ref, closure, halt_cl)`. Result is discarded by the caller.
-/// Sig: `(closure:i64, payload_ref:i64) -> i64 system_v`.
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
+    let sig = drain_dtor_entry_signature(m);
     emit_fn_body(m, fbctx, sig, locals.drain_dtor_entry_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
@@ -513,7 +525,16 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// Single SystemV `fz_resume(cont) -> i64` shim. Bound args live in
+/// The scheduler holds `fz_resume`'s address in an `extern "C"` fn pointer, so
+/// the target names the convention. Sig: `(cont:i64) -> i64`.
+fn resume_signature<M: cranelift_module::Module>(m: &mut M) -> Signature {
+    let mut sig = m.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // cont
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+/// Single `fz_resume(cont) -> i64` shim. Bound args live in
 /// the outcome closure env, so the shim sig is fixed regardless of
 /// clause arity. Body:
 ///     code = call fz_closure_code_ref(cont)
@@ -523,9 +544,7 @@ fn emit_resume<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
 ) -> Result<FuncId, CodegenError> {
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(types::I64)); // cont
-    sig.returns.push(AbiParam::new(types::I64));
+    let sig = resume_signature(m);
     let id = m
         .declare_function("fz_resume", Linkage::Local, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_resume: {}", e)))?;
@@ -681,42 +700,19 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// Emit SystemV stub + Tail-CC body for every declared mid-flight
-/// continuation. The SystemV stub enters Tail-CC from scheduler resume;
-/// the tail body replays each argument from the closure capture array
+/// Emit the Tail-CC body for every declared mid-flight continuation. The body
+/// replays each argument from the closure capture array
 /// and `return_call_indirect`s the callee body with its narrow ABI.
 fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     fn_ids: &HashMap<u32, FuncId>,
-    mid_flight_cont_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
 ) -> Result<(), CodegenError> {
-    for ((callee_sid, arg_shapes), stub_id) in mid_flight_cont_fn_ids.clone() {
-        let key = (callee_sid, arg_shapes.clone());
-        let tail_id = *mid_flight_cont_tail_fn_ids
-            .get(&key)
-            .ok_or_else(|| CodegenError::new(format!("missing mid-flight continuation tail {callee_sid}")))?;
+    for ((callee_sid, arg_shapes), tail_id) in mid_flight_cont_tail_fn_ids.clone() {
         let callee_fid = *fn_ids
             .get(&callee_sid)
             .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
-        let stub_name = format!("fz_mid_flight_cont_fn_{callee_sid}");
-        let mut stub_sig = Signature::new(CallConv::SystemV);
-        stub_sig.params.push(AbiParam::new(types::I64));
-        stub_sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(m, fbctx, stub_sig, stub_id, move |m, b| {
-            let entry = b.create_block();
-            b.append_block_params_for_function_params(entry);
-            b.switch_to_block(entry);
-            b.seal_block(entry);
-            let self_bits = b.block_params(entry)[0];
-            let tail_ref = m.declare_func_in_func(tail_id, b.func);
-            let inst = b.ins().call(tail_ref, &[self_bits]);
-            let result = b.inst_results(inst)[0];
-            b.ins().return_(&[result]);
-        })
-        .map_err(|e| CodegenError::new(format!("define {}: {}", stub_name, e)))?;
-
         let tail_name = format!("fz_mid_flight_cont_fn_{callee_sid}_tail");
         let mut tail_sig = Signature::new(CallConv::Tail);
         tail_sig.params.push(AbiParam::new(types::I64));
@@ -748,36 +744,31 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// Declare SystemV + Tail-CC stubs for every back-edge TailCall to a
+/// Declare the Tail-CC continuation for every back-edge TailCall to a
 /// native callee. The native codegen surface precomputes the unique
 /// `(callee_sid, arg_shapes)` keys; compiler2 native codegen only declares the
 /// actual functions.
 fn declare_mid_flight_conts<M: cranelift_module::Module>(
     m: &mut M,
     surface: &NativeCodegenSurface<'_>,
-) -> Result<(MidFlightContFnIds, MidFlightContFnIds), CodegenError> {
-    let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
+) -> Result<MidFlightContFnIds, CodegenError> {
     let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
     for key in &surface.mid_flight_cont_keys {
         let callee_sid = key.0;
-        let cont_name = format!("fz_mid_flight_cont_fn_{}_{}", callee_sid, mid_flight_cont_fn_ids.len());
-        let mut cont_sig = Signature::new(CallConv::SystemV);
+        let cont_name = format!(
+            "fz_mid_flight_cont_fn_{}_{}_tail",
+            callee_sid,
+            mid_flight_cont_tail_fn_ids.len()
+        );
+        let mut cont_sig = Signature::new(CallConv::Tail);
         cont_sig.params.push(AbiParam::new(types::I64));
         cont_sig.returns.push(AbiParam::new(types::I64));
         let cont_id = m
             .declare_function(&cont_name, Linkage::Local, &cont_sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", cont_name, e)))?;
-        let cont_tail_name = format!("{cont_name}_tail");
-        let mut cont_tail_sig = Signature::new(CallConv::Tail);
-        cont_tail_sig.params.push(AbiParam::new(types::I64));
-        cont_tail_sig.returns.push(AbiParam::new(types::I64));
-        let cont_tail_id = m
-            .declare_function(&cont_tail_name, Linkage::Local, &cont_tail_sig)
-            .map_err(|e| CodegenError::new(format!("declare {}: {}", cont_tail_name, e)))?;
-        mid_flight_cont_fn_ids.insert(key.clone(), cont_id);
-        mid_flight_cont_tail_fn_ids.insert(key.clone(), cont_tail_id);
+        mid_flight_cont_tail_fn_ids.insert(key.clone(), cont_id);
     }
-    Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
+    Ok(mid_flight_cont_tail_fn_ids)
 }
 
 pub(crate) fn compile_with_backend_native_program<
@@ -1003,13 +994,12 @@ pub(crate) fn compile_with_backend_surface<
     let schemas = build_per_spec_schemas(body_slots);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
 
-    let fn_sigs = build_fn_sigs(module, surface);
+    let fn_sigs = build_fn_sigs(backend.module_mut(), module, surface);
 
     let linkage = backend.fn_linkage();
     let fn_ids = declare_spec_fns(backend.module_mut(), linkage, body_slots, &fn_sigs)?;
     let callable_boundary_fn_ids = declare_callable_boundary_fns(backend.module_mut(), surface)?;
-    let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) =
-        declare_mid_flight_conts(backend.module_mut(), surface)?;
+    let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
     let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
@@ -1104,13 +1094,7 @@ pub(crate) fn compile_with_backend_surface<
 
     let static_closure_targets = collect_static_closure_targets(surface, &callable_boundary_fn_ids);
 
-    emit_mid_flight_cont_bodies(
-        backend.module_mut(),
-        &mut fbctx,
-        &fn_ids,
-        &mid_flight_cont_fn_ids,
-        &mid_flight_cont_tail_fn_ids,
-    )?;
+    emit_mid_flight_cont_bodies(backend.module_mut(), &mut fbctx, &fn_ids, &mid_flight_cont_tail_fn_ids)?;
     emit_callable_boundary_bodies(
         backend.module_mut(),
         &mut fbctx,
@@ -1155,4 +1139,42 @@ pub(crate) fn compile_with_backend_surface<
     let output = backend.finalize(metadata)?;
     drop(finalize_span);
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::receive::receive_dispatch_signature;
+    use super::*;
+    use crate::ir_codegen::backend::{AotBackend, JitBackend};
+
+    /// The host reaches each of these bodies through an `extern "C"` fn
+    /// pointer, so each signature is built in the convention the target names
+    /// for C. Writing one convention by hand is right only on the targets
+    /// where it happens to agree with the module's.
+    fn assert_host_called_signatures<M: cranelift_module::Module>(m: &mut M) {
+        let target_c_conv = m.make_signature().call_conv;
+        let sigs = [
+            ("a receive dispatch fn", receive_dispatch_signature(m)),
+            ("fz_drain_dtor_entry", drain_dtor_entry_signature(m)),
+            ("fz_resume", resume_signature(m)),
+            (
+                "a uniform trampoline body",
+                build_fn_signature(m, &[], false, false, None),
+            ),
+        ];
+        for (name, sig) in sigs {
+            assert_eq!(
+                sig.call_conv, target_c_conv,
+                "{name} is entered through a C fn pointer, so it takes the target's C convention"
+            );
+        }
+    }
+
+    #[test]
+    fn signatures_the_host_calls_by_address_use_the_target_convention() {
+        let mut jit = JitBackend::new();
+        assert_host_called_signatures(jit.module_mut());
+        let mut aot = AotBackend::new("host_called_signatures");
+        assert_host_called_signatures(aot.module_mut());
+    }
 }
