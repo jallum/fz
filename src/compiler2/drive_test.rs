@@ -636,7 +636,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
             .input_demand(forward)
             .expect("forward demand settled")
             .returned,
-        [crate::compiler2::keying::DispatchDemand::Whole],
+        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
         "a winning whole-input binding forwards the original input into the return"
     );
 }
@@ -16789,9 +16789,9 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
             .unwrap()
             .local_dispatch,
         [
-            crate::compiler2::keying::DispatchDemand::Whole,
-            crate::compiler2::keying::DispatchDemand::Ignore,
-            crate::compiler2::keying::DispatchDemand::Whole
+            crate::dispatch_matrix::demand::DispatchDemand::Whole,
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
+            crate::dispatch_matrix::demand::DispatchDemand::Whole
         ],
         "helper subject one receives caller input two; it cannot demand unused caller input one"
     );
@@ -21182,10 +21182,10 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                             continue;
                         }
                         readings += 1;
-                        let ignored = |axis: &Vec<crate::compiler2::keying::DispatchDemand>| {
+                        let ignored = |axis: &Vec<crate::dispatch_matrix::demand::DispatchDemand>| {
                             matches!(
                                 axis.get(slot),
-                                None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
+                                None | Some(crate::dispatch_matrix::demand::DispatchDemand::Ignore)
                             )
                         };
                         // A rung may sit on a slot EITHER axis names: the

@@ -42,9 +42,14 @@
 //! `dispatch_matrix::pattern` is now just a producer on top of this model. Its
 //! `SourcePatternRows` are AST-facing input rows; they are not a second matcher
 //! model, and they do not own executable dispatch semantics.
+//!
+//! `dispatch_matrix::demand` is the lattice a question is measured in: what a
+//! test asks of one input, shaped like the value it asks about. It lives here
+//! because the questions define it; the keying jobs only join it across bodies.
 
 use std::collections::BTreeMap;
 
+pub(crate) mod demand;
 pub(crate) mod pattern;
 
 /// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise

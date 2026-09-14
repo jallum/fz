@@ -1,5 +1,7 @@
+use crate::dispatch_matrix::demand::DispatchDemand;
+
 use super::facts::FactUse;
-use super::keying::{BodyKeying, DispatchDemand, InputDemand};
+use super::keying::{BodyKeying, InputDemand};
 use super::{
     DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
 };

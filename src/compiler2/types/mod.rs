@@ -20,13 +20,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 use crate::runtime_type_predicate::{
     CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
 };
 
-use super::keying::DispatchDemand;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{

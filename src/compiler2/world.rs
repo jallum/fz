@@ -17,6 +17,7 @@ use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
 use crate::modules::runtime_library;
@@ -39,9 +40,7 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
-use super::keying::{
-    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, InputDemand, InputDemandMap, StaticCalleeMap,
-};
+use super::keying::{BodyKeying, BodyKeyingMap, CallGraphComponentMap, InputDemand, InputDemandMap, StaticCalleeMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,

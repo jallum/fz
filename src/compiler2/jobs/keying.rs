@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
-use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
+use crate::dispatch_matrix::{ListRegion, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
-use super::super::keying::{BodyKeying, DispatchDemand, InputDemand};
+use super::super::keying::{BodyKeying, InputDemand};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -834,20 +835,9 @@ fn input_origin_positions(
     };
     let mut found = resolve_input_positions(body, source, origins, positions, visiting);
     for (_, steps) in &mut found {
-        steps.extend(path.iter().map(|kind| demand_path_step(kind)));
+        steps.extend(path.iter().copied().map(DemandPathStep::from));
     }
     found
-}
-
-fn demand_path_step(kind: &ProjectionKind) -> DemandPathStep {
-    match kind {
-        ProjectionKind::TupleField(index) => DemandPathStep::TupleField(*index),
-        ProjectionKind::StructField(_) => DemandPathStep::StructField,
-        ProjectionKind::ListHead => DemandPathStep::ListHead,
-        ProjectionKind::ListTail => DemandPathStep::ListTail,
-        ProjectionKind::MapValue { .. } => DemandPathStep::MapValue,
-        ProjectionKind::BitstringField(_) => DemandPathStep::BitstringField,
-    }
 }
 
 /// Every value this body can publish as its return, plus everything such a
@@ -1092,16 +1082,6 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum DemandPathStep {
-    StructField,
-    TupleField(u32),
-    ListHead,
-    ListTail,
-    MapValue,
-    BitstringField,
-}
-
 /// What THIS body's own entry dispatch asks about each of its inputs: the LOCAL
 /// half of `InputDemand`, before any forwarding join.
 fn local_dispatch_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
@@ -1152,34 +1132,9 @@ fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<De
         SubjectSource::Input { ordinal } => Some((*ordinal, Vec::new())),
         SubjectSource::Projection(projection) => {
             let (ordinal, mut path) = subject_path(subjects, projection.source)?;
-            match &projection.kind {
-                ProjectionKind::TupleField(field) => path.push(DemandPathStep::TupleField(*field)),
-                ProjectionKind::StructField(_) => path.push(DemandPathStep::StructField),
-                ProjectionKind::ListHead => path.push(DemandPathStep::ListHead),
-                ProjectionKind::ListTail => path.push(DemandPathStep::ListTail),
-                ProjectionKind::MapValue { .. } => path.push(DemandPathStep::MapValue),
-                ProjectionKind::BitstringField(_) => path.push(DemandPathStep::BitstringField),
-            }
+            path.push(DemandPathStep::from(&projection.kind));
             Some((ordinal, path))
         }
-    }
-}
-
-fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
-    let Some((head, tail)) = path.split_first() else {
-        return demand;
-    };
-    match head {
-        DemandPathStep::TupleField(field) => {
-            let mut fields = BTreeMap::new();
-            fields.insert(*field, demand_at_path(tail, demand));
-            DispatchDemand::TupleFields(fields)
-        }
-        DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
-        DemandPathStep::ListTail
-        | DemandPathStep::MapValue
-        | DemandPathStep::StructField
-        | DemandPathStep::BitstringField => DispatchDemand::Whole,
     }
 }
 
