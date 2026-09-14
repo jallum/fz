@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T02:10:12Z",
+  "description": "CI x86-64 failed after fz-21x.11: compiler2_compile_root_jit_consumes_native_program and compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen read open() on a missing path as 4294967295. C int returns leave the upper 32 bits of rax zero on x86-64 glibc; arm64 libcs write a full 64-bit -1, which masked it on macOS. The deleted open dispatcher cast to c_int; every int-returning libc function (open, printf, close, unlink, creat, abs) is declared :: integer, so the fixed-arity path has the same latent gap. Fix: wire spelling c_int -\u003e ExternTy::I32 (lane I32; param ireduce, return sextend; interp reads i32; variadic tail stays a 64-bit word; c_int returns sign-extended in the trampoline). Redeclare the libc functions. Fixture pinning a negative int return on all doors. Docs: wire alphabet table in externs.md and the guide.",
+  "id": "fz-21x.12",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "c_int wire spelling: a C int return reads back as 4294967295 on x86-64 once declared integer",
+  "type": "bug",
+  "updated_at": "2026-09-14T02:10:12Z"
+}
