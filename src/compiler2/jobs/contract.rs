@@ -8,7 +8,7 @@ use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::extern_contract::extern_semantic_contract;
+use crate::extern_contract::{ExternContractError, extern_semantic_contract};
 
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
@@ -40,10 +40,15 @@ pub(super) fn derive_function_contract(
         .collect::<Vec<_>>();
     let specs = if !declared_specs.is_empty() {
         declared_specs
-    } else if let Some(spec) = extern_semantic_contract(&surface) {
-        vec![spec]
     } else {
-        Vec::new()
+        match extern_semantic_contract(&surface) {
+            Ok(spec) => vec![spec],
+            Err(ExternContractError::NotAnExtern) => Vec::new(),
+            Err(refusal @ ExternContractError::WireSpellingInsideType { .. }) => {
+                emit_job_diagnostic(tel, refusal.diagnostic(&surface.name, surface.name_span));
+                Vec::new()
+            }
+        }
     };
 
     let mut reads = vec![FactKey::FunctionDefined(function)];

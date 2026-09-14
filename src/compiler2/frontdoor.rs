@@ -404,11 +404,11 @@ impl FrontDoorParser {
             other => return Err(self.error(format!("expected ABI string after `extern`, got {:?}", other))),
         };
         match self.peek() {
-            Tok::Ident(name) if name == "def" => {
+            Tok::Ident(name) if name == "defp" => {
                 self.bump();
             }
             other => {
-                return Err(self.error(format!("expected `def` after extern ABI string, got {:?}", other)));
+                return Err(self.error(format!("expected `defp` after extern ABI string, got {:?}", other)));
             }
         }
         let name = self.parse_extern_name()?;
@@ -488,6 +488,7 @@ impl FrontDoorParser {
             (self.builder.atom("params"), self.builder.list(&params)?),
             (self.builder.atom("return"), ret),
             (self.builder.atom("variadic"), self.builder.bool(variadic)),
+            (self.builder.atom("private"), self.builder.bool(true)),
         ];
         if !constraints.is_empty() {
             entries.push((self.builder.atom("when"), self.builder.list(&constraints)?));
@@ -2215,6 +2216,7 @@ impl FrontDoorParser {
             Tok::Star => "*",
             Tok::Slash => "/",
             Tok::Percent => "%",
+            Tok::Concat => "<>",
             Tok::EqEq => "==",
             Tok::NotEq => "!=",
             Tok::EqEqEq => "===",

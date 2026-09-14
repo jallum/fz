@@ -530,6 +530,12 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// specialized for them. `enum_map_family` falls 149 -> 113; the other seven
 /// pins hold. Stdout is byte-identical on all three doors — the accompanying
 /// matrix goldens moved only in diagnostic line numbers.
+///
+/// Re-pinned upward by fz-5xp.30: `Kernel.arithmetic_result/1` and
+/// `arithmetic_error/0` remain ordinary generic fz calls, so their concrete
+/// result/status helper bodies are retained instead of disappearing into an
+/// arithmetic lowering. The target fixtures gain four or five executables;
+/// inlining is deliberately deferred to a future optimizer.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -539,38 +545,44 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
             // it used to spell that `==` in a guard and rely on guards being
             // strict, so the strict operator becomes an executable of its own.
-            27,
+            31,
         ),
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            60,
+            64,
         ),
         (
             "fixtures2/behavior/enum_map_family.fz",
             include_str!("../../fixtures2/behavior/enum_map_family.fz"),
-            113,
+            // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
+            // retains the public Kernel.<>/2 wrapper between source callers
+            // and the private fz_binary_concat/2 physical gateway.
+            118,
         ),
         (
             "fixtures2/behavior/mailbox_closure_each.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_each.fz"),
-            31,
+            36,
         ),
         (
             "fixtures2/behavior/mailbox_closure_reduce.fz",
             include_str!("../../fixtures2/behavior/mailbox_closure_reduce.fz"),
-            41,
+            46,
         ),
         (
             "fixtures2/behavior/actor_ring.fz",
             include_str!("../../fixtures2/behavior/actor_ring.fz"),
-            24,
+            // The ring's `got == 5` compares a mailbox value, so all three
+            // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
+            // the `any`/`any` `fz_op_eq`.
+            31,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
             // Exact caller rows retain four specializations hidden by blended evidence.
-            170,
+            174,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
@@ -584,12 +596,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // reach their list arguments through `Enum.to_list/1`'s `[a]`
             // clause, so the reduce-and-reverse activations they used to mint
             // on the way in are never specialized.
-            226,
+            230,
         ),
         (
             "fixtures2/00420_enum_take_drop_split.fz",
             include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-            226,
+            230,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

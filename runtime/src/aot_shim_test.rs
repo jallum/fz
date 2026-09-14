@@ -127,6 +127,40 @@ fn aot_send_deep_copies_message_into_receiver_heap() {
     assert!(receiver.heap.contains_heap_addr(copied_addr));
 }
 
+#[test]
+fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
+    let mut sched = test_scheduler();
+
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut sender = Box::new(Process::new(schemas.clone()));
+    sender.pid = 1;
+    let msg = sender
+        .heap
+        .alloc_list_cons_int(42, AnyValueRef::empty_list())
+        .expect("sender list ref");
+    let mut receiver = Box::new(Process::new(schemas));
+    receiver.pid = 2;
+    receiver.state = ProcessState::Exited;
+    sched.tasks.insert(1, sender);
+    sched.tasks.insert(2, receiver);
+    let sender_ptr = sched
+        .tasks
+        .get_mut(&1)
+        .map(|p| p.as_mut() as *mut Process)
+        .expect("sender task");
+    let before_heap = sched.tasks[&2].heap.alloc_stats_snapshot();
+    let before_mailbox = sched.tasks[&2].mailbox.clone();
+    let before_queue = sched.run_queue.clone();
+
+    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
+    aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, msg.raw_word());
+
+    assert_eq!(sched.tasks[&2].heap.alloc_stats_snapshot(), before_heap);
+    assert_eq!(sched.tasks[&2].mailbox, before_mailbox);
+    assert_eq!(sched.tasks[&2].state, ProcessState::Exited);
+    assert_eq!(sched.run_queue, before_queue);
+}
+
 /// fz-xx8.3 — schedule→drain→wake flow on the AOT timer wheel.
 /// Mirrors `src/runtime.rs::drain_expired_timers_wakes_after_cont`. We
 /// can't drive aot_run_queue_loop directly (it would call into

@@ -1,5 +1,0 @@
-
-def main() do
-  spawn(fn () -> dbg(7) end, 4096)
-  0
-end

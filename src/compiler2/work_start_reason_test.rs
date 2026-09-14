@@ -221,38 +221,66 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         .drive_root_backend_work_starts(root)
         .expect("the activation-edge fixture should settle its backend product");
     let (demand_completions, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
-    assert_eq!(macro_definition_consumers.borrow().len(), 3);
+    // fz-5xp.30: 3 -> 2. One generic arithmetic helper path reaches its
+    // result/status fact directly, rather than becoming a macro-definition
+    // consumer; the retained consumers still take both exact dependencies.
+    assert_eq!(macro_definition_consumers.borrow().len(), 2);
     assert_eq!(
         *macro_definition_consumers.borrow(),
         *macro_product_consumers.borrow(),
-        "the three macro consumers resume on their definition and then on their exact retained content"
+        "the two macro consumers resume on their definition and then on their exact retained content"
     );
     assert_eq!(
         *source_work.borrow(),
-        (4081, 11, 21, 401),
-        "exact caller rows and retained closure values reduce applications while scope, module, and executable-fact work remain exact"
+        // fz-5xp.30: ordinary generic arithmetic result/status calls add 54
+        // applications and seven executable-fact derivations; their resolved
+        // Kernel definitions replace two source-module derivations.
+        // `==` carries a typed clause per numeric pair, so every `x == 1` site
+        // lowers and plans that whole family; the module and executable-fact
+        // tallies do not see it because the fixture's operands stay integers
+        // and each site settles on one clause.
+        // Each ordering operator's final `any`/`any` clause calls `compare/2`
+        // and compares the result: two applications in one body. This fixture
+        // reaches `<` and `>`, one application apiece, and the operands stay
+        // integers, so the module and executable-fact tallies count nothing
+        // for the catch-all.
+        (4183, 11, 19, 408),
+        "ordinary generic helper work has the exact source/module/executable-fact census"
     );
-    // Three consumers wait for macro definitions directly; content readiness
+    // Two consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1430,
-        "exact caller rows reduce non-demand changed-revision starts while macro waits and product wakes remain exact",
+        // fz-5xp.30: 1430 -> 1447. The generic result/status helper facts
+        // publish sixteen additional non-demand changed revisions.
+        // The typed `==` clauses and their externs publish non-demand changed
+        // revisions of their own.
+        // Each ordering operator's `any`/`any` clause publishes one non-demand
+        // changed revision, and this fixture reaches `<` and `>`.
+        1466,
+        "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
-        1162,
-        "fz-kdt.182 removed seven blocked expansions with the absorbed executable identities, fz-5xp.2 removes four more with the unminted reduce-and-reverse activations, and fz-5xp.87 adds the five blocked-waiter starts used by its six private-helper contract derivations; macro products require no separate readiness producer",
+        // fz-5xp.30: 1162 -> 1184. The ordinary generic result/status
+        // contracts retain twenty-two more blocked prerequisite waits.
+        // The typed `==` clauses retain blocked prerequisite waits of their own.
+        1211,
+        "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(
         (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
-        (1154, 926, [58, 228, 144, 496, 0]),
-        "every demand completion and wake retains its precise cause; removing retention feedback must reduce work without readiness-only or unexplained starts",
+        // fz-5xp.30: generic helper result/status facts add thirteen demand
+        // completions and nine attributed wakes; no unclassified cause appears.
+        (1167, 935, [58, 232, 145, 500, 0]),
+        "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        300,
-        "fz-kdt.182 removed seven absorbed identities from the RuntimeDemand and construction-target key frontier and fz-5xp.2 removes four more",
+        // fz-5xp.30: the ordinary generic result/status boundary contributes
+        // four exact RuntimeDemand/construction-target keys.
+        304,
+        "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
         (
@@ -262,8 +290,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts.root_scans,
             starts.drain_discovery_sweeps
         ),
-        (2, 261, 0, 0, 0),
-        "exact caller rows expose six more activations on the shared root/callee frontier; unsanctioned and scanning paths stay absent",
+        // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
+        // activations enter through the same attributed frontier.
+        (2, 265, 0, 0, 0),
+        "ordinary generic helper activations preserve the pull-only frontier",
     );
 
     let world = compiler.world();

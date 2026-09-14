@@ -134,7 +134,10 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 ];
 
 const SEAM_FACTS: &[(&str, &str)] = &[];
-const LEGACY_00181_NO_DUMP_JOB_STARTS: usize = 379;
+// The source-level arithmetic wrapper deliberately remains an ordinary Fz
+// call. Pin its whole causal cost exactly; fz-5xp.20's general direct-call
+// inliner, rather than an arithmetic exception, owns removing it later.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 443;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -578,7 +581,7 @@ end
 #[test]
 fn compiler2_transport_float_extern_preserves_raw_abi_lanes() {
     let source = r#"
-extern "C" def fz_float_id(float) :: float
+extern "C" defp fz_float_id(float) :: float
 def main(), do: fz_float_id(1.0)
 "#;
 
@@ -606,7 +609,7 @@ def main(), do: fz_float_id(1.0)
 #[test]
 fn compiler2_extern_any_marshals_a_raw_scalar_without_promoting_its_transport_carrier() {
     let source = r#"
-extern "C" def fz_any_id(any) :: any
+extern "C" defp fz_any_id(any) :: any
 def main(), do: fz_any_id(1.0)
 "#;
 
@@ -649,8 +652,8 @@ def main(), do: fz_any_id(1.0)
 #[test]
 fn compiler2_transport_flow_publishes_callable_value_lane_for_spawn_boundary_input() {
     let source = r#"
-extern "C" def fz_spawn(() -> any) :: pid
-def spawn(fun), do: fz_spawn(fun)
+extern "C" defp callable_sink(() -> any) :: pid
+def spawn(fun), do: callable_sink(fun)
 def child(), do: 42
 def main(), do: spawn(child)
 "#;
@@ -686,7 +689,7 @@ def main(), do: spawn(child)
 #[test]
 fn compiler2_transport_flow_keeps_extern_value_input_boxed_when_argument_is_tuple() {
     let source = r#"
-extern "C" def fz_dbg(any) :: any
+extern "C" defp fz_dbg(any) :: any
 def dbg(x), do: fz_dbg(x)
 def main(), do: dbg({:zero, :pos, :other})
 "#;
@@ -904,7 +907,7 @@ end
 #[test]
 fn compiler2_transport_flow_publishes_value_ref_codegen_reprs_for_boxed_tail_and_extern_lanes() {
     let source = r#"
-extern "C" def fz_binary_id(binary) :: binary
+extern "C" defp fz_binary_id(binary) :: binary
 def main(), do: fz_binary_id("hello")
 "#;
 
@@ -3392,9 +3395,9 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
-    assert!(
-        no_dump_job_fires < LEGACY_00181_NO_DUMP_JOB_STARTS,
-        "product no-dump interp should reduce fixture 00181 compiler job starts below the legacy baseline; got {no_dump_job_fires}"
+    assert_eq!(
+        no_dump_job_fires, EXPECTED_00181_NO_DUMP_JOB_STARTS,
+        "product no-dump interp must retain only the intentional ordinary arithmetic-helper work; got {no_dump_job_fires}"
     );
 
     let mut world = World::new();

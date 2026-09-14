@@ -1402,6 +1402,7 @@ fn prune_lowered_body(
             clauses,
             entries,
             generated,
+            ..
         } => {
             let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
             let mut clauses = reachable_clauses
@@ -1424,11 +1425,7 @@ fn prune_lowered_body(
                 .collect::<Vec<_>>();
             reindex_entries(&mut clauses, &mut kept, &needed);
             PrunedLoweredBody {
-                body: LoweredBody::Clauses {
-                    clauses,
-                    entries: kept,
-                    generated,
-                },
+                body: LoweredBody::clauses(clauses, kept, generated),
                 original_entry_ids: kept_ids,
             }
         }
@@ -1586,7 +1583,11 @@ fn resolve_extern_marshals(
         }
 
         if let Some(ascription) = &arg.ascription {
-            marshals.push(parse_extern_ascription(world, tel, root_id, ascription)?);
+            let ascribed = parse_extern_ascription(world, tel, root_id, ascription)?;
+            if ascribed == crate::fz_ir::ExternTy::F64 {
+                return Err(refuse_float_variadic_marshal(tel, root_id));
+            }
+            marshals.push(ascribed);
             continue;
         }
 
@@ -1641,7 +1642,7 @@ fn resolve_auto_variadic_marshal(
         return Ok(crate::fz_ir::ExternTy::I64);
     }
     if world.types().is_floating(&arg_ty) {
-        return Ok(crate::fz_ir::ExternTy::F64);
+        return Err(refuse_float_variadic_marshal(tel, root_id));
     }
     let str_ty = world.types_mut().str_t();
     if world.types().is_subtype(&arg_ty, &str_ty) {
@@ -1661,8 +1662,6 @@ fn resolve_auto_variadic_marshal(
 fn local_effects(body: &LoweredBody, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
     match body {
         LoweredBody::Extern { signature } => EffectSummary {
-            reads_allocation_stats: signature.symbol == "fz_process_heap_alloc_stats",
-            scheduler_visible: matches!(signature.symbol.as_str(), "fz_send" | "fz_spawn" | "fz_spawn_opt"),
             observable: true,
             halts: signature.ret == crate::fz_ir::ExternTy::Never,
             ..EffectSummary::default()
@@ -1972,6 +1971,19 @@ fn call_reaches_no_target(
     FatalError
 }
 
+/// A variadic argument carries an integer or a pointer and nothing else.
+///
+/// The call a backend generates for a variadic function lists its variadic
+/// values as ordinary integer parameters; a float would additionally need the
+/// x86-64 vector-register count that such a call has no way to set.
+fn refuse_float_variadic_marshal(tel: &impl crate::telemetry::Telemetry, root_id: RootId) -> FatalError {
+    incomplete_semantic_plan(
+        tel,
+        root_id,
+        "a variadic extern argument must be an integer or pointer value, not a float",
+    )
+}
+
 fn incomplete_semantic_plan(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -1994,7 +2006,59 @@ mod tests {
         CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
     };
     use crate::compiler2::{ActivationKey, FunctionId};
+    use crate::fz_ir::{ExternAbi, ExternTy};
     use crate::telemetry::ConfiguredTelemetry;
+    use crate::type_expr::ResolvedSpecDecl;
+
+    #[test]
+    fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
+        let mut world = World::new();
+        let nil = world.types_mut().nil();
+        let extern_body = |symbol: &str| LoweredBody::Extern {
+            signature: super::super::super::body::LoweredExtern {
+                abi: ExternAbi::C,
+                symbol: symbol.to_string(),
+                params: Vec::new(),
+                variadic: false,
+                ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
+                return_ty: nil,
+                semantic_contract: ResolvedSpecDecl {
+                    params: Vec::new(),
+                    result: nil,
+                    constraints: HashMap::new(),
+                },
+            },
+        };
+        let expected_local = EffectSummary {
+            observable: true,
+            ..EffectSummary::default()
+        };
+        let expected_transitive = EffectSummary {
+            allocates: true,
+            observable: true,
+            ..EffectSummary::default()
+        };
+
+        for symbol in [
+            "ordinary_foreign_function",
+            "fz_process_heap_alloc_stats",
+            "fz_send",
+            "fz_spawn",
+        ] {
+            let local = local_effects(&extern_body(symbol), &HashMap::new());
+            assert_eq!(local, expected_local, "`{symbol}` must use generic extern effects");
+
+            let mut caller = EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
+            };
+            caller.union_with(local);
+            assert_eq!(
+                caller, expected_transitive,
+                "callers must not acquire an effect from `{symbol}` by spelling"
+            );
+        }
+    }
 
     #[test]
     fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {

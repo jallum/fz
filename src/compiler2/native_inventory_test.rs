@@ -60,8 +60,8 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
         targets.iter().copied().for_each(&require_function);
         control.insert(function.id, targets);
         for block in &function.blocks {
-            for Stmt::Let(_, prim) in &block.stmts {
-                match prim {
+            for statement in &block.stmts {
+                match statement.prim() {
                     Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => roots.push(construction_target(*id)),
                     _ => {}
                 }
@@ -269,8 +269,7 @@ fn native_inventory_roots_every_construction_word_even_in_unreachable_bodies() {
     assert_eq!(unreachable_native_functions(&program), vec![FnId(5)]);
     for slot in 0..2 {
         let mut dangling = program.clone();
-        let Stmt::Let(_, prim) = &mut dangling.module.fns[5].blocks[0].stmts[slot];
-        match prim {
+        match dangling.module.fns[5].blocks[0].stmts[slot].prim_mut() {
             Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => *id = FnId(99),
             _ => unreachable!(),
         }

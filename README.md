@@ -401,9 +401,9 @@ the abstraction boundary is no longer where optimization stops.
 The OS lives in C. fz doesn't try to hide that — it declares it:
 
 ```elixir
-extern "C" def libc::creat(path :: cstring, mode :: integer) :: integer
-extern "C" def libc::write(integer, binary, integer) :: integer
-extern "C" def libc::close(integer) :: integer
+extern "C" def libc::creat(path :: cstring, mode :: integer) :: c_int
+extern "C" def libc::write(c_int, binary, integer) :: integer
+extern "C" def libc::close(c_int) :: c_int
 
 def main() do
   fd = libc::creat("/tmp/hello", 420)   # 0o644
@@ -412,9 +412,11 @@ def main() do
 end
 ```
 
-Each argument has a *marshal class* (`integer`, `binary`, `cstring`,
-`any`, `nil`) telling fz how to translate between tagged fz values
-and the raw 64-bit slots C expects. The `cstring` class is a small
+Each argument has a *marshal class* (`integer`, `c_int`, `binary`,
+`cstring`, `any`, `nil`) telling fz how to translate between tagged fz
+values and the slots C expects. `c_int` is the one that says a value is
+32 bits wide, so an error sentinel like `-1` stays `-1` on a machine
+whose C library leaves the other half of the register alone. The `cstring` class is a small
 trick: every fz binary has an invisible trailing zero byte past its
 end, so handing a binary to a C function that wants a `char *` is a
 pointer pass, not a copy. You can also attach a destructor to a

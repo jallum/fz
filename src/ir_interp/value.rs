@@ -288,14 +288,3 @@ pub(super) fn interp_value_from_extern_ref_word(ref_word: u64) -> Result<AnyValu
 pub(super) fn is_map_value(val: RuntimeAnyValue) -> bool {
     val.kind() == ValueKind::MAP && val.heap_addr().is_some_and(|p| !p.is_null())
 }
-
-pub(super) fn interp_value_from_slot(value: RuntimeAnyValue) -> AnyValue {
-    match value.kind() {
-        ValueKind::NULL => AnyValue::Null,
-        ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
-        ValueKind::INT => AnyValue::Int(value.raw() as i64),
-        ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
-        ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
-        _ => AnyValue::Ref(value.ref_word()),
-    }
-}

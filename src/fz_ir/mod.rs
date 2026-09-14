@@ -238,7 +238,15 @@ pub struct ExternMarshalSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
     I64,
+    /// C `int`: a 32-bit value in an integer-bank register. A C function
+    /// returning one leaves the upper half of the return register alone, so
+    /// the answer is only the low 32 bits, read as signed.
+    I32,
     F64,
+    /// C wire boolean: one `u64` word, with zero false and nonzero true.
+    /// Source arguments are emitted as 0 or 1; this is neither Rust/C `bool`
+    /// nor an fz atom id.
+    Bool,
     Any,   // opaque u64 fz value
     Unit,  // maps to 0 on return
     Never, // diverges
@@ -250,6 +258,42 @@ pub enum ExternTy {
     /// guaranteed trailing NUL (libc `open(path, flags)` style). Relies
     /// on the +1-NUL invariant from [[fz-wu9]].
     CString,
+}
+
+/// The physical result supplied by one foreign call.
+///
+/// Arguments stay scalar in the v1 contract. A C return may additionally be
+/// one exact two-field scalar struct; keeping that structure here prevents a
+/// semantic tuple from being mistaken for one opaque `Any` word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternReturn {
+    Scalar(ExternTy),
+    Pair([ExternTy; 2]),
+}
+
+impl ExternReturn {
+    pub fn scalar(ty: ExternTy) -> Self {
+        Self::Scalar(ty)
+    }
+
+    pub fn scalar_ty(self) -> Option<ExternTy> {
+        match self {
+            Self::Scalar(ty) => Some(ty),
+            Self::Pair(_) => None,
+        }
+    }
+}
+
+impl PartialEq<ExternTy> for ExternReturn {
+    fn eq(&self, other: &ExternTy) -> bool {
+        matches!(self, Self::Scalar(ty) if ty == other)
+    }
+}
+
+impl PartialEq<ExternReturn> for ExternTy {
+    fn eq(&self, other: &ExternReturn) -> bool {
+        other == self
+    }
 }
 
 /// Per-call-site marshal decision for an extern argument.
@@ -338,12 +382,11 @@ impl std::fmt::Display for ExternAbi {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
-    pub fz_name: String,
-    /// C symbol name (same as fz_name for v1; override possible later).
+    /// The C symbol the declaration resolves to.
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub variadic: bool,
-    pub ret: ExternTy,
+    pub ret: ExternReturn,
     pub abi: ExternAbi,
 }
 
@@ -378,7 +421,6 @@ pub enum BinOp {
     /// caller -- so a guard, which reached the matching lowering, answered
     /// `same?(1, 1.0)` as `:different` where Elixir says `:equal` (fz-5xp.24).
     Identical,
-    NotIdentical,
     Lt,
     Le,
     Gt,
@@ -598,6 +640,25 @@ impl Prim {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let(Var, Prim),
+    /// Bind every physical result produced by one multi-result primitive.
+    /// The first user is a fixed C scalar-pair return; keeping both vars on
+    /// the statement makes it impossible to route the call through a scalar
+    /// `LowerOut` and silently discard one ABI field.
+    LetMany(Vec<Var>, Prim),
+}
+
+impl Stmt {
+    pub fn prim(&self) -> &Prim {
+        match self {
+            Self::Let(_, prim) | Self::LetMany(_, prim) => prim,
+        }
+    }
+
+    pub fn prim_mut(&mut self) -> &mut Prim {
+        match self {
+            Self::Let(_, prim) | Self::LetMany(_, prim) => prim,
+        }
+    }
 }
 
 /// First-class continuation: an IR fn to invoke with the given captured vars
@@ -1036,6 +1097,12 @@ impl FnBuilder {
         v
     }
 
+    pub fn let_many(&mut self, block: BlockId, arity: usize, prim: Prim) -> Vec<Var> {
+        let vars = (0..arity).map(|_| self.fresh_var()).collect::<Vec<_>>();
+        self.block_mut(block).stmts.push(Stmt::LetMany(vars.clone(), prim));
+        vars
+    }
+
     pub fn set_terminator(&mut self, block: BlockId, term: Term) {
         self.block_mut(block).terminator = term;
     }
@@ -1175,7 +1242,6 @@ impl fmt::Display for BinOp {
             BinOp::Eq => "==",
             BinOp::Neq => "!=",
             BinOp::Identical => "===",
-            BinOp::NotIdentical => "!==",
             BinOp::Lt => "<",
             BinOp::Le => "<=",
             BinOp::Gt => ">",
@@ -1369,6 +1435,7 @@ impl fmt::Display for Block {
         for s in &self.stmts {
             match s {
                 Stmt::Let(v, p) => writeln!(f, "    let {} = {}", v, p)?,
+                Stmt::LetMany(vars, p) => writeln!(f, "    let [{}] = {}", fmt_var_list(vars), p)?,
             }
         }
         writeln!(f, "    {}", self.terminator)

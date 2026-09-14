@@ -58,7 +58,7 @@ defmodule R do
   def unwrap(h), do: h.value
 end
 
-extern "C" def fz_resource_test_print_dtor(integer) :: nil
+extern "C" defp fz_resource_test_print_dtor(integer) :: nil
 
 def dwrap(x), do: fz_resource_test_print_dtor(x)
 

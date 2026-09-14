@@ -122,7 +122,7 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   or a subject-bearing `case`, capture placeholders become direct lambdas,
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
   become ordinary helper calls such as `List.concat`, `Enum.member?`,
-  `Kernel.fz_binary_concat`, and `Range.new`.
+  `Kernel.<>`, and `Range.new`.
 - Remote helper calls are emitted in canonical quoted remote-call shape with
   `{:., meta, [{:__aliases__, meta, [...]}, :fun]}` heads. Dotted atom names are
   not a compiler2 source interchange format.

@@ -27,11 +27,10 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use crate::fz_ir::{FnId, Module};
+use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
-use crate::ir_interp::make_resource_in_current_process;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
-use fz_runtime::any_value::{AnyValue, AnyValueRef};
+use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
@@ -43,7 +42,7 @@ use fz_runtime::timer::TimerWheel;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 #[cfg(test)]
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -56,13 +55,6 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
     tasks: HashMap<PidId, Box<Process>>,
     run_queue: VecDeque<PidId>,
     next_pid: u32,
-    /// fz-swt.10 — optional IR `Module` the `MakeResourceHook` thunk
-    /// walks to resolve dtor closures. Set via `with_module(&m)` before
-    /// `run_until_idle`. None means programs that call `make_resource`
-    /// will panic with a clear "no module attached" message — fine for
-    /// programs that don't use resources.
-    module: Option<&'a Module>,
-
     /// fz-yxs/fz-st5 — sorted-vec timer wheel (F2). Stored inside the
     /// Runtime so per-Process `wait.after_deadline_ms` can be
     /// honoured via `dispatch_timer_schedule`; the run loop drains
@@ -105,15 +97,6 @@ extern "C" fn spawn_hook_thunk<T: Telemetry + ?Sized>(
     spawn_closure_via::<T>(sender, scheduler, closure_bits)
 }
 
-extern "C" fn spawn_opt_hook_thunk<T: Telemetry + ?Sized>(
-    sender: *mut Process,
-    scheduler: *mut (),
-    closure_bits: u64,
-    _min_heap_size: u32,
-) -> u32 {
-    spawn_closure_via::<T>(sender, scheduler, closure_bits)
-}
-
 extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
@@ -124,42 +107,10 @@ extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
     send_via::<T>(sender, scheduler, receiver_pid, msg_ref);
 }
 
-// fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
-// crate's `fz_make_resource` BIF (callable from JIT/AOT-emitted code) can
-// resolve the user-supplied dtor closure. The thunk reads the IR Module
-// pointer the binary stashed in `CURRENT_MODULE` (set/cleared with the
-// same lifetime as the running task) and delegates to the shared helper
-// in `ir_interp::make_resource_in_current_process`. The helper walks the
-// closure's wrapper-fn body to find the underlying `Prim::Extern` and
-// resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(
-    process: *mut Process,
-    module: *const (),
-    payload_raw: u64,
-    dtor_ref: u64,
-) -> u64 {
-    assert!(
-        !module.is_null(),
-        "fz_make_resource called with no IR Module in the execution context"
-    );
-    let module: &Module = unsafe { &*(module as *const Module) };
-    let dtor_ref = AnyValueRef::from_raw_word(dtor_ref).expect("fz_make_resource: dtor ref");
-    let payload = payload_raw as i64;
-    let dtor = AnyValue::from_ref(dtor_ref).expect("fz_make_resource: dtor value");
-    let res = make_resource_in_current_process(process, module, payload, dtor);
-    match res {
-        Ok(value) => value.ref_word().raw_word(),
-        // Mirror the assertion/extern-error contract used elsewhere: a
-        // resolution failure on the JIT/AOT path is unrecoverable (the
-        // generated code expects a value back and has no error channel),
-        // so we panic with a clear message rather than handing back NIL.
-        Err(msg) => panic!("fz_make_resource: {}", msg),
-    }
-}
-
 /// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
 /// by `fz_receive_park_matched` when the after-clause carries a real
-/// timeout. Routes through `CURRENT_RUNTIME`'s `TimerWheel`.
+/// timeout. Routes through the execution context's scheduler handle to its
+/// `TimerWheel`.
 extern "C" fn timer_schedule_hook_thunk<T: Telemetry + ?Sized>(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
     let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
     rt.timers.schedule(pid, Duration::from_millis(after_ms))
@@ -238,10 +189,12 @@ pub fn send_via<T: Telemetry + ?Sized>(
         // No state transition needed: sender is Running.
         return;
     }
-    let receiver = rt
-        .tasks
-        .get_mut(&receiver_pid)
-        .unwrap_or_else(|| panic!("send: receiver pid {} not in task registry", receiver_pid));
+    let Some(receiver) = rt.tasks.get_mut(&receiver_pid) else {
+        return;
+    };
+    if receiver.state == ProcessState::Exited {
+        return;
+    }
     if receiver.wait.is_some() {
         let receiver_ptr: *mut Process = &mut **receiver;
         let hit = receiver
@@ -302,7 +255,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             run_queue: VecDeque::new(),
             next_pid: 1,
             timers: TimerWheel::new(),
-            module: None,
             tel,
             output: &STDOUT_OUTPUT,
         }
@@ -310,14 +262,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
 
     pub fn with_output(mut self, output: &'a dyn OutputSink) -> Self {
         self.output = output;
-        self
-    }
-
-    /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
-    /// can walk dtor closures during `make_resource(_, &name/arity)`
-    /// calls. The Module must outlive `run_until_idle`.
-    pub fn with_module(mut self, module: &'a Module) -> Self {
-        self.module = Some(module);
         self
     }
 
@@ -402,31 +346,21 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         pid
     }
 
-    /// Drive ready tasks to completion (or to a yield point — once
-    /// .19.3 adds receive). v1: no yield points, so this runs each task
-    /// in turn until it halts.
+    /// Drive ready tasks until every task has halted or blocked.
     pub fn run_until_idle(&mut self) {
-        // fz-ul4.19.2: install Runtime in TLS so fz_spawn (.19.2) and
-        // future scheduler-bound FFI fns can reach back. Pointer is
-        // This Runtime, erased to *mut () for the per-context dispatch table
-        // below; the callbacks re-narrow it back to &mut Runtime.
+        // This Runtime is erased into the per-context dispatch table; its
+        // callbacks re-narrow the handle to &mut Runtime.
         let self_ptr = self as *mut Runtime<'a, T> as *mut ();
-        // The per-context dispatch table for this Runtime: the same scheduler
-        // handle, output context, module, and callbacks installed above as
-        // thread-globals, gathered into one value each task points its `ctx`
-        // at. Lives on this stack frame, which outlives every quantum below.
-        // Populated now; dispatch still reads the globals until the `fz-vdt`
-        // arc moves each reader onto `process->ctx`.
+        // Each task points at this stack-scoped dispatch table for the whole
+        // quantum; no callback retains it.
         let output = OutputContext::new(self.output);
         let mut exec_ctx = ExecCtx {
             scheduler: self_ptr,
             output_context: output.as_ptr(),
-            module: self.module.map_or(null(), |m| m as *const _ as *const ()),
             spawn: Some(spawn_hook_thunk::<T>),
-            spawn_opt: Some(spawn_opt_hook_thunk::<T>),
             send: Some(send_hook_thunk::<T>),
+            fault: Some(fz_runtime::STDERR_FAULT_HOOK),
             output: Some(OUTPUT_HOOK),
-            make_resource: self.module.is_some().then_some(make_resource_hook_thunk),
             timer_schedule: Some(timer_schedule_hook_thunk::<T>),
             timer_cancel: Some(timer_cancel_hook_thunk::<T>),
         };

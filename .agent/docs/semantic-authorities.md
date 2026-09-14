@@ -72,7 +72,7 @@ and SchemaRegistry. `NumericMode` selects the semantic question:
   * `Strict` is STRUCTURAL IDENTITY: `===`, a pinned match, a map key,
     `Enum.member?/2`, `--`, and every kind of pattern matching. `1` and `1.0`
     are different values, as are the two signed floating zeros. Entry points `fz_value_eq_ref`, `interp_value_eq`,
-    and IR `BinOp::Identical`/`NotIdentical`.
+    and IR `BinOp::Identical`.
 
 The IR ops are the load-bearing part. One `BinOp::Eq` used to serve both, with
 the question decided by a `widen_numerics` boolean that each lowering CALL SITE
@@ -100,26 +100,42 @@ signed-zero identity; widening mode equates signed zeros.
 `fz_value_cmp_raw_const` compares a ref against an unboxed payload without
 allocating a scalar box.
 
-`Kernel` declares a typed clause per orderable pair — numbers and binaries —
-and NO `any`/`any` clause, so `1 < :atom` is refused at compile time rather
-than answered wrongly at run time. The total order is reached through
-`Kernel.compare/2`, which `Enum.sort/1` uses. That split is not tidiness:
-giving the operators a catch-all makes every comparison callsite with an
-unresolved operand blind to the dispatcher, which the blind-escape census
-catches as a latent miscompile (fz-5xp.64).
+For the ORDERING operators `Kernel` declares a typed clause per numeric pair
+and a final `any`/`any` clause through `Kernel.compare/2`, so `1 < :atom`
+answers `true` by the total term order rather than being refused. That is the
+same shape `==` and `===` have; ordering, equality and identity are all total
+functions, so each catch-all answers a real pair rather than standing in for a
+missing one. `Enum.sort/1` calls `compare/2` directly. The ordering operators'
+`binary` clauses are commented out in `Kernel` rather than deleted: a `binary`
+clause compiles to a runtime test that proves only "bitstring", so seating one
+ahead of the catch-all would send an unresolved operand to the byte compare
+without proving the surface the clause names, and the blind-escape census
+cannot justify the seat. Binaries are ordered by the comparator's bitstring
+branch through the catch-all instead, and the clauses come back as the fast
+path when `RuntimeTestAxis::precision` stops calling `Binaries` erasing.
 
-**Arithmetic** — no single owner, and that is deliberate. The typed shim NAMES
-are the shared fact: `fz_op_add_ii`, `_if`, `_ff` and so on say which lanes they
-take, so each door implements the same typed operation rather than re-deriving
-which operation applies. Native lowers them in place (`ARITH_SHIMS` in
-`native_codegen/prim.rs`); the interpreter has private Rust shims
-(`ir_interp/extern_call.rs`). They agree because the name carries the types.
+**Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
+real C functions, and the `Kernel` extern declarations own how they are called.
+Neither interpreter nor native code discovers behavior from a symbol spelling
+or suffix. The interpreter calls the real export through the
+ordinary FFI path, and both arithmetic and comparison exports remain ordinary
+calls in native code too.
+
+Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
+The runtime returns initialized values and a canonical status word; Kernel's
+sole `arithmetic_error/0` helper turns `true` into the temporary `panic(:badarith)`
+policy. Numeric comparisons — ordering, equality and identity alike — are raw
+`extern "C"` calls on unboxed integer and float lanes. Binary and
+general-value comparisons use the ref-carrying `fz` ABI instead, so they
+retain process/schema context rather than pretending a C byte pointer has a
+length; that ABI is what `==` and `===` reach through their `any`/`any`
+clause.
 
 `%` is the one operator with no Elixir counterpart to be checked against —
 Elixir has no `%`, and its `rem/2` is integer-only. fz's `%` is C's `fmod`, so
 the result takes the sign of the dividend, and its float lanes are a CALL rather
-than an instruction because Cranelift has no `frem`: `fz_op_rem_ff` lives in the
-runtime crate so the AOT door can link it (fz-5xp.34).
+than an instruction because Cranelift has no `frem`: the real
+`fz_op_rem_{if,fi,ff}` exports retain that one fmod-backed call on native paths.
 
 **Runtime type tests** — owner `RuntimeTestAxis` (`src/runtime_type_predicate.rs`),
 one axis table with three lowerings that must each be taught, and the design we
@@ -211,17 +227,32 @@ readings of the threshold remain and are different questions:
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 
-**Where a foreign symbol lives** — owner `fz_extern_symbol_addr`
-(`runtime/src/extern_variadic.rs`). The interpreter's `resolve_symbol` fallback
-and its variadic path call it, and the JIT is built with it as its
-`symbol_lookup_fn` rather than cranelift's own dlsym. The AOT door is answered
-by the linker instead, which is a fourth place and why `-lm` is hardcoded:
-fz-5xp.61.
+**Where a symbol lives** — owner `fz_extern_symbol_addr`
+(`runtime/src/symbol_lookup.rs`), for fz's own exports and foreign ones
+alike. The interpreter's `resolve_symbol` and its variadic path call it, and
+the JIT is built with it as its `symbol_lookup_fn` rather than cranelift's own
+dlsym. Neither door keeps an address table: the compiler's binaries and test
+binaries export dynamically (`build.rs`), so fz's own exports are in the
+process to be found. The AOT door is answered by the linker instead, which is a
+fourth place and why `-lm` is hardcoded until a declaration can say which
+library it comes from.
 
-**Which runtime symbols exist, and their ABI** — owner `RUNTIME_SYMBOLS`
-(`src/extern_contract.rs`). Reachability from compiled code is held by a test
-rather than by construction, because an address table has to exist somewhere:
-see `every_declared_runtime_symbol_is_reachable_from_compiled_code`.
+**How a C variadic call is made** — owner `emit_variadic_c_call`
+(`native_codegen/variadic.rs`). Cranelift cannot mark a call variadic, so the
+platform's variadic placement is produced by choosing the call's parameter
+list, and one function makes that choice for every target. Native codegen calls
+it directly; the interpreter reaches it through a generated trampoline, so
+there is no second description of the ABI to drift. Its correctness rests on
+variadic arguments being integers and pointers only, which the marshal front
+end enforces.
+
+**How a runtime helper is typed at a compiled call site** — owner the Rust
+function item. `runtime_call!(body, fz_list_cons_int, [process, head, tail])`
+reads the linker symbol off the identifier and the Cranelift signature off the
+item's type (`native_codegen/runtime_call.rs`), so a compiled call cannot
+describe a helper differently from the function it reaches. The helper is
+declared on first use in each body; there is no table of helpers to keep in
+step with the runtime.
 
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid

@@ -7,6 +7,7 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
+use fz_runtime::ir_runtime::fz_get_static_closure;
 use std::collections::HashMap;
 
 /// Output of `lower_prim`. Generic values leave primitives as high-bit
@@ -65,7 +66,7 @@ pub(crate) enum ClosureCapture {
 }
 
 pub(crate) fn closure_capture_for_var<M: Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     v: u32,
 ) -> ClosureCapture {
@@ -94,7 +95,7 @@ pub(crate) fn closure_capture_for_var<M: Module>(
 }
 
 pub(crate) fn closure_capture_for_var_as<M: Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     v: u32,
     repr: ArgRepr,
@@ -252,17 +253,10 @@ pub(crate) fn as_known_numeric_f64(
     }
 }
 
-pub(crate) fn fetch_static_closure<M: Module>(
-    jmod: &mut M,
-    b: &mut FunctionBuilder<'_>,
-    runtime: &RuntimeRefs,
-    spec_id: u32,
-) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
-    let process = b.ins().get_pinned_reg(types::I64);
-    let sid_v = b.ins().iconst(types::I32, spec_id as i64);
-    let inst = b.ins().call(fref, &[process, sid_v]);
-    b.inst_results(inst)[0]
+pub(crate) fn fetch_static_closure<M: Module>(body: &mut CodegenFn<'_, '_, M>, spec_id: u32) -> ir::Value {
+    let process = body.process_arg();
+    let sid_v = body.b.ins().iconst(types::I32, spec_id as i64);
+    runtime_call1!(body, fz_get_static_closure, [process, sid_v])
 }
 
 pub(crate) fn tagged_to_raw_f64_unsupported(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {

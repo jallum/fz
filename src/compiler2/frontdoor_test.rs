@@ -504,11 +504,11 @@ fn compiler2_frontdoor_uses_general_ascription_shape_for_typed_def_operator_head
 }
 
 #[test]
-fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_externs() {
+fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_private_externs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "contextual_def.fz",
-        "defprotocol Fold do\n  def reduce(value)\nend\nextern \"C\" def libc::abs(integer) :: integer\n",
+        "defprotocol Fold do\n  def reduce(value)\nend\nextern \"C\" defp libc::abs(c_int) :: c_int\n",
         &tel,
     )
     .expect("quoted parse");
@@ -544,6 +544,30 @@ fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_externs() {
     assert_eq!(
         map_value(&details, "name").utf8_binary_text().expect("extern name"),
         "libc::abs"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_requires_private_extern_declarations() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program("private_extern.fz", "extern \"C\" defp abs(c_int) :: c_int\n", &tel)
+        .expect("private extern declaration should parse");
+    let form = root.cursor().list_items().unwrap()[0]
+        .ast_node(&root.sources)
+        .unwrap()
+        .unwrap();
+    let details = form.tail.list_items().unwrap()[1].map_entries().unwrap();
+    assert_eq!(
+        map_value(&details, "private").atom_name().unwrap(),
+        "true",
+        "quoted extern visibility must survive as source data"
+    );
+
+    let error = parse_quoted_program("public_extern.fz", "extern \"C\" def abs(c_int) :: c_int\n", &tel)
+        .expect_err("public extern syntax is not supported");
+    assert!(
+        error.msg.contains("expected `defp` after extern ABI string"),
+        "{error:?}"
     );
 }
 
@@ -1531,7 +1555,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
-        "extern \"C\" def libc::open(path :: cstring, flags :: integer, ...) :: integer\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
+        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1665,10 +1689,14 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
 #[test]
 fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
-    let root =
-        parse_quoted_program("operator_head.fz", "def left + right, do: left + right\n", &tel).expect("quoted parse");
+    let root = parse_quoted_program(
+        "operator_head.fz",
+        "def left + right, do: left + right\ndef left <> right, do: left\ndef main(), do: {&<>/2, &Kernel.<>/2}\n",
+        &tel,
+    )
+    .expect("quoted parse");
     // Operator-headed function definitions should quote directly.
-    assert_quoted_mentions(&root, &["def", "+"]);
+    assert_quoted_mentions(&root, &["def", "+", "<>", "&", "Kernel"]);
 }
 
 #[test]
@@ -1676,7 +1704,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "extern_surface.fz",
-        "extern \"C\" def fz_spawn(() -> any) :: pid\nextern \"C\" def fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
+        "extern \"C\" defp fz_spawn(() -> any) :: pid\nextern \"C\" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
         &tel,
     )
     .expect("quoted parse");

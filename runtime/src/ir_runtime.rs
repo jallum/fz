@@ -43,7 +43,7 @@ use crate::procbin::{
     ProcBin, SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
 };
 use crate::process::{AlignedClosureStorage, Process, ProcessState};
-use crate::resource::ResourceStub;
+use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
 use std::alloc::{Layout, alloc_zeroed, handle_alloc_error};
@@ -382,8 +382,8 @@ fn halt_value_from_slot(value: AnyValue) -> i64 {
 
 /// fz-ul4.19.2: scheduler-bound builtins.
 ///
-/// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
-/// Calling either outside the scheduler path panics with a clear message.
+/// Both dispatch through the scheduler callbacks installed on the current
+/// process's execution context. Calling either without that context panics.
 ///
 /// Borrow the execution context a BIF reaches scheduler services through.
 /// The owning scheduler installs it on the Process (`ctx.2`); it outlives any
@@ -396,40 +396,35 @@ unsafe fn process_ctx<'a>(process: *mut Process) -> &'a ExecCtx {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
+pub extern "C" fn fz_spawn(process: *mut Process, closure_ref_word: u64) -> u64 {
     let ctx = unsafe { process_ctx(process) };
     (ctx.spawn.expect("spawn callback installed"))(process, ctx.scheduler, closure_ref_word) as u64
 }
 
+/// Allocate a resource on the current process heap and retain its fz
+/// destructor closure on the stub. Scheduler-bound teardown invokes that
+/// closure later; allocation itself needs no compiler module or callback.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_opt_ref(process: *mut Process, closure_ref_word: u64, min_heap_size: u64) -> u64 {
-    let ctx = unsafe { process_ctx(process) };
-    (ctx.spawn_opt.expect("spawn_opt callback installed"))(
-        process,
-        ctx.scheduler,
-        closure_ref_word,
-        min_heap_size as u32,
-    ) as u64
-}
-
-/// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
-/// the JIT/AOT path. The payload is a raw integer handle; the destructor
-/// crosses as an opaque `AnyValueRef` closure word. Returns the tagged
-/// `TAG_RESOURCE` stub on the current process heap.
-///
-/// Dtor resolution requires walking the closure body's IR to find the
-/// underlying `Prim::Extern`, so we delegate to the binary-side hook
-/// (the runtime crate has no IR Module). The same hook is installed for
-/// both interp and JIT/AOT execution — the symbol path is therefore
-/// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource_ref(process: *mut Process, payload_raw: u64, dtor_ref: u64) -> u64 {
-    let ctx = unsafe { process_ctx(process) };
-    (ctx.make_resource.expect("make_resource callback installed"))(process, ctx.module, payload_raw, dtor_ref)
+pub extern "C" fn fz_make_resource(process: *mut Process, payload_raw: u64, dtor_ref: u64) -> u64 {
+    assert!(!process.is_null(), "fz_make_resource: no current process");
+    let dtor_ref = any_value_ref_from_word(dtor_ref, "fz_make_resource destructor");
+    let dtor_closure = AnyValue::from_ref(dtor_ref).expect("fz_make_resource: destructor value");
+    let closure_bits = dtor_closure
+        .heap_object_word()
+        .expect("fz_make_resource: destructor is not a closure");
+    assert!(
+        closure_addr_from_tagged(closure_bits).is_some(),
+        "fz_make_resource: destructor is not a closure"
+    );
+    let handle = ResourceHandle::new(payload_raw, fz_resource_destructor_noop);
+    let stub = alloc_resource(&mut unsafe { &mut *process }.heap, handle, dtor_closure);
+    AnyValueRef::from_heap_object(ValueKind::RESOURCE, stub.as_raw() as *const u8)
+        .expect("fz_make_resource: resource ref")
+        .raw_word()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_self_raw(process: *mut Process) -> u64 {
+pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
 
@@ -440,19 +435,19 @@ pub extern "C" fn fz_self_raw(process: *mut Process) -> u64 {
 static FZ_NEXT_REF: AtomicU64 = AtomicU64::new(1);
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_ref_raw() -> u64 {
+pub extern "C" fn fz_make_ref() -> u64 {
     FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed)
 }
 
-/// fz_send_ref(receiver_pid, msg_ref) -> msg_ref.
+/// fz_send(receiver_pid, msg_ref) -> msg_ref.
 ///
 /// `send` is an `any` boundary: callers box known scalars before calling, then
 /// the scheduler/mailbox moves the one-word any value ref until a matcher or
 /// receiver unwraps it.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_send_ref(process: *mut Process, receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
+pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
-    let _ = any_value_ref_from_word(msg_ref_word, "fz_send_ref message");
+    let _ = any_value_ref_from_word(msg_ref_word, "fz_send message");
     let ctx = unsafe { process_ctx(process) };
     (ctx.send.expect("send callback installed"))(process, ctx.scheduler, receiver_pid, msg_ref_word);
     msg_ref_word
@@ -887,49 +882,127 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     value.ref_word().raw_word()
 }
 
+/// A total integer arithmetic result returned by value at the C boundary.
+/// `failed` is a canonical `u64` 0 or 1, deliberately not Rust `bool`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FzIntegerArithmeticResult {
+    pub result: i64,
+    pub failed: u64,
+}
+
+/// A total floating arithmetic result returned by value at the C boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FzFloatArithmeticResult {
+    pub result: f64,
+    pub failed: u64,
+}
+
+fn successful_integer(result: i64) -> FzIntegerArithmeticResult {
+    FzIntegerArithmeticResult { result, failed: 0 }
+}
+
+fn failed_integer(result: i64) -> FzIntegerArithmeticResult {
+    FzIntegerArithmeticResult { result, failed: 1 }
+}
+
+fn finite_float(result: f64) -> FzFloatArithmeticResult {
+    if result.is_finite() {
+        FzFloatArithmeticResult { result, failed: 0 }
+    } else {
+        FzFloatArithmeticResult { result: 0.0, failed: 1 }
+    }
+}
+
 /// `/` on two integers, which is a FLOAT in Elixir: `1 / 2` is `0.5`, not `0`.
-/// The truncating form is `div/2`, which keeps `fz_op_div_ii`.
-///
-/// Lives HERE rather than beside the interpreter's other `fz_op_*` shims
-/// because native codegen does not intercept it by name: it takes the generic
-/// extern path, which needs a symbol the JIT can look up and the AOT link can
-/// resolve. The private shims work only while an intercept covers them, which
-/// is fz-5xp.29.
+/// Division by either signed zero stays total and returns `{0.0, 1}`.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_op_div_ii_to_float(a: i64, b: i64) -> f64 {
-    a as f64 / b as f64
+pub extern "C" fn fz_op_div_ii_to_float(a: i64, b: i64) -> FzFloatArithmeticResult {
+    finite_float(a as f64 / b as f64)
 }
 
-/// `-x` for an integer. Its own symbol rather than `0 - x`, because the two
-/// differ: `0.0 - 0.0` is `0.0` while `-0.0` is `-0.0`, and the float sibling
-/// below has to preserve that.
+/// Wrapped bits remain observable alongside the overflow status.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_op_neg_i(value: i64) -> i64 {
-    -value
+pub extern "C" fn fz_op_neg_i(value: i64) -> FzIntegerArithmeticResult {
+    let (result, overflowed) = value.overflowing_neg();
+    FzIntegerArithmeticResult {
+        result,
+        failed: u64::from(overflowed),
+    }
 }
 
-/// `-x` for a float. `fneg` flips the sign bit, so `-0.0` stays `-0.0`.
+/// `fneg` flips the sign bit, so `-0.0` stays `-0.0`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {
     -value
 }
 
-/// Float remainder, the `%` operator's float lanes.
-///
-/// Lives in the runtime crate rather than beside the interpreter's other
-/// `fz_op_*` shims because the NATIVE doors need to call it: Cranelift has no
-/// `frem`, so float `%` cannot be an instruction the way `+ - * /` are. An
-/// interp-private shim would be a `symbol not found` at AOT link time
-/// (fz-5xp.29's hazard).
-///
-/// Rust's `%` on `f64` is C's `fmod`: the result takes the sign of the
-/// DIVIDEND, so `-7.5 % 2.0` is `-1.5`. That is what the interpreter has always
-/// answered, and it is what fz's `%` means -- Elixir has no `%` operator to
-/// disagree with, and its `rem/2` is integer-only.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_op_rem_ff(left: f64, right: f64) -> f64 {
-    left % right
+macro_rules! integer_arithmetic_export {
+    ($name:ident, $method:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(left: i64, right: i64) -> FzIntegerArithmeticResult {
+            let (result, overflowed) = left.$method(right);
+            FzIntegerArithmeticResult {
+                result,
+                failed: u64::from(overflowed),
+            }
+        }
+    };
 }
+
+integer_arithmetic_export!(fz_op_add_ii, overflowing_add);
+integer_arithmetic_export!(fz_op_sub_ii, overflowing_sub);
+integer_arithmetic_export!(fz_op_mul_ii, overflowing_mul);
+
+macro_rules! float_arithmetic_export {
+    ($name:ident, ($left:ident : $left_ty:ty, $right:ident : $right_ty:ty) => $expression:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name($left: $left_ty, $right: $right_ty) -> FzFloatArithmeticResult {
+            finite_float($expression)
+        }
+    };
+}
+
+float_arithmetic_export!(fz_op_add_if, (left: i64, right: f64) => left as f64 + right);
+float_arithmetic_export!(fz_op_add_ff, (left: f64, right: f64) => left + right);
+float_arithmetic_export!(fz_op_sub_if, (left: i64, right: f64) => left as f64 - right);
+float_arithmetic_export!(fz_op_sub_fi, (left: f64, right: i64) => left - right as f64);
+float_arithmetic_export!(fz_op_sub_ff, (left: f64, right: f64) => left - right);
+float_arithmetic_export!(fz_op_mul_if, (left: i64, right: f64) => left as f64 * right);
+float_arithmetic_export!(fz_op_mul_ff, (left: f64, right: f64) => left * right);
+
+/// Guard both hardware integer-division trap cases before evaluating `/`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_div_ii(left: i64, right: i64) -> FzIntegerArithmeticResult {
+    if right == 0 || (left == i64::MIN && right == -1) {
+        failed_integer(0)
+    } else {
+        successful_integer(left / right)
+    }
+}
+
+float_arithmetic_export!(fz_op_div_if, (left: i64, right: f64) => left as f64 / right);
+float_arithmetic_export!(fz_op_div_fi, (left: f64, right: i64) => left / right as f64);
+float_arithmetic_export!(fz_op_div_ff, (left: f64, right: f64) => left / right);
+
+/// `MIN_I64 rem -1` is a successful zero even though its quotient overflows.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_rem_ii(left: i64, right: i64) -> FzIntegerArithmeticResult {
+    if right == 0 {
+        failed_integer(0)
+    } else if left == i64::MIN && right == -1 {
+        successful_integer(0)
+    } else {
+        successful_integer(left % right)
+    }
+}
+
+// Float remainder uses fmod-compatible `%`; it remains a helper call in
+// optimized code because Cranelift has no `frem` instruction.
+float_arithmetic_export!(fz_op_rem_if, (left: i64, right: f64) => left as f64 % right);
+float_arithmetic_export!(fz_op_rem_fi, (left: f64, right: i64) => left % right as f64);
+float_arithmetic_export!(fz_op_rem_ff, (left: f64, right: f64) => left % right);
 
 /// Unicode simple case mapping, the table `String.upcase/1` needs.
 ///
@@ -2323,6 +2396,75 @@ pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_ref: u64, b_ref: u64
 pub extern "C" fn fz_int_float_cmp(integer: i64, float: f64) -> i64 {
     crate::term::compare_int_float(integer, float) as i64
 }
+
+macro_rules! numeric_bool_export {
+    ($name:ident, ($left:ident : $left_ty:ty, $right:ident : $right_ty:ty) => $answer:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name($left: $left_ty, $right: $right_ty) -> u64 {
+            u64::from($answer)
+        }
+    };
+}
+
+numeric_bool_export!(fz_op_lt_ii, (left: i64, right: i64) => left < right);
+numeric_bool_export!(fz_op_lte_ii, (left: i64, right: i64) => left <= right);
+numeric_bool_export!(fz_op_gt_ii, (left: i64, right: i64) => left > right);
+numeric_bool_export!(fz_op_gte_ii, (left: i64, right: i64) => left >= right);
+numeric_bool_export!(fz_op_lt_ff, (left: f64, right: f64) => left < right);
+numeric_bool_export!(fz_op_lte_ff, (left: f64, right: f64) => left <= right);
+numeric_bool_export!(fz_op_gt_ff, (left: f64, right: f64) => left > right);
+numeric_bool_export!(fz_op_gte_ff, (left: f64, right: f64) => left >= right);
+numeric_bool_export!(fz_op_lt_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_lt());
+numeric_bool_export!(fz_op_lte_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_le());
+numeric_bool_export!(fz_op_gt_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_gt());
+numeric_bool_export!(fz_op_gte_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_ge());
+numeric_bool_export!(fz_op_lt_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_gt());
+numeric_bool_export!(fz_op_lte_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_ge());
+numeric_bool_export!(fz_op_gt_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_lt());
+numeric_bool_export!(fz_op_gte_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_le());
+
+// Equality and identity differ only on floats, and on exactly the same rule the
+// structural comparator uses: `==` widens, so `0.0 == -0.0` is true, while
+// `===` is strict, so `0.0 === -0.0` is false. A non-finite float is not a
+// language value, so neither rule has a NaN case to answer.
+numeric_bool_export!(fz_op_eq_ii, (left: i64, right: i64) => left == right);
+numeric_bool_export!(fz_op_eq_ff, (left: f64, right: f64) => left == right);
+numeric_bool_export!(fz_op_eq_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_eq());
+numeric_bool_export!(fz_op_eq_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_eq());
+numeric_bool_export!(fz_op_neq_ii, (left: i64, right: i64) => left != right);
+numeric_bool_export!(fz_op_neq_ff, (left: f64, right: f64) => left != right);
+numeric_bool_export!(fz_op_neq_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_ne());
+numeric_bool_export!(fz_op_neq_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_ne());
+numeric_bool_export!(fz_op_identical_ii, (left: i64, right: i64) => left == right);
+numeric_bool_export!(fz_op_identical_ff, (left: f64, right: f64) => left.total_cmp(&right).is_eq());
+numeric_bool_export!(fz_op_not_identical_ii, (left: i64, right: i64) => left != right);
+numeric_bool_export!(fz_op_not_identical_ff, (left: f64, right: f64) => left.total_cmp(&right).is_ne());
+
+fn compare_ref_words(process: *mut Process, left: u64, right: u64, mode: NumericMode) -> std::cmp::Ordering {
+    let left = any_value_from_ref_word(left, "runtime comparison lhs");
+    let right = any_value_from_ref_word(right, "runtime comparison rhs");
+    compare_values(process, left, right, mode)
+}
+
+macro_rules! ref_bool_export {
+    ($name:ident, $mode:expr, $predicate:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(process: *mut Process, left: u64, right: u64) -> u64 {
+            u64::from(compare_ref_words(process, left, right, $mode).$predicate())
+        }
+    };
+}
+
+// Binaries cross the truthful fz ABI as references, never as C byte pointers
+// without their lengths. Equality also needs the process-owned term authority.
+ref_bool_export!(fz_op_lt_bb, NumericMode::Widening, is_lt);
+ref_bool_export!(fz_op_lte_bb, NumericMode::Widening, is_le);
+ref_bool_export!(fz_op_gt_bb, NumericMode::Widening, is_gt);
+ref_bool_export!(fz_op_gte_bb, NumericMode::Widening, is_ge);
+ref_bool_export!(fz_op_eq, NumericMode::Widening, is_eq);
+ref_bool_export!(fz_op_neq, NumericMode::Widening, is_ne);
+ref_bool_export!(fz_op_identical, NumericMode::Strict, is_eq);
+ref_bool_export!(fz_op_not_identical, NumericMode::Strict, is_ne);
 
 fn compare_values(process: *mut Process, a: AnyValue, b: AnyValue, mode: NumericMode) -> std::cmp::Ordering {
     let process = unsafe { &*process };

@@ -14,7 +14,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
-use crate::fz_ir::{ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
+use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
@@ -414,6 +414,73 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
             "{name}: tuple fields transfer only when no peer or old owner overlaps"
         );
     }
+}
+
+/// Ownership construction reads the body a fixed number of times, whatever it
+/// finds there.
+///
+/// A body of fifty nested tuple literals gives the tuple pass three hundred
+/// items to decide, and each decision asks where a value is defined and
+/// whether a later step still wants it. Answered by searching the body, those
+/// questions cost a walk apiece and the pass grows with the cube of the
+/// constructions; answered from the body's tables they cost a lookup, and the
+/// only steps the pass reads in sequence are the two scans that find the
+/// list constructions and the tuples. The pin is that count: two per step,
+/// never a multiple of the constructions.
+#[test]
+fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
+    let mut text = String::from("def main() do\n");
+    for index in 1..=50 {
+        text.push_str(&format!("  x{index} = {{{{1, 2}}, {{3, 4}}}}\n"));
+    }
+    let bindings = (1..=50).map(|index| format!("x{index}")).collect::<Vec<_>>();
+    text.push_str(&format!("  [{}]\nend\n", bindings.join(", ")));
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "compiler2", "lowered_body"]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = compiler.submit_code(CodeSubmission {
+        name: Some("nested_tuple_literals.fz".into()),
+        text,
+    });
+    assert_resolved(compiler.drive(), "source indexing");
+    compiler.demand(Job::ScopeCode(source));
+    assert_resolved(compiler.drive(), "function identities");
+    let main = function_id(&functions, "main", 0);
+    compiler.demand(Job::LowerFunction(main));
+    assert_resolved(compiler.drive(), "fifty nested tuple literals lower");
+
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main) else {
+        panic!("clause body")
+    };
+    let steps = entries.iter().map(|entry| entry.steps.len()).sum::<usize>();
+    assert_eq!(
+        steps, 351,
+        "fifty nested tuple literals lower to four constants and three tuples each, plus the list that uses them"
+    );
+
+    let scanned = capture
+        .events()
+        .iter()
+        .filter(|event| event.name == ["fz", "compiler2", "lowered_body", "ownership"])
+        .filter(|event| {
+            matches!(event.metadata.get("function_id"), Some(Value::U64(id)) if *id == u64::from(main.as_u32()))
+        })
+        .filter_map(|event| match event.measurements.get("steps_scanned") {
+            Some(Value::U64(scanned)) => Some(*scanned),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scanned,
+        vec![2 * steps as u64],
+        "ownership construction scans the steps twice -- once for list constructions, once for tuples"
+    );
 }
 
 #[test]
@@ -1103,7 +1170,7 @@ fn executable_construction_and_runtime_demand_share_one_world_type_projection() 
         .expect("the shared-projection fixture should compile");
     let world = compiler.world();
 
-    let mut uses = Vec::new();
+    let mut uses_by_type = BTreeMap::new();
     for executable in executables {
         let facts = world
             .executable_facts(&executable)
@@ -1111,17 +1178,20 @@ fn executable_construction_and_runtime_demand_share_one_world_type_projection() 
         let demand_facts = facts.runtime_demand_facts(world.runtime_demand_type_projections());
         for &ty in facts.analysis().value_types.values() {
             if world.types().is_integer(&ty) {
-                uses.push(demand_facts.projection_identity(ty));
+                uses_by_type
+                    .entry(ty)
+                    .or_insert_with(Vec::new)
+                    .push(demand_facts.projection_identity(ty));
             }
         }
     }
-    assert!(
-        uses.len() >= 2,
-        "the fixture should exercise the same integer projection in multiple executable constructions",
-    );
+    let uses = uses_by_type
+        .into_values()
+        .find(|uses| uses.len() >= 2)
+        .expect("the fixture should exercise one exact interned integer type in multiple executable constructions");
     assert!(
         uses.iter().all(|projection| *projection == uses[0]),
-        "construction and formula views must borrow one World-owned projection for an interned type",
+        "construction and formula views must borrow one World-owned projection for the same interned type",
     );
 }
 
@@ -2852,7 +2922,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     let source_owner = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
-            "extern \"C\" def takes(p :: %NotAStruct{x: integer}) :: integer\n",
+            "extern \"C\" defp takes(p :: %NotAStruct{x: integer}) :: integer\n",
             "\n",
             "defmodule NotAStruct do\n",
             "  def hello(), do: 0\n",
@@ -5532,9 +5602,9 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     match &open_exec.body {
         crate::compiler2::BackendBody::Extern { signature } => {
             assert_eq!(signature.symbol, "open");
-            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I64]);
+            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I32]);
             assert!(signature.variadic);
-            assert_eq!(signature.ret, ExternTy::I64);
+            assert_eq!(signature.ret, ExternTy::I32);
         }
         other => panic!("expected backend extern body for libc::open, got {other:?}"),
     }
@@ -5552,7 +5622,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
             );
             assert_eq!(
                 direct.extern_marshals.as_deref(),
-                Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+                Some(&[ExternTy::CString, ExternTy::I32, ExternTy::I64][..]),
                 "backend direct-call steps should carry the exact settled C wire classes for a variadic extern site",
             );
             assert_eq!(
@@ -7248,12 +7318,12 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     );
     let decl = &program.module.externs[0];
     assert_eq!(decl.symbol, "open");
-    assert_eq!(decl.params, vec![ExternTy::CString, ExternTy::I64]);
+    assert_eq!(decl.params, vec![ExternTy::CString, ExternTy::I32]);
     assert!(decl.variadic);
-    assert_eq!(decl.ret, ExternTy::I64);
+    assert_eq!(decl.ret, ExternTy::I32);
     assert_eq!(
         sorted_extern_marshals(body),
-        vec![ExternTy::CString, ExternTy::I64, ExternTy::I64],
+        vec![ExternTy::CString, ExternTy::I32, ExternTy::I64],
         "native extern wrapper bodies should carry the exact settled C wire classes for a variadic site",
     );
 }
@@ -7799,6 +7869,341 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
         -1,
         "compiler2-owned native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
     );
+}
+
+/// The lowered CLIF for every function a program compiles, joined.
+///
+/// A machine's answer cannot tell a correct C `int` boundary from a lucky
+/// one: an arm64 libc writes a full 64-bit -1 where x86-64 glibc writes only
+/// the low half, so a fixture that reads -1 here proves nothing about there.
+/// The instructions the boundary emits are the same on every host, so that is
+/// what a `c_int` declaration is pinned by.
+fn lowered_clif_text(source: &str) -> String {
+    struct ClifCapture(Rc<RefCell<Vec<String>>>);
+
+    impl crate::compiler2::dump::RequestedOutputSink for ClifCapture {
+        fn wants_clif(&self) -> bool {
+            true
+        }
+
+        fn clif(&mut self, _: &crate::fz_ir::Module, _: FnId, function: &cranelift_codegen::ir::Function) {
+            self.0.borrow_mut().push(function.display().to_string());
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.set_requested_output(Box::new(ClifCapture(Rc::clone(&observed))));
+    compiler.submit_code(CodeSubmission {
+        name: Some("c_int_lowering.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .compile_root_jit(root)
+        .expect("c_int program should JIT-compile");
+    let text = observed.borrow().join("\n");
+    assert!(!text.is_empty(), "compiling should have lowered at least one function");
+    text
+}
+
+/// A C `int` result fills only the low half of the integer return register,
+/// so the fz integer is its sign extension; a C `int` parameter is the low
+/// half of the fz integer. Both the ordinary extern call and the generated
+/// variadic call carry that, and a declaration that says `integer` instead
+/// keeps the whole register.
+#[test]
+fn compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results() {
+    let fixed_c_int = lowered_clif_text("extern \"C\" defp abs(c_int) :: c_int\ndef main(), do: abs(-7)\n");
+    assert!(
+        fixed_c_int.contains("ireduce.i32"),
+        "a c_int parameter is the low half of the fz integer:\n{fixed_c_int}"
+    );
+    assert!(
+        fixed_c_int.contains("sextend.i64"),
+        "a c_int result is sign extended to the fz integer:\n{fixed_c_int}"
+    );
+
+    let fixed_integer = lowered_clif_text("extern \"C\" defp abs(integer) :: integer\ndef main(), do: abs(-7)\n");
+    assert!(
+        !fixed_integer.contains("ireduce.i32") && !fixed_integer.contains("sextend.i64"),
+        "an integer declaration crosses the boundary as a whole 64-bit word:\n{fixed_integer}"
+    );
+
+    let variadic_c_int = lowered_clif_text(
+        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\n\
+         def main(), do: libc::open(\"/fz_c_int_clif_probe\", 0, 420 :: integer)\n",
+    );
+    assert!(
+        variadic_c_int.contains("ireduce.i32"),
+        "a fixed c_int parameter of a variadic call is the low half of the fz integer:\n{variadic_c_int}"
+    );
+    assert!(
+        variadic_c_int.contains("sextend.i64"),
+        "a variadic call's c_int result is sign extended to the fz integer:\n{variadic_c_int}"
+    );
+}
+
+#[test]
+fn compiler2_private_extern_capture_flows_through_an_ordinary_higher_order_call() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/private_extern_capture.fz".to_string()),
+        text: "extern \"C\" defp abs(c_int) :: c_int\ndef apply_one(fun, value), do: fun.(value)\ndef main(), do: apply_one(&abs/1, -42)\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root_id);
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "private extern capture should lower through an ordinary higher-order call: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(
+        compiled.run(compiler.telemetry(), program.entry),
+        42,
+        "a private extern remains lexically capturable and callable as an ordinary function value",
+    );
+}
+
+#[test]
+fn compiler2_interp_c_extern_scalar_pair_enters_existing_tuple_transport_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp _test_integer_boolean_pair(integer) :: {integer, boolean}\n",
+            "def main() do\n",
+            "  case _test_integer_boolean_pair(42) do\n",
+            "    {value, false} -> value\n",
+            "    {_, true} -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok(42),
+        "a fixed C scalar-pair result must enter the ordinary tuple lanes without an Any/tuple/scalar box",
+    );
+}
+
+#[test]
+fn compiler2_jit_c_extern_scalar_pair_enters_existing_return_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair_jit.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp _test_integer_boolean_pair(integer) :: {integer, boolean}\n",
+            "def main() do\n",
+            "  case _test_integer_boolean_pair(42) do\n",
+            "    {value, false} -> value\n",
+            "    {_, true} -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "C scalar-pair native handoff");
+    let program = native.last(root).program;
+    let pair_extern = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+        .find(|stmt| matches!(stmt, IrStmt::LetMany(vars, IrPrim::Extern(..)) if vars.len() == 2))
+        .expect("the physical C aggregate call must bind two internal results");
+    assert!(matches!(pair_extern, IrStmt::LetMany(_, _)));
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
+}
+
+#[test]
+fn compiler2_c_extern_scalar_pairs_cover_every_semantic_field_pair_without_name_semantics() {
+    let source = concat!(
+        "extern \"C\" defp _test_pair_ii() :: {integer, integer}\n",
+        "extern \"C\" defp _test_pair_ib() :: {integer, boolean}\n",
+        "extern \"C\" defp _test_pair_bi() :: {boolean, integer}\n",
+        "extern \"C\" defp _test_pair_bb() :: {boolean, boolean}\n",
+        "extern \"C\" defp _test_pair_if() :: {integer, float}\n",
+        "extern \"C\" defp _test_pair_bf() :: {boolean, float}\n",
+        "extern \"C\" defp _test_pair_fi() :: {float, integer}\n",
+        "extern \"C\" defp _test_pair_fb() :: {float, boolean}\n",
+        "extern \"C\" defp _test_pair_ff() :: {float, float}\n",
+        "def main() do\n",
+        "  case _test_pair_ii() do\n",
+        "    {1, 2} -> case _test_pair_ib() do\n",
+        "      {1, false} -> case _test_pair_bi() do\n",
+        "        {true, 2} -> case _test_pair_bb() do\n",
+        "          {false, true} -> case _test_pair_if() do\n",
+        "            {_, 2.5} -> case _test_pair_bf() do\n",
+        "              {true, 2.5} -> case _test_pair_fi() do\n",
+        "                {1.5, _} -> case _test_pair_fb() do\n",
+        "                  {1.5, false} -> case _test_pair_ff() do\n",
+        "                    {1.5, 2.5} -> 42\n",
+        "                    _ -> 0\n",
+        "                  end\n",
+        "                  _ -> 0\n",
+        "                end\n",
+        "                _ -> 0\n",
+        "              end\n",
+        "              _ -> 0\n",
+        "            end\n",
+        "            _ -> 0\n",
+        "          end\n",
+        "          _ -> 0\n",
+        "        end\n",
+        "        _ -> 0\n",
+        "      end\n",
+        "      _ -> 0\n",
+        "    end\n",
+        "    _ -> 0\n",
+        "  end\n",
+        "end\n",
+    );
+
+    let interp = {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/c_extern_scalar_pair_matrix_interp.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.run_root_interp(root)
+    };
+    assert_eq!(
+        interp,
+        Ok(42),
+        "the interpreter must decode every pair field through its declared wire type"
+    );
+
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair_matrix_jit.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "C scalar-pair matrix native handoff");
+    let program = native.last(root).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
+}
+
+#[test]
+fn compiler2_c_extern_scalar_pair_nonzero_boolean_is_true_in_interpreter() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair_bad_boolean.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
+            "def main() do\n",
+            "  case _test_pair_bad_bool() do\n",
+            "    {true, 2} -> 42\n",
+            "    _ -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+}
+
+#[test]
+fn compiler2_jit_c_extern_scalar_pair_nonzero_boolean_is_true() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/c_extern_scalar_pair_nonzero_boolean_jit.fz".to_string()),
+        text: concat!(
+            "extern \"C\" defp _test_pair_bad_bool() :: {boolean, integer}\n",
+            "def main() do\n",
+            "  case _test_pair_bad_bool() do\n",
+            "    {true, 2} -> 42\n",
+            "    _ -> 0\n",
+            "  end\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "JIT nonzero C boolean handoff");
+    let program = native.last(root).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 42);
 }
 
 #[test]
@@ -8750,15 +9155,13 @@ fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
-    let tel = ConfiguredTelemetry::new();
-    let dbg = DbgCapture::new();
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.set_output(dbg.sink());
+fn compiler2_private_fz_spawn_opt_name_uses_ordinary_foreign_resolution() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/backend_interp_spawn_opt.fz".to_string()),
-        text: include_str!("../../fixtures2/00025_backend_interp_spawn_opt.fz").to_string(),
+        name: Some("private_foreign_fz_spawn_opt.fz".to_string()),
+        text: "extern \"C\" defp fz_spawn_opt(integer, integer) :: integer\n\
+               def main(), do: fz_spawn_opt(20, 22)\n"
+            .to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8767,22 +9170,12 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
         need: ExecutableNeed::Value,
     });
 
-    let halt = compiler.run_root_interp(root_id).unwrap_or_else(|error| {
-        let diagnostic = dbg
-            .lines()
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "Compiler2 backend interpreter should accept spawn/2 heap hints through fz_spawn_opt: {error}; dbg={diagnostic}"
-        );
-    });
-
-    assert_eq!(halt, 0, "spawn/2 should preserve the root task's explicit result");
-    assert_eq!(
-        dbg.lines().as_slice(),
-        ["7"],
-        "spawn/2 should still enqueue the child even though the backend interpreter ignores the heap hint",
+    let error = compiler
+        .run_root_interp(root_id)
+        .expect_err("the retired scheduler intrinsic must not seize a private foreign extern name");
+    assert!(
+        error.contains("dlsym: symbol `fz_spawn_opt` not found"),
+        "the declaration must reach ordinary C symbol resolution, not scheduler execution: {error}",
     );
 }
 
@@ -9305,7 +9698,7 @@ fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi()
 }
 
 #[test]
-fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
+fn compiler2_interp_drains_resource_dtor_through_private_runtime_export() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
 
@@ -9331,7 +9724,7 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "Compiler2 backend interpreter should route make_resource/2 through the shared runtime helper: {error}; diagnostic={diagnostic}"
+            "Compiler2 backend interpreter should call the private fz_make_resource export: {error}; diagnostic={diagnostic}"
         );
     });
 
@@ -10284,7 +10677,7 @@ fn compiler2_unknown_extern_abi_is_a_lower_diagnostic() {
     compiler.submit_code(CodeSubmission {
         name: Some("unknown_extern_abi.fz".to_string()),
         text: r#"defmodule Weird do
-  extern "rust" def some_symbol(integer) :: integer
+  extern "rust" defp some_symbol(integer) :: integer
 end
 
 def main(), do: Weird.some_symbol(1)
@@ -10318,6 +10711,90 @@ def main(), do: Weird.some_symbol(1)
 }
 
 #[test]
+fn compiler2_c_extern_aggregate_argument_is_rejected_at_the_shared_boundary() {
+    let telemetry = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&telemetry, &[]);
+
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("c_extern_aggregate_argument.fz".to_string()),
+        text: r#"extern "C" defp foreign_pair({integer, integer}) :: integer
+
+def main(), do: foreign_pair({1, 2})
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a C aggregate argument must fail before any execution door can lower it: {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("C aggregate argument diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
+    assert!(
+        metadata_str(&diagnostic, "message").contains("aggregate arguments"),
+        "the shared diagnostic must identify the unsupported C aggregate boundary",
+    );
+}
+
+#[test]
+fn compiler2_wire_spelling_inside_a_tuple_states_the_rule_it_breaks() {
+    // A wire spelling names a calling-convention lane, and a lane is a whole
+    // register: it stands where a whole parameter or result stands. Inside a
+    // tuple it has no register of its own, so the contract is refused. The
+    // refusal must state that rule; "unknown type name `c_int`" would send the
+    // reader hunting for a typo in a spelling the language documents.
+    let telemetry = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&telemetry, &[]);
+
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("wire_spelling_inside_tuple.fz".to_string()),
+        text: r#"extern "C" defp foreign_pair() :: {c_int, integer}
+
+def main(), do: foreign_pair()
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a wire spelling inside an aggregate must stop the compile: {outcome:?}",
+    );
+
+    let errors = capture.find(&["fz", "diag", "error"]);
+    let messages: Vec<&str> = errors.iter().map(|event| metadata_str(event, "message")).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.contains("`c_int`") && message.contains("whole parameter or result") }),
+        "the diagnostic must name the spelling and state where it may stand, got: {messages:?}",
+    );
+    assert!(
+        !messages.iter().any(|message| message.contains("unknown type name")),
+        "a documented wire spelling is never reported as an unknown name, got: {messages:?}",
+    );
+}
+
+#[test]
 fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
     // The `fz` ABI names symbols that BOTH doors also claim by name in their
     // own lowerings, and the two claim sets are not the same. So a foreign
@@ -10333,7 +10810,7 @@ fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
     compiler.submit_code(CodeSubmission {
         name: Some("foreign_fz_abi.fz".to_string()),
         text: r#"defmodule Weird do
-  extern "fz" def fz_op_add_ii(integer, integer) :: integer
+  extern "fz" defp fz_op_add_ii(integer, integer) :: integer
 end
 
 def main(), do: Weird.fz_op_add_ii(2, 3)
@@ -10359,56 +10836,6 @@ def main(), do: Weird.fz_op_add_ii(2, 3)
     assert!(
         message.contains("reserved for fz's own runtime library"),
         "the diagnostic should say why the ABI is not available here, got: {message}",
-    );
-}
-
-#[test]
-fn compiler2_refuses_a_runtime_symbol_declared_with_the_wrong_abi() {
-    // `fz_dbg_value` is really `fn(*mut Process, u64) -> u64`. A declaration
-    // saying otherwise is not a preference, it is a lie about a symbol the
-    // runtime owns, and it ends in a transmute: `extern "C"` reached it as
-    // `fn(u64) -> u64`, so the argument's ref word was read as the process
-    // pointer. Under `interp` that returned nil; under `run` and `build`,
-    // `fz_process_heap_alloc_stats` shaped the same way SEGFAULTED.
-    //
-    // So the refusal belongs where FIX A's does -- the shared front end. That
-    // is what lets this be one assertion instead of three: `drive` is the
-    // common ancestor of every door.
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    capture.install(&tel, &[]);
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("wrong_abi_for_runtime_symbol.fz".to_string()),
-        text: r#"defmodule Weird do
-  extern "C" def fz_dbg_value(any) :: any
-end
-
-def main(), do: Weird.fz_dbg_value(:zz)
-"#
-        .to_string(),
-    });
-    compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    let outcome = compiler.drive();
-    assert!(
-        matches!(outcome, DriveOutcome::Fatal { .. }),
-        "a declaration contradicting the runtime must stop the compile: {outcome:?}",
-    );
-
-    let diagnostic = capture.last(&["fz", "diag", "error"]).expect("ABI mismatch diagnostic");
-    assert_eq!(metadata_str(&diagnostic, "code"), codes::LOWER_UNSUPPORTED.0);
-    let message = metadata_str(&diagnostic, "message");
-    assert!(
-        message.contains("fz_dbg_value") && message.contains("`fz` ABI"),
-        "the diagnostic should name the symbol and the convention the runtime actually \
-         provides, got: {message}",
     );
 }
 
@@ -10877,14 +11304,32 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
-    let (compiler, program) = driven_backend_program(fixture);
+    let (mut compiler, program) = driven_backend_program(fixture);
+    let kernel = compiler
+        .world_mut()
+        .reference_module(ModuleName::parse_dotted("Kernel").expect("Kernel module name"));
+    let arithmetic_result = compiler.world_mut().reference_function(kernel, "arithmetic_result", 1);
     let plans = artifact_plans(compiler.world(), &program);
+    let forwarded_callsite_plans = plans
+        .iter()
+        .filter(|plan| {
+            !matches!(
+                plan.site,
+                PlanSite::Entry { executable }
+                    if program.executables()[executable].key.activation.function == arithmetic_result
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        plans.is_empty(),
-        "{fixture} passes a known closure at every call site, so nothing may be left for a \
-         runtime test; {} plan(s) still dispatch: {:?}",
-        plans.len(),
-        plans.iter().map(|plan| plan.site.to_string()).collect::<Vec<_>>(),
+        forwarded_callsite_plans.is_empty(),
+        "{fixture} passes a known closure at every call site, so its callsites and ordinary \
+         function entries other than Kernel.arithmetic_result/1 need no runtime test; {} plan(s) \
+         still dispatch: {:?}",
+        forwarded_callsite_plans.len(),
+        forwarded_callsite_plans
+            .iter()
+            .map(|plan| plan.site.to_string())
+            .collect::<Vec<_>>(),
     );
 
     let types = compiler.world().types();
@@ -11614,8 +12059,20 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// identity semantics only because guards happen to be strict -- and says
 /// `===` in the body instead, so the guard region it used to contribute goes
 /// away with it. The escape populations this census ratchets are unchanged.
+/// fz-5xp.30: `entry` 159 -> 179 plans, 151 -> 171 unreadable.
+/// `Kernel.arithmetic_result/1` remains an ordinary generic Fz call, so the
+/// twenty census specializations that call it each materialize its status-pair
+/// entry dispatch. They all ask `Region::TupleArity`, which this census counts
+/// as unreadable; the readable denominator stays 8 and every blind population
+/// is unchanged.
+/// `==` and `===` carry a typed clause per numeric pair, so each has an entry
+/// dispatch asking `Region::Type` where a lone `any`/`any` clause asks
+/// nothing. Those plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
+/// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
+/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are readable, so
+/// they count in the denominator and every blind population stays empty.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 159, 151), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 184, 171), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13182,7 +13639,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
 
     let program = backend.last(root_id).program;
     let summaries = callsites.all();
-    let mut found = false;
+    let mut dispatching = Vec::new();
     for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
@@ -13206,12 +13663,20 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
                 "multi-target summary should lower as a multi-arm dispatch edge: {:?}",
                 summary.summary,
             );
-            found = true;
+            dispatching.push(crate::compiler2::canon::function_label(
+                compiler.world(),
+                executable.key.activation.function,
+            ));
         }
     }
-    assert!(
-        !found,
-        "membership_operator should now settle each protocol receiver to a direct impl instead of lowering a spurious dispatch edge",
+    dispatching.sort();
+    dispatching.dedup();
+    assert_eq!(
+        dispatching,
+        ["Kernel.===/2"],
+        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the one \
+         multi-target callsite left is inside `===`, whose `any`/`any` clause serves every non-numeric pair \
+         at once and calls an extern that is keyed per operand type",
     );
 }
 
@@ -13310,8 +13775,11 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
+    // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
+    // statistics now traverse ordinary Kernel arithmetic and its generic
+    // result/status helper; all five extra activations are rooted and reached.
     assert!(
-        activations.len() <= 17,
+        activations.len() <= 22,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
          qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
@@ -15393,7 +15861,7 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_wrapper_calls.fz".to_string()),
-        text: "defmodule Main do\n  def main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
+        text: "defmodule Main do\n  def main(x), do: {x + 1, x == 1, x < 2, \"a\" <> \"b\"}\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: Some("Main".to_string()),
@@ -15411,6 +15879,7 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     let add_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
     let eq_id = function_id_in_module(&functions, &modules, "Kernel", "==", 2);
     let lt_id = function_id_in_module(&functions, &modules, "Kernel", "<", 2);
+    let concat_id = function_id_in_module(&functions, &modules, "Kernel", "<>", 2);
     let reached = callsites
         .all()
         .into_iter()
@@ -15420,13 +15889,14 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     assert!(
         reached.contains(&SelectedCallee::Function(add_id))
             && reached.contains(&SelectedCallee::Function(eq_id))
-            && reached.contains(&SelectedCallee::Function(lt_id)),
+            && reached.contains(&SelectedCallee::Function(lt_id))
+            && reached.contains(&SelectedCallee::Function(concat_id)),
         "main/1 should resolve operator syntax through Kernel wrapper functions, got {reached:?}",
     );
 }
 
 #[test]
-fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
+fn compiler2_kernel_operator_wrappers_lower_to_private_gateway_calls() {
     let tel = ConfiguredTelemetry::new();
     let bodies = LoweredBodyCapture::new();
     bodies.install(&tel);
@@ -15438,7 +15908,8 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_intrinsic_lanes.fz".to_string()),
-        text: "defmodule Main do\n  def main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
+        text: "defmodule Main do\n  def main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0, \"a\" <> \"b\"}\nend\n"
+            .to_string(),
     });
     compiler.submit_root(RootSubmission {
         module_name: Some("Main".to_string()),
@@ -15449,17 +15920,619 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
 
     assert_resolved(
         compiler.drive(),
-        "Kernel operator wrapper should lower through typed intrinsic lanes",
+        "Kernel operator wrappers should lower through their typed private gateways",
     );
 
     let add_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
     let extern_ii = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ii", 2);
     let extern_if = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_if", 2);
     let extern_ff = function_id_in_module(&functions, &modules, "Kernel", "fz_op_add_ff", 2);
+    let concat_id = function_id_in_module(&functions, &modules, "Kernel", "<>", 2);
+    let concat_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_binary_concat", 2);
     let body = lowered_body(&bodies, add_id);
     direct_call_in_body(body.clone(), extern_ii);
     direct_call_in_body(body.clone(), extern_if);
     direct_call_in_body(body, extern_ff);
+    direct_call_in_body(lowered_body(&bodies, concat_id), concat_extern);
+
+    let kernel = module_id(&modules, "Kernel");
+    let interface = compiler.world().module_interface(kernel);
+    assert!(
+        interface
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("<>", 2)),
+        "Kernel.<>/2 is the public binary-concatenation authority",
+    );
+    assert!(
+        !interface
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("fz_binary_concat", 2)),
+        "fz_binary_concat/2 remains a private physical gateway",
+    );
+}
+
+#[test]
+fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_door() {
+    let source = "defmodule Main do\n  def main(), do: dbg(-7.5 % 2.0)\nend\n";
+
+    let native_tel = ConfiguredTelemetry::new();
+    let native_output = DbgCapture::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&native_tel);
+    let native = NativeProgramCapture::new();
+    native.install(&native_tel);
+    let functions = FunctionCapture::new();
+    functions.install(&native_tel);
+    let modules = ModuleCapture::new();
+    modules.install(&native_tel);
+    let mut native_compiler = Compiler2::new(native_tel);
+    native_compiler.set_output(native_output.sink());
+    native_compiler.submit_code(CodeSubmission {
+        name: Some("kernel_float_remainder_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let native_root = native_compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut native_compiler, native_root);
+
+    let rem_wrapper = function_id_in_module(&functions, &modules, "Kernel", "%", 2);
+    let rem_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_op_rem_ff", 2);
+    let backend_program = backend.last(native_root).program;
+    let (_, wrapper_exec) = backend_executable(&backend_program, rem_wrapper);
+    backend_direct_call(wrapper_exec, rem_extern);
+    let (_, extern_exec) = backend_executable(&backend_program, rem_extern);
+    let BackendBody::Extern { signature } = &extern_exec.body else {
+        panic!("Kernel.fz_op_rem_ff/2 must remain an ordinary extern executable")
+    };
+    assert_eq!(signature.symbol, "fz_op_rem_ff");
+    assert_eq!(signature.abi, ExternAbi::C);
+    assert_eq!(signature.params, vec![ExternTy::F64, ExternTy::F64]);
+    assert_eq!(signature.ret, ExternReturn::Pair([ExternTy::F64, ExternTy::Bool]));
+    assert!(
+        !native_compiler
+            .world()
+            .module_interface(module_id(&modules, "Kernel"))
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("fz_op_rem_ff", 2)),
+        "the runtime gateway is private source, not a Kernel interface leaf",
+    );
+    assert_eq!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_op_rem_ff").unwrap(),
+        fz_runtime::ir_runtime::fz_op_rem_ff as *const (),
+        "the interpreter must resolve the real runtime export, not a private operation shim",
+    );
+    let native_program = native.last(native_root).program;
+    assert!(
+        native_program.module.externs.iter().any(|decl| {
+            decl.symbol == "fz_op_rem_ff"
+                && decl.abi == ExternAbi::C
+                && decl.params == [ExternTy::F64, ExternTy::F64]
+                && decl.ret == ExternReturn::Pair([ExternTy::F64, ExternTy::Bool])
+        }),
+        "native codegen must receive the ordinary typed extern declaration",
+    );
+    let compiled = jit_compile_native_program(&mut native_compiler, &native_program);
+    let _ = compiled.run_with_output(native_compiler.telemetry(), &native_output, native_program.entry);
+    assert_eq!(native_output.lines(), vec!["-1.5".to_string()]);
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let interp_output = DbgCapture::new();
+    let mut interp_compiler = Compiler2::new(interp_tel);
+    interp_compiler.set_output(interp_output.sink());
+    interp_compiler.submit_code(CodeSubmission {
+        name: Some("kernel_float_remainder_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp_compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    interp_compiler
+        .run_root_interp(interp_root)
+        .expect("interpreter should call the same declared C export");
+    assert_eq!(interp_output.lines(), vec!["-1.5".to_string()]);
+}
+
+#[test]
+fn compiler2_raw_arithmetic_pair_edges_use_the_total_runtime_exports_at_interp_and_forced_native_c_doors() {
+    let source = include_str!("../../fixtures2/00556_arithmetic_raw_pair_edges.fz");
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let mut interp = Compiler2::new(interp_tel);
+    interp.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/arithmetic_raw_pair_edges_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        interp.run_root_interp(interp_root),
+        Ok(42),
+        "the interpreter must expose each real C result/status lane at arithmetic boundaries",
+    );
+
+    let native_tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&native_tel);
+    let mut forced_c = Compiler2::new(native_tel);
+    forced_c.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/arithmetic_raw_pair_edges_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let native_root = forced_c.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut forced_c, native_root);
+    let program = native.last(native_root).program;
+    for symbol in [
+        "fz_op_neg_i",
+        "fz_op_add_ii",
+        "fz_op_sub_ii",
+        "fz_op_mul_ii",
+        "fz_op_div_ii",
+        "fz_op_rem_ii",
+        "fz_op_div_ff",
+        "fz_op_mul_ff",
+    ] {
+        assert!(
+            program
+                .module
+                .externs
+                .iter()
+                .any(|decl| decl.symbol == symbol && decl.abi == ExternAbi::C),
+            "the exact declaration of {symbol} must remain a real C call",
+        );
+    }
+    let compiled = jit_compile_native_program(&mut forced_c, &program);
+    assert_eq!(
+        compiled.run(forced_c.telemetry(), program.entry),
+        42,
+        "the forced native C calls must expose the same result/status lanes as interpreter calls",
+    );
+}
+
+#[test]
+fn compiler2_typed_kernel_arithmetic_helpers_call_real_pair_exports_in_the_native_path() {
+    use object::{BinaryFormat, Object, ObjectSymbol};
+
+    let source = r#"
+def main() do
+  integer = (-5 + 7) * 3
+  float = (integer + 0.5) / 2.0
+  if integer == 6 and float == 3.25, do: 42, else: 0
+end
+"#;
+    let telemetry = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&telemetry);
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("typed_kernel_arithmetic_generic_helpers.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let pair_exports = program
+        .module
+        .externs
+        .iter()
+        .filter_map(|decl| match (decl.abi, decl.ret) {
+            (ExternAbi::C, ExternReturn::Pair(_)) => Some(decl.symbol.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        ["fz_op_add_ii", "fz_op_mul_ii", "fz_op_add_if", "fz_op_div_ff"]
+            .iter()
+            .all(|symbol| pair_exports.contains(symbol)),
+        "the typed Kernel root must retain its resolved real C arithmetic declarations: {pair_exports:?}",
+    );
+
+    let (jit, entry) = compiler
+        .compile_root_jit(root)
+        .expect("compile typed arithmetic JIT root");
+    assert_eq!(
+        jit.run(compiler.telemetry(), entry),
+        42,
+        "JIT must execute the same real C arithmetic calls",
+    );
+
+    let artifact = compiler
+        .compile_root_aot(root, "typed_kernel_arithmetic_generic_helpers")
+        .expect("compile typed arithmetic AOT root");
+    let object = object::File::parse(artifact.object.as_slice()).expect("parse emitted arithmetic object");
+    let imports = object
+        .symbols()
+        .filter(|symbol| symbol.is_undefined())
+        .filter_map(|symbol| symbol.name().ok())
+        .collect::<BTreeSet<_>>();
+    let pair_imports = pair_exports
+        .iter()
+        .map(|symbol| match object.format() {
+            BinaryFormat::MachO => format!("_{symbol}"),
+            _ => (*symbol).to_string(),
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        pair_imports.iter().all(|symbol| imports.contains(symbol.as_str())),
+        "the shared native pair lowering must import every real C arithmetic export; pair={pair_imports:?} imports={imports:?}",
+    );
+}
+
+#[test]
+fn compiler2_kernel_self_and_make_ref_are_typed_private_externs_on_native_and_interp() {
+    let source = "defmodule Main do\n  def main(), do: if self() == self() and make_ref() != make_ref(), do: dbg(42), else: dbg(0)\nend\n";
+
+    let native_tel = ConfiguredTelemetry::new();
+    let native_output = DbgCapture::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&native_tel);
+    let native = NativeProgramCapture::new();
+    native.install(&native_tel);
+    let functions = FunctionCapture::new();
+    functions.install(&native_tel);
+    let modules = ModuleCapture::new();
+    modules.install(&native_tel);
+    let mut native_compiler = Compiler2::new(native_tel);
+    native_compiler.set_output(native_output.sink());
+    native_compiler.submit_code(CodeSubmission {
+        name: Some("kernel_self_make_ref_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let native_root = native_compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut native_compiler, native_root);
+
+    let kernel = module_id(&modules, "Kernel");
+    let self_wrapper = function_id_in_module(&functions, &modules, "Kernel", "self", 0);
+    let self_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_self", 0);
+    let ref_wrapper = function_id_in_module(&functions, &modules, "Kernel", "make_ref", 0);
+    let ref_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_make_ref", 0);
+    let interface = native_compiler.world().module_interface(kernel);
+    for name in ["fz_self", "fz_make_ref"] {
+        assert!(
+            !interface
+                .callables()
+                .iter()
+                .any(|callable| callable.matches_name_arity(name, 0)),
+            "{name}/0 is a private lexical leaf, not Kernel interface"
+        );
+    }
+
+    let backend_program = backend.last(native_root).program;
+    backend_direct_call(backend_executable(&backend_program, self_wrapper).1, self_extern);
+    backend_direct_call(backend_executable(&backend_program, ref_wrapper).1, ref_extern);
+    for (function, symbol, abi) in [
+        (self_extern, "fz_self", ExternAbi::Fz),
+        (ref_extern, "fz_make_ref", ExternAbi::C),
+    ] {
+        let BackendBody::Extern { signature } = &backend_executable(&backend_program, function).1.body else {
+            panic!("{symbol}/0 must lower as an ordinary extern executable")
+        };
+        assert_eq!(signature.symbol, symbol);
+        assert_eq!(signature.abi, abi);
+        assert!(signature.params.is_empty());
+        assert_eq!(signature.ret, ExternTy::I64);
+    }
+    assert_eq!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_self").unwrap(),
+        fz_runtime::ir_runtime::fz_self as *const (),
+    );
+    assert_eq!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_ref").unwrap(),
+        fz_runtime::ir_runtime::fz_make_ref as *const (),
+    );
+    let native_program = native.last(native_root).program;
+    for (symbol, abi) in [("fz_self", ExternAbi::Fz), ("fz_make_ref", ExternAbi::C)] {
+        let decl = native_program
+            .module
+            .externs
+            .iter()
+            .find(|decl| decl.symbol == symbol)
+            .unwrap_or_else(|| panic!("native module extern {symbol}"));
+        assert_eq!(decl.abi, abi);
+        assert!(decl.params.is_empty());
+        assert_eq!(decl.ret, ExternTy::I64);
+    }
+    let compiled = jit_compile_native_program(&mut native_compiler, &native_program);
+    assert_eq!(
+        compiled.run_with_output(native_compiler.telemetry(), &native_output, native_program.entry),
+        42
+    );
+    assert_eq!(native_output.lines(), vec!["42".to_string()]);
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let interp_output = DbgCapture::new();
+    let mut interp_compiler = Compiler2::new(interp_tel);
+    interp_compiler.set_output(interp_output.sink());
+    interp_compiler.submit_code(CodeSubmission {
+        name: Some("kernel_self_make_ref_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp_compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(interp_compiler.run_root_interp(interp_root), Ok(42));
+    assert_eq!(interp_output.lines(), vec!["42".to_string()]);
+}
+
+#[test]
+fn compiler2_kernel_make_resource_is_one_typed_private_fz_extern() {
+    let source = "extern \"C\" defp _resource_test_dtor(integer) :: nil\n\
+                  defmodule Main do\n\
+                    def main(), do: make_resource(42, &_resource_test_dtor/1)\n\
+                  end\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("kernel_make_resource_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+
+    let kernel = module_id(&modules, "Kernel");
+    let wrapper = function_id_in_module(&functions, &modules, "Kernel", "make_resource", 2);
+    let extern_id = function_id_in_module(&functions, &modules, "Kernel", "fz_make_resource", 2);
+    assert!(
+        !compiler
+            .world()
+            .module_interface(kernel)
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("fz_make_resource", 2)),
+        "the runtime allocator is a private lexical leaf, not Kernel interface",
+    );
+
+    let backend_program = backend.last(root).program;
+    backend_direct_call(backend_executable(&backend_program, wrapper).1, extern_id);
+    let BackendBody::Extern { signature } = &backend_executable(&backend_program, extern_id).1.body else {
+        panic!("Kernel.fz_make_resource/2 must lower as an ordinary extern executable")
+    };
+    assert_eq!(signature.symbol, "fz_make_resource");
+    assert_eq!(signature.abi, ExternAbi::Fz);
+    assert_eq!(signature.params, vec![ExternTy::I64, ExternTy::Any]);
+    assert_eq!(signature.ret, ExternTy::Any);
+    assert_eq!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_make_resource").unwrap(),
+        fz_runtime::ir_runtime::fz_make_resource as *const (),
+        "the interpreter must resolve the exact physical export",
+    );
+
+    let native_program = native.last(root).program;
+    let decl = native_program
+        .module
+        .externs
+        .iter()
+        .find(|decl| decl.symbol == "fz_make_resource")
+        .expect("native module extern fz_make_resource");
+    assert_eq!(decl.abi, ExternAbi::Fz);
+    assert_eq!(decl.params, [ExternTy::I64, ExternTy::Any]);
+    assert_eq!(decl.ret, ExternTy::Any);
+}
+
+#[test]
+fn compiler2_kernel_panic_is_one_private_fz_never_extern() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("kernel_panic_native.fz".to_string()),
+        text: "defmodule Main do\n  def main(), do: panic({:stop, [1, 2]})\nend\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+
+    let kernel = module_id(&modules, "Kernel");
+    let wrapper = function_id_in_module(&functions, &modules, "Kernel", "panic", 1);
+    let extern_id = function_id_in_module(&functions, &modules, "Kernel", "fz_panic", 1);
+    assert!(
+        !compiler
+            .world()
+            .module_interface(kernel)
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("fz_panic", 1)),
+        "the panic gateway is private source, not a Kernel interface leaf",
+    );
+
+    let backend_program = backend.last(root).program;
+    backend_direct_call(backend_executable(&backend_program, wrapper).1, extern_id);
+    let BackendBody::Extern { signature } = &backend_executable(&backend_program, extern_id).1.body else {
+        panic!("Kernel.fz_panic/1 must lower as an ordinary extern executable")
+    };
+    assert_eq!(signature.symbol, "fz_panic");
+    assert_eq!(signature.abi, ExternAbi::Fz);
+    assert_eq!(signature.params, vec![ExternTy::Any]);
+    assert_eq!(signature.ret, ExternTy::Never);
+    assert_eq!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_panic").unwrap(),
+        fz_runtime::fz_panic as *const (),
+        "the interpreter must resolve the exact physical panic export",
+    );
+
+    let native_program = native.last(root).program;
+    let decl = native_program
+        .module
+        .externs
+        .iter()
+        .find(|decl| decl.symbol == "fz_panic")
+        .expect("native module extern fz_panic");
+    assert_eq!(decl.abi, ExternAbi::Fz);
+    assert_eq!(decl.params, [ExternTy::Any]);
+    assert_eq!(decl.ret, ExternTy::Never);
+}
+
+#[test]
+fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
+    let source = "defmodule Main do\n\
+                    def child(parent), do: send(parent, {:ready, self()})\n\
+                    def main() do\n\
+                      parent = self()\n\
+                      child = spawn(fn () -> child(parent) end)\n\
+                      receive do\n\
+                        {:ready, ^child} -> 42\n\
+                      end\n\
+                    end\n\
+                  end\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let modules = ModuleCapture::new();
+    modules.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("kernel_spawn_send_native.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("Main".to_string()),
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+
+    let kernel = module_id(&modules, "Kernel");
+    let spawn_wrapper = function_id_in_module(&functions, &modules, "Kernel", "spawn", 1);
+    let spawn_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_spawn", 1);
+    let send_wrapper = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
+    let send_extern = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
+    let interface = compiler.world().module_interface(kernel);
+    assert!(
+        !interface
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("spawn", 2)),
+        "Kernel publishes only spawn/1",
+    );
+    assert!(
+        !interface
+            .callables()
+            .iter()
+            .any(|callable| callable.matches_name_arity("fz_spawn_opt", 2)),
+        "the removed runtime leaf has no Kernel identity",
+    );
+    assert!(
+        crate::ir_interp::tests_support_resolved_symbol_addr("fz_spawn_opt_ref").is_err(),
+        "the removed physical export must not still be reachable",
+    );
+    for (name, arity) in [("fz_spawn", 1), ("fz_send", 2)] {
+        assert!(
+            !interface
+                .callables()
+                .iter()
+                .any(|callable| callable.matches_name_arity(name, arity)),
+            "{name}/{arity} is a private lexical leaf, not Kernel interface",
+        );
+    }
+
+    let backend_program = backend.last(root).program;
+    backend_direct_call(backend_executable(&backend_program, spawn_wrapper).1, spawn_extern);
+    backend_direct_call(backend_executable(&backend_program, send_wrapper).1, send_extern);
+    for (function, symbol, params, ret) in [
+        (spawn_extern, "fz_spawn", vec![ExternTy::Any], ExternTy::I64),
+        (
+            send_extern,
+            "fz_send",
+            vec![ExternTy::I64, ExternTy::Any],
+            ExternTy::Any,
+        ),
+    ] {
+        let BackendBody::Extern { signature } = &backend_executable(&backend_program, function).1.body else {
+            panic!("Kernel.{symbol} must lower as an ordinary extern executable")
+        };
+        assert_eq!(signature.symbol, symbol);
+        assert_eq!(signature.abi, ExternAbi::Fz);
+        assert_eq!(signature.params, params);
+        assert_eq!(signature.ret, ret);
+        let expected = match symbol {
+            "fz_spawn" => fz_runtime::ir_runtime::fz_spawn as *const (),
+            "fz_send" => fz_runtime::ir_runtime::fz_send as *const (),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            crate::ir_interp::tests_support_resolved_symbol_addr(symbol).unwrap(),
+            expected,
+            "the interpreter must resolve the exact physical {symbol} export",
+        );
+    }
+
+    let native_program = native.last(root).program;
+    for (symbol, params, ret) in [
+        ("fz_spawn", vec![ExternTy::Any], ExternTy::I64),
+        ("fz_send", vec![ExternTy::I64, ExternTy::Any], ExternTy::Any),
+    ] {
+        let decl = native_program
+            .module
+            .externs
+            .iter()
+            .find(|decl| decl.symbol == symbol)
+            .unwrap_or_else(|| panic!("native module extern {symbol}"));
+        assert_eq!(decl.abi, ExternAbi::Fz);
+        assert_eq!(decl.params, params);
+        assert_eq!(decl.ret, ret);
+    }
 }
 
 #[test]
@@ -18335,20 +19408,32 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
         self_calls.last().expect("self calls").summary.return_ty.is_some(),
         "the ascent should land on real return evidence",
     );
+    let recursive_result_records = callsites
+        .all()
+        .into_iter()
+        .filter(|record| {
+            record
+                .summary
+                .targets
+                .iter()
+                .any(|target| target.callee == SelectedCallee::Function(count_id))
+        })
+        .collect::<Vec<_>>();
 
     // Mid-ascent, not-yet-derived callee returns surface as ABSENT evidence
     // (return_ty None) — the honest snapshot the engine now records.
     assert!(
-        callsites.all().iter().any(|record| record.summary.return_ty.is_none()),
-        "some round must record absent return evidence",
+        recursive_result_records
+            .iter()
+            .any(|record| record.summary.return_ty.is_none()),
+        "some round must record absent return evidence for the source calls that target count/1",
     );
 
-    // The two lies are gone. Every function in this program returns, so the
-    // empty type may never appear as a return (the old absent-reads-as-none
-    // lie), and there are no boundaries or dynamic callables, so `any` may
-    // never appear either (the old wait-placeholder lie).
+    // The two lies are gone at the recursive source callsite. Kernel helper
+    // error paths may correctly return `never`; they are not an absent read of
+    // count/1's recursive result.
     let any = world.types_mut().any();
-    for record in callsites.all() {
+    for record in recursive_result_records {
         for target in &record.summary.targets {
             if let Some(ty) = target.return_ty {
                 assert!(
@@ -18664,7 +19749,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
         assert!(!names.contains("foo"));
         assert!(
-            frontier.len() <= 17,
+            frontier.len() <= 22,
             "quicksort frontier exceeded the proven bound: {frontier:?}"
         );
         shapes.push((*jobs_ran.borrow(), normalized));

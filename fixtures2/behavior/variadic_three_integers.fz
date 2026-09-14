@@ -1,0 +1,32 @@
+#---
+# purpose: "a variadic C call carries three integer arguments, in order, on every door"
+#---
+#
+# # variadic_three_integers
+#
+# A C variadic call is not a call with more arguments. The platform ABI
+# describes where the variadic tail goes separately from the fixed prefix, and
+# on Apple's AArch64 the two places are different: fixed arguments use the
+# argument registers, while every variadic argument is read off the stack.
+#
+# Cranelift cannot mark a call variadic, so the placement has to be produced by
+# choosing the parameter list, and the call is right only if that choice is
+# right for the target (see `native_codegen/variadic.rs`).
+#
+# Three variadic arguments are what makes the layout observable. One argument
+# lands in the first slot whether the call filled the argument registers or
+# not, so a single value cannot tell a correct layout from one that put the
+# tail in registers. Three values in a row read back in order can.
+#
+# The second call goes through the same declaration with a different variadic
+# arity, which is what a per-call-site parameter list buys: the shape is the
+# call's, not the declaration's.
+#
+# `printf` reports how many characters it wrote, so the second line also pins
+# the result lane: `11 22 33\n` is nine characters.
+extern "C" defp libc::printf(fmt :: cstring, ...) :: c_int
+
+def main() do
+  written = libc::printf("%lld %lld %lld\n", 11, 22, 33)
+  libc::printf("%lld\n", written)
+end

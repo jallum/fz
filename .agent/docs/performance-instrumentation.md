@@ -134,6 +134,16 @@ Unchanged reads emit no event and allocate no checked-node table or wait frame.
 These are operation counts, not total allocator calls or elapsed time; they
 expose shared-path revisits and cycle cleanup that formula counts alone miss.
 
+**Ownership scans** — `fz.compiler2.lowered_body.ownership`, one per lowered
+function, carrying its `function_id` and `steps_scanned`: how many steps
+ownership construction read in sequence while lowering it. The decisions
+themselves -- where a value is defined, whether a use that can still happen
+wants it -- come from the body's tables, so the only sequential reads are the
+two scans that find the list constructions and the tuples, and the count stays
+at twice the body's step count however many constructions the body holds. A
+count that grows with the constructions is a pass that went back to searching
+the body.
+
 **Backend requests and pull sessions** —
 `fz.compiler2.backend_request.started` / `finished` bracket one request for a
 root backend program. Both boundaries use one gate and one typed payload;

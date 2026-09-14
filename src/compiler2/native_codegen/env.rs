@@ -10,7 +10,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) struct CodegenEnv<'a> {
-    pub(super) runtime: &'a RuntimeRefs,
+    /// The bodies codegen emits itself, for the sites that take their
+    /// address or call them.
+    pub(super) locals: &'a LocalBodies,
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
     pub(super) active_spec_id: u32,
@@ -84,6 +86,7 @@ pub(crate) struct StaticStructRef {
 ///   for immutable aggregate literals whose storage may be emitted as static
 ///   data instead of heap construction.
 /// - `extern_funcs`: FuncRef deduplicated per extern symbol per function.
+/// - `runtime_funcs`: FuncRef per runtime helper per function, keyed by linker name.
 /// - `used_vars`: all var IDs that appear as operands anywhere in the function;
 ///   unit-return extern results whose dest ID is absent skip the nil iconst.
 /// - `if_only_conds`: var IDs used exclusively as Term::If conditions; their
@@ -106,6 +109,9 @@ pub(crate) struct CodegenCache {
     pub(super) static_struct_count: usize,
     /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<ExternId, ir::FuncRef>,
+    /// FuncRef for each runtime helper, keyed by its linker name and
+    /// deduplicated per function.
+    pub(super) runtime_funcs: HashMap<&'static str, ir::FuncRef>,
     /// Var IDs referenced anywhere in the function's IR. Unit-return
     /// extern results whose dest ID is absent here can skip the nil iconst.
     pub(super) used_vars: HashSet<u32>,

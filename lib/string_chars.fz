@@ -54,7 +54,7 @@ defimpl StringChars, for: Atom do
 end
 
 defimpl StringChars, for: Binary do
-  extern "C" def fz_bitstring_is_binary(any) :: integer
+  extern "C" defp fz_bitstring_is_binary(any) :: integer
 
   # fz's `binary` type does not require byte alignment -- `<<1::4>>` satisfies
   # a `s :: binary` clause head -- so whether a given bitstring is actually a

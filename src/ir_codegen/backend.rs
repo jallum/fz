@@ -1,7 +1,6 @@
 use super::*;
 use crate::diag::Diagnostics;
-use cranelift_codegen::ir::{AbiParam, Signature, types};
-use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::ir::{AbiParam, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{Configurable, Flags};
 use cranelift_frontend::FunctionBuilderContext;
@@ -9,7 +8,6 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, Linkage, Module as ClModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use fz_runtime::process::Node;
-use fz_runtime::{extern_binary, extern_variadic, fz_panic, ir_runtime, procbin, resource};
 #[cfg(target_os = "macos")]
 use object::macho::PLATFORM_MACOS;
 #[cfg(target_os = "macos")]
@@ -77,20 +75,19 @@ impl JitBackend {
     pub(crate) fn new() -> Self {
         let isa = host_isa();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        // Bind every fz runtime FFI fn pointer. JIT-specific: the linker
-        // is in-process and resolves symbols by name → Rust fn pointer.
-        // AOT will skip this entire block (linker resolves against the
-        // fz_runtime staticlib instead).
-        register_runtime_symbols(&mut builder);
-        // fz-5xp.59 — a FOREIGN symbol goes through the same resolver the
-        // interpreter uses, rather than cranelift's own `dlsym`. There is one
-        // question -- where does `libc::sqrt` live -- and it had two answers:
-        // cranelift's searched only what the process had already loaded, so the
-        // JIT door failed on Linux where libm is a separate library while the
-        // interp door, once taught to open it, did not.
+        #[cfg(test)]
+        register_test_symbols(&mut builder);
+        // Every symbol the JIT cannot resolve itself -- fz's own runtime
+        // helpers and foreign C functions alike -- goes through the resolver
+        // the interpreter uses, rather than cranelift's own `dlsym`. It asks
+        // the loaded image, then the standard C libraries. Cranelift's
+        // `dlsym` searched only what the process had
+        // already loaded, so there were two answers to "where does `libc::sqrt`
+        // live" and the JIT door failed on Linux, where libm is a separate
+        // library, while the interp door did not.
         builder.symbol_lookup_fn(Box::new(|name| {
             let name = std::ffi::CString::new(name).ok()?;
-            let addr = unsafe { fz_runtime::extern_variadic::fz_extern_symbol_addr(name.as_ptr()) };
+            let addr = unsafe { fz_runtime::symbol_lookup::fz_extern_symbol_addr(name.as_ptr()) };
             (addr != 0).then_some(addr as *const u8)
         }));
         Self {
@@ -99,304 +96,19 @@ impl JitBackend {
     }
 }
 
-/// Bind every fz runtime FFI fn pointer into the JIT linker. Split out
-/// of `JitBackend::new` purely for readability — the list is long and
-/// flat. Grouped by subsystem (debug print/panic, list, struct, bitstring,
-/// map, closure, scheduler, receive, etc.).
-/// Every runtime symbol the JIT can resolve, as (name, address).
-///
-/// fz-5xp.58 — a TABLE rather than a run of `builder.symbol` calls, so the
-/// set is observable: `every_declared_runtime_symbol_is_registered` checks it
-/// against `RUNTIME_SYMBOLS`, the provenance authority. A symbol declared
-/// there and missing here used to be a Linux-only runtime panic — on macOS the
-/// JIT falls back to `dlsym` over the process image and finds the `no_mangle`
-/// export anyway, so the local gate could not see the hole.
-pub(crate) fn runtime_symbol_addrs() -> Vec<(&'static str, *const u8)> {
-    vec![
-        ("fz_dbg_value_ref", ir_runtime::fz_dbg_value_ref as *const u8),
-        ("fz_dbg_value", ir_runtime::fz_dbg_value as *const u8),
-        (
-            "fz_process_heap_alloc_stats",
-            ir_runtime::fz_process_heap_alloc_stats as *const u8,
-        ),
-        ("fz_map_count", ir_runtime::fz_map_count as *const u8),
-        ("fz_map_entry_key", ir_runtime::fz_map_entry_key as *const u8),
-        ("fz_map_entry_value", ir_runtime::fz_map_entry_value as *const u8),
-        ("fz_panic", fz_panic as *const u8),
-        (
-            "fz_dynamic_float_arith_unsupported",
-            ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
-        ),
-        ("fz_halt_implicit_ref", ir_runtime::fz_halt_implicit_ref as *const u8),
-        ("fz_halt_implicit_i64", ir_runtime::fz_halt_implicit_i64 as *const u8),
-        ("fz_halt_implicit_f64", ir_runtime::fz_halt_implicit_f64 as *const u8),
-        ("fz_halt_implicit_atom", ir_runtime::fz_halt_implicit_atom as *const u8),
-        ("fz_exit_fault", ir_runtime::fz_exit_fault as *const u8),
-        ("fz_alloc_frame", ir_runtime::fz_alloc_frame as *const u8),
-        ("fz_list_cons_ref", ir_runtime::fz_list_cons_ref as *const u8),
-        ("fz_list_cons_any", ir_runtime::fz_list_cons_any as *const u8),
-        ("fz_list_cons_int", ir_runtime::fz_list_cons_int as *const u8),
-        ("fz_list_cons_float", ir_runtime::fz_list_cons_float as *const u8),
-        ("fz_list_cons_atom", ir_runtime::fz_list_cons_atom as *const u8),
-        ("fz_list_is_cons", ir_runtime::fz_list_is_cons as *const u8),
-        ("fz_list_head_ref", ir_runtime::fz_list_head_ref as *const u8),
-        ("fz_list_head_int_ref", ir_runtime::fz_list_head_int_ref as *const u8),
-        (
-            "fz_list_head_float_ref",
-            ir_runtime::fz_list_head_float_ref as *const u8,
-        ),
-        ("fz_list_tail_ref", ir_runtime::fz_list_tail_ref as *const u8),
-        (
-            "fz_list_reuse_or_cons_ref",
-            ir_runtime::fz_list_reuse_or_cons_ref as *const u8,
-        ),
-        (
-            "fz_list_reuse_or_cons_parts",
-            ir_runtime::fz_list_reuse_or_cons_parts as *const u8,
-        ),
-        (
-            "fz_mark_published_ref_aliased",
-            ir_runtime::fz_mark_published_ref_aliased as *const u8,
-        ),
-        ("fz_alloc_struct", ir_runtime::fz_alloc_struct as *const u8),
-        (
-            "fz_struct_get_field_ref",
-            ir_runtime::fz_struct_get_field_ref as *const u8,
-        ),
-        (
-            "fz_struct_get_named_field_ref",
-            ir_runtime::fz_struct_get_named_field_ref as *const u8,
-        ),
-        (
-            "fz_struct_set_field_ref",
-            ir_runtime::fz_struct_set_field_ref as *const u8,
-        ),
-        (
-            "fz_struct_set_field_int",
-            ir_runtime::fz_struct_set_field_int as *const u8,
-        ),
-        (
-            "fz_struct_set_field_float",
-            ir_runtime::fz_struct_set_field_float as *const u8,
-        ),
-        (
-            "fz_struct_set_field_atom",
-            ir_runtime::fz_struct_set_field_atom as *const u8,
-        ),
-        ("fz_bs_begin", ir_runtime::fz_bs_begin as *const u8),
-        ("fz_bs_write_field_ref", ir_runtime::fz_bs_write_field_ref as *const u8),
-        ("fz_bs_finalize", ir_runtime::fz_bs_finalize as *const u8),
-        (
-            "fz_alloc_bitstring_const",
-            ir_runtime::fz_alloc_bitstring_const as *const u8,
-        ),
-        ("fz_binary_concat", ir_runtime::fz_binary_concat as *const u8),
-        ("fz_atom_to_binary", ir_runtime::fz_atom_to_binary as *const u8),
-        ("fz_binary_downcase", ir_runtime::fz_binary_downcase as *const u8),
-        ("fz_binary_to_atom", ir_runtime::fz_binary_to_atom as *const u8),
-        ("fz_binary_upcase", ir_runtime::fz_binary_upcase as *const u8),
-        (
-            "fz_bitstring_byte_size",
-            ir_runtime::fz_bitstring_byte_size as *const u8,
-        ),
-        ("fz_map_delete", ir_runtime::fz_map_delete as *const u8),
-        ("fz_map_from_kv", ir_runtime::fz_map_from_kv as *const u8),
-        ("fz_map_put_ref", ir_runtime::fz_map_put_ref as *const u8),
-        ("fz_map_put_int", ir_runtime::fz_map_put_int as *const u8),
-        ("fz_map_put_float", ir_runtime::fz_map_put_float as *const u8),
-        ("fz_map_put_atom", ir_runtime::fz_map_put_atom as *const u8),
-        ("fz_map_put_atom_ref", ir_runtime::fz_map_put_atom_ref as *const u8),
-        ("fz_op_div_ii_to_float", ir_runtime::fz_op_div_ii_to_float as *const u8),
-        ("fz_op_neg_i", ir_runtime::fz_op_neg_i as *const u8),
-        ("fz_op_neg_f", ir_runtime::fz_op_neg_f as *const u8),
-        ("fz_op_rem_ff", ir_runtime::fz_op_rem_ff as *const u8),
-        ("fz_integer_to_binary", ir_runtime::fz_integer_to_binary as *const u8),
-        ("fz_float_to_binary", ir_runtime::fz_float_to_binary as *const u8),
-        ("fz_bs_reader_init_ref", ir_runtime::fz_bs_reader_init_ref as *const u8),
-        ("fz_bs_read_field_ref", ir_runtime::fz_bs_read_field_ref as *const u8),
-        ("fz_bs_reader_done_ref", ir_runtime::fz_bs_reader_done_ref as *const u8),
-        // Static SharedBin path: codegen emits a 40-byte data symbol in
-        // `.data`, then calls this helper to wrap it in a per-process
-        // ProcBin / MSO entry.
-        (
-            "fz_alloc_procbin_from_static",
-            ir_runtime::fz_alloc_procbin_from_static as *const u8,
-        ),
-        // Noop destructor address baked into each static SharedBin's
-        // `destructor` field via a function-address relocation. Never
-        // invoked in practice (anchor refcount stays >= 1) but must
-        // resolve at link time.
-        (
-            "shared_bin_destructor_noop",
-            procbin::shared_bin_destructor_noop as *const u8,
-        ),
-        ("fz_binary_as_ptr", extern_binary::fz_binary_as_ptr as *const u8),
-        ("fz_binary_as_cstring", extern_binary::fz_binary_as_cstring as *const u8),
-        (
-            "fz_extern_symbol_addr",
-            extern_variadic::fz_extern_symbol_addr as *const u8,
-        ),
-        (
-            "fz_call_var_i64_cstring_i64_i64_to_i64",
-            extern_variadic::fz_call_var_i64_cstring_i64_i64_to_i64 as *const u8,
-        ),
-        (
-            "fz_call_var_i64_cstring_i64_to_i64",
-            extern_variadic::fz_call_var_i64_cstring_i64_to_i64 as *const u8,
-        ),
-        ("fz_map_dest_begin", ir_runtime::fz_map_dest_begin as *const u8),
-        (
-            "fz_map_dest_begin_update",
-            ir_runtime::fz_map_dest_begin_update as *const u8,
-        ),
-        ("fz_map_dest_put_parts", ir_runtime::fz_map_dest_put_parts as *const u8),
-        ("fz_map_dest_put_ref", ir_runtime::fz_map_dest_put_ref as *const u8),
-        ("fz_map_dest_freeze", ir_runtime::fz_map_dest_freeze as *const u8),
-        ("fz_map_get_ref", ir_runtime::fz_map_get_ref as *const u8),
-        (
-            "fz_map_get_atom_key_ref",
-            ir_runtime::fz_map_get_atom_key_ref as *const u8,
-        ),
-        (
-            "fz_map_get_int_key_ref",
-            ir_runtime::fz_map_get_int_key_ref as *const u8,
-        ),
-        (
-            "fz_map_get_float_key_ref",
-            ir_runtime::fz_map_get_float_key_ref as *const u8,
-        ),
-        ("fz_ref_load_float", ir_runtime::fz_ref_load_float as *const u8),
-        ("fz_ref_load_int", ir_runtime::fz_ref_load_int as *const u8),
-        ("fz_type_of", ir_runtime::fz_type_of as *const u8),
-        ("fz_unbox_int", ir_runtime::fz_unbox_int as *const u8),
-        ("fz_unbox_float", ir_runtime::fz_unbox_float as *const u8),
-        ("fz_unbox_atom", ir_runtime::fz_unbox_atom as *const u8),
-        (
-            "fz_struct_schema_id_ref",
-            ir_runtime::fz_struct_schema_id_ref as *const u8,
-        ),
-        ("fz_truthy_ref", ir_runtime::fz_truthy_ref as *const u8),
-        ("fz_box_int_for_any", ir_runtime::fz_box_int_for_any as *const u8),
-        ("fz_box_float_for_any", ir_runtime::fz_box_float_for_any as *const u8),
-        ("fz_box_atom_for_any", ir_runtime::fz_box_atom_for_any as *const u8),
-        ("fz_map_is_map", ir_runtime::fz_map_is_map as *const u8),
-        ("fz_value_cmp_ref", ir_runtime::fz_value_cmp_ref as *const u8),
-        ("fz_int_float_cmp", ir_runtime::fz_int_float_cmp as *const u8),
-        (
-            "fz_value_eq_widening_ref",
-            ir_runtime::fz_value_eq_widening_ref as *const u8,
-        ),
-        (
-            "fz_value_cmp_raw_const",
-            ir_runtime::fz_value_cmp_raw_const as *const u8,
-        ),
-        ("fz_value_eq_ref", ir_runtime::fz_value_eq_ref as *const u8),
-        ("fz_value_eq_raw_const", ir_runtime::fz_value_eq_raw_const as *const u8),
-        // Receive matcher's binary-literal helper.
-        ("fz_matcher_eq_bytes", ir_runtime::fz_matcher_eq_bytes as *const u8),
-        // Receive matcher's map-key lookup helper.
-        (
-            "fz_matcher_map_get_ref",
-            ir_runtime::fz_matcher_map_get_ref as *const u8,
-        ),
-        ("fz_alloc_closure", ir_runtime::fz_alloc_closure as *const u8),
-        ("fz_closure_code_ref", ir_runtime::fz_closure_code_ref as *const u8),
-        ("fz_materialize_cont", ir_runtime::fz_materialize_cont as *const u8),
-        (
-            "fz_closure_halt_kind_ref",
-            ir_runtime::fz_closure_halt_kind_ref as *const u8,
-        ),
-        (
-            "fz_closure_get_capture_ref",
-            ir_runtime::fz_closure_get_capture_ref as *const u8,
-        ),
-        (
-            "fz_closure_get_capture_i64",
-            ir_runtime::fz_closure_get_capture_i64 as *const u8,
-        ),
-        (
-            "fz_closure_get_capture_f64",
-            ir_runtime::fz_closure_get_capture_f64 as *const u8,
-        ),
-        (
-            "fz_closure_get_capture_atom",
-            ir_runtime::fz_closure_get_capture_atom as *const u8,
-        ),
-        (
-            "fz_closure_set_capture_ref",
-            ir_runtime::fz_closure_set_capture_ref as *const u8,
-        ),
-        (
-            "fz_closure_set_capture_i64",
-            ir_runtime::fz_closure_set_capture_i64 as *const u8,
-        ),
-        (
-            "fz_closure_set_capture_f64",
-            ir_runtime::fz_closure_set_capture_f64 as *const u8,
-        ),
-        (
-            "fz_closure_set_capture_atom",
-            ir_runtime::fz_closure_set_capture_atom as *const u8,
-        ),
-        ("fz_spawn_ref", ir_runtime::fz_spawn_ref as *const u8),
-        ("fz_spawn_opt_ref", ir_runtime::fz_spawn_opt_ref as *const u8),
-        ("fz_self_raw", ir_runtime::fz_self_raw as *const u8),
-        ("fz_make_ref_raw", ir_runtime::fz_make_ref_raw as *const u8),
-        ("fz_make_resource_ref", ir_runtime::fz_make_resource_ref as *const u8),
-        ("fz_send_ref", ir_runtime::fz_send_ref as *const u8),
-        // utf8 brand support.
-        (
-            "fz_bitstring_is_binary",
-            ir_runtime::fz_bitstring_is_binary as *const u8,
-        ),
-        (
-            "fz_bitstring_valid_utf8",
-            ir_runtime::fz_bitstring_valid_utf8 as *const u8,
-        ),
-        (
-            "fz_bitstring_utf8_prefix",
-            ir_runtime::fz_bitstring_utf8_prefix as *const u8,
-        ),
-        (
-            "fz_brand_bitstring_as_utf8",
-            ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
-        ),
-        // Runtime-exported fixture/test dtor. Bound unconditionally (not
-        // cfg(test)-gated) so any compiler2 CLIF dump or run over
-        // a fixture using it resolves cleanly — the golden-CLIF harness
-        // compiles every non-deferred fixture.
-        (
-            "fz_resource_test_print_dtor",
-            resource::fz_resource_test_print_dtor as *const u8,
-        ),
-        // Selective-receive park entry. Used by JIT codegen at the
-        // Term::ReceiveMatched seam.
-        (
-            "fz_receive_park_matched",
-            ir_runtime::fz_receive_park_matched as *const u8,
-        ),
-        (
-            "fz_yield_mid_flight_report",
-            ir_runtime::fz_yield_mid_flight_report as *const u8,
-        ),
-        (
-            "fz_yield_slow_path_begin",
-            ir_runtime::fz_yield_slow_path_begin as *const u8,
-        ),
-        ("fz_get_static_closure", ir_runtime::fz_get_static_closure as *const u8),
-        ("fz_get_halt_cont", ir_runtime::fz_get_halt_cont as *const u8),
-    ]
-}
-
-pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
-    for (name, addr) in runtime_symbol_addrs() {
-        builder.symbol(name, addr);
-    }
-    // Test externs (e.g. the `_resource_test_dtor` counter used by
-    // JIT-leg resource lifecycle tests). Production paths see no
-    // extra symbols.
-    #[cfg(test)]
+/// Test externs (e.g. the `_resource_test_dtor` counter used by JIT-leg
+/// resource lifecycle tests). They live in this crate's test support, not in
+/// the runtime, so they are the only symbols the JIT is handed by hand.
+#[cfg(test)]
+fn register_test_symbols(builder: &mut JITBuilder) {
     builder.symbol("_resource_test_dtor", crate::ir_interp::tests_support_test_dtor_addr());
+    builder.symbol(
+        "_test_integer_boolean_pair",
+        crate::ir_interp::tests_support_integer_boolean_pair_addr(),
+    );
+    for (name, address) in crate::ir_interp::tests_support_scalar_pair_symbols() {
+        builder.symbol(name, address);
+    }
 }
 
 impl Backend for JitBackend {
@@ -476,9 +188,9 @@ impl Backend for JitBackend {
 }
 
 /// AOT backend: wraps a cranelift_object ObjectModule. Drives the same
-/// codegen as the JIT (through the Backend trait + declare_runtime_symbols)
-/// but finalizes by emitting object-file bytes for a linker rather than
-/// resolving fn pointers in memory.
+/// codegen as the JIT (through the Backend trait) but finalizes by emitting
+/// object-file bytes for a linker rather than resolving fn pointers in
+/// memory.
 pub struct AotBackend {
     omod: ObjectModule,
 }
@@ -518,89 +230,6 @@ impl Backend for AotBackend {
         let Some(main_fn_id) = meta.main_fn_id else {
             return Ok(());
         };
-
-        // AOT C-main is a thin driver around the Tail-CC entry bodies
-        // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted by
-        // planned codegen. Three fz-runtime FFI fns handle Process
-        // setup, static-closure registration, and run-main+teardown.
-        // Setup takes the four halt_cont_body addrs (ValueRef, RawInt,
-        // RawF64, RawAtom) in slots 2-5.
-        let setup_sig = sig1(
-            &[
-                types::I64,
-                types::I32,
-                types::I64,
-                types::I64,
-                types::I64,
-                types::I64,
-                types::I64,
-            ],
-            &[types::I64],
-        );
-        let setup_id = self
-            .omod
-            .declare_function("fz_aot_setup", Linkage::Import, &setup_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
-
-        // Trailing i32 carries halt_kind.
-        let reg_sig = sig1(
-            &[types::I64, types::I32, types::I32, types::I64, types::I32, types::I32],
-            &[],
-        );
-        let reg_id = self
-            .omod
-            .declare_function("fz_aot_register_static_closure", Linkage::Import, &reg_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_static_closure: {}", e)))?;
-
-        let run_sig = sig1(&[types::I64, types::I64, types::I64, types::I32], &[types::I32]);
-        let run_id = self
-            .omod
-            .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_run_main: {}", e)))?;
-
-        // Registers the SystemV→Tail-CC `fz_drain_dtor_entry` shim so
-        // the AOT run-queue loop can dispatch pending dtor closures at
-        // task-exit. `(proc, addr)` — proc carries the scheduler handle.
-        let set_drain_sig = sig1(&[types::I64, types::I64], &[]);
-        let set_drain_id = self
-            .omod
-            .declare_function("fz_aot_set_drain_dtor_entry", Linkage::Import, &set_drain_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e)))?;
-
-        // Registers the SystemV `fz_resume(cont)` shim so the AOT run-queue
-        // loop can resume `runnable` (entry thunk or selective-receive/
-        // mid-flight continuation) on parity with the JIT.
-        // `(proc, addr)` — proc carries the scheduler handle.
-        let set_resume_sig = sig1(&[types::I64, types::I64], &[]);
-        let set_resume_id = self
-            .omod
-            .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
-
-        // `fz_aot_register_tuple_schemas(proc, arities_ptr, len)` populates
-        // the AOT process's SchemaRegistry with one Tuple{N} entry per
-        // arity in array order. That order matches the planned codegen
-        // schema iteration, so the schema ids baked into the CLIF
-        // (via tuple_schema_ids) resolve correctly.
-        let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
-        let reg_tuples_id = self
-            .omod
-            .declare_function("fz_aot_register_tuple_schemas", Linkage::Import, &reg_tuples_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e)))?;
-        let reg_named_schemas_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
-        let reg_named_schemas_id = self
-            .omod
-            .declare_function("fz_aot_register_named_schemas", Linkage::Import, &reg_named_schemas_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_named_schemas: {}", e)))?;
-        let reg_closure_denotations_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
-        let reg_closure_denotations_id = self
-            .omod
-            .declare_function(
-                "fz_aot_register_closure_denotations",
-                Linkage::Import,
-                &reg_closure_denotations_sig,
-            )
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_closure_denotations: {}", e)))?;
 
         let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) = if meta.tuple_arities.is_empty() {
             (None, 0)
@@ -691,7 +320,9 @@ impl Backend for AotBackend {
             (Some(id), len)
         };
 
-        let mut c_main_sig = Signature::new(CallConv::SystemV);
+        // C `main(argc, argv) -> int`: not a runtime item, so its signature
+        // is written out here.
+        let mut c_main_sig = self.omod.make_signature();
         c_main_sig.params.push(AbiParam::new(types::I32));
         c_main_sig.params.push(AbiParam::new(types::I64));
         c_main_sig.returns.push(AbiParam::new(types::I32));
@@ -712,21 +343,13 @@ impl Backend for AotBackend {
             &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,
-            reg_closure_denotations_id,
             closure_denotations_data,
             closure_denotations_len,
-            setup_id,
-            reg_id,
-            run_id,
-            reg_tuples_id,
             tuple_arities_data,
             tuple_arities_len,
-            reg_named_schemas_id,
             named_schemas_data,
             named_schemas_len,
-            set_drain_id,
             meta.drain_dtor_entry_id,
-            set_resume_id,
             meta.resume_id,
         )?;
         Ok(())

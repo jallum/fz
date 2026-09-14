@@ -86,9 +86,11 @@ survives ordinary runtime-helper calls made from within generated code — prove
 
 ## Entry coverage
 
-The scheduler reaches generated fz code through exactly two SystemV→Tail-CC
-shims, each entered through a `pinned_abi` wrapper so the register is set before
-control transfers:
+The scheduler reaches generated fz code through exactly two C→Tail-CC shims,
+each entered through a `pinned_abi` wrapper so the register is set before
+control transfers. The host holds their addresses in `extern "C"` fn pointers,
+so both are built with `Module::make_signature` — the convention the target
+names for C:
 
 - `fz_resume(cont)` — the one re-entry verb, entered via `call1`. Whatever sits
   in `Process.runnable` (a continuation from a receive hit, after-timer fire, or

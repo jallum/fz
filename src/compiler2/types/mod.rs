@@ -36,7 +36,8 @@ use crate::types::{
 use bits::BasicBits;
 
 pub use crate::types::{
-    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, TypeVarId,
+    BuiltinOpaque, CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError,
+    Sigma, TypeVarId,
 };
 
 pub use arrow_match::ArrowMatch;
@@ -328,7 +329,15 @@ impl Types {
     }
 
     pub fn cpointer(&mut self) -> Ty {
-        self.opaque_of("cpointer")
+        self.builtin_opaque(BuiltinOpaque::CPointer)
+    }
+
+    pub fn pid(&mut self) -> Ty {
+        self.builtin_opaque(BuiltinOpaque::Pid)
+    }
+
+    pub fn reference(&mut self) -> Ty {
+        self.builtin_opaque(BuiltinOpaque::Ref)
     }
 
     pub fn key_is_strictly_more_specific(&self, lhs: &[Ty], rhs: &[Ty]) -> bool {
@@ -348,10 +357,15 @@ impl Types {
             .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
-    /// The persistence boundary, in three passes that each leave the next one's
+    /// The persistence boundary, in four passes that each leave the next one's
     /// precondition intact.
     ///
-    /// ORDER first (fz-kdt.105): every axis goes into canonical clause order, so
+    /// TUPLE NORMALIZATION first: a ground tuple difference whose cover differs
+    /// in exactly one coordinate is still one rectangle. Rewriting that form
+    /// here makes every construction route share the same semantic normal form
+    /// before descriptor identity is assigned.
+    ///
+    /// ORDER follows (fz-kdt.105): every axis goes into canonical clause order, so
     /// a descriptor's clause list is a function of its clause set rather than of
     /// the arrival order that built it. It has to lead, because the absorption
     /// below picks the survivor of a mutually-subsuming pair by ARRIVAL — sort
@@ -368,6 +382,7 @@ impl Types {
     /// and no exact duplicate left to collapse, so it hashes to the descriptor
     /// already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
+        self.normalize_tuple_coordinate_differences(&mut d);
         self.order_clauses(&mut d);
         self.canonicalize_tuple_axis(&mut d);
         self.canonicalize_list_axis(&mut d);
@@ -499,6 +514,60 @@ impl Types {
         absorb_subsumed_clauses(&mut d.tuples, |clause, sibling| {
             tuple_clause_subsumed(clause, sibling, |x, y| self.is_subtype(x, y))
         });
+    }
+
+    /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle
+    /// whenever every coordinate except `k` is contained in its cover:
+    ///
+    /// `P₀ × … × (Pₖ \ Nₖ) × … × Pₙ`.
+    ///
+    /// The descriptor kernel represents the left form as one positive and one
+    /// negative tuple signature. It is semantically exact but structurally
+    /// distinct from the right form, so it must collapse before `Ty` identity
+    /// is assigned. More than one differing coordinate needs a union of
+    /// rectangles and deliberately stays in its existing DNF form.
+    fn normalize_tuple_coordinate_differences(&mut self, d: &mut Descr) {
+        let clauses = std::mem::take(&mut d.tuples);
+        d.tuples = clauses
+            .into_iter()
+            .map(|clause| self.normalize_tuple_coordinate_difference(clause))
+            .collect();
+    }
+
+    fn normalize_tuple_coordinate_difference(&mut self, clause: Conj<TupleSig>) -> Conj<TupleSig> {
+        let ([positive], [negative]) = (clause.pos.as_slice(), clause.neg.as_slice()) else {
+            return clause;
+        };
+        if positive.elems.len() != negative.elems.len() {
+            return clause;
+        }
+        // This changes which side of the enclosing tuple's negative polarity
+        // owns a child. Ground coordinates describe the same rectangle either
+        // way. A variable does not: `runtime_envelope` deliberately removes a
+        // finite negative variable before it descends, so moving it inside the
+        // child would also remove the concrete exclusions beside it.
+        if positive
+            .elems
+            .iter()
+            .chain(&negative.elems)
+            .any(|elem| self.has_vars(elem))
+        {
+            return clause;
+        }
+        let differing = positive
+            .elems
+            .iter()
+            .zip(&negative.elems)
+            .enumerate()
+            .filter_map(|(index, (positive, negative))| (!self.is_subtype(positive, negative)).then_some(index))
+            .collect::<Vec<_>>();
+        let [index] = differing.as_slice() else {
+            return clause;
+        };
+
+        let mut elems = positive.elems.clone();
+        elems[*index] = self.difference(elems[*index], negative.elems[*index]);
+        Conj::pos_of(TupleSig { elems })
     }
 
     /// Absorb list clauses whose denotation is contained in a sibling. The
@@ -822,6 +891,10 @@ impl Types {
 
     pub fn opaque_of(&mut self, name: &str) -> Ty {
         self.intern(Descr::opaque_of(name))
+    }
+
+    pub fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Ty {
+        self.intern(Descr::builtin_opaque(builtin))
     }
 
     pub(crate) fn nominal_protocol_target(&mut self, name: ModuleName) -> Ty {
@@ -1508,6 +1581,10 @@ impl Types {
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_opaque_singleton().map(String::from)
+    }
+
+    pub fn builtin_opaque_singleton(&self, a: &Ty) -> Option<BuiltinOpaque> {
+        self.descr(a).as_builtin_opaque_singleton()
     }
 
     /// Classifies the resolved protocol-domain markers carried by a contract.
@@ -2394,6 +2471,10 @@ impl SharedTypes for Types {
         Types::opaque_of(self, name)
     }
 
+    fn builtin_opaque(&mut self, builtin: BuiltinOpaque) -> Self::Ty {
+        Types::builtin_opaque(self, builtin)
+    }
+
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::list_element_type(self, a)
     }
@@ -2490,6 +2571,10 @@ impl SharedTypes for Types {
 
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String> {
         Types::opaque_singleton(self, a)
+    }
+
+    fn builtin_opaque_singleton(&self, a: &Self::Ty) -> Option<BuiltinOpaque> {
+        Types::builtin_opaque_singleton(self, a)
     }
 
     #[cfg(test)]
@@ -2866,7 +2951,7 @@ fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
             .opaques
             .values
             .iter()
-            .any(|tag| matches!(tag, OpaqueTag::Named(_)))
+            .any(|tag| matches!(tag, OpaqueTag::Builtin(_) | OpaqueTag::Named(_)))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
@@ -3005,7 +3090,7 @@ fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<Module
     } else {
         FiniteSet::finite(descr.opaques.values.iter().filter_map(|tag| match tag {
             OpaqueTag::ProtocolTarget(module) => Some(module.clone()),
-            OpaqueTag::Named(_) => None,
+            OpaqueTag::Builtin(_) | OpaqueTag::Named(_) => None,
         }))
     };
     nominal.union(&structs)

@@ -303,11 +303,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let mut module = Module::default();
     module.externs.push(ExternDecl {
         id: ExternId(0),
-        fz_name: "libc::open".to_string(),
         symbol: "open".to_string(),
         params: vec![ExternTy::CString, ExternTy::I64],
         variadic: true,
-        ret: ExternTy::I64,
+        ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::I64),
         abi: ExternAbi::C,
     });
     module.extern_idx.insert(ExternId(0), 0);
@@ -495,11 +494,10 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
     let mut module = Module::default();
     module.externs.push(ExternDecl {
         id: ExternId(0),
-        fz_name: "libc::puts".to_string(),
         symbol: "puts".to_string(),
         params: vec![ExternTy::CString],
         variadic: false,
-        ret: ExternTy::I64,
+        ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::I64),
         abi: ExternAbi::C,
     });
     module.extern_idx.insert(ExternId(0), 0);

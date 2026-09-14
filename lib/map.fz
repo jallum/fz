@@ -20,15 +20,15 @@ defmodule Map do
   iteration can differ between the two runtimes.
   """
 
-  extern "C" def fz_map_count(any) :: integer
-  extern "C" def fz_map_entry_key(any, integer) :: any
-  extern "C" def fz_map_entry_value(any, integer) :: any
-  extern "fz" def fz_map_delete(any, any) :: any
-  extern "fz" def fz_map_from_kv(any, any) :: any
-  extern "fz" def fz_map_put_ref(any, any, any) :: any
-  extern "fz" def fz_map_put_int(any, any, integer) :: any
-  extern "fz" def fz_map_put_float(any, any, float) :: any
-  extern "fz" def fz_map_put_atom_ref(any, any, atom) :: any
+  extern "C" defp fz_map_count(any) :: integer
+  extern "C" defp fz_map_entry_key(any, integer) :: any
+  extern "C" defp fz_map_entry_value(any, integer) :: any
+  extern "fz" defp fz_map_delete(any, any) :: any
+  extern "fz" defp fz_map_from_kv(any, any) :: any
+  extern "fz" defp fz_map_put_ref(any, any, any) :: any
+  extern "fz" defp fz_map_put_int(any, any, integer) :: any
+  extern "fz" defp fz_map_put_float(any, any, float) :: any
+  extern "fz" defp fz_map_put_atom_ref(any, any, atom) :: any
 
   # One pass, one allocation each. Reach for these when working with several keys.
 

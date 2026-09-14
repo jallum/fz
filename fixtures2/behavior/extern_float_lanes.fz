@@ -28,25 +28,25 @@
 #
 #   * `(float) :: float`            -- float in, float out
 #   * `(float, float) :: float`     -- two floats
-#   * `(float, integer) :: float`   -- MIXED, and
-#   * `(integer, float) :: float`   -- MIXED THE OTHER WAY ROUND. Both, because
+#   * `(float, c_int) :: float`     -- MIXED, and
+#   * `(c_int, float) :: float`     -- MIXED THE OTHER WAY ROUND. Both, because
 #                                      one alone cannot tell a correct table
 #                                      from one with the two mixed shapes
 #                                      transposed: each would still answer its
 #                                      own case and fail only the other.
 #   * `(cstring) :: float`          -- integer bank in, float bank out
-#   * `(integer) :: integer`        -- the all-integer control, which always
+#   * `(c_int) :: c_int`            -- the all-integer control, which always
 #                                      worked and must keep working
 #
 # These are real libc functions with exact binary results at these inputs, so
 # the expected output is not platform-sensitive: every value here is a small
 # power of two or an exact sum of them.
-extern "C" def libc::sqrt(float) :: float
-extern "C" def libc::pow(float, float) :: float
-extern "C" def libc::ldexp(float, integer) :: float
-extern "C" def libc::jn(integer, float) :: float
-extern "C" def libc::atof(cstring) :: float
-extern "C" def libc::abs(integer) :: integer
+extern "C" defp libc::sqrt(float) :: float
+extern "C" defp libc::pow(float, float) :: float
+extern "C" defp libc::ldexp(float, c_int) :: float
+extern "C" defp libc::jn(c_int, float) :: float
+extern "C" defp libc::atof(cstring) :: float
+extern "C" defp libc::abs(c_int) :: c_int
 
 def main() do
   dbg(libc::sqrt(16.0))

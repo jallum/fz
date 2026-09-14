@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_closure};
+use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_callable, unpack_closure};
 use super::dispatch_exec::{
     DispatchExecState, DispatchMatch, DispatchOperands, DispatchStop, DispatchValues, execute_dispatch_inputs,
     subject_word,
 };
-use super::extern_call::call_lowered_extern;
+use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
     AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_runtime_type_predicate_schema_ids,
@@ -218,9 +218,13 @@ impl IrInterpRuntime {
 
     pub(super) fn spawn_backend(
         &mut self,
+        sender: *mut Process,
         executable: Rc<BackendExecutable>,
         args: Vec<AnyValue>,
     ) -> Result<u32, String> {
+        if sender.is_null() {
+            return Err("spawn: no sender process".to_string());
+        }
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         let node = Rc::clone(&self.node);
@@ -233,12 +237,24 @@ impl IrInterpRuntime {
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
         child.state = ProcessState::Ready;
+        let mut forwarding = HashMap::new();
+        let args = args
+            .into_iter()
+            .map(|value| match value {
+                AnyValue::Ref(value) => {
+                    let copied =
+                        deep_copy_any_value_ref(value, &unsafe { &*sender }.heap, &mut child.heap, &mut forwarding);
+                    AnyValue::from_any_value_ref(copied)
+                }
+                value => Ok(value),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.insert_task(pid, child);
         self.enqueue_backend_entry(pid, executable, args)?;
         Ok(pid)
     }
 
-    pub(super) fn send_opaque<T: Telemetry + ?Sized>(
+    pub(super) fn send_ref<T: Telemetry + ?Sized>(
         &mut self,
         types: &mut crate::compiler2::Types,
         transport: &TransportStore,
@@ -246,8 +262,16 @@ impl IrInterpRuntime {
         program: &BackendProgram,
         module: &Module,
         receiver_pid: &u32,
-        msg: AnyValue,
+        msg_ref: AnyValueRef,
     ) -> Result<(), String> {
+        let Some(receiver) = self.tasks.get(receiver_pid) else {
+            tel.raw_event1(&["fz", "runtime", "send_to_unknown_pid"], receiver_pid);
+            return Ok(());
+        };
+        if receiver.state == ProcessState::Exited {
+            return Ok(());
+        }
+        let msg = AnyValue::from_any_value_ref(msg_ref)?;
         let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
         if let Some(park) = self.backend_parked.remove(receiver_pid) {
             let entries = entries_for_executable(&park.executable)?;
@@ -302,16 +326,91 @@ impl IrInterpRuntime {
             }
             self.backend_parked.insert(*receiver_pid, park);
         }
-        let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
-        let Some(task) = self.tasks.get_mut(receiver_pid) else {
-            tel.raw_event1(&["fz", "runtime", "send_to_unknown_pid"], receiver_pid);
-            return Ok(());
-        };
+        let task = self.tasks.get_mut(receiver_pid).expect("receiver checked above");
 
         let mut forwarding = HashMap::new();
         let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
         task.mailbox.push_back(copied);
         Ok(())
+    }
+}
+
+/// Interpreter-side implementation of the scheduler services exposed through
+/// `Process::ctx`. The adapter lives on `drive_backend_until_idle`'s stack;
+/// callbacks are synchronous, so every erased pointer below remains valid for
+/// the whole physical extern call and is never retained by the runtime crate.
+struct BackendSchedulerAdapter<T: Telemetry + ?Sized> {
+    runtime: *mut IrInterpRuntime,
+    types: *mut crate::compiler2::Types,
+    transport: *const TransportStore,
+    tel: *const T,
+    program: *const BackendProgram,
+    module: *const Module,
+}
+
+extern "C" fn interp_fault_hook<T: Telemetry + ?Sized>(process: *mut Process, scheduler: *mut (), value_ref_word: u64) {
+    let adapter = unsafe { &mut *(scheduler as *mut BackendSchedulerAdapter<T>) };
+    let runtime = unsafe { &mut *adapter.runtime };
+    runtime.record_callback_error(fz_runtime::render_panic_message(process, value_ref_word));
+}
+
+extern "C" fn interp_spawn_hook<T: Telemetry + ?Sized>(
+    sender: *mut Process,
+    scheduler: *mut (),
+    closure_ref_word: u64,
+) -> u32 {
+    let adapter = unsafe { &mut *(scheduler as *mut BackendSchedulerAdapter<T>) };
+    let runtime = unsafe { &mut *adapter.runtime };
+    let result = (|| {
+        let closure_ref = AnyValueRef::from_raw_word(closure_ref_word)
+            .map_err(|error| format!("fz_spawn: invalid closure ref: {error:?}"))?;
+        let closure = AnyValue::from_any_value_ref(closure_ref)?;
+        let (fn_id, captures) = unpack_callable(closure, sender)?;
+        let (target, inputs) = construction_wrapper_invocation(
+            runtime,
+            unsafe { &mut *adapter.types },
+            unsafe { &*adapter.transport },
+            unsafe { &*adapter.program },
+            unsafe { &*adapter.module },
+            fn_id,
+            &captures,
+            &[],
+        )?;
+        runtime.spawn_backend(sender, target, inputs)
+    })();
+    match result {
+        Ok(pid) => pid,
+        Err(error) => {
+            runtime.record_callback_error(error);
+            0
+        }
+    }
+}
+
+extern "C" fn interp_send_hook<T: Telemetry + ?Sized>(
+    sender: *mut Process,
+    scheduler: *mut (),
+    receiver_pid: u32,
+    msg_ref_word: u64,
+) {
+    let adapter = unsafe { &mut *(scheduler as *mut BackendSchedulerAdapter<T>) };
+    let runtime = unsafe { &mut *adapter.runtime };
+    let result = AnyValueRef::from_raw_word(msg_ref_word)
+        .map_err(|error| format!("fz_send: invalid message ref: {error:?}"))
+        .and_then(|msg| {
+            debug_assert_eq!(sender, runtime.cur_proc(), "fz_send sender must be current process");
+            runtime.send_ref(
+                unsafe { &mut *adapter.types },
+                unsafe { &*adapter.transport },
+                unsafe { &*adapter.tel },
+                unsafe { &*adapter.program },
+                unsafe { &*adapter.module },
+                &receiver_pid,
+                msg,
+            )
+        });
+    if let Err(error) = result {
+        runtime.record_callback_error(error);
     }
 }
 
@@ -327,11 +426,21 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
 ) -> Result<Vec<(u32, AnyValue)>, String> {
     let mut completions = Vec::new();
     let output = OutputContext::new(output);
+    let mut scheduler_adapter = BackendSchedulerAdapter {
+        runtime,
+        types,
+        transport,
+        tel,
+        program,
+        module,
+    };
     let mut exec_ctx = ExecCtx {
-        scheduler: runtime as *mut IrInterpRuntime as *mut (),
+        scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<T> as *mut (),
         output_context: output.as_ptr(),
+        spawn: Some(interp_spawn_hook::<T>),
+        send: Some(interp_send_hook::<T>),
+        fault: Some(interp_fault_hook::<T>),
         output: Some(OUTPUT_HOOK),
-        module: module as *const Module as *const (),
         ..ExecCtx::empty()
     };
 
@@ -514,12 +623,12 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
 ) -> Result<BackendEvalTransition, String> {
     match &executable.body {
         BackendBody::Extern { signature } => {
-            let value = call_lowered_extern(runtime, types, transport, tel, program, module, signature, None, &args)?;
+            let value = call_lowered_extern(runtime, signature, None, &args)?;
             continue_backend_value(
                 runtime,
                 transport,
                 program,
-                BackendBoundValue::Runtime(value),
+                bind_extern_result(transport, program, runtime.cur_proc(), &executable, value)?,
                 continuations,
             )
         }
@@ -1011,9 +1120,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 runtime,
                 types,
                 transport,
-                tel,
                 program,
-                module,
                 callee,
                 args,
                 extern_marshals,
@@ -1919,13 +2026,11 @@ fn delivered_env(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
+fn eval_backend_direct_call_edge(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &T,
     program: &BackendProgram,
-    module: &Module,
     callee: &CallTarget<ExecutableKey>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
@@ -1941,9 +2046,7 @@ fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
                 runtime,
                 types,
                 transport,
-                tel,
                 program,
-                module,
                 callee,
                 args,
                 extern_marshals,
@@ -1960,13 +2063,11 @@ fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
     }
 }
 
-fn eval_direct_call<T: Telemetry + ?Sized>(
+fn eval_direct_call(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &T,
     program: &BackendProgram,
-    module: &Module,
     callee: Rc<BackendExecutable>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
@@ -1990,32 +2091,59 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
         }
     };
     match &executable.body {
-        BackendBody::Extern { signature } => call_lowered_extern(
-            runtime,
-            types,
-            transport,
-            tel,
-            program,
-            module,
-            signature,
-            extern_marshals,
-            &call_args,
-        )
-        .and_then(|value| {
-            continue_backend_value(
-                runtime,
-                transport,
-                program,
-                BackendBoundValue::Runtime(value),
-                continuations,
-            )
-        }),
+        BackendBody::Extern { signature } => call_lowered_extern(runtime, signature, extern_marshals, &call_args)
+            .and_then(|value| {
+                let value = bind_extern_result(transport, program, runtime.cur_proc(), executable, value)?;
+                continue_backend_value(runtime, transport, program, value, continuations)
+            }),
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,
             continuations,
         })),
     }
+}
+
+fn bind_extern_result(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    proc: *mut Process,
+    executable: &BackendExecutable,
+    result: ExternCallValue,
+) -> Result<BackendBoundValue, String> {
+    let ExternCallValue::Pair(values) = result else {
+        let ExternCallValue::Scalar(value) = result else {
+            unreachable!()
+        };
+        return Ok(BackendBoundValue::Runtime(value));
+    };
+    let shape = executable.abi.return_layout.layout.structural;
+    let ShapeDescr::Tuple(fields) = transport.interners().shape(shape) else {
+        return Err(format!(
+            "extern scalar-pair result has non-tuple backend return shape {shape:?}"
+        ));
+    };
+    if fields.len() != values.len() {
+        return Err(format!(
+            "extern scalar-pair result has {} fields but backend shape {shape:?} has {}",
+            values.len(),
+            fields.len()
+        ));
+    }
+    let mut lanes = Vec::new();
+    for (value, field_layout) in values.into_iter().zip(fields.iter().copied()) {
+        if transport.interners().layout_width(field_layout) != 0 {
+            encode_transport_layout(
+                transport,
+                program,
+                proc,
+                &BackendBoundValue::Runtime(value),
+                field_layout,
+                &mut lanes,
+            )?;
+        }
+    }
+    Ok(BackendBoundValue::Transport { shape, lanes })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3423,6 +3551,294 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kernel_panic_preserves_a_composite_reason_without_terminating_the_interpreter_host() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("composite_panic_reason.fz".into()),
+            text: "def main() do\n  panic({:stop, [1, 2]})\n  dbg(:unreachable)\nend\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let error = compiler
+            .run_root_interp(root)
+            .expect_err("panic is an interpreter process error");
+        assert!(error.contains("fz panic: {:stop, [1, 2]}"), "{error}");
+
+        let mut survivor = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        survivor.submit_code(CodeSubmission {
+            name: Some("after_interpreted_panic.fz".into()),
+            text: "def main(), do: 42\n".into(),
+        });
+        let survivor_root = survivor.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_eq!(survivor.run_root_interp(survivor_root), Ok(42));
+    }
+
+    #[test]
+    fn generic_panic_dispatch_consumes_the_context_fault_before_the_never_return_error() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("panic_callback_error.fz".into()),
+            text: "def main(), do: panic(9)\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler
+            .run_root_interp(root)
+            .expect_err("compile and execute real Kernel panic path");
+        let program = compiler.retained_backend_program(root);
+        let signature = program
+            .executables()
+            .iter()
+            .find_map(|executable| match &executable.body {
+                BackendBody::Extern { signature } if signature.symbol == "fz_panic" => Some(signature.clone()),
+                _ => None,
+            })
+            .expect("real lowered fz_panic declaration");
+
+        let names = program
+            .atom_names
+            .iter()
+            .map(|name| name.as_ref().clone())
+            .collect::<Vec<_>>();
+        let module = Module {
+            atom_names: names.clone(),
+            ..Module::default()
+        };
+        let transport = TransportStore::new();
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
+        let process = runtime.process_ptr(1).unwrap();
+        runtime.current_proc = process;
+        let types = compiler.world_mut().types_mut() as *mut crate::compiler2::Types;
+        let mut scheduler_adapter = BackendSchedulerAdapter {
+            runtime: &mut runtime,
+            types,
+            transport: &transport,
+            tel: &tel,
+            program: program.as_ref(),
+            module: &module,
+        };
+        let mut exec_ctx = ExecCtx {
+            scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<_> as *mut (),
+            fault: Some(interp_fault_hook::<crate::telemetry::ConfiguredTelemetry>),
+            ..ExecCtx::empty()
+        };
+        unsafe { &mut *process }.ctx = &mut exec_ctx;
+
+        let error = call_lowered_extern(&mut runtime, &signature, None, &[AnyValue::Int(9)])
+            .expect_err("the callback error must win over the generic Never-returned fallback");
+        assert_eq!(error, "fz panic: 9");
+        assert_eq!(
+            runtime.take_callback_error(),
+            None,
+            "the callback error is consumed once"
+        );
+    }
+
+    #[test]
+    fn a_foreign_function_declared_never_cannot_return_into_interpreted_code() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("returning_never_extern.fz".into()),
+            text: "extern \"C\" defp _test_never_returns() :: never\ndef main() do\n  _test_never_returns()\n  dbg(:unreachable)\nend\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+
+        let error = compiler
+            .run_root_interp(root)
+            .expect_err("a Never extern returning is a runtime contract violation");
+        assert!(
+            error.contains("extern `_test_never_returns` declared Never returned"),
+            "the generic return policy must diagnose the declaration, not resume unreachable source: {error}",
+        );
+    }
+
+    #[test]
+    fn generic_spawn_dispatch_returns_adapter_error_before_pid_sentinel() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("spawn_callback_error.fz".into()),
+            text: "def main(), do: spawn(fn () -> nil end)\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.run_root_interp(root).expect("compile real Kernel spawn path");
+        let program = compiler.retained_backend_program(root);
+        let signature = program
+            .executables()
+            .iter()
+            .find_map(|executable| match &executable.body {
+                BackendBody::Extern { signature } if signature.symbol == "fz_spawn" => Some(signature.clone()),
+                _ => None,
+            })
+            .expect("real lowered fz_spawn declaration");
+        assert_eq!(signature.abi, crate::fz_ir::ExternAbi::Fz);
+        assert_eq!(signature.params, [crate::fz_ir::ExternTy::Any]);
+        assert_eq!(signature.ret, crate::fz_ir::ExternTy::I64);
+
+        let names = program
+            .atom_names
+            .iter()
+            .map(|name| name.as_ref().clone())
+            .collect::<Vec<_>>();
+        let module = Module {
+            atom_names: names.clone(),
+            ..Module::default()
+        };
+        let transport = TransportStore::new();
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
+        let sender = runtime.process_ptr(1).unwrap();
+        runtime.current_proc = sender;
+        let types = compiler.world_mut().types_mut() as *mut crate::compiler2::Types;
+        let mut scheduler_adapter = BackendSchedulerAdapter {
+            runtime: &mut runtime,
+            types,
+            transport: &transport,
+            tel: &tel,
+            program: program.as_ref(),
+            module: &module,
+        };
+        let mut exec_ctx = ExecCtx {
+            scheduler: &mut scheduler_adapter as *mut BackendSchedulerAdapter<_> as *mut (),
+            spawn: Some(interp_spawn_hook::<crate::telemetry::ConfiguredTelemetry>),
+            ..ExecCtx::empty()
+        };
+        unsafe { &mut *sender }.ctx = &mut exec_ctx;
+
+        let result = call_lowered_extern(&mut runtime, &signature, None, &[AnyValue::Int(9)]);
+        let error = result.expect_err("a non-closure must not become pid sentinel 0");
+        assert!(
+            error.contains("call_closure on non-closure value"),
+            "the scheduler adapter's actual closure error must cross the physical extern call: {error}",
+        );
+        assert_eq!(
+            runtime.take_callback_error(),
+            None,
+            "generic return handling consumes the callback error exactly once",
+        );
+    }
+
+    #[test]
+    fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
+        use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+
+        let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("scheduler_adapter_ownership.fz".into()),
+            text: "def main(), do: nil\n".into(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.run_root_interp(root).expect("compile ownership witness");
+        let program = compiler.retained_backend_program(root);
+        let executable = backend_executable_ref(&program, compiler.world().types(), program.entry()).unwrap();
+        let names = program
+            .atom_names
+            .iter()
+            .map(|name| name.as_ref().clone())
+            .collect::<Vec<_>>();
+        let module = Module {
+            atom_names: names.clone(),
+            ..Module::default()
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
+        let sender = runtime.process_ptr(1).unwrap();
+        runtime.current_proc = sender;
+        let input = interp_list_cons(sender, AnyValue::Int(1), AnyValue::EmptyList, "spawn input").unwrap();
+        let input_ref = input.as_any_value_ref(sender).unwrap();
+
+        let receiver_pid = runtime
+            .spawn_backend(sender, Rc::clone(&executable), vec![input])
+            .unwrap();
+        let BackendResumeEntry::Executable { args, .. } =
+            runtime.backend_resume.get(&receiver_pid).expect("spawned child entry")
+        else {
+            panic!("spawned child starts at its executable")
+        };
+        let copied = args[0]
+            .as_any_value_ref(runtime.process_ptr(receiver_pid).unwrap())
+            .unwrap();
+        let input_addr = input_ref.heap_addr(ValueKind::LIST).unwrap();
+        let copied_addr = copied.heap_addr(ValueKind::LIST).unwrap();
+        assert_ne!(copied_addr, input_addr);
+        assert!(unsafe { &*sender }.heap.contains_heap_addr(input_addr));
+        assert!(
+            runtime
+                .process_ref(receiver_pid)
+                .unwrap()
+                .heap
+                .contains_heap_addr(copied_addr)
+        );
+
+        runtime.set_process_state(receiver_pid, ProcessState::Exited);
+        let message = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "send message").unwrap();
+        let message_ref = message.as_any_value_ref(sender).unwrap();
+        let receiver = runtime.process_ref(receiver_pid).unwrap();
+        let before_heap = receiver.heap.alloc_stats_snapshot();
+        let before_mailbox = receiver.mailbox.clone();
+        let before_queue = runtime.run_queue.clone();
+        let before_resume_len = runtime.backend_resume.len();
+        let before_parked_len = runtime.backend_parked.len();
+
+        for pid in [receiver_pid, u32::MAX] {
+            runtime
+                .send_ref(
+                    compiler.world_mut().types_mut(),
+                    &TransportStore::new(),
+                    &crate::telemetry::ConfiguredTelemetry::new(),
+                    &program,
+                    &module,
+                    &pid,
+                    message_ref,
+                )
+                .unwrap();
+        }
+
+        let receiver = runtime.process_ref(receiver_pid).unwrap();
+        assert_eq!(receiver.heap.alloc_stats_snapshot(), before_heap);
+        assert_eq!(receiver.mailbox, before_mailbox);
+        assert_eq!(receiver.state, ProcessState::Exited);
+        assert_eq!(runtime.run_queue, before_queue);
+        assert_eq!(runtime.backend_resume.len(), before_resume_len);
+        assert_eq!(runtime.backend_parked.len(), before_parked_len);
+    }
+
+    #[test]
     fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
         use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
         let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
@@ -3467,7 +3883,9 @@ mod tests {
         let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
         let sender = runtime.process_ptr(1).unwrap();
         runtime.current_proc = sender;
-        let receiver_pid = runtime.spawn_backend(Rc::clone(&executable), Vec::new()).unwrap();
+        let receiver_pid = runtime
+            .spawn_backend(sender, Rc::clone(&executable), Vec::new())
+            .unwrap();
         runtime.backend_parked.insert(
             receiver_pid,
             BackendParkRecord {
@@ -3485,14 +3903,14 @@ mod tests {
         let retained = interp_list_cons(sender, AnyValue::Int(1), tail, "source").unwrap();
         let message = interp_list_cons(sender, ignored, retained, "message").unwrap();
         runtime
-            .send_opaque(
+            .send_ref(
                 compiler.world_mut().types_mut(),
                 &TransportStore::new(),
                 &crate::telemetry::ConfiguredTelemetry::new(),
                 &program,
                 &module,
                 &receiver_pid,
-                message,
+                message.as_any_value_ref(sender).unwrap(),
             )
             .unwrap();
         let BackendResumeEntry::Entry { env, .. } = runtime.take_backend_resume(receiver_pid).expect("winning wake")

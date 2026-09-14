@@ -1,11 +1,11 @@
 //! Callback *type* definitions for the scheduler services the per-task FFI fns
-//! (`fz_spawn`, `fz_send`, `fz_make_resource`, after-timers, dbg output) drive.
+//! (`fz_spawn`, `fz_send`, `fz_panic`, after-timers, dbg output) drive.
 //!
 //! Background: these services semantically belong to the runtime substrate (they
 //! manipulate Process state), but the *scheduler* — `Runtime` in src/runtime.rs —
 //! depends on `CompiledModule` (codegen-side, JIT-only). So `Runtime` stays in the
 //! binary, and the runtime crate can't name it directly; the binary supplies
-//! `extern "C"` callbacks that re-narrow a type-erased scheduler/module handle.
+//! `extern "C"` callbacks that re-narrow a type-erased scheduler handle.
 //!
 //! Those callbacks no longer live in per-thread hook slots. Each one is a field
 //! of the running task's [`crate::exec_ctx::ExecCtx`], installed by whichever
@@ -31,29 +31,17 @@ pub const YIELD_PTR: u64 = 0x1;
 /// closure's code pointer to materialize the initial frame, and enqueue.
 pub type SpawnHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32;
 
-/// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
-/// min_heap_size (bytes, already unboxed from AnyValue). v1: hint accepted
-/// and ignored by the binary; hook body is identical to SpawnHook.
-pub type SpawnOptHook =
-    extern "C" fn(sender: *mut Process, scheduler: *mut (), closure_bits: u64, min_heap_size: u32) -> u32;
-
 /// fz_send FFI signature on the binary side: takes receiver pid plus the
 /// one-word any value ref to deliver. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
 
-pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
+/// Process-fault notification used by a runtime helper whose source contract
+/// returns `never`. The value remains owned by `process`; callbacks consume it
+/// synchronously and must not retain the raw word past the call.
+pub type FaultHook = extern "C" fn(process: *mut Process, context: *mut (), value_ref_word: u64);
 
-/// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
-/// the binary side. The runtime crate forwards the raw integer payload and an
-/// opaque `AnyValueRef` closure word through this hook so the binary can
-/// resolve the dtor C-ABI fn pointer from the closure value (the binary holds
-/// the IR `Module` and can walk the closure's body to find the underlying
-/// `Prim::Extern`). The hook allocates the off-heap `Resource` + on-heap stub
-/// on the current process heap and returns the resulting tagged resource
-/// pointer.
-pub type MakeResourceHook =
-    extern "C" fn(process: *mut Process, module: *const (), payload_raw: u64, dtor_ref: u64) -> u64;
+pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`

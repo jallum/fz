@@ -2603,11 +2603,7 @@ mod tests {
                 callsites: Vec::new(),
                 value_types: HashMap::new(),
             },
-            body: LoweredBody::Clauses {
-                clauses: Vec::new(),
-                entries: Vec::new(),
-                generated: Vec::new(),
-            },
+            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             entry_dispatch: None,
             entry_dispatch_inputs: HashSet::new(),
             callsites: HashMap::new(),
@@ -2699,9 +2695,9 @@ mod tests {
             steps: Vec::new(),
             tail,
         };
-        let body = LoweredBody::Clauses {
-            clauses: Vec::new(),
-            entries: vec![
+        let body = LoweredBody::clauses(
+            Vec::new(),
+            vec![
                 entry(LoweredTail::DirectCall {
                     value: direct_value,
                     callsite: direct_callsite,
@@ -2717,8 +2713,8 @@ mod tests {
                     dest: ControlDestination::Return,
                 }),
             ],
-            generated: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let callsite_origins = collect_callsite_return_origins(&body);
         let value_origins = collect_value_origins(&body, &callsite_origins);

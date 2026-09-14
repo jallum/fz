@@ -1,0 +1,35 @@
+extern "C" defp fz_op_neg_i(integer) :: {integer, boolean}
+extern "C" defp fz_op_add_ii(integer, integer) :: {integer, boolean}
+extern "C" defp fz_op_sub_ii(integer, integer) :: {integer, boolean}
+extern "C" defp fz_op_mul_ii(integer, integer) :: {integer, boolean}
+extern "C" defp fz_op_div_ii(integer, integer) :: {integer, boolean}
+extern "C" defp fz_op_rem_ii(integer, integer) :: {integer, boolean}
+extern "C" defp fz_op_div_ff(float, float) :: {float, boolean}
+extern "C" defp fz_op_mul_ff(float, float) :: {float, boolean}
+
+def main() do
+  {minimum, minimum_failed} = fz_op_add_ii(-9223372036854775807, -1)
+  {negated, negated_failed} = fz_op_neg_i(minimum)
+  {added, added_failed} = fz_op_add_ii(9223372036854775807, 1)
+  {subtracted, subtracted_failed} = fz_op_sub_ii(minimum, 1)
+  {multiplied, multiplied_failed} = fz_op_mul_ii(9223372036854775807, 2)
+  {zero_divisor, zero_divisor_failed} = fz_op_div_ii(1, 0)
+  {minimum_divisor, minimum_divisor_failed} = fz_op_div_ii(minimum, -1)
+  {zero_remainder, zero_remainder_failed} = fz_op_rem_ii(1, 0)
+  {minimum_remainder, minimum_remainder_failed} = fz_op_rem_ii(minimum, -1)
+  {positive_zero_float, positive_zero_float_failed} = fz_op_div_ff(1.0, 0.0)
+  {negative_zero_float, negative_zero_float_failed} = fz_op_div_ff(1.0, -0.0)
+  {overflow_float, overflow_float_failed} = fz_op_mul_ff(1.0e308, 1.0e308)
+  {finite_float, finite_float_failed} = fz_op_div_ff(1.0, 2.0)
+
+  if minimum_failed == false and negated == minimum and negated_failed and added == minimum and added_failed and
+       subtracted == 9223372036854775807 and subtracted_failed and multiplied == -2 and multiplied_failed and
+       zero_divisor == 0 and zero_divisor_failed and minimum_divisor == 0 and minimum_divisor_failed and
+       zero_remainder == 0 and zero_remainder_failed and minimum_remainder == 0 and minimum_remainder_failed == false and
+       positive_zero_float == 0.0 and positive_zero_float_failed and negative_zero_float == 0.0 and negative_zero_float_failed and
+       overflow_float == 0.0 and overflow_float_failed and finite_float == 0.5 and finite_float_failed == false do
+    42
+  else
+    0
+  end
+end

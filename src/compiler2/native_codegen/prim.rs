@@ -1,5 +1,6 @@
 //! Primitive lowering helpers for codegen.
 
+use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
 use crate::fz_ir::{
@@ -15,12 +16,23 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_size_for_payload};
+use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
-use fz_runtime::ir_runtime::fz_bs_field_spec;
+use fz_runtime::ir_runtime::{
+    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_alloc_struct, fz_bs_begin, fz_bs_field_spec,
+    fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_done_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
+    fz_dynamic_float_arith_unsupported, fz_fmod, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom,
+    fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
+    fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
+    fz_map_get_int_key_ref, fz_map_get_ref, fz_matcher_map_get_ref, fz_ref_load_atom, fz_ref_load_float,
+    fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+};
 use std::collections::HashMap;
+use target_lexicon::{Architecture, OperatingSystem, Triple};
 
 pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Types<Ty = Ty>>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -28,48 +40,32 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     key: Var,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> ir::Value {
-    let runtime = env.runtime;
     let value_types = env.active_value_types();
     let map_ref = body.tagged_var(var_env, map.0);
     let process = body.process_arg();
     let key_kind = expected_runtime_value_kind(t, value_types, block_env, key);
     match key_kind {
         Some(ValueKind::ATOM) => {
-            let kv = body.value_raw_atom(binding_for_var(var_env, key.0));
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.map_get_atom_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
-            body.b.inst_results(inst)[0]
+            let key_atom = body.value_raw_atom(binding_for_var(var_env, key.0));
+            runtime_call1!(body, fz_map_get_atom_key_ref, [process, map_ref, key_atom])
         }
         Some(ValueKind::INT) => {
-            let kv = body.value_raw_int(binding_for_var(var_env, key.0));
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.map_get_int_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
-            body.b.inst_results(inst)[0]
+            let key_int = body.value_raw_int(binding_for_var(var_env, key.0));
+            runtime_call1!(body, fz_map_get_int_key_ref, [process, map_ref, key_int])
         }
         Some(ValueKind::FLOAT) => {
             let key_float = body.value_raw_float(binding_for_var(var_env, key.0));
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.map_get_float_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[process, map_ref, key_float]);
-            body.b.inst_results(inst)[0]
+            runtime_call1!(body, fz_map_get_float_key_ref, [process, map_ref, key_float])
         }
         _ => {
-            let fref = body.jmod.declare_func_in_func(runtime.map_get_ref_id, body.b.func);
             let key_ref = body.tagged_var(var_env, key.0);
-            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
-            body.b.inst_results(inst)[0]
+            runtime_call1!(body, fz_map_get_ref, [process, map_ref, key_ref])
         }
     }
 }
 
 fn emit_map_destination_put<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
     map_bits: ir::Value,
     key: CodegenValue,
     value: CodegenValue,
@@ -79,93 +75,74 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
         && key_kind.is_scalar()
         && value_kind.is_scalar()
     {
-        let fref = body
-            .jmod
-            .declare_func_in_func(runtime.map_dest_put_parts_id, body.b.func);
         let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
         let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
         let process = body.process_arg();
-        body.b
-            .ins()
-            .call(fref, &[process, map_bits, key_raw, key_kind, value_raw, value_kind]);
+        runtime_call!(
+            body,
+            fz_map_dest_put_parts,
+            [process, map_bits, key_raw, key_kind, value_raw, value_kind]
+        );
     } else {
         let key_ref = body.value_as_any_ref(key);
         let value_ref = body.value_as_any_ref(value);
-        let fref = body.jmod.declare_func_in_func(runtime.map_dest_put_ref_id, body.b.func);
         let process = body.process_arg();
-        body.b.ins().call(fref, &[process, map_bits, key_ref, value_ref]);
+        runtime_call!(body, fz_map_dest_put_ref, [process, map_bits, key_ref, value_ref]);
     }
 }
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     head_kind: Option<ValueKind>,
     tail: ListTailBits,
 ) -> ir::Value {
-    let runtime = env.runtime;
     let tail_ref = body.list_tail_ref_word(tail);
     let head_value = binding_for_var(var_env, head.0);
-    let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
-        Some(ValueKind::INT) => (runtime.list_cons_int_id, vec![body.value_raw_int(head_value), tail_ref]),
-        Some(ValueKind::FLOAT) => (
-            runtime.list_cons_float_id,
-            vec![body.value_raw_float(head_value), tail_ref],
-        ),
-        Some(ValueKind::ATOM) => (
-            runtime.list_cons_atom_id,
-            vec![body.value_raw_atom(head_value), tail_ref],
-        ),
-        None if matches!(
-            head_value,
-            CodegenValue::RawInt(_)
-                | CodegenValue::Known {
-                    kind: ValueKind::INT,
-                    ..
-                }
-        ) =>
-        {
-            (runtime.list_cons_int_id, vec![body.value_raw_int(head_value), tail_ref])
+    let process = body.process_arg();
+    match cons_head_kind(head_kind, head_value) {
+        Some(ValueKind::INT) => {
+            let head_raw = body.value_raw_int(head_value);
+            runtime_call1!(body, fz_list_cons_int, [process, head_raw, tail_ref])
         }
-        None if matches!(
-            head_value,
-            CodegenValue::RawF64(_)
-                | CodegenValue::Known {
-                    kind: ValueKind::FLOAT,
-                    ..
-                }
-        ) =>
-        {
-            (
-                runtime.list_cons_float_id,
-                vec![body.value_raw_float(head_value), tail_ref],
-            )
+        Some(ValueKind::FLOAT) => {
+            let head_raw = body.value_raw_float(head_value);
+            runtime_call1!(body, fz_list_cons_float, [process, head_raw, tail_ref])
         }
-        None if matches!(
-            head_value,
-            CodegenValue::Known {
-                kind: ValueKind::ATOM,
-                ..
-            } | CodegenValue::RawAtom(_)
-        ) =>
-        {
-            (
-                runtime.list_cons_atom_id,
-                vec![body.value_raw_atom(head_value), tail_ref],
-            )
+        Some(ValueKind::ATOM) => {
+            let head_raw = body.value_raw_atom(head_value);
+            runtime_call1!(body, fz_list_cons_atom, [process, head_raw, tail_ref])
         }
-        None => (
-            runtime.list_cons_any_id,
-            vec![body.value_as_any_ref(head_value), tail_ref],
-        ),
-        _ => (
-            runtime.list_cons_any_id,
-            vec![body.value_as_any_ref(head_value), tail_ref],
-        ),
-    };
-    body.list_cons_with(func_id, &args)
+        _ => {
+            let head_ref = body.value_as_any_ref(head_value);
+            runtime_call1!(body, fz_list_cons_any, [process, head_ref, tail_ref])
+        }
+    }
+}
+
+/// The scalar kind a cons head can be stored in unboxed: the kind the caller
+/// proved, or the one the binding already carries. `None` conses a tagged
+/// value ref.
+fn cons_head_kind(head_kind: Option<ValueKind>, head_value: CodegenValue) -> Option<ValueKind> {
+    if head_kind.is_some() {
+        return head_kind;
+    }
+    match head_value {
+        CodegenValue::RawInt(_)
+        | CodegenValue::Known {
+            kind: ValueKind::INT, ..
+        } => Some(ValueKind::INT),
+        CodegenValue::RawF64(_)
+        | CodegenValue::Known {
+            kind: ValueKind::FLOAT, ..
+        } => Some(ValueKind::FLOAT),
+        CodegenValue::RawAtom(_)
+        | CodegenValue::Known {
+            kind: ValueKind::ATOM, ..
+        } => Some(ValueKind::ATOM),
+        _ => None,
+    }
 }
 
 fn static_literal_field_for_var(
@@ -189,7 +166,7 @@ fn static_literal_field_for_var(
 }
 
 fn try_static_struct_literal<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
@@ -209,7 +186,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
 }
 
 fn define_static_struct_literal<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     dest_var: Var,
     schema_id: u32,
@@ -265,7 +242,7 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
 }
 
 fn static_struct_ref_word<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     dest_var: Var,
     data_id: DataId,
 ) -> ir::Value {
@@ -278,22 +255,16 @@ fn static_struct_ref_word<M: cranelift_module::Module>(
     ref_word
 }
 
-fn alloc_struct_for_schema<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
-    schema_id: u32,
-) -> ir::Value {
-    let fref = body.jmod.declare_func_in_func(runtime.alloc_struct_id, body.b.func);
+fn alloc_struct_for_schema<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, schema_id: u32) -> ir::Value {
     let sid = body.b.ins().iconst(types::I32, schema_id as i64);
     let process = body.process_arg();
-    let inst = body.b.ins().call(fref, &[process, sid]);
-    body.b.inst_results(inst)[0]
+    runtime_call1!(body, fz_alloc_struct, [process, sid])
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -302,7 +273,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
     block_id: BlockId,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    let runtime = env.runtime;
     let value_types = env.active_value_types();
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
@@ -338,7 +308,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             for e in elems.iter().rev() {
                 let cons = emit_list_cons_bif(
                     body,
-                    env,
                     var_env,
                     *e,
                     expected_runtime_value_kind(t, value_types, block_env, *e),
@@ -362,7 +331,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, elems)? {
                 return Ok(LowerOut::ValueRefWord(static_ref));
             }
-            let p = alloc_struct_for_schema(body, runtime, schema_id);
+            let p = alloc_struct_for_schema(body, schema_id);
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
                 body.struct_set_field(p, i, value);
@@ -380,7 +349,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, &field_vars)? {
                 return Ok(LowerOut::ValueRefWord(static_ref));
             }
-            let p = alloc_struct_for_schema(body, runtime, schema_id);
+            let p = alloc_struct_for_schema(body, schema_id);
             for (i, (_, field_var)) in fields.iter().enumerate() {
                 let value = binding_for_var(var_env, field_var.0);
                 body.struct_set_field(p, i, value);
@@ -393,12 +362,14 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             // heap value, so the load is provably safe. A SIGSEGV here
             // would be an IR integrity bug worth surfacing loudly — do
             // NOT add `notrap`, which would silently mask it.
-            let fref = body.jmod.declare_func_in_func(runtime.struct_get_field_id, body.b.func);
             let field_offset = body.b.ins().iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
             let struct_ref = body.tagged_var(var_env, c.0);
             let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, struct_ref, field_offset]);
-            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
+            LowerOut::ValueRefWord(runtime_call1!(
+                body,
+                fz_struct_get_field_ref,
+                [process, struct_ref, field_offset]
+            ))
         }
         Prim::StructField(c, field) => {
             let atom_id = env
@@ -407,20 +378,18 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .iter()
                 .position(|name| name == field)
                 .ok_or_else(|| CodegenError::new(format!("field atom `{}` not interned", field)))?;
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.struct_get_named_field_id, body.b.func);
             let struct_ref = body.tagged_var(var_env, c.0);
             let process = body.process_arg();
             let atom = body.b.ins().iconst(types::I64, atom_id as i64);
-            let inst = body.b.ins().call(fref, &[process, struct_ref, atom]);
-            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
+            LowerOut::ValueRefWord(runtime_call1!(
+                body,
+                fz_struct_get_named_field_ref,
+                [process, struct_ref, atom]
+            ))
         }
         Prim::MakeBitstring(fields) => {
-            let begin = body.jmod.declare_func_in_func(runtime.bs_begin_id, body.b.func);
             let process = body.process_arg();
-            body.b.ins().call(begin, &[process]);
-            let write = body.jmod.declare_func_in_func(runtime.bs_write_ref_id, body.b.func);
+            runtime_call!(body, fz_bs_begin, [process]);
             for f in fields {
                 let value_ref = body.tagged_var(var_env, f.value.0);
                 let ty_tag = body.b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
@@ -442,9 +411,10 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         (body.b.ins().iconst(types::I32, 1), truncated)
                     }
                 };
-                body.b.ins().call(
-                    write,
-                    &[
+                runtime_call!(
+                    body,
+                    fz_bs_write_field_ref,
+                    [
                         process,
                         value_ref,
                         ty_tag,
@@ -452,14 +422,12 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         size_value,
                         unit,
                         endian,
-                        signed,
-                    ],
+                        signed
+                    ]
                 );
             }
-            let fin = body.jmod.declare_func_in_func(runtime.bs_finalize_id, body.b.func);
             let process = body.process_arg();
-            let inst = body.b.ins().call(fin, &[process]);
-            LowerOut::ValueRef(body.b.inst_results(inst)[0])
+            LowerOut::ValueRef(runtime_call1!(body, fz_bs_finalize, [process]))
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // Split paths by payload size:
@@ -480,7 +448,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     if above_threshold && syms.sharedbin_id.is_none() {
                         syms.sharedbin_id = Some(define_static_sharedbin(
                             body.jmod,
-                            runtime,
                             syms.bytes_id,
                             bytes,
                             *bit_len,
@@ -508,9 +475,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         .define_data(bytes_id, &desc)
                         .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
                     let sharedbin_id = if above_threshold {
-                        Some(define_static_sharedbin(
-                            body.jmod, runtime, bytes_id, bytes, *bit_len, idx,
-                        )?)
+                        Some(define_static_sharedbin(body.jmod, bytes_id, bytes, *bit_len, idx)?)
                     } else {
                         None
                     };
@@ -522,33 +487,25 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(sb_id) = syms.sharedbin_id {
                 let gv = body.jmod.declare_data_in_func(sb_id, body.b.func);
                 let sb_ptr = body.b.ins().symbol_value(types::I64, gv);
-                let fref = body
-                    .jmod
-                    .declare_func_in_func(runtime.alloc_procbin_from_static_id, body.b.func);
                 let process = body.process_arg();
-                let inst = body.b.ins().call(fref, &[process, sb_ptr]);
-                LowerOut::ValueRef(body.b.inst_results(inst)[0])
+                LowerOut::ValueRef(runtime_call1!(body, fz_alloc_procbin_from_static, [process, sb_ptr]))
             } else {
                 let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
                 let ptr_v = body.b.ins().symbol_value(types::I64, gv);
                 let byte_len_v = body.b.ins().iconst(types::I64, bytes.len() as i64);
                 let bit_len_v = body.b.ins().iconst(types::I64, *bit_len as i64);
-                let fref = body
-                    .jmod
-                    .declare_func_in_func(runtime.alloc_bitstring_const_id, body.b.func);
                 let process = body.process_arg();
-                let inst = body.b.ins().call(fref, &[process, ptr_v, byte_len_v, bit_len_v]);
-                LowerOut::ValueRef(body.b.inst_results(inst)[0])
+                LowerOut::ValueRef(runtime_call1!(
+                    body,
+                    fz_alloc_bitstring_const,
+                    [process, ptr_v, byte_len_v, bit_len_v]
+                ))
             }
         }
         Prim::BitReaderInit(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
             let process = body.process_arg();
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.bs_reader_init_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[process, value_ref]);
-            LowerOut::ValueRef(body.b.inst_results(inst)[0])
+            LowerOut::ValueRef(runtime_call1!(body, fz_bs_reader_init_ref, [process, value_ref]))
         }
         Prim::BitReadField {
             reader,
@@ -579,56 +536,52 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             );
             let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
             let process = body.process_arg();
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.bs_read_field_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[process, reader_ref, field_spec, size_value]);
-            LowerOut::ValueRef(body.b.inst_results(inst)[0])
+            LowerOut::ValueRef(runtime_call1!(
+                body,
+                fz_bs_read_field_ref,
+                [process, reader_ref, field_spec, size_value]
+            ))
         }
         Prim::DestMapBegin { base, extra, .. } => {
             let extra = body.b.ins().iconst(types::I32, *extra as i64);
             if let Some(base) = base {
                 let base_bits = body.any_ref_for_var(var_env, base.0);
-                let fref = body
-                    .jmod
-                    .declare_func_in_func(runtime.map_dest_begin_update_id, body.b.func);
                 let process = body.process_arg();
-                let inst = body.b.ins().call(fref, &[process, base_bits, extra]);
-                LowerOut::ValueRef(body.b.inst_results(inst)[0])
+                LowerOut::ValueRef(runtime_call1!(
+                    body,
+                    fz_map_dest_begin_update,
+                    [process, base_bits, extra]
+                ))
             } else {
-                let fref = body.jmod.declare_func_in_func(runtime.map_dest_begin_id, body.b.func);
                 let process = body.process_arg();
-                let inst = body.b.ins().call(fref, &[process, extra]);
-                LowerOut::ValueRef(body.b.inst_results(inst)[0])
+                LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin, [process, extra]))
             }
         }
         Prim::DestMapPut { map, key, value, .. } => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
             let key = binding_for_var(var_env, key.0);
             let value = binding_for_var(var_env, value.0);
-            emit_map_destination_put(body, runtime, map_bits, key, value);
+            emit_map_destination_put(body, map_bits, key, value);
             LowerOut::DeadUnit
         }
         Prim::DestMapFreeze { map, .. } => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
-            let fref = body.jmod.declare_func_in_func(runtime.map_dest_freeze_id, body.b.func);
             let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, map_bits]);
-            LowerOut::ValueRef(body.b.inst_results(inst)[0])
+            LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_freeze, [process, map_bits]))
         }
         Prim::MapGet(m, k) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
             LowerOut::ValueRefWord(value_ref)
         }
         Prim::MatcherMapGet(m, k) => {
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.matcher_map_get_ref_id, body.b.func);
             let map_ref = body.tagged_var(var_env, m.0);
             let key_ref = body.tagged_var(var_env, k.0);
             let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
-            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
+            LowerOut::ValueRefWord(runtime_call1!(
+                body,
+                fz_matcher_map_get_ref,
+                [process, map_ref, key_ref]
+            ))
         }
         Prim::IsMatcherMapMiss(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
@@ -649,8 +602,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
 /// two conventions -- which is why the ABI has to reach this far rather than
 /// being consumed at the front door.
 fn marshal_extern_arg<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     var: Var,
     ty: ExternTy,
@@ -658,17 +610,28 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
+        // A C `int` parameter is the low half of the fz integer.
+        ExternTy::I32 => {
+            let word = body.as_raw_i64(var_env, var.0);
+            body.b.ins().ireduce(types::I32, word)
+        }
         ExternTy::F64 => body.as_raw_f64(var_env, var.0),
+        ExternTy::Bool => {
+            let atom = body.coerce_binding_to(
+                *var_env.get(&var.0).expect("bound extern boolean argument"),
+                ArgRepr::RawAtom,
+            );
+            let is_true = body.b.ins().icmp_imm(IntCC::Equal, atom, TRUE_ATOM_ID as i64);
+            body.b.ins().uextend(types::I64, is_true)
+        }
         ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
-        ExternTy::Binary | ExternTy::CString => {
-            let helper_id = match ty {
-                ExternTy::CString => runtime.binary_as_cstring_id,
-                _ => runtime.binary_as_ptr_id,
-            };
-            let helper_fref = body.jmod.declare_func_in_func(helper_id, body.b.func);
+        ExternTy::CString => {
             let bits = body.tagged_var(var_env, var.0);
-            let call = body.b.ins().call(helper_fref, &[bits]);
-            body.b.inst_results(call)[0]
+            runtime_call1!(body, fz_binary_as_cstring, [bits])
+        }
+        ExternTy::Binary => {
+            let bits = body.tagged_var(var_env, var.0);
+            runtime_call1!(body, fz_binary_as_ptr, [bits])
         }
         ExternTy::Any => body.tagged_var(var_env, var.0),
         ExternTy::Unit | ExternTy::Never => {
@@ -680,76 +643,14 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
     })
 }
 
-fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
-    let fixed = fixed
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let variadic = variadic
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
-}
-
-fn variadic_dispatcher(
-    runtime: &RuntimeRefs,
-    ret: ExternTy,
-    fixed: &[ExternTy],
-    variadic: &[ExternTy],
-) -> Result<FuncId, CodegenError> {
-    match (ret, fixed, variadic) {
-        (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => {
-            Ok(runtime.extern_var_i64_cstring_i64_i64_to_i64_id)
-        }
-        (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => Ok(runtime.extern_var_i64_cstring_i64_to_i64_id),
-        _ => Err(CodegenError::new(format!(
-            "unsupported variadic extern shape: {}",
-            format_extern_shape(ret, fixed, variadic)
-        ))),
-    }
-}
-
-fn emit_extern_symbol_name<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    caller_fn_id: FnId,
-    block_id: BlockId,
-    stmt_idx: usize,
-    symbol: &str,
-) -> Result<ir::Value, CodegenError> {
-    if symbol.as_bytes().contains(&0) {
-        return Err(CodegenError::new(format!(
-            "extern symbol `{}` contains a NUL byte",
-            symbol
-        )));
-    }
-    let name = format!(".fz_extern_symbol_{}_{}_{}", caller_fn_id.0, block_id.0, stmt_idx);
-    let data_id = jmod
-        .declare_data(&name, Linkage::Local, false, false)
-        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-    let mut payload = symbol.as_bytes().to_vec();
-    payload.push(0);
-    let mut desc = DataDescription::new();
-    desc.define(payload.into_boxed_slice());
-    desc.set_align(1);
-    jmod.define_data(data_id, &desc)
-        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
-    let gv = jmod.declare_data_in_func(data_id, b.func);
-    Ok(b.ins().symbol_value(types::I64, gv))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     eid: ExternId,
     args: &[ExternArg],
     dest_var: Var,
-    caller_fn_id: FnId,
     block_id: BlockId,
     stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
@@ -771,66 +672,100 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     }
 
     let fixed_count = decl.params.len();
-    let fixed = &arg_tys[..fixed_count];
-    let variadic = &arg_tys[fixed_count..];
-    let dispatcher = variadic_dispatcher(env.runtime, decl.ret, fixed, variadic)?;
-    let symbol_ptr = emit_extern_symbol_name(
-        body.b,
-        body.jmod,
-        caller_fn_id,
-        block_id,
-        stmt_idx,
-        decl.symbol.as_str(),
-    )?;
-    let lookup_fref = body
-        .jmod
-        .declare_func_in_func(env.runtime.extern_symbol_addr_id, body.b.func);
-    let lookup = body.b.ins().call(lookup_fref, &[symbol_ptr]);
-    let fn_ptr = body.b.inst_results(lookup)[0];
-
-    let mut call_args = Vec::with_capacity(args.len() + 1);
-    call_args.push(fn_ptr);
-    for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
-        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty, false)?);
+    let ret = decl
+        .ret
+        .scalar_ty()
+        .ok_or_else(|| CodegenError::new("variadic extern aggregate returns are unsupported"))?;
+    if ret == ExternTy::F64 {
+        return Err(CodegenError::new(format!(
+            "variadic extern `{}` returns a float, which the generated variadic call does not carry",
+            decl.symbol
+        )));
     }
 
-    let dispatcher_fref = body.jmod.declare_func_in_func(dispatcher, body.b.func);
-    let inst = body.b.ins().call(dispatcher_fref, &call_args);
-    if matches!(decl.ret, ExternTy::Unit | ExternTy::Never) {
+    let mut marshalled = Vec::with_capacity(args.len());
+    for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
+        marshalled.push((marshal_extern_arg(body, var_env, arg.var, ty, false)?, ty));
+    }
+    // A parameter that carries no value has no lane; `marshal_extern_arg`
+    // refuses one above, so the word it would occupy here is never reached.
+    let fixed: Vec<(ir::Value, ir::Type)> = marshalled[..fixed_count]
+        .iter()
+        .map(|(value, ty)| (*value, ty.lane().unwrap_or(types::I64)))
+        .collect();
+    // Every variadic value is one integer word: the marshal classes a variadic
+    // argument can resolve to are all integer-lane, which is what makes the
+    // generated call correct on every target (see `variadic.rs`). C promotes a
+    // narrower integer to a full word in the tail, so a `c_int` there is sign
+    // extended back to the word it was reduced from.
+    let variadic: Vec<ir::Value> = marshalled[fixed_count..]
+        .iter()
+        .map(|(value, ty)| match ty {
+            ExternTy::I32 => body.b.ins().sextend(types::I64, *value),
+            _ => *value,
+        })
+        .collect();
+
+    let callee = foreign_symbol_addr(body, eid, decl.symbol.as_str())?;
+    let isa = body.jmod.isa();
+    let result = emit_variadic_c_call(body.b, isa, callee, &fixed, &variadic, ret.lane());
+
+    let Some(raw) = result else {
         if body.cache.used_vars.contains(&dest_var.0) {
             return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
         }
         return Ok(LowerOut::DeadUnit);
-    }
-    let raw = body.b.inst_results(inst)[0];
-    match decl.ret {
+    };
+    match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
+        ExternTy::I32 => Ok(LowerOut::RawI64(body.b.ins().sextend(types::I64, raw))),
+        ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
-        // `variadic_dispatcher` accepts only `I64`-returning shapes, so the
-        // dispatcher's result is an i64 whatever the declaration says. Tagging
-        // it `RawF64` would be the mislabelling this arm looks like it guards
-        // against, so the refusal stays upstream where it can be one message.
-        ExternTy::F64 => unreachable!("variadic_dispatcher refuses a non-I64 return"),
-        ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
+        ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
+        ExternTy::Unit | ExternTy::Never => unreachable!("a lane-less return produced no result"),
     }
+}
+
+/// The address of a foreign symbol, for a call emitted indirectly.
+///
+/// A variadic call's parameter list is built per call site, so the symbol is
+/// declared once as an ordinary import to name it for the linker (or the JIT's
+/// symbol lookup) and then reached through its address. The declared signature
+/// is a placeholder: nothing ever calls through it.
+fn foreign_symbol_addr<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    eid: ExternId,
+    symbol: &str,
+) -> Result<ir::Value, CodegenError> {
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(&eid) {
+        cached
+    } else {
+        let sig = body.jmod.make_signature();
+        let func_id = body
+            .jmod
+            .declare_function(symbol, Linkage::Import, &sig)
+            .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", symbol, e)))?;
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(eid, fref);
+        fref
+    };
+    Ok(body.b.ins().func_addr(types::I64, fref))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
     dest_var: Var,
-    // `caller_fn_id`/`block_id`/`stmt_idx` identify per-stmt side tables such
-    // as variadic extern marshal plans and generated static data symbols.
-    caller_fn_id: FnId,
+    // `block_id`/`stmt_idx` identify the per-stmt side table holding a
+    // variadic extern call's resolved marshal classes.
     block_id: BlockId,
     stmt_idx: usize,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    let runtime = env.runtime;
     let value_types = env.active_value_types();
     // Helper: every consumer site below that wants one-word ValueRef uses
     // this. Sites that want a raw f64 (float fast paths only) call
@@ -892,13 +827,13 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // dispatch fallback) pay it.
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    lower_arith_binop(body, t, value_types, var_env, runtime, *op, *a, *bv)
+                    lower_arith_binop(body, t, value_types, var_env, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq | BinOp::Identical | BinOp::NotIdentical => {
-                    lower_eq_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
+                BinOp::Eq | BinOp::Neq | BinOp::Identical => {
+                    lower_eq_binop(body, t, value_types, var_env, *op, *a, *bv, dest_var)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    lower_cmp_binop(body, t, value_types, var_env, runtime, *op, *a, *bv, dest_var)
+                    lower_cmp_binop(body, t, value_types, var_env, *op, *a, *bv, dest_var)
                 }
                 BinOp::And | BinOp::Or => lower_bool_binop(body, var_env, *op, *a, *bv, dest_var),
             }
@@ -918,104 +853,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         },
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
-            let arg_vars: Vec<Var> = args.iter().map(|arg| arg.var).collect();
-            if decl.symbol == "fz_panic" && args.len() == 1 {
-                return lower_extern_fz_panic(body, var_env, &arg_vars, dest_var);
-            }
-            if decl.symbol == "fz_send" && args.len() == 2 {
-                return lower_extern_fz_send(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(body);
-            }
-            if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(body);
-            }
-            if decl.symbol == "fz_spawn" && args.len() == 1 {
-                return lower_extern_fz_spawn(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                return lower_extern_fz_spawn_opt(body, var_env, &arg_vars);
-            }
-            if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                return lower_extern_fz_make_resource(body, var_env, &arg_vars);
-            }
-            if let Some(op) = arith_shim_op(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_extern_fz_op_arith(body, t, value_types, var_env, runtime, op, &arg_vars);
-            }
-            if decl.symbol == "fz_op_eq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Eq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Identical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_not_identical" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::NotIdentical,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if decl.symbol == "fz_op_neq" && args.len() == 2 {
-                return lower_eq_binop(
-                    body,
-                    t,
-                    value_types,
-                    var_env,
-                    runtime,
-                    BinOp::Neq,
-                    arg_vars[0],
-                    arg_vars[1],
-                    dest_var,
-                );
-            }
-            if let Some((op, kinds)) = typed_cmp_extern(&decl.symbol)
-                && args.len() == 2
-            {
-                return lower_typed_cmp(body, var_env, runtime, op, kinds, &arg_vars, dest_var);
-            }
             if decl.variadic {
-                return emit_variadic_extern_call(
-                    body,
-                    env,
-                    var_env,
-                    *eid,
-                    args,
-                    dest_var,
-                    caller_fn_id,
-                    block_id,
-                    stmt_idx,
-                );
+                return emit_variadic_extern_call(body, env, var_env, *eid, args, dest_var, block_id, stmt_idx);
             }
-            lower_extern_generic(body, runtime, var_env, decl, eid, args, dest_var)
+            lower_extern_generic(body, var_env, decl, eid, args, dest_var)
         }
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
@@ -1059,12 +900,8 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
         Prim::BitReaderDone(r) => {
             let rv = body.tagged_var(var_env, r.0);
-            let fref = body
-                .jmod
-                .declare_func_in_func(runtime.bs_reader_done_ref_id, body.b.func);
             let process = body.process_arg();
-            let inst = body.b.ins().call(fref, &[process, rv]);
-            let cmp = body.b.inst_results(inst)[0];
+            let cmp = runtime_call1!(body, fz_bs_reader_done_ref, [process, rv]);
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
@@ -1072,21 +909,15 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
         Prim::MapGet(m, k) if ty_is_float(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
-            let load_float = body.jmod.declare_func_in_func(runtime.ref_load_float_id, body.b.func);
-            let load_inst = body.b.ins().call(load_float, &[value_ref]);
-            Ok(LowerOut::RawF64(body.b.inst_results(load_inst)[0]))
+            Ok(LowerOut::RawF64(runtime_call1!(body, fz_ref_load_float, [value_ref])))
         }
         Prim::MapGet(m, k) if ty_is_int(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
-            let load_int = body.jmod.declare_func_in_func(runtime.ref_load_int_id, body.b.func);
-            let load_inst = body.b.ins().call(load_int, &[value_ref]);
-            Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
+            Ok(LowerOut::RawI64(runtime_call1!(body, fz_ref_load_int, [value_ref])))
         }
         Prim::MapGet(m, k) if ty_is_atom(t, value_types, dest_var) => {
             let value_ref = emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
-            let load_atom = body.jmod.declare_func_in_func(runtime.ref_load_atom_id, body.b.func);
-            let load_inst = body.b.ins().call(load_atom, &[value_ref]);
-            Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
+            Ok(LowerOut::RawI64(runtime_call1!(body, fz_ref_load_atom, [value_ref])))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, value_types, *c, block_env) && ty_is_int(t, value_types, dest_var) =>
@@ -1125,16 +956,14 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => lower_make_closure(body, env, var_env, *fn_id, captured),
-        Prim::RuntimeTypeTest(v, descr) => {
-            lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
-        }
+        Prim::RuntimeTypeTest(v, descr) => lower_runtime_type_predicate(body, env, var_env, *v, descr, dest_var),
         Prim::ClosureCapture { closure, index } => lower_closure_capture(body, var_env, *closure, *index),
     }
 }
 
 /// The captured value's kind byte makes every lexical slot self-describing.
 fn lower_closure_capture<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     closure: Var,
     index: u32,
@@ -1152,16 +981,15 @@ fn lower_closure_capture<M: cranelift_module::Module>(
 /// emitter reads it. A tuple a caller delivered lane-wise never reaches here:
 /// entry dispatch answers its arity from the transport shape instead.
 fn lower_runtime_type_predicate<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
     v: Var,
     predicate: &RuntimeTypePredicate,
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
     let value = *var_env.get(&v.0).expect("type-test subject");
-    let mut emitter = PrimTestEmitter { body, env, runtime };
+    let mut emitter = PrimTestEmitter { body, env };
     let flag = emit_runtime_type_test(&mut emitter, value, predicate)?;
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
@@ -1170,13 +998,12 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
 }
 
 /// The compiled-body door onto the shared runtime-test emitter.
-struct PrimTestEmitter<'a, 'b, 'env, 'fb, M: cranelift_module::Module> {
-    body: &'a mut CodegenFn<'b, 'env, 'fb, M>,
+struct PrimTestEmitter<'a, 'b, 'fb, M: cranelift_module::Module> {
+    body: &'a mut CodegenFn<'b, 'fb, M>,
     env: &'a CodegenEnv<'a>,
-    runtime: &'a RuntimeRefs,
 }
 
-impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitter<'_, '_, '_, 'fb, M> {
+impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitter<'_, '_, 'fb, M> {
     type Value = CodegenValue;
 
     fn builder(&mut self) -> &mut FunctionBuilder<'fb> {
@@ -1241,25 +1068,19 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 
     fn schema_id(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let struct_ref = self.body.value_as_any_ref(value);
-        let fref = self
-            .body
-            .jmod
-            .declare_func_in_func(self.runtime.struct_schema_id_ref_id, self.body.b.func);
-        let inst = self.body.b.ins().call(fref, &[struct_ref]);
-        let raw = self.body.b.inst_results(inst)[0];
+        let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
     }
 
     fn tuple_field(&mut self, value: CodegenValue, index: usize) -> Result<CodegenValue, CodegenError> {
         let struct_ref = self.body.value_as_any_ref(value);
-        let fref = self
-            .body
-            .jmod
-            .declare_func_in_func(self.runtime.struct_get_field_id, self.body.b.func);
         let offset = self.body.b.ins().iconst(types::I32, (index as i64) * SLOT_BYTES as i64);
         let process = self.body.process_arg();
-        let inst = self.body.b.ins().call(fref, &[process, struct_ref, offset]);
-        Ok(CodegenValue::AnyRef(self.body.b.inst_results(inst)[0]))
+        Ok(CodegenValue::AnyRef(runtime_call1!(
+            self.body,
+            fz_struct_get_field_ref,
+            [process, struct_ref, offset]
+        )))
     }
 
     fn list_head(&mut self, value: CodegenValue) -> Result<CodegenValue, CodegenError> {
@@ -1291,7 +1112,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 }
 
 fn emit_is_empty_list_flag<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
 ) -> ir::Value {
     if let CodegenValue::AnyRef(value_ref) = value {
@@ -1308,7 +1129,7 @@ fn emit_is_empty_list_flag<M: cranelift_module::Module>(
 }
 
 fn emit_is_list_cons_flag<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
 ) -> ir::Value {
     if let CodegenValue::AnyRef(value_ref) = value {
@@ -1343,7 +1164,7 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
 /// i64 from non-integer value" on `run` and `build` while `interp` answered
 /// `-3.0` (fz-5xp.33). A negative float literal is not an exotic input.
 fn lower_neg<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1398,7 +1219,7 @@ where
 }
 
 fn try_typed_binop_fast_path<T, F, I, M>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
     a: Var,
@@ -1443,26 +1264,22 @@ where
 /// (same-kind int or float), and tagged dispatch fallback that splits
 /// on runtime tag tests.
 /// Float `%`. Cranelift has no `frem`, so where `+ - * /` are one instruction
-/// this is a call into the runtime (fz-5xp.34). Excluding Mod from the float
-/// paths instead is what made `7.5 % 2.0` answer 1.5 on interp and abort in
-/// `fz_dynamic_float_arith_unsupported` on run and build.
+/// this is a call into the runtime. Mod belongs on the float paths with them:
+/// the float lane is where `7.5 % 2.0` is answered, and a Mod that misses it
+/// reaches `fz_dynamic_float_arith_unsupported` instead.
 fn emit_float_rem<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
     left: ir::Value,
     right: ir::Value,
 ) -> ir::Value {
-    let fref = body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[left, right]);
-    body.b.inst_results(inst)[0]
+    runtime_call1!(body, fz_fmod, [left, right])
 }
 
 fn lower_arith_binop<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
     op: BinOp,
     a: Var,
     bv: Var,
@@ -1485,14 +1302,14 @@ where
             BinOp::Sub => body.b.ins().fsub(af, bf),
             BinOp::Mul => body.b.ins().fmul(af, bf),
             BinOp::Div => body.b.ins().fdiv(af, bf),
-            BinOp::Mod => emit_float_rem(body, runtime, af, bf),
+            BinOp::Mod => emit_float_rem(body, af, bf),
             _ => unreachable!(),
         }));
     }
     // Typed fast paths: float and int. Float `%` is the one that is a CALL
     // rather than an instruction, so its funcref is declared up front — the
     // closure below is handed a builder, not the module.
-    let rem_fref = matches!(mop, BinOp::Mod).then(|| body.jmod.declare_func_in_func(runtime.op_rem_ff_id, body.b.func));
+    let rem_fref = matches!(mop, BinOp::Mod).then(|| runtime_func_ref!(body, fz_fmod(_, _)));
     if let Some(out) = try_typed_binop_fast_path(
         body,
         t,
@@ -1556,11 +1373,7 @@ where
 
     body.b.switch_to_block(slow_blk);
     body.b.seal_block(slow_blk);
-    let unsupported_ref = body
-        .jmod
-        .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, body.b.func);
-    let inst = body.b.ins().call(unsupported_ref, &[]);
-    let slow_raw = body.b.inst_results(inst)[0];
+    let slow_raw = runtime_call1!(body, fz_dynamic_float_arith_unsupported, []);
     body.b.ins().jump(join_blk, &[BlockArg::Value(slow_raw)]);
 
     body.b.switch_to_block(join_blk);
@@ -1609,19 +1422,18 @@ fn raw_scalar_vs_dynamic(
 /// value_eq_ref for the fully heterogeneous fallback.
 /// The OP says which of the two questions is being asked. `Eq`/`Neq` are the
 /// `==` operator, which compares numbers by value, so `1 == 1.0` is true.
-/// `Identical`/`NotIdentical` are structural identity -- `===`, and what every
-/// kind of matching asks -- for which `1` and `1.0` are different values and
-/// the value-disjointness fold applies.
+/// `Identical` is structural identity -- `===`, and what every kind of matching
+/// asks -- for which `1` and `1.0` are different values and the
+/// value-disjointness fold applies.
 ///
 /// This used to be a `widen_numerics: bool` that each CALL SITE set from what
 /// it knew about its caller, which is how a guard came to ask the matching
 /// question and answer `same?(1, 1.0)` as `:different` (fz-5xp.24).
 fn lower_eq_binop<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
     op: BinOp,
     a: Var,
     bv: Var,
@@ -1647,7 +1459,7 @@ where
     let b_is_float = ty_is_float(t, value_types, bv);
     let mixed_numeric = widen_numerics && ((a_is_int && b_is_float) || (a_is_float && b_is_int));
     if mixed_numeric {
-        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let ordering = emit_mixed_numeric_cmp(body, var_env, a, bv, a_is_int);
         let cmp = body.b.ins().icmp_imm(int_cc, ordering, 0);
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -1733,11 +1545,7 @@ where
         // actual tag.
         let dyn_ref = body.tagged_var(var_env, dyn_var.0);
         let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
-        let fref = body
-            .jmod
-            .declare_func_in_func(runtime.value_eq_raw_const_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[dyn_ref, kind_tag, raw]);
-        let eq = body.b.inst_results(inst)[0];
+        let eq = runtime_call1!(body, fz_value_eq_raw_const, [dyn_ref, kind_tag, raw]);
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
             eq_bool
@@ -1756,14 +1564,11 @@ where
         // flag that separates the two static arms has to separate the dynamic
         // one as well, or the widening leaks into pinned matches,
         // `Enum.member?/2` and `--`.
-        let eq_fn = if widen_numerics {
-            runtime.value_eq_widening_ref_id
+        let eq = if widen_numerics {
+            runtime_call1!(body, fz_value_eq_widening_ref, [process, a_ref, b_ref])
         } else {
-            runtime.value_eq_ref_id
+            runtime_call1!(body, fz_value_eq_ref, [process, a_ref, b_ref])
         };
-        let fref = body.jmod.declare_func_in_func(eq_fn, body.b.func);
-        let inst = body.b.ins().call(fref, &[process, a_ref, b_ref]);
-        let eq = body.b.inst_results(inst)[0];
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
             eq_bool
@@ -1781,11 +1586,10 @@ where
 /// paths emit native fcmp/icmp for same-kind lanes and the shared exact
 /// comparator for mixed numeric lanes; dynamic values ask the term comparator.
 fn lower_cmp_binop<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
     var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
     op: BinOp,
     a: Var,
     bv: Var,
@@ -1813,7 +1617,7 @@ where
     if (a_is_int && ty_is_float(t, value_types, bv))
         || (ty_is_float(t, value_types, a) && ty_is_int(t, value_types, bv))
     {
-        let ordering = emit_mixed_numeric_cmp(body, var_env, runtime, a, bv, a_is_int);
+        let ordering = emit_mixed_numeric_cmp(body, var_env, a, bv, a_is_int);
         let cmp = body.b.ins().icmp_imm(icc, ordering, 0);
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -1863,12 +1667,12 @@ where
         let dyn_ref = body.tagged_var(var_env, dyn_var.0);
         let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
         let swap_flag = body.b.ins().iconst(types::I32, i64::from(swap));
-        let fref = body
-            .jmod
-            .declare_func_in_func(runtime.value_cmp_raw_const_id, body.b.func);
         let process = body.process_arg();
-        let inst = body.b.ins().call(fref, &[process, dyn_ref, kind_tag, raw, swap_flag]);
-        let ordering = body.b.inst_results(inst)[0];
+        let ordering = runtime_call1!(
+            body,
+            fz_value_cmp_raw_const,
+            [process, dyn_ref, kind_tag, raw, swap_flag]
+        );
         let zero = body.b.ins().iconst(types::I64, 0);
         let cmp = body.b.ins().icmp(icc, ordering, zero);
         if body.cache.if_only_conds.contains(&dest_var.0) {
@@ -1900,20 +1704,16 @@ where
     let cmp = body.b.ins().icmp(icc, ai, bi);
     body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
-    // fz-5xp.18 — anything else asks `fz_value_cmp_ref`, the one dynamic
-    // ordering, shared with the interpreter and with the `bb` intrinsic. It
-    // replaces an inlined coercion that boxed the float operand and then read
-    // the resulting pointer as a number: that answered `2 >= 1.0` as false,
-    // and answered it differently from the interpreter, because ordering was
-    // implemented twice.
+    // Anything else asks `fz_value_cmp_ref`, the one dynamic ordering, shared
+    // with the interpreter and with the `bb` intrinsic. Ordering is answered
+    // in one place so that a mixed pair like `2 >= 1.0` cannot get one answer
+    // here and another under the interpreter.
     body.b.switch_to_block(slow_blk);
     body.b.seal_block(slow_blk);
     let left = body.tagged_var(var_env, a.0);
     let right = body.tagged_var(var_env, bv.0);
-    let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
     let process = body.process_arg();
-    let call = body.b.ins().call(cmp_ref, &[process, left, right]);
-    let ordering = body.b.inst_results(call)[0];
+    let ordering = runtime_call1!(body, fz_value_cmp_ref, [process, left, right]);
     let zero = body.b.ins().iconst(types::I64, 0);
     let slow_cmp = body.b.ins().icmp(icc, ordering, zero);
     body.b.ins().jump(join_blk, &[BlockArg::Value(slow_cmp)]);
@@ -1928,7 +1728,7 @@ where
 /// Both operands are coerced to truthy i8s and combined with
 /// `band`/`bor`.
 fn lower_bool_binop<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     op: BinOp,
     a: Var,
@@ -1950,168 +1750,9 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
-// fz "process intrinsics": externs the front end exposes but the runtime
-// implements as BIFs that need the running process (and/or bespoke arg
-// marshaling). Each marshals its args, then routes through `body.call_named`
-// — the one declare→call path — and wraps the result per its ABI. The process,
-// when needed, is the pinned register (`process_arg`), prepended here rather
-// than appearing in the fz extern decl.
-
-/// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
-fn lower_extern_fz_panic<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let value_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    body.call_named("fz_panic", &[process, value_ref]);
-    if body.cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
-    }
-    Ok(LowerOut::DeadUnit)
-}
-
-/// The arithmetic shims native codegen LOWERS IN PLACE rather than calls.
-///
-/// They are declared in `kernel.fz` and listed in `RUNTIME_SYMBOLS`, but no
-/// door ever resolves their address on the native path: this table is where
-/// the call becomes a machine instruction instead. It is a table rather than
-/// five `matches!` arms so that the set is nameable — `extern_contract`'s
-/// coverage test reads it to tell a symbol that needs no JIT registration
-/// from one that is simply missing (fz-5xp.58).
-pub(crate) const ARITH_SHIMS: &[(&str, BinOp)] = &[
-    ("fz_op_add_ii", BinOp::Add),
-    ("fz_op_add_if", BinOp::Add),
-    ("fz_op_add_ff", BinOp::Add),
-    ("fz_op_sub_ii", BinOp::Sub),
-    ("fz_op_sub_if", BinOp::Sub),
-    ("fz_op_sub_fi", BinOp::Sub),
-    ("fz_op_sub_ff", BinOp::Sub),
-    ("fz_op_mul_ii", BinOp::Mul),
-    ("fz_op_mul_if", BinOp::Mul),
-    ("fz_op_mul_ff", BinOp::Mul),
-    ("fz_op_div_ii", BinOp::Div),
-    ("fz_op_div_if", BinOp::Div),
-    ("fz_op_div_fi", BinOp::Div),
-    ("fz_op_div_ff", BinOp::Div),
-    ("fz_op_rem_ii", BinOp::Mod),
-    ("fz_op_rem_if", BinOp::Mod),
-    ("fz_op_rem_fi", BinOp::Mod),
-    ("fz_op_rem_ff", BinOp::Mod),
-];
-
-pub(crate) fn arith_shim_op(symbol: &str) -> Option<BinOp> {
-    ARITH_SHIMS.iter().find(|(name, _)| *name == symbol).map(|(_, op)| *op)
-}
-
-fn lower_extern_fz_op_arith<M, T>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    value_types: &HashMap<Var, Ty>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    op: BinOp,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError>
-where
-    M: cranelift_module::Module,
-    T: Types<Ty = Ty>,
-{
-    lower_arith_binop(body, t, value_types, var_env, runtime, op, args[0], args[1])
-}
-
-/// fz-5xp.18 — the typed comparison intrinsics `Kernel` selects for an operand
-/// pair whose kinds it knows.
-///
-/// Ordering is a partial function: `Kernel` declares a clause for each pair it
-/// can order and no `any`/`any` default, so an unsupported combination has no
-/// matching clause and is refused at compile time rather than answered wrongly
-/// at run time. Equality is total and keeps its structural default.
-///
-/// `ii` and `ff` compare raw lanes directly. `if`/`fi` call the shared exact
-/// numeric comparator without boxing. `bb` asks the runtime for byte order.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CmpOperands {
-    IntInt,
-    FloatFloat,
-    IntFloat,
-    FloatInt,
-    BinaryBinary,
-}
-
-fn typed_cmp_extern(symbol: &str) -> Option<(BinOp, CmpOperands)> {
-    let (op, suffix) = symbol.strip_prefix("fz_op_")?.rsplit_once('_')?;
-    let kinds = match suffix {
-        "ii" => CmpOperands::IntInt,
-        "ff" => CmpOperands::FloatFloat,
-        "if" => CmpOperands::IntFloat,
-        "fi" => CmpOperands::FloatInt,
-        "bb" => CmpOperands::BinaryBinary,
-        _ => return None,
-    };
-    let op = match op {
-        "eq" => BinOp::Eq,
-        "neq" => BinOp::Neq,
-        "lt" => BinOp::Lt,
-        "lte" => BinOp::Le,
-        "gt" => BinOp::Gt,
-        "gte" => BinOp::Ge,
-        _ => return None,
-    };
-    Some((op, kinds))
-}
-
-fn lower_typed_cmp<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
-    op: BinOp,
-    kinds: CmpOperands,
-    args: &[Var],
-    dest_var: Var,
-) -> Result<LowerOut, CodegenError> {
-    let cmp = match kinds {
-        CmpOperands::IntInt => {
-            let icc = int_cc_for(op)?;
-            let left = body.as_raw_i64(var_env, args[0].0);
-            let right = body.as_raw_i64(var_env, args[1].0);
-            body.b.ins().icmp(icc, left, right)
-        }
-        CmpOperands::FloatFloat => {
-            let fcc = float_cc_for(op)?;
-            let left = body.as_raw_f64(var_env, args[0].0);
-            let right = body.as_raw_f64(var_env, args[1].0);
-            body.b.ins().fcmp(fcc, left, right)
-        }
-        CmpOperands::IntFloat | CmpOperands::FloatInt => {
-            let ordering =
-                emit_mixed_numeric_cmp(body, var_env, runtime, args[0], args[1], kinds == CmpOperands::IntFloat);
-            body.b.ins().icmp_imm(int_cc_for(op)?, ordering, 0)
-        }
-        CmpOperands::BinaryBinary => {
-            let icc = int_cc_for(op)?;
-            let left = body.tagged_var(var_env, args[0].0);
-            let right = body.tagged_var(var_env, args[1].0);
-            let cmp_ref = body.jmod.declare_func_in_func(runtime.value_cmp_ref_id, body.b.func);
-            let process = body.process_arg();
-            let call = body.b.ins().call(cmp_ref, &[process, left, right]);
-            let ordering = body.b.inst_results(call)[0];
-            let zero = body.b.ins().iconst(types::I64, 0);
-            body.b.ins().icmp(icc, ordering, zero)
-        }
-    };
-    if body.cache.if_only_conds.contains(&dest_var.0) {
-        return Ok(LowerOut::Condition(cmp));
-    }
-    Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
-}
-
 fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    runtime: &RuntimeRefs,
     left: Var,
     right: Var,
     left_is_int: bool,
@@ -2121,9 +1762,7 @@ fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
     } else {
         (body.as_raw_i64(var_env, right.0), body.as_raw_f64(var_env, left.0))
     };
-    let compare = body.jmod.declare_func_in_func(runtime.int_float_cmp_id, body.b.func);
-    let call = body.b.ins().call(compare, &[integer, float]);
-    let ordering = body.b.inst_results(call)[0];
+    let ordering = runtime_call1!(body, fz_int_float_cmp, [integer, float]);
     if left_is_int {
         ordering
     } else {
@@ -2131,109 +1770,11 @@ fn emit_mixed_numeric_cmp<M: cranelift_module::Module>(
     }
 }
 
-fn int_cc_for(op: BinOp) -> Result<IntCC, CodegenError> {
-    Ok(match op {
-        BinOp::Eq => IntCC::Equal,
-        BinOp::Neq => IntCC::NotEqual,
-        BinOp::Lt => IntCC::SignedLessThan,
-        BinOp::Le => IntCC::SignedLessThanOrEqual,
-        BinOp::Gt => IntCC::SignedGreaterThan,
-        BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
-        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-    })
-}
-
-fn float_cc_for(op: BinOp) -> Result<FloatCC, CodegenError> {
-    Ok(match op {
-        BinOp::Eq => FloatCC::Equal,
-        BinOp::Neq => FloatCC::NotEqual,
-        BinOp::Lt => FloatCC::LessThan,
-        BinOp::Le => FloatCC::LessThanOrEqual,
-        BinOp::Gt => FloatCC::GreaterThan,
-        BinOp::Ge => FloatCC::GreaterThanOrEqual,
-        other => return Err(CodegenError::new(format!("{other:?} is not a comparison"))),
-    })
-}
-
-/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
-/// forwards to `fz_send_ref`.
-fn lower_extern_fz_send<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let receiver = body.as_raw_i64(var_env, args[0].0);
-    let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
-    let mut msg_args = Vec::with_capacity(1);
-    body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
-    let msg_ref = msg_args[0];
-    let process = body.process_arg();
-    let inst = body.call_named("fz_send_ref", &[process, receiver, msg_ref]);
-    Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_self()`: the current process id from `fz_self_raw`.
-fn lower_extern_fz_self<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-) -> Result<LowerOut, CodegenError> {
-    let process = body.process_arg();
-    let inst = body.call_named("fz_self_raw", &[process]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_make_ref()`: a fresh opaque ref from `fz_make_ref_raw` (no process).
-fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-) -> Result<LowerOut, CodegenError> {
-    let inst = body.call_named("fz_make_ref_raw", &[]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
-fn lower_extern_fz_spawn<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let closure_ref = body.tagged_var(var_env, args[0].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_spawn_ref", &[process, closure_ref]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_spawn_opt(closure, min_heap_size)`: `fz_spawn` plus a heap-size hint.
-fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let closure_ref = body.tagged_var(var_env, args[0].0);
-    let min_heap_size = body.as_raw_i64(var_env, args[1].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_spawn_opt_ref", &[process, closure_ref, min_heap_size]);
-    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
-}
-
-/// `fz_make_resource(payload, dtor)`: raw payload bits + destructor closure ref.
-fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[Var],
-) -> Result<LowerOut, CodegenError> {
-    let payload = *var_env.get(&args[0].0).expect("unbound make_resource payload");
-    let payload_raw = body.value_raw_int(payload);
-    let dtor_ref = body.tagged_var(var_env, args[1].0);
-    let process = body.process_arg();
-    let inst = body.call_named("fz_make_resource_ref", &[process, payload_raw, dtor_ref]);
-    Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
-}
-
 /// Generic extern fallback: marshals each arg per its declared `ExternTy`,
 /// looks up (or caches) the FuncRef, and packages the return as
 /// RawI64 / RawF64 / ValueRef / nil / DeadUnit per the decl shape.
 fn lower_extern_generic<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     decl: &ExternDecl,
     eid: &ExternId,
@@ -2249,20 +1790,20 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     if takes_process {
         param_tys.push(types::I64);
     }
-    param_tys.extend(decl.params.iter().map(|t| match t {
-        ExternTy::F64 => types::F64,
-        _ => types::I64,
-    }));
-    let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
-    let ret_tys: &[ir::Type] = if returns_value {
-        match decl.ret {
-            ExternTy::F64 => &[types::F64],
-            _ => &[types::I64],
-        }
-    } else {
-        &[]
-    };
-    let sig = sig1(&param_tys, ret_tys);
+    // A parameter that carries no value has no lane; `marshal_extern_arg`
+    // refuses one, so the word it would occupy here is never reached.
+    param_tys.extend(decl.params.iter().map(|t| t.lane().unwrap_or(types::I64)));
+    let ret = decl.ret.scalar_ty().ok_or_else(|| {
+        CodegenError::new(format!(
+            "extern `{}` aggregate result reached scalar Prim::Extern lowering",
+            decl.symbol
+        ))
+    })?;
+    let ret_lane = ret.lane();
+    let returns_value = ret_lane.is_some();
+    let mut sig = body.jmod.make_signature();
+    sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
+    sig.returns.extend(ret_lane.map(ir::AbiParam::new));
     let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
         cached
     } else {
@@ -2290,7 +1831,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     let arg_vals: Vec<ir::Value> = args
         .iter()
         .zip(param_kinds.iter())
-        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty, takes_process))
+        .map(|(v, ty)| marshal_extern_arg(body, var_env, v.var, *ty, takes_process))
         .collect::<Result<_, _>>()?;
     let call_args: Vec<ir::Value> = match process_arg {
         Some(process) => std::iter::once(process).chain(arg_vals).collect(),
@@ -2304,8 +1845,14 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         // everything downstream that a raw f64 was a tagged value ref: the
         // consumer then unboxed it, and the result was an unbox helper applied
         // to an f64 that failed Cranelift verification.
-        return Ok(match decl.ret {
+        return Ok(match ret {
             ExternTy::I64 => LowerOut::RawI64(raw),
+            // A C `int` result fills only the low half of the return
+            // register, so the fz integer is its sign extension. Reading the
+            // whole register instead is what turned `open`'s -1 into
+            // 4294967295 on a platform whose libc leaves the upper half zero.
+            ExternTy::I32 => LowerOut::RawI64(body.b.ins().sextend(types::I64, raw)),
+            ExternTy::Bool => LowerOut::Strict(decode_foreign_boolean_word(body, raw)),
             ExternTy::F64 => LowerOut::RawF64(raw),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
             // Spelled out rather than defaulted: the defect above WAS a wire
@@ -2319,6 +1866,145 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+pub(crate) fn lower_extern_pair<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    decl: &ExternDecl,
+    eid: &ExternId,
+    args: &[ExternArg],
+) -> Result<Vec<CodegenValue>, CodegenError> {
+    lower_extern_pair_call(body, var_env, decl, eid, args)
+}
+
+fn lower_extern_pair_call<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    decl: &ExternDecl,
+    eid: &ExternId,
+    args: &[ExternArg],
+) -> Result<Vec<CodegenValue>, CodegenError> {
+    let crate::fz_ir::ExternReturn::Pair(fields) = decl.ret else {
+        return Err(CodegenError::new(format!(
+            "extern `{}` reached pair lowering with scalar result {:?}",
+            decl.symbol, decl.ret
+        )));
+    };
+    if decl.abi != crate::fz_ir::ExternAbi::C || decl.variadic {
+        return Err(CodegenError::new(format!(
+            "extern `{}` pair results require one fixed `C` declaration",
+            decl.symbol
+        )));
+    }
+    if args.len() != decl.params.len() {
+        return Err(CodegenError::new(format!(
+            "extern `{}` codegen: arg count {} != param count {}",
+            decl.symbol,
+            args.len(),
+            decl.params.len()
+        )));
+    }
+    let mut sig = body.jmod.make_signature();
+    sig.params.extend(
+        decl.params
+            .iter()
+            .map(|ty| ir::AbiParam::new(ty.lane().unwrap_or(types::I64))),
+    );
+    let physical = c_pair_return_types(body.jmod.isa().triple(), fields)?;
+    sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
+        cached
+    } else {
+        let func_id = body
+            .jmod
+            .declare_function(&decl.symbol, Linkage::Import, &sig)
+            .map_err(|error| CodegenError::new(format!("declare extern `{}`: {error}", decl.symbol)))?;
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(*eid, fref);
+        fref
+    };
+    let call_args = args
+        .iter()
+        .zip(decl.params.iter().copied())
+        .map(|(arg, ty)| marshal_extern_arg(body, var_env, arg.var, ty, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    let call = body.b.ins().call(fref, &call_args);
+    let results = body.b.inst_results(call).to_vec();
+    results
+        .into_iter()
+        .zip(physical)
+        .zip(fields)
+        .map(|((value, physical), semantic)| decode_pair_result(body, value, physical, semantic))
+        .collect()
+}
+
+fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+    // A pair field rides a whole return register. The shared front end builds
+    // a pair only out of the three wire types that do, and naming them here
+    // keeps a narrower lane from being mapped into one of those registers.
+    if let Some(field) = fields
+        .iter()
+        .find(|field| !matches!(field, ExternTy::I64 | ExternTy::F64 | ExternTy::Bool))
+    {
+        return Err(CodegenError::new(format!(
+            "{field:?} is not a scalar C pair field; a pair field is integer, float, or boolean"
+        )));
+    }
+    let natural = |field: ExternTy| field.lane().unwrap_or(types::I64);
+    match triple.architecture {
+        Architecture::X86_64 | Architecture::X86_64h
+            if matches!(
+                triple.operating_system,
+                OperatingSystem::Linux | OperatingSystem::Darwin(_)
+            ) =>
+        {
+            Ok(fields.map(natural))
+        }
+        Architecture::Aarch64(_)
+            if matches!(
+                triple.operating_system,
+                OperatingSystem::Linux | OperatingSystem::Darwin(_)
+            ) =>
+        {
+            if fields == [ExternTy::F64, ExternTy::F64] {
+                Ok([types::F64, types::F64])
+            } else {
+                Ok([types::I64, types::I64])
+            }
+        }
+        Architecture::X86_64 | Architecture::X86_64h | Architecture::Aarch64(_) => Err(CodegenError::new(format!(
+            "C scalar-pair returns are unsupported on target {triple}; only Linux and Darwin x86_64 SysV or AArch64 are verified"
+        ))),
+        ref architecture => Err(CodegenError::new(format!(
+            "C scalar-pair returns are unsupported on target architecture {architecture}"
+        ))),
+    }
+}
+
+fn decode_pair_result<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    value: ir::Value,
+    physical: ir::Type,
+    semantic: ExternTy,
+) -> Result<CodegenValue, CodegenError> {
+    Ok(match semantic {
+        ExternTy::I64 => CodegenValue::RawInt(value),
+        ExternTy::F64 if physical == types::F64 => CodegenValue::RawF64(value),
+        ExternTy::F64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlags::new(), value)),
+        ExternTy::Bool => decode_foreign_boolean_word(body, value),
+        other => {
+            return Err(CodegenError::new(format!("{other:?} is not a scalar C pair field")));
+        }
+    })
+}
+
+fn decode_foreign_boolean_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    word: ir::Value,
+) -> CodegenValue {
+    let condition = body.b.ins().icmp_imm(IntCC::NotEqual, word, 0);
+    strict_bool(body.b, condition)
 }
 
 fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32, CodegenError> {
@@ -2346,24 +2032,19 @@ fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32
 /// materializes the planned callable-boundary singleton directly instead of
 /// routing through closure allocation.
 pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     fn_id: FnId,
 ) -> Result<LowerOut, CodegenError> {
     let cl_sid = settled_callable_boundary_id(env, fn_id)?;
-    Ok(LowerOut::ValueRef(fetch_static_closure(
-        body.jmod,
-        body.b,
-        env.runtime,
-        cl_sid,
-    )))
+    Ok(LowerOut::ValueRef(fetch_static_closure(body, cl_sid)))
 }
 
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
 /// object, store the callable-boundary code pointer, then write captures through
 /// the runtime's schema-backed accessor.
 pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     fn_id: FnId,
@@ -2392,7 +2073,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
 /// closure-target sig `(args..., self, cont) tail` and projects
 /// captures from `self` in its entry harness.
 fn emit_capturing_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
@@ -2431,4 +2112,62 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
         }
     }
     Ok(cl_ptr)
+}
+
+#[cfg(test)]
+mod c_pair_abi_test {
+    use super::*;
+    use std::str::FromStr;
+
+    fn classify(target: &str, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+        c_pair_return_types(&Triple::from_str(target).expect("valid target triple"), fields)
+    }
+
+    #[test]
+    fn x86_64_uses_each_field_natural_return_bank_on_linux_and_darwin() {
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"] {
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::Bool]).unwrap(),
+                [types::I64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::F64]).unwrap(),
+                [types::I64, types::F64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::Bool]).unwrap(),
+                [types::F64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::F64]).unwrap(),
+                [types::F64, types::F64]
+            );
+        }
+    }
+
+    #[test]
+    fn aarch64_only_uses_float_banks_for_a_float_hfa() {
+        for target in ["aarch64-unknown-linux-gnu", "aarch64-apple-darwin"] {
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::F64]).unwrap(),
+                [types::F64, types::F64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::I64, ExternTy::F64]).unwrap(),
+                [types::I64, types::I64]
+            );
+            assert_eq!(
+                classify(target, [ExternTy::F64, ExternTy::Bool]).unwrap(),
+                [types::I64, types::I64]
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_target_abi_is_refused_before_emitting_a_call() {
+        assert!(classify("x86_64-pc-windows-msvc", [ExternTy::I64, ExternTy::F64]).is_err());
+        assert!(classify("x86_64-unknown-freebsd", [ExternTy::I64, ExternTy::F64]).is_err());
+        assert!(classify("aarch64-pc-windows-msvc", [ExternTy::F64, ExternTy::I64]).is_err());
+        assert!(classify("riscv64gc-unknown-linux-gnu", [ExternTy::I64, ExternTy::I64]).is_err());
+    }
 }

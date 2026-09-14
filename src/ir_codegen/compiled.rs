@@ -39,13 +39,13 @@ pub struct CompiledModule {
     pub(crate) entry_thunk_addr: *const u8,
     /// Tail-CC `fz_main_trampoline(self, cont) -> i64` body.
     pub(crate) main_trampoline_addr: *const u8,
-    /// SystemV->Tail-CC shim for deferred destructor dispatch.
+    /// C-convention to Tail-CC shim for deferred destructor dispatch.
     pub(crate) drain_dtor_entry_addr: *const u8,
     /// Finalized addresses of `fz_halt_cont_body_{tagged,i64,f64,atom}`.
     pub(crate) halt_cont_body_addrs: [*const u8; 4],
     /// Per-FnId halt-cont singleton kind.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
-    /// Single `fz_resume(cont) -> i64` SystemV shim.
+    /// Single `fz_resume(cont) -> i64` shim, in the target's C convention.
     pub(crate) resume_addr: *const u8,
 }
 

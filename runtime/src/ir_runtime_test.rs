@@ -17,6 +17,148 @@ fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
     f(&mut proc)
 }
 
+#[test]
+fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message() {
+    #[derive(Default)]
+    struct Calls {
+        closure: u64,
+        receiver: u32,
+        message: u64,
+    }
+
+    extern "C" fn spawn(_sender: *mut Process, scheduler: *mut (), closure: u64) -> u32 {
+        let calls = unsafe { &mut *(scheduler as *mut Calls) };
+        calls.closure = closure;
+        37
+    }
+
+    extern "C" fn send(_sender: *mut Process, scheduler: *mut (), receiver: u32, message: u64) {
+        let calls = unsafe { &mut *(scheduler as *mut Calls) };
+        calls.receiver = receiver;
+        calls.message = message;
+    }
+
+    with_process(|process| {
+        let process_ptr = process as *mut Process;
+        let closure = process
+            .heap
+            .alloc_list_cons_int(1, AnyValueRef::empty_list())
+            .expect("representative boxed closure lane")
+            .raw_word();
+        let message = process
+            .heap
+            .alloc_list_cons_int(2, AnyValueRef::empty_list())
+            .expect("boxed message")
+            .raw_word();
+        let mut calls = Calls::default();
+        let mut ctx = ExecCtx {
+            scheduler: &mut calls as *mut Calls as *mut (),
+            spawn: Some(spawn),
+            send: Some(send),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+
+        assert_eq!(fz_spawn(process_ptr, closure), 37);
+        assert_eq!(fz_send(process_ptr, 41, message), message);
+        assert_eq!(calls.closure, closure);
+        assert_eq!(calls.receiver, 41);
+        assert_eq!(calls.message, message);
+    });
+}
+
+#[test]
+fn panic_export_forwards_the_exact_value_to_the_context_fault_channel_and_returns() {
+    #[derive(Default)]
+    struct FaultCapture {
+        process: *mut Process,
+        value: u64,
+    }
+
+    extern "C" fn fault(process: *mut Process, context: *mut (), value: u64) {
+        let capture = unsafe { &mut *(context as *mut FaultCapture) };
+        capture.process = process;
+        capture.value = value;
+    }
+
+    with_process(|process| {
+        let process_ptr = process as *mut Process;
+        let message = process
+            .heap
+            .alloc_list_cons_int(7, AnyValueRef::empty_list())
+            .expect("composite panic value")
+            .raw_word();
+        let mut capture = FaultCapture::default();
+        let mut ctx = ExecCtx {
+            scheduler: &mut capture as *mut FaultCapture as *mut (),
+            fault: Some(fault),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut ctx;
+
+        crate::fz_panic(process_ptr, message);
+
+        assert_eq!(capture.process, process_ptr);
+        assert_eq!(capture.value, message);
+    });
+}
+
+#[test]
+fn total_arithmetic_exports_return_initialized_result_and_canonical_status_at_boundaries() {
+    assert_eq!(
+        fz_op_neg_i(i64::MIN),
+        FzIntegerArithmeticResult {
+            result: i64::MIN,
+            failed: 1,
+        }
+    );
+    assert_eq!(
+        fz_op_add_ii(i64::MAX, 1),
+        FzIntegerArithmeticResult {
+            result: i64::MIN,
+            failed: 1,
+        }
+    );
+    assert_eq!(
+        fz_op_sub_ii(i64::MIN, 1),
+        FzIntegerArithmeticResult {
+            result: i64::MAX,
+            failed: 1,
+        }
+    );
+    assert_eq!(
+        fz_op_mul_ii(i64::MAX, 2),
+        FzIntegerArithmeticResult { result: -2, failed: 1 }
+    );
+    assert_eq!(fz_op_div_ii(1, 0), FzIntegerArithmeticResult { result: 0, failed: 1 });
+    assert_eq!(
+        fz_op_div_ii(i64::MIN, -1),
+        FzIntegerArithmeticResult { result: 0, failed: 1 }
+    );
+    assert_eq!(fz_op_rem_ii(1, 0), FzIntegerArithmeticResult { result: 0, failed: 1 });
+    assert_eq!(
+        fz_op_rem_ii(i64::MIN, -1),
+        FzIntegerArithmeticResult { result: 0, failed: 0 }
+    );
+    for failed in [
+        fz_op_add_ff(f64::MAX, f64::MAX),
+        fz_op_div_ii_to_float(1, 0),
+        fz_op_div_ii_to_float(1, -0),
+        fz_op_div_ff(1.0, -0.0),
+        fz_op_rem_ff(1.0, 0.0),
+    ] {
+        assert_eq!(failed, FzFloatArithmeticResult { result: 0.0, failed: 1 });
+    }
+    assert_eq!(
+        fz_op_rem_ff(-7.5, 2.0),
+        FzFloatArithmeticResult {
+            result: -1.5,
+            failed: 0
+        }
+    );
+    assert_eq!(fz_op_neg_f(0.0).to_bits(), (-0.0f64).to_bits());
+}
+
 fn map_int_value_by_atom_name(process: &Process, map_ref_word: u64, name: &str) -> i64 {
     let map_ref = AnyValueRef::from_raw_word(map_ref_word).expect("stats map ref");
     let map_addr = map_ref.map_addr().expect("stats map addr");

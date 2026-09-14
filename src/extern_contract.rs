@@ -1,104 +1,30 @@
+//! Extern wire types, from two directions.
+//!
+//! One table names every source spelling an extern declaration may write —
+//! the `ExternTy` lane it means, whether a declared parameter takes its lane
+//! from the spelling, and, for a wire-only spelling that names a calling
+//! convention the type system has no type for, the semantic spelling the type
+//! checker must see instead. A wire-only spelling names one lane, and a lane
+//! is a whole register, so it stands only as a whole parameter or result; a
+//! contract that writes one inside a larger type is refused here by name.
+//!
+//! `ty_to_extern_ty` answers the other direction: it derives a lane from a
+//! semantic type through the type calculator, which is where every declared
+//! parameter whose spelling does not name its own lane is answered.
+
 use crate::ast::{SpecDecl, TypeExprBody};
+use crate::diag::{Diagnostic, codes};
 use crate::function_surface::CallableSurface;
-use crate::fz_ir::{ExternAbi, ExternTy};
+use crate::fz_ir::ExternTy;
 use crate::parser::lexer::{Tok, Token};
+use crate::source::Span;
 use crate::types::Types;
 
-/// The symbols fz itself owns, and the convention each is really provided with.
-///
-/// "Owns" spans two providers, deliberately: some rows are exported by the
-/// runtime crate (`fz_binary_concat`, `fz_map_count`), and the `fz_op_*` rows
-/// are private shims inside `ir_interp/extern_call.rs` that exist only because
-/// native codegen answers those symbols by emitting arithmetic instead of a
-/// call. What unites them is not where the code lives but that fz decides how
-/// they are called, so a declaration claiming otherwise is a lie.
-///
-/// It is provenance, not preference: `fz_dbg_value` is
-/// `fn(*mut Process, u64) -> u64` whatever a declaration says about it, so a
-/// foreign `extern "C" def fz_dbg_value(any) :: any` ends in a transmute. That
-/// used to be harmless only because both doors claimed those symbols by name
-/// before the declaration was consulted; once the ABI became the authority the
-/// lie reached the callee and segfaulted the JIT and AOT doors.
-///
-/// So the question is answered ONCE, here, and asked from the shared front end
-/// (`resolve_extern_abi`) -- the only place an answer reaches every door
-/// identically -- and again by the interpreter's symbol resolver as
-/// defence-in-depth around a raw transmute.
-///
-/// INCOMPLETE BY CONSTRUCTION, and fz-5xp.32 tracks closing it. The runtime
-/// crate exports far more `fz_*` symbols than appear here, and a foreign
-/// declaration of one that is absent gets no check at all. Absence currently
-/// means "fz makes no claim", which is the right default for a genuinely
-/// foreign symbol like `libc::close` and the wrong one for `fz_self_raw`.
-pub const RUNTIME_SYMBOLS: &[(&str, ExternAbi)] = &[
-    // Allocating helpers reach the process heap, so they take the process.
-    // These are the `extern "fz"` declarations in the runtime library.
-    ("fz_atom_to_binary", ExternAbi::Fz),
-    ("fz_binary_concat", ExternAbi::Fz),
-    ("fz_dbg_value", ExternAbi::Fz),
-    ("fz_float_to_binary", ExternAbi::Fz),
-    ("fz_integer_to_binary", ExternAbi::Fz),
-    ("fz_process_heap_alloc_stats", ExternAbi::Fz),
-    // Plain C symbols the runtime exports for the interpreter to call.
-    // fz-5xp.8 — the total term order. Takes the process because atoms order
-    // by NAME, and the name table lives on the node.
-    ("fz_value_cmp_ref", ExternAbi::Fz),
-    ("fz_binary_downcase", ExternAbi::Fz),
-    ("fz_binary_to_atom", ExternAbi::Fz),
-    ("fz_binary_upcase", ExternAbi::Fz),
-    ("fz_bitstring_byte_size", ExternAbi::C),
-    ("fz_bitstring_is_binary", ExternAbi::C),
-    ("fz_bitstring_valid_utf8", ExternAbi::C),
-    ("fz_bitstring_utf8_prefix", ExternAbi::C),
-    ("fz_brand_bitstring_as_utf8", ExternAbi::C),
-    ("fz_map_delete", ExternAbi::Fz),
-    ("fz_map_from_kv", ExternAbi::Fz),
-    ("fz_map_put_ref", ExternAbi::Fz),
-    ("fz_map_put_int", ExternAbi::Fz),
-    ("fz_map_put_float", ExternAbi::Fz),
-    ("fz_map_put_atom", ExternAbi::Fz),
-    ("fz_map_put_atom_ref", ExternAbi::Fz),
-    ("fz_map_count", ExternAbi::C),
-    ("fz_map_entry_key", ExternAbi::C),
-    ("fz_map_entry_value", ExternAbi::C),
-    ("fz_resource_test_print_dtor", ExternAbi::C),
-    ("fz_op_add_ii", ExternAbi::C),
-    ("fz_op_add_if", ExternAbi::C),
-    ("fz_op_add_ff", ExternAbi::C),
-    ("fz_op_sub_ii", ExternAbi::C),
-    ("fz_op_sub_if", ExternAbi::C),
-    ("fz_op_sub_fi", ExternAbi::C),
-    ("fz_op_sub_ff", ExternAbi::C),
-    ("fz_op_neg_i", ExternAbi::C),
-    ("fz_op_neg_f", ExternAbi::C),
-    ("fz_op_mul_ii", ExternAbi::C),
-    ("fz_op_mul_if", ExternAbi::C),
-    ("fz_op_mul_ff", ExternAbi::C),
-    ("fz_op_div_ii", ExternAbi::C),
-    ("fz_op_div_ii_to_float", ExternAbi::C),
-    ("fz_op_div_if", ExternAbi::C),
-    ("fz_op_div_fi", ExternAbi::C),
-    ("fz_op_div_ff", ExternAbi::C),
-    ("fz_op_rem_ii", ExternAbi::C),
-    ("fz_op_rem_if", ExternAbi::C),
-    ("fz_op_rem_fi", ExternAbi::C),
-    ("fz_op_rem_ff", ExternAbi::C),
-];
-
-pub fn runtime_symbol_abi(symbol: &str) -> Option<ExternAbi> {
-    RUNTIME_SYMBOLS
-        .iter()
-        .find(|(name, _)| *name == symbol)
-        .map(|(_, abi)| *abi)
-}
-
-/// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
-/// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
-/// linker sees just the bare suffix. fz-axu — externs declared inside a
-/// `defmodule Foo do ... end` get auto-qualified by the resolver to
-/// `Foo.name` (with a `.`), which is also fz-side decoration; strip
-/// either separator to recover the C symbol. Single-segment names
-/// round-trip.
+/// The C symbol an extern's fz-visible name resolves to. A `lib::name`
+/// prefix is fz-side namespacing only, and an extern declared inside a
+/// `defmodule Foo do ... end` is qualified to `Foo.name` by the resolver,
+/// which is also fz-side decoration; the linker sees the bare suffix either
+/// way. A single-segment name is already the symbol.
 pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
     if let Some((_, sym)) = fz_name.rsplit_once("::") {
         return sym;
@@ -109,67 +35,219 @@ pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
     fz_name
 }
 
+/// One source spelling of an extern wire type.
+struct WireSpelling {
+    /// The spelling as it is written in a declaration or a call-site
+    /// ascription.
+    name: &'static str,
+    /// The lane the spelling names.
+    ty: ExternTy,
+    /// Whether a declared parameter takes its lane from the spelling rather
+    /// than from its semantic type.
+    lane_from_spelling: bool,
+    /// The semantic spelling a wire-only spelling is rewritten to before the
+    /// type checker sees the contract.
+    semantic: Option<&'static str>,
+}
+
+impl WireSpelling {
+    /// A spelling a declared parameter's lane is read off the semantic type
+    /// for, so an alias or a constraint can widen it.
+    const fn from_semantic_type(name: &'static str, ty: ExternTy) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: false,
+            semantic: None,
+        }
+    }
+
+    /// A spelling that names its own lane, because the semantic type cannot:
+    /// `binary` is a pointer convention the calculator reads as `Any`, and
+    /// `nil` carries no value at all.
+    const fn names_its_lane(name: &'static str, ty: ExternTy) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: true,
+            semantic: None,
+        }
+    }
+
+    /// A spelling the type system has no type for: a C width or pointer
+    /// convention. It names its own lane, and the contract the type checker
+    /// sees is rewritten to `semantic`, which is the fz type the values in
+    /// that lane are.
+    const fn wire_only(name: &'static str, ty: ExternTy, semantic: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: true,
+            semantic: Some(semantic),
+        }
+    }
+}
+
+const WIRE_SPELLINGS: &[WireSpelling] = &[
+    WireSpelling::from_semantic_type("any", ExternTy::Any),
+    WireSpelling::from_semantic_type("atom", ExternTy::Any),
+    WireSpelling::from_semantic_type("boolean", ExternTy::Bool),
+    WireSpelling::from_semantic_type("integer", ExternTy::I64),
+    WireSpelling::from_semantic_type("float", ExternTy::F64),
+    WireSpelling::from_semantic_type("never", ExternTy::Never),
+    WireSpelling::names_its_lane("nil", ExternTy::Unit),
+    WireSpelling::names_its_lane("binary", ExternTy::Binary),
+    WireSpelling::wire_only("c_int", ExternTy::I32, "integer"),
+    WireSpelling::wire_only("cstring", ExternTy::CString, "binary"),
+    WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
+];
+
+fn wire_spelling(name: &str) -> Option<&'static WireSpelling> {
+    WIRE_SPELLINGS.iter().find(|row| row.name == name)
+}
+
+/// The token the lexer produces for a spelling: `nil` is its own token,
+/// everything else is an identifier.
+fn token_for_spelling(name: &str) -> Tok {
+    if name == "nil" {
+        Tok::Nil
+    } else {
+        Tok::Ident(name.to_string())
+    }
+}
+
+/// The lane a bare type name means, as written in a variadic call site's
+/// `arg :: ty` ascription.
 pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
-    match name {
-        "any" | "atom" | "boolean" => Some(ExternTy::Any),
-        "integer" => Some(ExternTy::I64),
-        "float" => Some(ExternTy::F64),
-        "nil" => Some(ExternTy::Unit),
-        "never" => Some(ExternTy::Never),
-        "binary" => Some(ExternTy::Binary),
-        "cstring" => Some(ExternTy::CString),
-        _ => None,
+    wire_spelling(name).map(|row| row.ty)
+}
+
+/// Why a declaration hands the type checker no extern contract.
+#[derive(Debug)]
+pub(crate) enum ExternContractError {
+    /// The declaration is not an extern, so it has no wire contract at all.
+    NotAnExtern,
+    /// A wire-only spelling is written inside a larger type. Such a spelling
+    /// names one calling-convention lane, and a lane is a whole register, so
+    /// it stands exactly where a whole parameter or result stands.
+    WireSpellingInsideType { spelling: &'static str, span: Span },
+}
+
+impl ExternContractError {
+    /// The refusal as every door reports it, so one declaration reads the
+    /// same however it is compiled.
+    pub(crate) fn diagnostic(&self, function: &str, name_span: Span) -> Diagnostic {
+        match self {
+            Self::NotAnExtern => Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("`{function}` is not an extern declaration"),
+                name_span,
+            ),
+            Self::WireSpellingInsideType { spelling, span } => Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!(
+                    "`{function}` writes `{spelling}` inside a larger type: a wire spelling names \
+                     one C lane, so it stands only as a whole parameter or result"
+                ),
+                *span,
+            ),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ExternTy, extern_ty_from_name};
+    use super::{
+        ExternContractError, ExternTy, TypeExprBody, WIRE_SPELLINGS, extern_ty_from_name,
+        normalize_extern_semantic_body, token_for_spelling,
+    };
+    use crate::parser::lexer::{Tok, Token};
+    use crate::source::Span;
+
+    fn token(tok: Tok) -> Token {
+        Token {
+            tok,
+            span: Span::DUMMY,
+            space_before: false,
+        }
+    }
+
+    fn ident(name: &str) -> Token {
+        token(Tok::Ident(name.to_string()))
+    }
 
     #[test]
     fn boolean_is_the_extern_source_type_name() {
-        assert_eq!(extern_ty_from_name("boolean"), Some(ExternTy::Any));
+        assert_eq!(extern_ty_from_name("boolean"), Some(ExternTy::Bool));
+    }
+
+    /// Every wire-only spelling obeys one rule, and the table is what states
+    /// it: alone it becomes the semantic type the checker has, and inside a
+    /// larger type it is refused by name.
+    #[test]
+    fn a_wire_only_spelling_stands_alone_or_is_refused_by_name() {
+        for row in WIRE_SPELLINGS.iter().filter(|row| row.semantic.is_some()) {
+            let alone = TypeExprBody(vec![ident(row.name)]);
+            let rewritten = normalize_extern_semantic_body(&alone).expect("a whole body names a lane");
+            assert_eq!(
+                rewritten.0[0].tok,
+                token_for_spelling(row.semantic.expect("a wire-only row carries a semantic spelling")),
+            );
+
+            let inside_a_tuple = TypeExprBody(vec![
+                token(Tok::LBrace),
+                ident(row.name),
+                token(Tok::Comma),
+                ident("integer"),
+                token(Tok::RBrace),
+            ]);
+            match normalize_extern_semantic_body(&inside_a_tuple) {
+                Err(ExternContractError::WireSpellingInsideType { spelling, .. }) => {
+                    assert_eq!(spelling, row.name)
+                }
+                other => panic!("`{}` inside a tuple must be refused by name: {other:?}", row.name),
+            }
+        }
     }
 }
 
-pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
-    let mut contract = surface.extern_contract_decl()?;
+pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Result<SpecDecl, ExternContractError> {
+    let mut contract = surface.extern_contract_decl().ok_or(ExternContractError::NotAnExtern)?;
     contract.param_body_tokens = contract
         .param_body_tokens
         .iter()
         .map(normalize_extern_semantic_body)
-        .collect();
-    contract.result_body_tokens = normalize_extern_semantic_body(&contract.result_body_tokens);
+        .collect::<Result<_, _>>()?;
+    contract.result_body_tokens = normalize_extern_semantic_body(&contract.result_body_tokens)?;
     contract.constraints = contract
         .constraints
         .iter()
-        .map(|(name, body)| (name.clone(), normalize_extern_semantic_body(body)))
-        .collect();
-    Some(contract)
+        .map(|(name, body)| Ok((name.clone(), normalize_extern_semantic_body(body)?)))
+        .collect::<Result<_, _>>()?;
+    Ok(contract)
 }
 
+/// The lane a declared parameter's type tokens name outright. `None` leaves
+/// the answer to `ty_to_extern_ty` and the semantic type.
 pub(crate) fn explicit_extern_wire_hint(body: &TypeExprBody) -> Option<ExternTy> {
-    match body.0.as_slice() {
+    let spelling = match body.0.as_slice() {
         [
             Token {
                 tok: Tok::Ident(name), ..
             },
-        ] => match name.as_str() {
-            "binary" => Some(ExternTy::Binary),
-            "cstring" => Some(ExternTy::CString),
-            "unit" => Some(ExternTy::Unit),
-            _ => None,
-        },
-        [Token { tok: Tok::Nil, .. }] => Some(ExternTy::Unit),
-        _ => None,
-    }
+        ] => name.as_str(),
+        [Token { tok: Tok::Nil, .. }] => "nil",
+        _ => return None,
+    };
+    let row = wire_spelling(spelling)?;
+    row.lane_from_spelling.then_some(row.ty)
 }
 
 /// Derive a coarse C-ABI wire type from a semantic Ty.
 ///
 /// Explicit marshal hints should already have been handled before this point.
 /// The fallback uses the semantic upper bound: raw integer lanes cover both
-/// `integer` and `cpointer`; float-only types get F64; nil-only -> Unit;
+/// `integer` and the closed builtin word identities; float-only types get F64; nil-only -> Unit;
 /// never -> Never. Everything else stays as a tagged value.
 pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_empty(d) {
@@ -178,79 +256,86 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_nil(d) {
         return ExternTy::Unit;
     }
+    let boolean = t.bool();
+    if t.is_equivalent(d, &boolean) {
+        return ExternTy::Bool;
+    }
     if t.is_floating(d) {
         return ExternTy::F64;
     }
     let int = t.int();
+    let pid = t.pid();
+    let reference = t.reference();
     let cpointer = t.cpointer();
-    let raw_word = t.union(int, cpointer);
+    let raw_word = t.union(int, pid);
+    let raw_word = t.union(raw_word, reference);
+    let raw_word = t.union(raw_word, cpointer);
     if t.is_subtype(d, &raw_word) {
         return ExternTy::I64;
     }
     ExternTy::Any
 }
 
-fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
+/// Rewrite a wire-only spelling to its semantic spelling, so the type checker
+/// sees a type it has. A whole body is the only place the rewrite can reach,
+/// which is also the only place the lane it names has a register of its own,
+/// so a spelling written anywhere else is refused here by name.
+fn normalize_extern_semantic_body(body: &TypeExprBody) -> Result<TypeExprBody, ExternContractError> {
     let mut normalized = body.clone();
     if let [token] = normalized.0.as_mut_slice() {
-        match &token.tok {
-            Tok::Ident(name) if name == "cstring" => {
-                token.tok = Tok::Ident("binary".to_string());
-            }
-            Tok::Ident(name) if name == "unit" => {
-                token.tok = Tok::Nil;
-            }
-            _ => {}
+        if let Tok::Ident(name) = &token.tok
+            && let Some(semantic) = wire_spelling(name).and_then(|row| row.semantic)
+        {
+            token.tok = token_for_spelling(semantic);
         }
+        return Ok(normalized);
     }
-    normalized
+    match misplaced_wire_spelling(&normalized) {
+        Some(refusal) => Err(refusal),
+        None => Ok(normalized),
+    }
+}
+
+/// The first wire-only spelling written among a compound type's tokens. A
+/// field key lexes as its own token, so only a spelling in type position is
+/// found here.
+fn misplaced_wire_spelling(body: &TypeExprBody) -> Option<ExternContractError> {
+    body.0.iter().find_map(|token| {
+        let Tok::Ident(name) = &token.tok else {
+            return None;
+        };
+        let row = wire_spelling(name).filter(|row| row.semantic.is_some())?;
+        Some(ExternContractError::WireSpellingInsideType {
+            spelling: row.name,
+            span: token.span,
+        })
+    })
 }
 
 #[cfg(test)]
-mod runtime_symbol_reachability_test {
-    use super::RUNTIME_SYMBOLS;
-    use crate::compiler2::native_codegen::ARITH_SHIMS;
-    use crate::ir_codegen::runtime_symbol_addrs;
+mod builtin_opaque_wire_test {
+    use super::{ExternTy, ty_to_extern_ty};
+    use crate::compiler2::Types;
 
-    /// fz-5xp.58 — a symbol fz DECLARES must be reachable when compiled code
-    /// calls it. There are exactly two ways for that to be true on the native
-    /// path: the JIT is handed its address, or native codegen lowers the call
-    /// in place and never asks for an address at all.
-    ///
-    /// Nothing checked it, and the JIT's symbol list had drifted:
-    /// `fz_bitstring_is_binary` was declared and never registered. On macOS the
-    /// JIT falls back to `dlsym` over the process image and finds the
-    /// `no_mangle` export anyway, so the whole six-target local gate was green
-    /// while `to_string` died on Linux with `can't resolve symbol`. Every
-    /// symbol missing from that list is a landmine that only goes off on one
-    /// platform, which is precisely the kind of thing a test has to hold.
     #[test]
-    fn every_declared_runtime_symbol_is_reachable_from_compiled_code() {
-        let registered: Vec<&str> = runtime_symbol_addrs().into_iter().map(|(name, _)| name).collect();
-        let unreachable: Vec<&str> = RUNTIME_SYMBOLS
-            .iter()
-            .map(|(name, _)| *name)
-            .filter(|name| !registered.contains(name) && !ARITH_SHIMS.iter().any(|(shim, _)| shim == name))
-            .collect();
-        assert!(
-            unreachable.is_empty(),
-            "declared in RUNTIME_SYMBOLS but neither registered with the JIT nor lowered in place \
-             by native codegen -- these resolve on macOS only by dlsym accident and fail on Linux: {:?}",
-            unreachable
-        );
-    }
+    fn only_builtin_opaque_word_types_use_the_integer_abi_lane() {
+        let mut types = Types::new();
+        let pid = types.pid();
+        let reference = types.reference();
+        let cpointer = types.cpointer();
+        let builtin_union = types.union(pid, reference);
+        let builtin_union = types.union(builtin_union, cpointer);
 
-    /// The escape hatch cannot become a dumping ground: a name is only allowed
-    /// to skip registration because codegen really does lower it, so every
-    /// entry in that table has to be a symbol fz declares.
-    #[test]
-    fn every_natively_lowered_shim_is_a_declared_symbol() {
-        let declared: Vec<&str> = RUNTIME_SYMBOLS.iter().map(|(name, _)| *name).collect();
-        let strays: Vec<&str> = ARITH_SHIMS
-            .iter()
-            .map(|(name, _)| *name)
-            .filter(|name| !declared.contains(name))
-            .collect();
-        assert!(strays.is_empty(), "lowered in place but never declared: {:?}", strays);
+        for builtin in [pid, reference, cpointer, builtin_union] {
+            assert_eq!(ty_to_extern_ty(&mut types, &builtin), ExternTy::I64);
+        }
+        for spelling in ["pid", "ref", "cpointer"] {
+            let user_opaque = types.opaque_of(spelling);
+            assert_eq!(
+                ty_to_extern_ty(&mut types, &user_opaque),
+                ExternTy::Any,
+                "display spelling cannot grant a user opaque a raw ABI lane"
+            );
+        }
     }
 }

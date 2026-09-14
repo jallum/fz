@@ -4,6 +4,7 @@
 //! structured body form. It owns the local lowering algorithm, lambda capture
 //! discovery, and generated-function definition path.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
@@ -18,7 +19,7 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use crate::extern_contract::{
-    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, runtime_symbol_abi, ty_to_extern_ty,
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
 use crate::fz_ir::ExternAbi;
@@ -27,9 +28,9 @@ use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::Span;
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
-    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
-    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId,
+    BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
+    DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
+    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -321,6 +322,7 @@ pub(super) fn lower_function(
 
     let mut lowerer = Lowerer::new(world, tel, function, source, surface);
     let (body, mut outputs, mut changed) = lowerer.lower()?;
+    emit_ownership_scan(tel, function, lowerer.ownership_steps_scanned);
     let body_changed =
         super::super::drive::ExecutionContext::new(lowerer.world, tel).define_lowered_body(function, body);
     outputs.push(FactKey::LoweredBody(function));
@@ -333,6 +335,18 @@ pub(super) fn lower_function(
         changed,
         ..JobEffects::default()
     })
+}
+
+/// How many steps ownership construction read in sequence while lowering this
+/// function. Everything else it asks -- where a value is defined, what a later
+/// step uses -- is a table lookup, so the count stays proportional to the body
+/// instead of to the constructions the body contains.
+fn emit_ownership_scan(tel: &impl crate::telemetry::Telemetry, function: FunctionId, steps_scanned: u64) {
+    tel.dispatch(
+        &["fz", "compiler2", "lowered_body", "ownership"],
+        &crate::measurements! { steps_scanned: steps_scanned },
+        &crate::metadata! { function_id: u64::from(function.as_u32()) },
+    );
 }
 
 fn extern_wire_ty(
@@ -350,6 +364,82 @@ fn extern_wire_ty(
         types.instantiate(semantic_ty, constraints)
     };
     ty_to_extern_ty(types, &upper_bound)
+}
+
+fn extern_param_wire(
+    types: &mut super::super::types::Types,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &super::super::types::Ty,
+    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
+    abi: crate::fz_ir::ExternAbi,
+) -> Result<crate::fz_ir::ExternTy, String> {
+    let resolved = if constraints.is_empty() {
+        *semantic_ty
+    } else {
+        types.instantiate(semantic_ty, constraints)
+    };
+    if abi == crate::fz_ir::ExternAbi::C && types.max_tuple_arity(&resolved) != 0 {
+        return Err("C extern aggregate arguments are unsupported; pass an opaque value reference or define an exact scalar C signature".to_string());
+    }
+    Ok(extern_wire_ty(types, body, semantic_ty, constraints))
+}
+
+fn extern_return_wire(
+    types: &mut super::super::types::Types,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &super::super::types::Ty,
+    constraints: &HashMap<super::super::types::TypeVarId, super::super::types::Ty>,
+    abi: crate::fz_ir::ExternAbi,
+) -> Result<crate::fz_ir::ExternReturn, String> {
+    let resolved = if constraints.is_empty() {
+        *semantic_ty
+    } else {
+        types.instantiate(semantic_ty, constraints)
+    };
+    let tuple_arity = {
+        let predicate = types.runtime_type_predicate(&resolved);
+        let arities = predicate.tuples.arities();
+        (!arities.cofinite && arities.values.len() == 1)
+            .then(|| arities.values.iter().next().copied())
+            .flatten()
+    };
+    if let Some(arity) = tuple_arity {
+        if abi != crate::fz_ir::ExternAbi::C {
+            return Err("fixed scalar-pair returns are supported only by the `C` ABI".to_string());
+        }
+        if arity != 2 {
+            return Err(format!(
+                "C extern aggregate returns require exactly two scalar fields, found tuple arity {arity}"
+            ));
+        }
+        let fields = types.tuple_projections(&resolved, 2);
+        let fields: [crate::fz_ir::ExternTy; 2] = fields
+            .iter()
+            .map(|field| ty_to_extern_ty(types, field))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("two tuple projections");
+        if fields.iter().any(|field| {
+            !matches!(
+                field,
+                crate::fz_ir::ExternTy::I64 | crate::fz_ir::ExternTy::F64 | crate::fz_ir::ExternTy::Bool
+            )
+        }) {
+            return Err(format!(
+                "C extern aggregate return fields must be integer, float, or boolean, found {fields:?}"
+            ));
+        }
+        return Ok(crate::fz_ir::ExternReturn::Pair(fields));
+    }
+    if types.max_tuple_arity(&resolved) != 0 {
+        return Err("C extern aggregate return must resolve to one exact two-field tuple".to_string());
+    }
+    Ok(crate::fz_ir::ExternReturn::Scalar(extern_wire_ty(
+        types,
+        body,
+        semantic_ty,
+        constraints,
+    )))
 }
 
 fn collect_local_dispatch_requirements(
@@ -1070,6 +1160,7 @@ struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
     generated: Vec<Output>,
     generated_changed: Vec<Changed>,
     generated_ids: Vec<FunctionId>,
+    ownership_steps_scanned: u64,
 }
 
 struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> {
@@ -1377,6 +1468,7 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
             generated: Vec::new(),
             generated_changed: Vec::new(),
             generated_ids: Vec::new(),
+            ownership_steps_scanned: 0,
         }
     }
 
@@ -1401,31 +1493,22 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
 
     /// The declared calling convention, or a diagnostic.
     ///
-    /// Four ways to get it wrong, and every one of them is refused HERE rather
-    /// than in a door's lowering, because a diagnostic raised in the shared
-    /// front end is the only kind every door raises identically. Each of these
-    /// was, at some point, a per-door check that protected fewer doors than it
-    /// appeared to.
+    /// Three ways to get it wrong, and every one of them is refused HERE
+    /// rather than in a door's lowering, because a diagnostic raised in the
+    /// shared front end is the only kind every door raises identically. Each
+    /// of these was, at some point, a per-door check that protected fewer
+    /// doors than it appeared to.
     ///
     /// 1. An unrecognised name must not fall back to C: the conventions
     ///    disagree about the implicit process argument and about what a
     ///    `binary` parameter is, so a wrong guess is a crash inside the callee.
     ///
-    /// 2. `"fz"` is reserved to the runtime library. It passes fz's own
-    ///    `*mut Process` and fz's internal value representation, which nothing
-    ///    outside the runtime can accept; worse, the symbols it can name are
-    ///    the ones both doors also claim by name in their lowerings, and those
-    ///    two claim sets are not equal, so a foreign declaration of one is a
-    ///    question the doors would answer differently.
+    /// 2. `"fz"` is reserved to the runtime library, because it passes fz's
+    ///    own `*mut Process` and fz's internal value representation. Both
+    ///    belong to the runtime, and a foreign function cannot accept either.
     ///
     /// 3. There is no variadic `"fz"`: a variadic call goes through a
     ///    fixed-arity C dispatcher with nowhere to put the process.
-    ///
-    /// 4. A declaration may not contradict what the runtime actually provides.
-    ///    `fz_dbg_value` is `fn(*mut Process, u64)` however it is declared, so
-    ///    an `extern "C"` one reached it as `fn(u64)` -- nil under `interp`,
-    ///    and for the same shape on `fz_process_heap_alloc_stats`, a segfault
-    ///    under `run` and `build`.
     fn resolve_extern_abi(&self) -> Result<ExternAbi, FatalError> {
         let declared = self
             .surface
@@ -1459,18 +1542,6 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 self.surface.name
             )));
         }
-        let symbol = extern_symbol_from_name(&self.surface.name);
-        if let Some(provided) = runtime_symbol_abi(symbol)
-            && provided != abi
-        {
-            return Err(self.extern_abi_error(format!(
-                "`{}` names `{}`, which the fz runtime provides with the `{}` ABI, \
-                 but declares `extern \"{}\"`; the two disagree about the implicit process \
-                 argument and about how a binary is passed, so the call would reach the \
-                 symbol with arguments it never accepts",
-                self.surface.name, symbol, provided, abi
-            )));
-        }
         Ok(abi)
     }
 
@@ -1489,14 +1560,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         // Checked first: it is the cheapest question, and a wrong answer makes
         // every later one moot.
         let abi = self.resolve_extern_abi()?;
-        let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
+        let contract = extern_semantic_contract(&self.surface).map_err(|error| {
             emit_job_diagnostic(
                 self.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("`{}` is not an extern declaration", self.surface.name),
-                    self.surface.name_span,
-                ),
+                error.diagnostic(&self.surface.name, self.surface.name_span),
             )
         })?;
         let semantic_contract = self
@@ -1515,22 +1582,26 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                     ),
                 )
             })?;
-        let params = self
+        let params: Vec<_> = self
             .surface
             .extern_param_tokens
             .iter()
             .zip(semantic_contract.params.iter())
-            .map(|(body, ty)| extern_wire_ty(self.world.types_mut(), body, ty, &semantic_contract.constraints))
-            .collect();
-        let ret = extern_wire_ty(
+            .map(|(body, ty)| extern_param_wire(self.world.types_mut(), body, ty, &semantic_contract.constraints, abi))
+            .collect::<Result<_, _>>()
+            .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
+        let ret = extern_return_wire(
             self.world.types_mut(),
             &self.surface.extern_ret_tokens,
             &semantic_contract.result,
             &semantic_contract.constraints,
-        );
+            abi,
+        )
+        .map_err(|message| self.extern_abi_error(format!("`{}`: {message}", self.surface.name)))?;
+        let symbol = extern_symbol_from_name(&self.surface.name);
         Ok(LoweredExtern {
             abi,
-            symbol: extern_symbol_from_name(&self.surface.name).to_string(),
+            symbol: symbol.to_string(),
             params,
             variadic: self.surface.variadic,
             ret,
@@ -2728,9 +2799,8 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
     fn plan_clauses(&mut self, clauses: Vec<ExprClause>) -> LoweredBody {
         let mut lowered = Vec::with_capacity(clauses.len());
         let mut entries = Vec::new();
-        let mut clause_bounds = HashMap::new();
         for clause in clauses {
-            let projection_steps = clause.projections.iter().map(lower_projection_step).collect::<Vec<_>>();
+            let projections = clause.projections.iter().map(lower_projection_step).collect::<Vec<_>>();
             let entry = self.plan_block(
                 clause.body,
                 ControlEntryOrigin::Clause,
@@ -2739,49 +2809,36 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 Vec::new(),
                 &mut entries,
             );
-            let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
-            bound.extend(values_defined_by_steps(&projection_steps));
-            clause_bounds.insert(entry, bound);
             lowered.push(LoweredClause {
                 span: clause.span,
                 params: clause.params,
-                projections: projection_steps,
+                projections,
                 entry,
             });
         }
-        let mut body = LoweredBody::Clauses {
-            clauses: lowered,
-            entries,
-            generated: self.generated_ids.clone(),
-        };
-        self.construct_entry_captures(&mut body, &clause_bounds);
+        let mut body = LoweredBody::clauses(lowered, entries, self.generated_ids.clone());
+        self.construct_entry_captures(&mut body);
         body
     }
 
-    fn construct_entry_captures(
-        &mut self,
-        body: &mut LoweredBody,
-        clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
-    ) {
+    fn construct_entry_captures(&mut self, body: &mut LoweredBody) {
         use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
-        use crate::fz_ir::{ListRetention, ListRewritePermission};
+        use crate::fz_ir::ListRewritePermission;
+        let scanned = Cell::new(0);
+        let clause_bounds = clause_bounds(body);
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
         let LoweredBody::Clauses { entries, .. } = body else {
             unreachable!()
         };
-        let constructions = entries
-            .iter()
-            .enumerate()
-            .flat_map(|(entry, block)| {
-                block.steps.iter().enumerate().filter_map(move |(step, instruction)| {
-                    let LoweredStep::List {
-                        items, tail: Some(_), ..
-                    } = instruction
-                    else {
-                        return None;
-                    };
-                    (items.len() == 1).then_some((entry, step, items[0]))
-                })
+        let constructions = scan_steps(entries, &scanned)
+            .filter_map(|(entry, step, instruction)| {
+                let LoweredStep::List {
+                    items, tail: Some(_), ..
+                } = instruction
+                else {
+                    return None;
+                };
+                (items.len() == 1).then_some((entry, step, items[0]))
             })
             .collect::<Vec<_>>();
         let sources = constructions
@@ -2837,22 +2894,18 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
                 }
                 _ => unreachable!("a list source is a local value or a plan-owned subject"),
             };
-            let LoweredBody::Clauses { entries, .. } = body else {
-                unreachable!()
-            };
-            let LoweredStep::List { retention, .. } = &mut entries[*entry].steps[*step] else {
-                unreachable!()
-            };
-            *retention = Some(ListRetention {
+            body.retain_list_source(
+                ControlEntryId::from_u32(*entry as u32),
+                *step,
                 source,
-                permission: ListRewritePermission::RetainOnly,
-            });
+                ListRewritePermission::RetainOnly,
+            );
         }
-        let LoweredBody::Clauses { entries, .. } = body else {
+        let LoweredBody::Clauses { entries, tables, .. } = body else {
             unreachable!()
         };
-        let semantic = compute_entry_captures(entries, clause_bounds, false);
-        let mut physical = compute_entry_captures(entries, clause_bounds, true);
+        let semantic = compute_entry_captures(entries, tables, &clause_bounds, false);
+        let mut physical = compute_entry_captures(entries, tables, &clause_bounds, true);
         for entry in entries.iter() {
             let LoweredTail::Receive(receive) = &entry.tail else {
                 continue;
@@ -2879,25 +2932,16 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         }
         let origins = collect_value_origins(body, &collect_callsite_return_origins(body));
         construct_call_ownership(body, &origins);
-        construct_tuple_ownership(body, &origins);
+        construct_tuple_ownership(body, &origins, &scanned);
         for (entry, step, _, _) in sources {
             let permission = if list_can_rewrite(body, &origins, entry, step) {
                 ListRewritePermission::Rewrite
             } else {
                 ListRewritePermission::RetainOnly
             };
-            let LoweredBody::Clauses { entries, .. } = body else {
-                unreachable!()
-            };
-            let LoweredStep::List {
-                retention: Some(retention),
-                ..
-            } = &mut entries[entry].steps[step]
-            else {
-                unreachable!()
-            };
-            retention.permission = permission;
+            body.set_list_rewrite_permission(ControlEntryId::from_u32(entry as u32), step, permission);
         }
+        self.ownership_steps_scanned += scanned.get();
     }
 
     fn plan_block(
@@ -3661,62 +3705,50 @@ fn lower_projection_step(step: &ExprStep) -> LoweredStep {
     }
 }
 
-fn values_defined_by_steps(steps: &[LoweredStep]) -> HashSet<ValueId> {
-    steps.iter().flat_map(step_defined_values).collect()
-}
-
-fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = ValueId> {
-    let values = match step {
-        LoweredStep::Const { value, .. }
-        | LoweredStep::Tuple { value, .. }
-        | LoweredStep::List { value, .. }
-        | LoweredStep::Map { value, .. }
-        | LoweredStep::MapUpdate { value, .. }
-        | LoweredStep::Struct { value, .. }
-        | LoweredStep::Bitstring { value, .. }
-        | LoweredStep::FunctionRef { value, .. }
-        | LoweredStep::Lambda { value, .. }
-        | LoweredStep::BinaryOp { value, .. }
-        | LoweredStep::UnaryOp { value, .. }
-        | LoweredStep::MapIndex { value, .. }
-        | LoweredStep::FieldAccess { value, .. }
-        | LoweredStep::RequireMapValue { value, .. }
-        | LoweredStep::TupleField { value, .. }
-        | LoweredStep::BitstringInit { reader: value, .. } => [Some(*value), None, None],
-        LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
-        LoweredStep::BitstringRead {
-            ok, value, next_reader, ..
-        } => [Some(*ok), Some(*value), Some(*next_reader)],
-        LoweredStep::AssertLiteral { .. }
-        | LoweredStep::AssertStruct { .. }
-        | LoweredStep::AssertTuple { .. }
-        | LoweredStep::AssertEmptyList { .. }
-        | LoweredStep::AssertSame { .. }
-        | LoweredStep::AssertBitstringDone { .. } => [None; 3],
-    };
-    values.into_iter().flatten()
-}
-
-fn value_definition(body: &LoweredBody, value: ValueId) -> Option<&LoweredStep> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return None;
+/// The values a clause binds before its entry runs: the clause parameters and
+/// everything its projections define.
+fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, HashSet<ValueId>> {
+    let LoweredBody::Clauses { clauses, tables, .. } = body else {
+        return HashMap::new();
     };
     clauses
         .iter()
-        .flat_map(|clause| &clause.projections)
-        .chain(entries.iter().flat_map(|entry| &entry.steps))
-        .find(|step| step_defined_values(step).any(|defined| defined == value))
+        .enumerate()
+        .map(|(index, clause)| {
+            let mut bound = clause.params.iter().copied().collect::<HashSet<_>>();
+            bound.extend(tables.clause_defines(index));
+            (clause.entry, bound)
+        })
+        .collect()
+}
+
+/// Every step in the body with its position, counted as the scan reads it.
+///
+/// Ownership construction is entitled to a fixed number of passes over the
+/// steps; the count is published on the lowering job so a pass that starts
+/// searching the body again says so in the telemetry.
+fn scan_steps<'a>(
+    entries: &'a [LoweredEntry],
+    scanned: &'a Cell<u64>,
+) -> impl Iterator<Item = (usize, usize, &'a LoweredStep)> + 'a {
+    entries.iter().enumerate().flat_map(move |(entry, block)| {
+        block.steps.iter().enumerate().map(move |(step, instruction)| {
+            scanned.set(scanned.get() + 1);
+            (entry, step, instruction)
+        })
+    })
 }
 
 fn compute_entry_captures(
     entries: &[LoweredEntry],
+    tables: &BodyTables,
     clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
     physical: bool,
 ) -> Vec<Vec<ValueId>> {
     let mut memo = HashMap::new();
     for entry_id in 0..entries.len() {
         let entry_id = ControlEntryId::from_u32(entry_id as u32);
-        let _ = entry_captures(entries, clause_bounds, entry_id, physical, &mut memo);
+        let _ = entry_captures(entries, tables, clause_bounds, entry_id, physical, &mut memo);
     }
     (0..entries.len())
         .map(|index| memo.remove(&ControlEntryId::from_u32(index as u32)).unwrap_or_default())
@@ -3816,7 +3848,7 @@ fn construction_projection(
     {
         return items.get(*index as usize).map(|item| (*item, 1));
     }
-    let LoweredStep::List { items, tail, .. } = value_definition(body, root)? else {
+    let LoweredStep::List { items, tail, .. } = body.value_definition(root)? else {
         return None;
     };
     let tails = path
@@ -3889,6 +3921,14 @@ fn source_used_after(
     })
 }
 
+/// Whether any use that can still happen after `step` of `entry` competes for
+/// ownership.
+///
+/// Later means later in this entry, or anywhere in the entries it reaches: a
+/// reached entry runs in full, so its first step is as "later" as its last.
+/// Both questions are answered from the body's use tables, so the walk costs
+/// one visit per reachable entry and one per use it offers, never a search
+/// through the body's steps.
 fn any_later_ownership_use(
     body: &LoweredBody,
     entry: usize,
@@ -3896,37 +3936,27 @@ fn any_later_ownership_use(
     mut competes: impl FnMut(ValueId, super::super::body::ValueRole) -> bool,
 ) -> bool {
     use super::super::body::ValueRole;
-    let LoweredBody::Clauses { entries, .. } = body else {
+    let LoweredBody::Clauses { entries, tables, .. } = body else {
         return true;
     };
-    let mut pending = vec![(entry, step + 1)];
+    let mut pending = vec![(ControlEntryId::from_u32(entry as u32), step as u32 + 1)];
     let mut visited = HashSet::new();
     while let Some((block_id, start)) = pending.pop() {
         if !visited.insert(block_id) {
             continue;
         }
-        let block = &entries[block_id];
-        let mut used = HashSet::new();
-        collect_used_values(&block.steps[start..], &mut used);
-        for instruction in block.steps.iter().skip(start) {
-            if let LoweredStep::List {
-                retention: Some(retention),
-                ..
-            } = instruction
-                && competes(retention.source, ValueRole::Physical)
-            {
-                return true;
-            }
+        if tables
+            .entry_retentions_from(block_id, start)
+            .any(|source| competes(source, ValueRole::Physical))
+        {
+            return true;
         }
-        collect_tail_used_values(&block.tail, &mut used);
+        let used = tables.entry_uses_from(block_id, start).collect::<HashSet<_>>();
         if used.into_iter().any(|value| competes(value, ValueRole::Semantic)) {
             return true;
         }
-        pending.extend(
-            child_entries(block.tail.clone())
-                .into_iter()
-                .map(|child| (child.as_u32() as usize, 0)),
-        );
+        let block = &entries[block_id.as_u32() as usize];
+        pending.extend(child_entries(&block.tail).into_iter().map(|child| (child, 0)));
     }
     false
 }
@@ -3995,7 +4025,7 @@ fn value_may_retain_source(
     let retained = if let Some(origin) = origins.get(&value) {
         origin_may_retain_source(body, origins, origin, source, exempt, visiting)
     } else {
-        match value_definition(body, value) {
+        match body.value_definition(value) {
             Some(
                 LoweredStep::Const { .. }
                 | LoweredStep::FunctionRef { .. }
@@ -4006,8 +4036,8 @@ fn value_may_retain_source(
                 false
             }
             Some(step) => {
-                let mut operands = HashSet::new();
-                collect_used_values(std::slice::from_ref(step), &mut operands);
+                let mut operands = Vec::new();
+                step_used_values(step, &mut operands);
                 if let LoweredStep::List {
                     retention: Some(retention),
                     ..
@@ -4142,7 +4172,7 @@ fn construction_children(
             _ => {}
         }
     }
-    match value_definition(body, value) {
+    match body.value_definition(value) {
         Some(LoweredStep::List { items, tail, .. })
             if path.iter().all(|kind| matches!(kind, ProjectionKind::ListTail)) =>
         {
@@ -4236,6 +4266,7 @@ fn construct_call_ownership(
 fn construct_tuple_ownership(
     body: &mut LoweredBody,
     origins: &HashMap<ValueId, super::super::executable_facts::TransportOrigin>,
+    scanned: &Cell<u64>,
 ) {
     use super::super::body::ValueRole;
     use super::super::executable_facts::TransportOrigin;
@@ -4243,23 +4274,15 @@ fn construct_tuple_ownership(
     let LoweredBody::Clauses { entries, .. } = body else {
         return;
     };
-    let tuples = entries
-        .iter()
-        .enumerate()
-        .flat_map(|(entry, block)| {
-            block
-                .steps
-                .iter()
-                .enumerate()
-                .filter_map(move |(step, instruction)| match instruction {
-                    LoweredStep::Tuple { value, items } => Some((
-                        entry,
-                        step,
-                        *value,
-                        items.iter().map(|item| item.value).collect::<Vec<_>>(),
-                    )),
-                    _ => None,
-                })
+    let tuples = scan_steps(entries, scanned)
+        .filter_map(|(entry, step, instruction)| match instruction {
+            LoweredStep::Tuple { value, items } => Some((
+                entry,
+                step,
+                *value,
+                items.iter().map(|item| item.value).collect::<Vec<_>>(),
+            )),
+            _ => None,
         })
         .collect::<Vec<_>>();
     for (entry, step, result, items) in tuples {
@@ -4301,6 +4324,7 @@ fn construct_tuple_ownership(
 
 fn entry_captures(
     entries: &[LoweredEntry],
+    tables: &BodyTables,
     clause_bounds: &HashMap<ControlEntryId, HashSet<ValueId>>,
     entry_id: ControlEntryId,
     physical: bool,
@@ -4316,25 +4340,15 @@ fn entry_captures(
     if let Some(value) = entry.origin.input_value() {
         bound.insert(value);
     }
-    bound.extend(values_defined_by_steps(&entry.steps));
+    bound.extend(tables.entry_defines(entry_id));
 
     let mut needed = if physical {
-        entry
-            .steps
-            .iter()
-            .filter_map(|step| match step {
-                LoweredStep::List {
-                    retention: Some(retention),
-                    ..
-                } => Some(retention.source),
-                _ => None,
-            })
-            .collect()
+        tables.entry_retentions_from(entry_id, 0).collect::<HashSet<_>>()
     } else {
-        used_values_in_entry(entry)
+        tables.entry_uses_from(entry_id, 0).collect::<HashSet<_>>()
     };
-    for child in child_entries(entry.tail.clone()) {
-        for capture in entry_captures(entries, clause_bounds, child, physical, memo) {
+    for child in child_entries(&entry.tail) {
+        for capture in entry_captures(entries, tables, clause_bounds, child, physical, memo) {
             if !bound.contains(&capture) {
                 needed.insert(capture);
             }
@@ -4353,173 +4367,51 @@ fn entry_captures(
     ordered
 }
 
-fn used_values_in_entry(entry: &LoweredEntry) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    collect_used_values(&entry.steps, &mut out);
-    collect_tail_used_values(&entry.tail, &mut out);
-    out
-}
-
-fn collect_tail_used_values(tail: &LoweredTail, out: &mut HashSet<ValueId>) {
-    match tail {
-        LoweredTail::Value { value, .. } => {
-            out.insert(*value);
-        }
-        LoweredTail::DirectCall { args, .. } => {
-            for arg in args {
-                out.insert(arg.value);
-            }
-        }
-        LoweredTail::ClosureCall { callee, args, .. } => {
-            out.insert(*callee);
-            for arg in args {
-                out.insert(arg.value);
-            }
-        }
-        LoweredTail::If { cond, .. } => {
-            out.insert(*cond);
-        }
-        LoweredTail::Dispatch { inputs, bindings, .. } => {
-            out.extend(inputs.iter().copied());
-            out.extend(bindings.pinned.iter().copied());
-            out.extend(bindings.prepared.iter().copied());
-        }
-        LoweredTail::Receive(receive) => {
-            let bindings = &receive.bindings;
-            let after = &receive.after;
-            out.extend(bindings.pinned.iter().copied());
-            out.extend(bindings.prepared.iter().copied());
-            if let Some(after) = after {
-                out.insert(after.timeout);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-}
-
 /// Every value identity retained by a lowered body's executable surface.
 /// Running this after artifact pruning gives downstream products the exact
 /// value-type subset that can still be interpreted or lowered.
 pub(super) fn retained_value_ids(body: &LoweredBody) -> HashSet<ValueId> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+    let LoweredBody::Clauses {
+        clauses,
+        entries,
+        tables,
+        ..
+    } = body
+    else {
         return HashSet::new();
     };
     let mut retained = HashSet::new();
-    for clause in clauses {
+    for (index, clause) in clauses.iter().enumerate() {
         retained.extend(clause.params.iter().copied());
-        retained.extend(values_defined_by_steps(&clause.projections));
-        collect_used_values(&clause.projections, &mut retained);
+        retained.extend(tables.clause_defines(index));
+        retained.extend(tables.clause_uses(index));
     }
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        let entry_id = ControlEntryId::from_u32(index as u32);
         retained.extend(entry.params.iter().copied());
         retained.extend(entry.captures.iter().copied());
         retained.extend(entry.physical_captures.iter().copied());
-        retained.extend(entry.steps.iter().filter_map(|step| match step {
-            LoweredStep::List {
-                retention: Some(retention),
-                ..
-            } => Some(retention.source),
-            _ => None,
-        }));
+        retained.extend(tables.entry_retentions_from(entry_id, 0));
         if let Some(value) = entry.origin.input_value() {
             retained.insert(value);
         }
-        retained.extend(values_defined_by_steps(&entry.steps));
-        retained.extend(used_values_in_entry(entry));
+        retained.extend(tables.entry_defines(entry_id));
+        retained.extend(tables.entry_uses_from(entry_id, 0));
     }
     retained
 }
 
-fn collect_used_values(steps: &[LoweredStep], out: &mut HashSet<ValueId>) {
-    for step in steps {
-        match step {
-            LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
-            LoweredStep::Tuple { items, .. } => out.extend(items.iter().map(|item| item.value)),
-            LoweredStep::List { items, tail, .. } => {
-                out.extend(items.iter().copied());
-                if let Some(tail) = tail {
-                    out.insert(*tail);
-                }
-            }
-            LoweredStep::Map { entries, .. } => {
-                for (key, value) in entries {
-                    out.insert(key.value);
-                    out.insert(*value);
-                }
-            }
-            LoweredStep::MapUpdate { base, entries, .. } => {
-                out.insert(*base);
-                for (key, value) in entries {
-                    out.insert(key.value);
-                    out.insert(*value);
-                }
-            }
-            LoweredStep::Struct { fields, .. } => out.extend(fields.iter().map(|(_, value)| *value)),
-            LoweredStep::Bitstring { fields, .. } => {
-                for field in fields {
-                    out.insert(field.value);
-                    if let Some(LoweredBitSize::Value(size)) = field.spec.size {
-                        out.insert(size);
-                    }
-                }
-            }
-            LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
-            LoweredStep::BinaryOp { left, right, .. } => {
-                out.insert(*left);
-                out.insert(*right);
-            }
-            LoweredStep::UnaryOp { input, .. } => {
-                out.insert(*input);
-            }
-            LoweredStep::MapIndex { base, key, .. } => {
-                out.insert(*base);
-                out.insert(key.value);
-            }
-            LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
-                out.insert(*base);
-            }
-            LoweredStep::RequireMapValue { source, .. } => {
-                out.insert(*source);
-            }
-            LoweredStep::AssertLiteral { source, .. }
-            | LoweredStep::AssertTuple { source, .. }
-            | LoweredStep::AssertEmptyList { source } => {
-                out.insert(*source);
-            }
-            LoweredStep::TupleField { source, .. } => {
-                out.insert(*source);
-            }
-            LoweredStep::AssertSame { source, value } => {
-                out.insert(*source);
-                out.insert(*value);
-            }
-            LoweredStep::SplitList { source, .. } => {
-                out.insert(*source);
-            }
-            LoweredStep::BitstringInit { source, .. } | LoweredStep::AssertBitstringDone { reader: source } => {
-                out.insert(*source);
-            }
-            LoweredStep::BitstringRead { reader, spec, .. } => {
-                out.insert(*reader);
-                if let Some(LoweredBitSize::Value(size)) = spec.size {
-                    out.insert(size);
-                }
-            }
-        }
-    }
-}
-
-fn child_entries(tail: LoweredTail) -> Vec<ControlEntryId> {
+fn child_entries(tail: &LoweredTail) -> Vec<ControlEntryId> {
     match tail {
         LoweredTail::Value { dest, .. }
         | LoweredTail::DirectCall { dest, .. }
         | LoweredTail::ClosureCall { dest, .. } => match dest {
             ControlDestination::Return => Vec::new(),
-            ControlDestination::Deliver(entry) => vec![entry],
+            ControlDestination::Deliver(entry) => vec![*entry],
         },
         LoweredTail::If {
             then_entry, else_entry, ..
-        } => vec![then_entry, else_entry],
+        } => vec![*then_entry, *else_entry],
         LoweredTail::Dispatch { dispatch, .. } => {
             let mut children = dispatch.outcomes.iter().map(|edge| edge.target).collect::<Vec<_>>();
             children.push(dispatch.miss_entry);

@@ -734,16 +734,14 @@ defmodule Enum do
     )
   end
 
-  # The default sort is Erlang's total term order, not `<=`. `<=` is declared
-  # only for the operand pairs fz can prove, so `Enum.sort/1` over a mixed
-  # list could not even be written in terms of it; `Kernel.compare/2` is the
-  # entry point that orders anything against anything.
+  # The default sort is Erlang's total term order, which `Kernel.compare/2`
+  # answers directly and `<=` reaches through its final clause.
   #
   # A typed clause family rather than one `compare/2` call, because
   # `compare/2` takes `any` and marshalling an unboxed integer as `any` boxes
   # it: routing every comparison through it cost 54 extra scalar boxes on an
   # eleven-element sort. The numeric clauses keep the inline compare the
-  # operators already have; only the pairs `<=` cannot express reach the
+  # operators already have; only the pairs no typed clause covers reach the
   # comparator.
   @spec default_order(any, any) :: boolean
   defp default_order(left :: integer, right :: integer), do: left <= right

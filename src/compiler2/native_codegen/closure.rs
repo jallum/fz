@@ -10,24 +10,13 @@ use fz_runtime::any_value::{AnyValueRefPacking, TAG_FWD, TaggedRefArch};
 /// Used when the caller has no cont_param and needs a halt-cont to pass to the
 /// callee — the callee's Term::Return chains through it to record halt_value.
 pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
+    locals: &LocalBodies,
     repr: ArgRepr,
 ) -> ir::Value {
-    let hcb_addr = fn_addr(body.jmod, halt_cont_body_id_for(runtime, repr), body.b);
+    let hcb_addr = fn_addr(body.jmod, locals.halt_cont_body_id(repr), body.b);
     let kind_v = body.b.ins().iconst(types::I32, repr.halt_kind() as i64);
     body.get_halt_cont(hcb_addr, kind_v)
-}
-
-/// Pick the halt_cont_body FuncId matching `repr`.
-pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
-    match repr {
-        ArgRepr::ValueRef => runtime.halt_cont_body_strict_id,
-        ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
-        ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
-        ArgRepr::RawAtom => runtime.halt_cont_body_atom_id,
-        ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
-    }
 }
 
 /// Resolve the outer-cont ref to forward into a new cont closure.
@@ -40,8 +29,8 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
 /// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
 /// — fall through to the uniform branch when cont_param is None.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
+    locals: &LocalBodies,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
@@ -77,7 +66,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                 let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
                 let n_caps0 = body.b.ins().iconst(types::I32, 0);
                 let hc_repr = return_reprs[cont_sid as usize];
-                let hcb_addr = fn_addr(body.jmod, halt_cont_body_id_for(runtime, hc_repr), body.b);
+                let hcb_addr = fn_addr(body.jmod, locals.halt_cont_body_id(hc_repr), body.b);
                 let zero_hk = body.b.ins().iconst(types::I32, 0);
                 let halt_cl = body.alloc_closure(
                     fz_runtime::any_value::ClosureDenotationId::INTERNAL,
@@ -96,8 +85,8 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 }
 
 fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
+    locals: &LocalBodies,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
@@ -107,7 +96,7 @@ fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
 ) -> ir::Value {
     outer_cont_override
         .map(|outer_cont| body.materialize_cont(outer_cont))
-        .unwrap_or_else(|| resolve_outer_cont(body, runtime, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid))
+        .unwrap_or_else(|| resolve_outer_cont(body, locals, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid))
 }
 
 /// Allocate a cont closure, populate its code-addr, outer-cont, and user
@@ -117,8 +106,8 @@ fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
 /// payload slots; `ValueRef` captures are already one-word any value refs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
+    locals: &LocalBodies,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
@@ -131,7 +120,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
 ) -> ir::Value {
     let my_outer_cont = explicit_or_resolved_outer_cont(
         body,
-        runtime,
+        locals,
         return_reprs,
         is_cont_fn,
         cont_param,
@@ -200,8 +189,8 @@ const LAZY_CONT_KIND_F64: i64 = 2;
 const LAZY_CONT_KIND_ATOM: i64 = 3;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, M>,
+    locals: &LocalBodies,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
@@ -214,7 +203,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
 ) -> ir::Value {
     let my_outer_cont = explicit_or_resolved_outer_cont(
         body,
-        runtime,
+        locals,
         return_reprs,
         is_cont_fn,
         cont_param,

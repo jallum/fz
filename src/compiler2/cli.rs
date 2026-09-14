@@ -249,7 +249,7 @@ fn build_command(
 /// `fz2 test <src.fz>`: discovers every `test(:name) do ... end` item — at
 /// top level or nested in a `defmodule` — and runs each as its own root.
 /// Each test runs in a fresh `run-test-root` subprocess: on the JIT backend a
-/// failing `assert` aborts the whole process (see `fz_panic`), so sibling
+/// failing `assert` reaches the native `Never` trap after `fz_panic`, so sibling
 /// tests would never run if the driver executed them in-process.
 fn test_command(
     tel: ConfiguredTelemetry,

@@ -1326,7 +1326,9 @@ const SCENARIOS: [&str; 5] = [
 // `Enum.to_list/1`'s `[a]` clause removes the reduce-and-reverse activations
 // those families used to mint on the way to their list arguments. The
 // construction-wrapper column is unchanged.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (172, 32), (228, 38)];
+// fz-5xp.30: each fixture reaches four ordinary generic arithmetic
+// result/status executable bodies; wrapper populations stay flat.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(66, 0), (176, 32), (232, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1519,9 +1521,13 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let product = report.product_totals();
             let formula = report.formula_totals();
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
+            // fz-5xp.30: cold range-map, predicate, and take/drop/split paths
+            // are 228 -> 237, 603 -> 614, and 1106 -> 1115 body walks. Their
+            // reached arithmetic result/status helpers remain ordinary generic
+            // calls; the edit scenarios do not reach those helpers.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[228, 0, 0, 9, 155], [603, 0, 0, 64, 392], [1106, 0, 0, 70, 661]][fixture_index][scenario],
+                [[237, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1115, 0, 0, 70, 661]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1657,10 +1663,29 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // fz-5xp.18: 101 -> 125 evaluations and 51 -> 63 blocked. Each comparison
     // operator now has a clause per orderable operand pair, and this fixture
     // reaches four of them; the callees of each are derived once.
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 125, 63),
-    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 158, 83),
+    // fz-5xp.30: 62/24 -> 67/25 and 125/63 -> 129/65. Range.count/3's
+    // subtraction, division, and addition retain ordinary generic
+    // result/status calls, so their reached component and callee work is no
+    // longer inlined away.
+    // The ordering operators end in an `any`/`any` clause through `compare/2`
+    // and carry no `binary` clause; this fixture's operands stay numeric, so
+    // no `compare/2` activation is minted (its rows in `ANALYSIS_CLAIM_RATCHET`
+    // say so) and the StaticCallees evaluations and blocks count only the
+    // numeric families' callee layers.
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 67, 25, 127, 64),
+    // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
+    // StaticCallees evaluations/blocks. This predicate fixture reaches two
+    // ordinary arithmetic result/status helper specializations.
+    // `==` carries a typed clause per numeric pair, and this fixture reaches
+    // four of them; the callees of each are derived once, so they add
+    // StaticCallees work and no component work.
+    ("fixtures2/behavior/enum_predicate_search.fz", 75, 12, 170, 89),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 261, 134),
+    // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
+    // result/status helpers are ordinary generic calls.
+    // The typed `==` clauses this fixture's predicates reach add one
+    // component evaluation and their StaticCallees work.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 273, 140),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2008,7 +2033,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // restores 71/1; restoring only field-erasing envelopes does not.
         // The settled activation/type inventory and canonical backend are
         // byte-identical: these 70 claims now appear once and are never withdrawn.
-        activations: lifecycle(70, 70, 0),
+        // fz-5xp.30: 70 -> 74. Range.count/3's ordinary arithmetic calls
+        // reach four generic result/status activations; none retracts.
+        activations: lifecycle(74, 74, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2017,7 +2044,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // its own call edges with it.
         // fz-kdt.182: 85 -> 79 identities, 87 -> 79 first appearances,
         // 2 -> 0 retractions with their six absorbed activation identities.
-        callsites: lifecycle(79, 79, 0),
+        // The same four ordinary helper activations each publish one callsite
+        // lifecycle, so the exact callsite row rises 79 -> 83 without churn.
+        callsites: lifecycle(83, 83, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2043,7 +2072,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // into its builder is never minted, and it takes its demand edge and
         // its rebased completion with it.
         // fz-kdt.27: eliminating that cycle removes three shift wakes/rebases.
-        shifts: shifts(18, 117),
+        // Every ordering callsite here plans against clause families that end
+        // in an `any`/`any` clause through `compare/2`, and six of the rebased
+        // completions are standing completions of those families rebasing
+        // while the demand behind them climbs. The activation and callsite
+        // rows above count nothing for it: nothing is minted or withdrawn.
+        shifts: shifts(18, 123),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2062,7 +2096,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // for a list argument took its analysis -- and that analysis's
         // re-derivation of an answer it already had -- with it.
         // fz-kdt.27: five analyses disappear, including three equal reproductions.
-        analyze_evaluations: 206,
+        // fz-5xp.30: 206 -> 218. The four ordinary arithmetic helper
+        // activations and their reached status branches each need analysis;
+        // zero-change remains 9.
+        analyze_evaluations: 218,
         analyze_zero_change: 9,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2073,7 +2110,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // DeriveFunctionContract: newly declared Map.entry/2 and
         // Range.done?/3 each contribute their one exact contract derivation.
         // fz-kdt.27: exactly those five analyses; all remaining wakes are caused.
-        total_evaluations: 1106,
+        // fz-5xp.30: 1106 -> 1158. The ordinary arithmetic helper boundary
+        // brings its own reached semantic formulas; causal work stays exact.
+        // The ordering families carry no `binary` clause, so the StaticCallees
+        // evaluations above are the whole of what this total counts for them;
+        // causal work stays exact.
+        total_evaluations: 1156,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2087,7 +2129,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.183: 175 -> 179. The demanded list element splits four
         // reducer activations that used to share one joined key; no
         // retractions, so nothing stopped being published.
-        activations: lifecycle(180, 180, 0),
+        // fz-5xp.30: 180 -> 184. The two reached arithmetic helper paths
+        // materialize four generic activations, without retractions.
+        activations: lifecycle(184, 184, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2095,7 +2139,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retractions flat): the two new activations bring their edges.
         // fz-kdt.183: 215 -> 219 distinct (248 -> 252 first appearances,
         // retractions flat): the four new activations bring their edges.
-        callsites: lifecycle(219, 252, 33),
+        // fz-5xp.30: 219/252/33 -> 224/257/33. The ordinary helper calls add
+        // five reached callsite rows, with no new withdrawal.
+        callsites: lifecycle(224, 257, 33),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2122,7 +2168,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `List.reduce_while_cont/3` input ascent land before one queued
         // analysis runs. The one run now observes both content movements;
         // every other formula-family count and the final artifacts stay flat.
-        analyze_evaluations: 545,
+        // fz-5xp.30: 545 -> 551 reached helper/status analyses; equal
+        // re-derivations remain flat at 3.
+        // The typed `==` clauses add reached formulas but no activation, so
+        // they do not appear here.
+        analyze_evaluations: 551,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2144,7 +2194,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Macro readiness is a retained content dependency.
         // Exact caller rows reduce semantic work without weakening the
         // retained claim or final executable population.
-        total_evaluations: 1459,
+        // fz-5xp.30: 1459 -> 1495. The generic arithmetic helper boundary
+        // adds reached formulas; every evaluation remains causally attributed.
+        // `==` carries a typed clause per numeric pair, so the predicates that
+        // compare here reach that family's clauses and externs; analysis
+        // evaluations and every claim population do not see it.
+        // The ordering families this fixture's predicates reach each end in an
+        // `any`/`any` body that calls `compare/2`, and that body brings its own
+        // reached formulas to this total.
+        total_evaluations: 1537,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2208,7 +2266,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 270 -> 261 identities. Nine redundant list-union
         // identities are absorbed before activation keying; retractions stay
         // at zero.
-        activations: lifecycle(263, 263, 0),
+        // fz-5xp.30: 263 -> 267. Reached arithmetic result/status helpers
+        // add four generic activations and no retractions.
+        activations: lifecycle(267, 267, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2246,7 +2306,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.182: 459 -> 449 identities and 469 -> 459 first
         // appearances. The ten absorbed callsites were never separate
         // denotations; retractions stay flat.
-        callsites: lifecycle(451, 461, 10),
+        // fz-5xp.30: 451/461/10 -> 458/468/10. Seven helper-path callsites
+        // become reached, without introducing a withdrawal.
+        callsites: lifecycle(458, 468, 10),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -2254,7 +2316,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // keys exist, not how often `InputDemand` moves under them.
         // fz-kdt.47: rebased completions 77 -> 76. The transient activation
         // removed above never needs its rebase.
-        shifts: shifts(25, 76),
+        // The ordering families this fixture's predicates reach end in an
+        // `any`/`any` clause through `compare/2`; three of the rebased
+        // completions are standing completions of those families.
+        shifts: shifts(25, 79),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2315,7 +2380,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // artifact/runtime gates below remain the authority on coverage.
         // fz-kdt.182 removes thirteen analyses of absorbed identities; equal
         // reproductions remain flat.
-        analyze_evaluations: 891,
+        // fz-5xp.30: 891 -> 903. The ordinary generic result/status helpers
+        // add twelve reached analyses; equal re-derivations remain 15.
+        // One analysis belongs to the typed `==` family this fixture's
+        // predicates reach.
+        // The ordering families carry no `binary` clause, so no analysis of
+        // one is counted here; equal reproductions stay at 15.
+        analyze_evaluations: 901,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
@@ -2326,7 +2397,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-5xp.6 lowers this by 30 -- see the work-start census.
         // Exact caller rows reduce semantic work without weakening the
         // retained claim or final executable population.
-        total_evaluations: 2469,
+        // fz-5xp.30: 2469 -> 2507. The ordinary generic arithmetic boundary
+        // accounts for thirty-six additional semantic evaluations.
+        // The typed `==` clauses and their externs are reached formulas; the
+        // activation and callsite populations do not see them.
+        // The ordering families' `any`/`any` clauses contribute four formulas
+        // and no `binary` clause analyses; the claim populations stay put.
+        total_evaluations: 2552,
     },
 ];
 

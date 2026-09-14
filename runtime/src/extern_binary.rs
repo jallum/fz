@@ -17,8 +17,9 @@
 //!     at the parent's buffer boundary; if not, allocate a fresh
 //!     +1-NUL-padded buffer and copy.
 //!
-//! Both helpers raise an arg exception (abort with a message, matching the
-//! existing `fz_panic` shape) when the value is not a byte-aligned binary.
+//! Both helpers abort with an argument error when the value is not a
+//! byte-aligned binary. They predate the process-aware `fz_panic` path and do
+//! not participate in its execution-context fault channel.
 
 use crate::any_value::{AnyValueRef, ValueKind, heap_object_word};
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};

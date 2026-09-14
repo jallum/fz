@@ -55,7 +55,9 @@ or local join.
 
 ## fz_resume: the one verb
 
-`fz_resume(cont) -> i64` is a SystemV shim. It reads the closure's code pointer
+`fz_resume(cont) -> i64` is a shim in the target's C convention, since the
+scheduler holds its address in an `extern "C"` fn pointer. It reads the
+closure's code pointer
 (via `fz_closure_code_ref`) and tail-calls the body with the single argument
 `(self)`. Bound values, loop args, and continuation state already live in the
 closure's captures, so the shim signature is fixed regardless of what kind of
@@ -243,9 +245,9 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
   (`src/exec/runtime_test.rs`) — a sender-side hit bypasses the mailbox and
   copies only the projected payload needed by the winning clause into the
   receiver-owned outcome closure.
-- `cargo test --test fixture_matrix spawn` — selects `spawn2_basic` and
-  `spawn_with_captures`: a spawned task resumed as an entry thunk through
-  `fz_resume`, the same verb a continuation uses.
+- `cargo test --test fixture_matrix spawn_with_captures` — a spawned task is
+  resumed as an entry thunk through `fz_resume`, the same verb a continuation
+  uses.
 - `reduction_budget_resets_and_spends` / `reset_reduction_budget_clears_yield_reasons`
   (`runtime/src/process_test.rs`) — budget reset/spend and yield-reason clearing.
 - `coexistence` (`src/ir_interp/tests/coexistence.rs`) — two interpreters run on

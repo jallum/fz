@@ -1,7 +1,9 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
 use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
-use crate::telemetry::ConfiguredTelemetry;
+use crate::diag::codes;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 // Ported from src/ir_interp/tests/typed_slot.rs: large integer arithmetic does not lose high-order bits
 #[test]
@@ -612,21 +614,45 @@ fn variadic_c_extern_open_passes_int_args() {
     // TODO: JIT-execute with a unique temp path and assert fd >= 0, file mode bits match requested & !umask
 }
 
-// Ported from src/ir_interp/tests/variadic.rs: unsupported variadic extern arg type produces a clear runtime error
+// A variadic argument is one integer or pointer word. A float would need the
+// x86-64 vector-register count the generated variadic call cannot set, so the
+// shared front end refuses it and every door refuses identically.
 #[test]
 fn unsupported_variadic_extern_float_arg_is_error() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00253_variadic_float_error.fz".to_string()),
         text: include_str!("../../fixtures2/00253_variadic_float_error.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "variadic printf with float arg should resolve");
-    // TODO: JIT-execute and assert error contains "unsupported variadic extern shape" and "F64"
+    // The marshal class is a fact about the argument's settled type, so the
+    // refusal lands when the backend product is materialized. Materialization
+    // reports an incomplete semantic plan by aborting after it has said what
+    // is wrong, so the diagnostic is the observation.
+    let materialized = catch_unwind(AssertUnwindSafe(|| compiler.run_root_interp(root_id)));
+    assert!(
+        matches!(&materialized, Err(_) | Ok(Err(_))),
+        "a float variadic argument should not produce a runnable program",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .and_then(|event| event.diagnostic)
+        .expect("float variadic diagnostic");
+    assert_eq!(diagnostic.code, codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN);
+    assert!(
+        diagnostic
+            .message
+            .contains("must be an integer or pointer value, not a float"),
+        "the diagnostic should say what a variadic argument may carry, got: {}",
+        diagnostic.message,
+    );
 }

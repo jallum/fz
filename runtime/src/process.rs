@@ -62,18 +62,17 @@ impl Drop for AlignedClosureStorage {
 /// the pinned register, the interpreter as a threaded parameter — so there is
 /// no ambient current-process.
 ///
-/// libdispatch-style: TLS records the currently-running task's pointer per
-/// worker; a task is owned by exactly one worker at a time (scheduler
-/// invariant, .19.1). FFI fns do not yield, so TLS is stable within any FFI
-/// call.
+/// A task is owned by exactly one worker at a time (scheduler invariant,
+/// .19.1). FFI functions do not yield, so its explicit process pointer stays
+/// valid for the duration of each call.
 pub struct Process {
     pub heap: Heap,
-    /// Execution-context dispatch table for this task: scheduler services,
-    /// output context, and IR module, reached explicitly by BIFs instead of
-    /// through thread-local singletons. Set by the owning scheduler (JIT
+    /// Execution-context dispatch table for this task: scheduler services and
+    /// output context, reached explicitly by BIFs instead of through
+    /// thread-local singletons. Set by the owning scheduler (JIT
     /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
     /// outlives any FFI call made under this process. Null until a scheduler
-    /// installs one. The spawn/send/make_resource/timer/output BIFs dispatch
+    /// installs one. The spawn/send/fault/timer/output BIFs dispatch
     /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
     /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,

@@ -32,12 +32,14 @@ mod function;
 mod prim;
 mod receive;
 pub(crate) mod repr;
+pub(crate) mod runtime_call;
 mod runtime_test;
 mod support;
 pub(crate) mod surface;
 mod terminator;
 mod type_pred;
 mod value;
+pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
@@ -45,21 +47,24 @@ pub(crate) use call::*;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use delivery::*;
+pub(crate) use driver::LocalBodies;
 pub(crate) use entry::*;
 pub(crate) use env::*;
 pub(crate) use fn_ctx::*;
 pub(crate) use function::*;
 pub(crate) use prim::*;
 pub(crate) use repr::*;
+pub(crate) use runtime_call::*;
 pub(crate) use support::*;
 pub(crate) use surface::*;
 pub(crate) use terminator::*;
 pub(crate) use type_pred::*;
 pub(crate) use value::*;
+pub(crate) use variadic::*;
 
 pub(crate) use crate::ir_codegen::{
-    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, RuntimeRefs, build_frame_schema,
-    declare_runtime_symbols, define_static_sharedbin, runtime_import_sig, sig1,
+    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, build_frame_schema,
+    define_static_sharedbin,
 };
 
 pub(crate) fn compile_with_backend_native_program<

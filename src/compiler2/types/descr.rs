@@ -7,12 +7,13 @@ use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, StructTag, TupleSig};
-use super::{MapKey, Ty, TyCtx, TypeVarId};
+use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OpaqueTag {
+    Builtin(BuiltinOpaque),
     Named(String),
     ProtocolTarget(ModuleName),
 }
@@ -20,6 +21,7 @@ pub(super) enum OpaqueTag {
 impl std::fmt::Display for OpaqueTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Builtin(builtin) => builtin.fmt(f),
             Self::Named(name) => f.write_str(name),
             Self::ProtocolTarget(module) => write!(f, "protocol-target({module})"),
         }
@@ -102,6 +104,12 @@ impl Descr {
     pub(super) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(OpaqueTag::Named(name.into()));
+        d
+    }
+
+    pub(super) fn builtin_opaque(builtin: BuiltinOpaque) -> Self {
+        let mut d = Self::unbranded();
+        d.opaques = FiniteSet::lit(OpaqueTag::Builtin(builtin));
         d
     }
 
@@ -244,8 +252,17 @@ impl Descr {
             .then(|| {
                 self.opaques.values.iter().next().and_then(|tag| match tag {
                     OpaqueTag::Named(name) => Some(name.as_str()),
-                    OpaqueTag::ProtocolTarget(_) => None,
+                    OpaqueTag::Builtin(_) | OpaqueTag::ProtocolTarget(_) => None,
                 })
+            })
+            .flatten()
+    }
+
+    pub(super) fn as_builtin_opaque_singleton(&self) -> Option<BuiltinOpaque> {
+        (!self.opaques.cofinite && self.opaques.values.len() == 1)
+            .then(|| match self.opaques.values.iter().next() {
+                Some(OpaqueTag::Builtin(builtin)) => Some(*builtin),
+                _ => None,
             })
             .flatten()
     }

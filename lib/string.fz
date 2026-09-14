@@ -86,9 +86,9 @@ defmodule String do
   # Case mapping is full Unicode, not ASCII -- see `upcase/1` and `downcase/1`
   # below for what "full" means and why the table lives in the runtime.
 
-  extern "fz" def fz_binary_to_atom(any) :: any
-  extern "fz" def fz_binary_upcase(any) :: binary
-  extern "fz" def fz_binary_downcase(any) :: binary
+  extern "fz" defp fz_binary_to_atom(any) :: any
+  extern "fz" defp fz_binary_upcase(any) :: binary
+  extern "fz" defp fz_binary_downcase(any) :: binary
 
   @doc """
   Returns the number of codepoints in `s`.

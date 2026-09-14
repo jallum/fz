@@ -31,21 +31,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures2/00420_enum_take_drop_split.fz",
         golden: "fixtures2/behavior/enum_take_drop_split.fz",
-        runtime_demand_walks: 1103,
+        runtime_demand_walks: 1112,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/enum_predicate_search.fz",
         golden: "fixtures2/behavior/enum_predicate_search.fz",
-        runtime_demand_walks: 600,
+        runtime_demand_walks: 611,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 225,
+        runtime_demand_walks: 234,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1079,9 +1079,11 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // prerequisite set one arbiter boundary and made the job span timing-only;
     // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
     // steps. The bounds retain modest headroom while unrelated public-stream
-    // creep still trips.
+    // creep still trips. `==` carries a typed clause per numeric pair, and
+    // 00181 compares, so its stream carries that family's completions: about
+    // a dozen events and eight kilobytes, with only `lib/kernel.fz` swapped.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_060, 1_600 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -1133,7 +1135,7 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
             })
             .sum::<u64>();
         assert_eq!(
-            aggregate_walks, 1928,
+            aggregate_walks, 1957,
             "the same retained observations own the aggregate work pin"
         );
         assert!(
@@ -1547,6 +1549,70 @@ fn run_and_built_binary_report_runtime_dispatch_faults() {
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }
 
+/// Arithmetic is total at the foreign boundary; the single Kernel policy
+/// helper turns its status lane into the currently-approved loud `:badarith`
+/// endpoint.  Each invocation is a child process so that this intentionally
+/// fatal policy is proven without taking down the test harness.  The result is
+/// deliberately unused: DCE must not erase a failed checked operation.
+#[test]
+fn interp_run_and_built_binary_report_unused_arithmetic_failure() {
+    let source = "def main() do\n  dbg(:before)\n  div(1, 0)\n  dbg(:after)\nend\n";
+    let src_path = unique_temp_path("fz2_badarith", ".fz");
+    write(&src_path, source).expect("write arithmetic-failure source");
+
+    for command in ["interp", "run"] {
+        let output = run_fz2_without_color(&[OsStr::new(command), src_path.as_os_str()]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "fz2 {command} must exit nonzero after bad arithmetic; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains(":before") && !stdout.contains(":after"),
+            "fz2 {command} must not continue after the arithmetic helper panics: {stdout:?}"
+        );
+        assert!(
+            stderr.contains("badarith"),
+            "fz2 {command} must report the Kernel arithmetic reason: {stderr:?}"
+        );
+    }
+
+    let out_bin = unique_temp_path("fz2_badarith_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        src_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build should compile dynamic arithmetic failure; stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(&out_bin)
+        .output()
+        .expect("run built arithmetic-failure binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "built arithmetic-failure binary must exit nonzero; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(":before") && !stdout.contains(":after"),
+        "built binary must not continue after arithmetic failure: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("badarith"),
+        "built binary must report the Kernel arithmetic reason: {stderr:?}"
+    );
+
+    let _ = remove_file(&src_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 #[test]
 fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
@@ -1823,8 +1889,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .collect();
     assert_eq!(
         quiesced.len(),
-        14,
-        "{fixture}: one derivation's co-outputs must share arbitration, below the former 34-event ceiling"
+        // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
+        // helper facts settle through the same arbiter and publish six more
+        // readiness-only steps.
+        20,
+        "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
     let mut wakes = Vec::new();
@@ -1855,18 +1924,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            ("Activation", 9),
-            ("ActivationAnalyzed", 10),
-            ("ActivationInputs", 9),
-            ("CallSiteSummary", 11),
-            ("CallSiteTargets", 11),
-            ("IncomingInputSlot", 23),
-            ("ReturnType", 10),
-            ("RuntimeDemand", 10),
-            ("RuntimeDemandInput", 9),
-            ("RuntimeDemandInputs", 10),
+            ("Activation", 13),
+            ("ActivationAnalyzed", 14),
+            ("ActivationInputs", 13),
+            ("CallSiteSummary", 15),
+            ("CallSiteTargets", 15),
+            ("IncomingInputSlot", 26),
+            ("ReturnType", 14),
+            ("RuntimeDemand", 14),
+            ("RuntimeDemandInput", 13),
+            ("RuntimeDemandInputs", 14),
         ]),
-        "certification must publish all exact co-output readiness transitions without changing values"
+        "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
 
     let mut wake_causes = BTreeSet::new();
@@ -1946,8 +2015,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert_eq!(
         wake_dispositions,
-        BTreeMap::from([("enqueued", 6)]),
-        "{fixture}: direct-fact readiness wake accounting moved"
+        // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
+        // their exact settled consumers.
+        BTreeMap::from([("enqueued", 9)]),
+        "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
     );
 
     let report = CausalReport::derive(&events);
@@ -1969,17 +2040,19 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // Co-output finality removes redundant executable-fact readiness work.
-            evaluations: 349,
-            runtime_demand_evaluations: 31,
-            initial: 174,
-            content_caused: 169,
-            readiness_caused: 6,
+            // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
+            // ordinary generic arithmetic result/status calls, whose facts
+            // add only attributed initial, content, and readiness work.
+            evaluations: 443,
+            runtime_demand_evaluations: 40,
+            initial: 222,
+            content_caused: 212,
+            readiness_caused: 9,
             uncaused: 0,
-            changed_outputs: 210,
-            unchanged_outputs: 139,
-            wakes: 177,
-            blocked_completions: 156,
+            changed_outputs: 269,
+            unchanged_outputs: 174,
+            wakes: 223,
+            blocked_completions: 197,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2024,10 +2097,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        // Answers stay exact. Already-current queued work skips eight cache
-        // queries: three materialized, three shape, and two callable products.
-        (239, 239, 239, 0, 7, 0),
-        "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
+        // fz-5xp.30: the ordinary generic result/status boundary contributes
+        // forty-one settled, changed product generations; cache behavior is
+        // otherwise unchanged.
+        (280, 280, 280, 0, 7, 0),
+        "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
         report.uncaused.is_empty(),

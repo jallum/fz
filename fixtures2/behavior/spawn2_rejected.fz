@@ -1,0 +1,8 @@
+#---
+# purpose: "spawn/2 is rejected because Kernel publishes only spawn/1"
+# expect: diagnostic
+# diagnostic.code: lower/unbound
+#---
+def main() do
+  spawn(fn () -> nil end, 4096)
+end

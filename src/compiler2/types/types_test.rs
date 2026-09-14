@@ -892,7 +892,11 @@ macro_rules! key_helper_conformance_tests {
             fn default_cpointer_is_builtin_opaque() {
                 let mut t = $ctor;
                 let ptr = t.cpointer();
-                assert_eq!(t.opaque_singleton(&ptr).as_deref(), Some("cpointer"));
+                assert_eq!(
+                    t.builtin_opaque_singleton(&ptr),
+                    Some(crate::types::BuiltinOpaque::CPointer)
+                );
+                assert_eq!(t.opaque_singleton(&ptr), None);
             }
 
             #[test]
@@ -2088,6 +2092,28 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
 // provably-empty clauses) and every garbage clause doubles a `dnf_neg` factor.
 mod tuple_dnf_hygiene {
     use super::*;
+
+    /// A tuple difference whose cover differs in one coordinate is still one
+    /// rectangle. Keeping the negated cover as a separate clause makes the
+    /// same set intern apart from its direct coordinate-difference form.
+    #[test]
+    fn tuple_difference_normalizes_a_single_coordinate_cover() {
+        let mut t = Types::new();
+        let any = t.any();
+        let false_ = t.bool_lit(false);
+        let true_ = t.bool_lit(true);
+        let boolean = t.union(false_, true_);
+
+        let all_booleans = t.tuple(&[any, boolean]);
+        let false_booleans = t.tuple(&[any, false_]);
+        let through_difference = t.difference(all_booleans, false_booleans);
+        let direct = t.tuple(&[any, true_]);
+
+        assert_eq!(
+            through_difference, direct,
+            "the interning boundary must give equivalent tuple forms one identity"
+        );
+    }
 
     /// The clause product of two overlapping tuple unions yields the same
     /// merged clause from symmetric pairs; idempotence collapses them and
