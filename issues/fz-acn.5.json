@@ -4,14 +4,15 @@
     "fz-acn.4"
   ],
   "blocks": [],
+  "closed_at": "2026-09-14T22:20:18Z",
   "created": "2026-09-14T17:16:13Z",
   "description": "Folded into fz-21x.27 (punch two of the interpreter dispatch pair): prepared keys materialize on first read inside the context fz-acn.4 introduces.",
   "id": "fz-acn.5",
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Prepared dispatch keys materialize on first read",
   "type": "task",
-  "updated_at": "2026-09-14T22:20:17Z"
+  "updated_at": "2026-09-14T22:20:18Z"
 }
