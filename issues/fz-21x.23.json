@@ -5,6 +5,7 @@
     "fz-21x.22"
   ],
   "blocks": [
+    "fz-21x.17",
     "fz-21x.24"
   ],
   "created": "2026-09-14T10:58:45Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "One effects fact per function on the World: allocates and fails",
   "type": "task",
-  "updated_at": "2026-09-14T10:58:48Z"
+  "updated_at": "2026-09-14T10:58:51Z"
 }
