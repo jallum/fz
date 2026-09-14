@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T02:32:42Z",
+  "description": "`c_int`, `cstring` and `unit` are wire-only spellings: the contract the type checker sees is rewritten to the semantic spelling by `normalize_extern_semantic_body` (src/extern_contract.rs), which only rewrites a body that is ONE token. So a spelling written inside an aggregate -- `extern \"C\" defp f() :: {c_int, integer}` -- survives normalization and `resolve_spec_decl` reports `compiler2 could not resolve extern contract for \\`f\\`: unknown type name \\`c_int\\``.\n\nThe refusal is correct (a pair field rides a whole return register, and `ty_to_extern_ty` can only ever produce I64/F64/Bool for one) and it reaches every door identically. The MESSAGE is wrong: `c_int` is a documented spelling, so \"unknown type name\" sends the reader looking for a typo instead of telling them the spelling is only valid as a whole parameter or result.\n\nFound while building fz-21x.12; pre-existing for `cstring` and `unit`. A fix needs an error channel out of `extern_semantic_contract`, which today returns `Option` and is read by both `jobs/contract.rs` and `jobs/body.rs`.",
+  "id": "fz-21x.14",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 3,
+  "status": "open",
+  "title": "A wire-only spelling inside an aggregate reports `unknown type name`",
+  "type": "bug",
+  "updated_at": "2026-09-14T02:32:42Z"
+}
