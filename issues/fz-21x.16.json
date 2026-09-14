@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-14T03:26:19Z",
-  "description": "Measured 2026-09-14 on HEAD 445f71dc6, debug build, fz2 interp, --log-telemetry self time. fixtures2/behavior/cross_kind_operators.fz (102 dbg lines) takes 5.4-5.9s per door; LowerFunction(main) self time 3.1s in one span, AnalyzeActivation(main) rerun 125 times (1.6s). Prefix scaling: 20 lines 4ms/35 reruns, 40 lines 346ms/55, 60 lines 707ms/75, 80 lines 1185ms/95, 102 lines 3088ms/125. Trigger isolated: 100 lines of 'dbg(lt?(a, b))' where lt? is a two-clause guard helper (when a \u003c b) and the 100 calls cycle through K distinct operand-kind pairs: K=1 25ms, K=4 2806ms, K=8 1434ms, K=16 1457ms. Body-position operators (no helper) with 1 pair: 25ms. So each distinct-kind activation of an inlined guard helper makes lowering the CALLER superlinear, and main is re-analyzed once per new callee activation. Consequence: the fixture sits near the CI 20s hang guard (attempt 1 of run 34800809954 tripped it on all three doors alongside the known json_roundtrip/tail_recursion flakes). Note: guard helpers are inlined as nested dispatch plans at every call site today; 8b (guards as pure functions called by the dispatcher) removes that inlining and is the candidate fix; verify with this measurement.",
+  "description": "ROOT CAUSE (diagnosed 2026-09-14, sample + telemetry; A/B on 1ec2701a7 vs 445f71dc6 identical, so pre-existing): construct_tuple_ownership (src/compiler2/jobs/body.rs ~4295) asks, per tuple item, any_later_ownership_use (~3951), which walks every later step of every reachable entry; each predicate (values_overlap_inner, origin_source_path, construction_children) resolves values through value_definition (~3759), a linear find over every projection and step of the whole body, unmemoized. Three nested linear scans. Measurements (debug build): 100 guard-helper calls over int/atom operands 0.14s; over tuple operands 50s; WITHOUT any helper, 25 lines of x = {{1,2},{3,4}} 2.7s, 50 lines 19.8s (~N^3). ~90% of samples in value_definition/step_defined_values. Guards, distinct operand kinds and activation counts are incidental; cross_kind_operators tripped it because a third of its cases carry tuple literals. FIX: build a ValueId -\u003e definition index once per LoweredBody and thread it through the ownership predicates (cubic -\u003e quadratic); if the later-use walk still shows, add a use index in the same motion. Regression test: 50 nested tuple literals in one body lower well under the harness guard; cross_kind_operators stays whole. SEPARATE DEFECT measured alongside, not fixed here: prepare_function_call (jobs/semantic.rs ~1770-1785) subscribes the caller to ReturnType(callee activation), so each new callee activation re-runs analyze_activation for the caller in full (12/18/26 analyses for K=1/4/8 distinct pairs); this is the downstream-monolith shape and belongs with that work.",
   "id": "fz-21x.16",
   "labels": [],
   "parent": "fz-21x",
   "priority": 1,
   "status": "open",
-  "title": "Lowering a body that calls a guard helper across distinct operand kinds is superlinear",
+  "title": "Tuple-ownership lowering is cubic in tuple constructions: value_definition is an unindexed whole-body search",
   "type": "bug",
-  "updated_at": "2026-09-14T03:26:19Z"
+  "updated_at": "2026-09-14T03:55:15Z"
 }
