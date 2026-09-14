@@ -32,8 +32,8 @@
 #   the direct C result/status carrier is unboxed. The current ordinary
 #   `Kernel.arithmetic_result/1` entry materializes its tuple solely to dispatch
 #   its source clauses, so the ten additions in this fixture add ten temporary
-#   structs (`struct_allocs = 10`, `struct_bytes = 320`). fz-5xp.20 owns the
-#   general direct-Fz inlining rule that removes that generic entry work;
+#   structs (`struct_allocs = 10`, `struct_bytes = 320`); a general inliner
+#   for small ordinary wrappers is what removes that entry work;
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;

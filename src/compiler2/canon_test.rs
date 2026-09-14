@@ -573,10 +573,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/actor_ring.fz",
             include_str!("../../fixtures2/behavior/actor_ring.fz"),
-            // fz-21x.5 re-measured 29 -> 31: the ring's `got == 5` compares a
-            // mailbox value, so all three reachable `==` clauses emit --
-            // `fz_op_eq_ii`, `fz_op_eq_fi` and the `any`/`any` `fz_op_eq` --
-            // where the lone structural clause once emitted one.
+            // The ring's `got == 5` compares a mailbox value, so all three
+            // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
+            // the `any`/`any` `fz_op_eq`.
             31,
         ),
         (

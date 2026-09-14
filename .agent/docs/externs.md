@@ -73,8 +73,7 @@ the same way it finds `sqrt`. The arithmetic and comparison exports stay
 reachable for interpreter execution, JIT resolution, and AOT linking. Not
 exporting by default is what made
 `fz_bitstring_is_binary` resolve on macOS and die on Linux with
-`can't resolve symbol` while the whole six-target local gate was green
-(fz-5xp.58).
+`can't resolve symbol` while the whole six-target local gate was green.
 
 There is no variadic form of the `fz` ABI: every variadic call goes through a
 fixed-arity C dispatcher, which has nowhere to put the implicit process
@@ -109,7 +108,7 @@ The AOT door has the same split on the link line: `aot_link.rs` passes
 `-Wl,-undefined,dynamic_lookup` instead.
 
 Both the library list and that `-lm` are stand-ins for something fz cannot say:
-which library a declaration comes from (fz-5xp.61). `libc::` is an fz module
+which library a declaration comes from. `libc::` is an fz module
 path, not a library name. It works only because every foreign symbol fz names
 today is in the C standard library.
 

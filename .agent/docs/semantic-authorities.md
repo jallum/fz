@@ -106,7 +106,7 @@ refused at compile time rather than answered wrongly at run time. The total
 order is reached through `Kernel.compare/2`, which `Enum.sort/1` uses. That
 split is not tidiness: giving an ordering a catch-all makes every ordering
 callsite with an unresolved operand blind to the dispatcher, which the
-blind-escape census catches as a latent miscompile (fz-5xp.64). Equality and
+blind-escape census catches as a latent miscompile. Equality and
 identity are total functions, so their `any`/`any` clause answers a real pair
 rather than standing in for a missing one.
 
@@ -230,7 +230,8 @@ the JIT is built with it as its `symbol_lookup_fn` rather than cranelift's own
 dlsym. Neither door keeps an address table: the compiler's binaries and test
 binaries export dynamically (`build.rs`), so fz's own exports are in the
 process to be found. The AOT door is answered by the linker instead, which is a
-fourth place and why `-lm` is hardcoded: fz-5xp.61.
+fourth place and why `-lm` is hardcoded until a declaration can say which
+library it comes from.
 
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid

@@ -11873,13 +11873,12 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// entry dispatch. They all ask `Region::TupleArity`, which this census counts
 /// as unreadable; the readable denominator stays 8 and every blind population
 /// is unchanged.
-/// fz-21x.5: `entry` 179 -> 184 plans, 171 unreadable either way. `==` and
-/// `===` gained a typed clause per numeric pair, so each now has an entry
-/// dispatch asking `Region::Type` where the lone `any`/`any` clause asked
-/// nothing. The five plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
+/// `==` and `===` carry a typed clause per numeric pair, so each has an entry
+/// dispatch asking `Region::Type` where a lone `any`/`any` clause asks
+/// nothing. Those plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
 /// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
-/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are READABLE, so
-/// the denominator rises 8 -> 13 and every blind population stays empty.
+/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are readable, so
+/// they count in the denominator and every blind population stays empty.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
     &[("case", 3, 3), ("entry", 184, 171), ("receive", 2, 0)];
 

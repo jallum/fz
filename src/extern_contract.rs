@@ -16,13 +16,11 @@ use crate::fz_ir::ExternTy;
 use crate::parser::lexer::{Tok, Token};
 use crate::types::Types;
 
-/// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
-/// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
-/// linker sees just the bare suffix. fz-axu — externs declared inside a
-/// `defmodule Foo do ... end` get auto-qualified by the resolver to
-/// `Foo.name` (with a `.`), which is also fz-side decoration; strip
-/// either separator to recover the C symbol. Single-segment names
-/// round-trip.
+/// The C symbol an extern's fz-visible name resolves to. A `lib::name`
+/// prefix is fz-side namespacing only, and an extern declared inside a
+/// `defmodule Foo do ... end` is qualified to `Foo.name` by the resolver,
+/// which is also fz-side decoration; the linker sees the bare suffix either
+/// way. A single-segment name is already the symbol.
 pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
     if let Some((_, sym)) = fz_name.rsplit_once("::") {
         return sym;
