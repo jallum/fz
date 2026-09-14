@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-21x.24"
+  ],
   "blocks": [],
   "created": "2026-09-14T03:03:48Z",
   "description": "Measured 2026-09-14 on interp and run (JIT): a dispatch-pure guard helper 'defp int?(_n :: integer), do: true' used as 'def g(x) when int?(x)' answers :matched for g(:a). The annotated parameter is named with a leading underscore, and its type does not become a plan precondition, so the helper admits every value. Repro: scratchpad/8b/t_typed.fz from the 8b research (session scratchpad; recreate from this description). Blocks nothing in fz-21x directly, but it is a miscompile in the guard-inlining path that 8b rewrites; fix or fold it into 8b.1 rather than carry it.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Guard helper with a wildcard-named annotated parameter loses its type precondition",
   "type": "bug",
-  "updated_at": "2026-09-14T03:03:48Z"
+  "updated_at": "2026-09-14T10:58:49Z"
 }
