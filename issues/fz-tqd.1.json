@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-21x.24"
+  ],
   "blocks": [],
   "created": "2026-09-14T17:16:19Z",
   "description": "Reproduced 2026-09-14 at main f26264572. guard_dispatch_from_surface binds a helper plan's pins by looking up the pin's name among the FIRST clause's Pattern::Var parameters (src/dispatch_matrix/pattern.rs:285-298). A pin is positional and per-clause, so:\n\n    def eqp(0, 0), do: true\n    def eqp(b, ^b), do: true\n    def eqp(_, _), do: false\n\ncalled from a case guard fails with error[lower/unbound]: compiler2 case guard references unknown name 'b'. The same failure with def eqp(z, 0) first, because clause 0 names input 0 z.\n\nDies with fz-21x.24 (guards are code): a guard helper becomes an ordinary function with an ordinary entry plan, and there are no helper pins to bind. Filed so the shape is not lost; if fz-21x.24 slips, the fix is to bind each clause's pins against that clause's own parameters.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Guard-helper pins resolve in clause 0's namespace only",
   "type": "bug",
-  "updated_at": "2026-09-14T17:16:19Z"
+  "updated_at": "2026-09-14T17:16:27Z"
 }
