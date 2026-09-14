@@ -1,0 +1,46 @@
+#---
+# purpose: "arithmetic in a guard is the body's arithmetic; when it fails, the guard is false"
+# oracle: oracle.exs
+# defer: "a failure inside a guard raises or traps instead of making the clause false"
+#---
+#
+# # guard_arithmetic_failure
+#
+# A guard cannot raise. When an arithmetic operation inside one has no answer,
+# dividing by zero, taking a remainder by zero, dividing a float by zero, or
+# adding to something that is not a number, the guard is false and the clause
+# does not match. The next clause answers. That is Elixir's rule, and it holds
+# on every door here.
+#
+# The operators mean the same thing in a guard as in a body: `/` is float
+# division, so `5 / 2` is `2.5` in a guard exactly as it is in an expression.
+defp by_zero(x) when x / 0 > 0, do: :matched
+defp by_zero(_x), do: :fell_through
+
+defp rem_by_zero(x) when x % 0 == 0, do: :matched
+defp rem_by_zero(_x), do: :fell_through
+
+defp float_by_zero(x) when x / 0.0 > 0, do: :matched
+defp float_by_zero(_x), do: :fell_through
+
+defp plus_one(x) when x + 1 > 0, do: :matched
+defp plus_one(_x), do: :fell_through
+
+defp half_is_two(x) when x / 2 == 2, do: :matched
+defp half_is_two(_x), do: :fell_through
+
+defp times_two(x) when x * 2 > 10, do: :matched
+defp times_two(_x), do: :fell_through
+
+def main() do
+  dbg(by_zero(1))
+  dbg(rem_by_zero(7))
+  dbg(float_by_zero(1.0))
+  dbg(plus_one(:a))
+  dbg(plus_one(1))
+  dbg(plus_one(-1))
+  dbg(half_is_two(5))
+  dbg(half_is_two(4))
+  dbg(times_two(6))
+  dbg(times_two(:a))
+end
