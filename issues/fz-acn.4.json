@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:11Z",
+  "description": "Five stacked entry functions run a plan against operands in the interpreter: select_clause (src/ir_interp/backend.rs:704), select_dispatch_body (:790, one .map over twelve lines of signature), select_dispatch_match (:959), execute_dispatch_inputs (dispatch_exec.rs:74, one field read), execute_dispatch_node (:88, the walk). select_dispatch_match hides DispatchOperands from its callers, so backend.rs:1344-1348 and :1462-1466 rebuild identical operands right after it returns, per case and per receive attempt. select_clause allocates vec![Absent; n] and clones a lane vector per required input (:714-721) although args is already \u0026[Option\u003cBackendBoundValue\u003e] and Absent is None.\n\nChange: delete execute_dispatch_inputs and select_dispatch_body; select_dispatch_match takes \u0026DispatchOperands, built once per call and reused for the outcome arguments; select_clause borrows its argument slice. An omitted required input is still an error, tested the same way.\n\nSignal: the case, receive and entry fixture lanes on three doors; a mis-threaded state surfaces as \"winning outcome lacks subject\". Concept that stops existing: two signature adapters, operands built twice, copying arguments in order to dispatch on them.",
+  "id": "fz-acn.4",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 1,
+  "status": "open",
+  "title": "One door into the interpreter's dispatch; arguments are borrowed, not copied",
+  "type": "task",
+  "updated_at": "2026-09-14T17:16:11Z"
+}
