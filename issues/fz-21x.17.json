@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-21x.22",
-    "fz-21x.23"
+    "fz-21x.23",
+    "fz-21x.24"
   ],
   "blocks": [],
   "created": "2026-09-14T03:26:20Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Matcher purity contract is asserted, unenforced, and violated; whose heap at probe time is per-door",
   "type": "bug",
-  "updated_at": "2026-09-14T10:58:51Z"
+  "updated_at": "2026-09-14T10:58:52Z"
 }

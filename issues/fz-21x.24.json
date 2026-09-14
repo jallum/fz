@@ -6,6 +6,7 @@
   ],
   "blocks": [
     "fz-21x.15",
+    "fz-21x.17",
     "fz-21x.20"
   ],
   "created": "2026-09-14T10:58:45Z",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Guards are code: one guard function per clause, failure is false, one evaluator on three doors",
   "type": "task",
-  "updated_at": "2026-09-14T10:58:50Z"
+  "updated_at": "2026-09-14T10:58:52Z"
 }
