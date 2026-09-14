@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:18Z",
+  "description": "Six holders spell \"outcome -\u003e body_id -\u003e target\" four ways: jobs/native.rs:2882-2890 and :1928-1933, ir_interp/backend.rs:801, :1098-1106, :2496-2506, ir_interp/dispatch_exec.rs:585-587. OutcomeId \u003c-\u003e body_id is a bijection (one construction site, pattern.rs:611-625, one Unique outcome per row, validate_source_rows enforces strictly monotonic body ids). ExecutableDispatch::clause_index does a linear position() per interpreted call and DispatchCallArm lookup a linear find per dispatched call.\n\nChange: PatternDispatchPlan::body_id(outcome) plus one BodyTable\u003cT\u003e newtype with get(body_id) collapses the six chains to one-liners and retires the scans. A full Dispatch\u003cTarget\u003e fold of the holders touches 33 references in 8 files for less gain and is not recommended as one motion. Signal: the per-door fixture matrix; a unit test that the table's index equals the plan's outcome order.",
+  "id": "fz-acn.12",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 3,
+  "status": "open",
+  "title": "One body table for the six outcome-to-body lookups",
+  "type": "task",
+  "updated_at": "2026-09-14T17:16:18Z"
+}
