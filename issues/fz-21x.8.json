@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T00:18:54Z",
+  "description": "Found while landing fz-21x.5 (2026-09-13). The membership operator's === dispatch has three arms that are identical [Any, Any] extern calls to fz_op_identical, differing only in callee activation: an extern executable is keyed per operand type although its declared marshal is Any, so one physical call is specialised three ways for nothing. Collapse extern activations by their marshal shape (the declared ExternTy per parameter) rather than by the caller's operand types; the physical call is identical whenever the marshals are. Expect fewer executables and dispatch arms in the census fixtures (canon_test actor_ring inventory, blind-escape entry plans) and no semantic change. Same family as fz-y6w over-specialization.",
+  "id": "fz-21x.8",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 3,
+  "status": "open",
+  "title": "Extern activations are keyed per operand type even when the marshal is Any",
+  "type": "task",
+  "updated_at": "2026-09-14T00:18:54Z"
+}
