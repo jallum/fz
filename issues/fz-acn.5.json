@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-09-14T17:16:13Z",
-  "description": "src/ir_interp/backend.rs:755-788 (prepared_dispatch_keys) allocates every binary prepared key on the process heap (fz_alloc_bitstring_const, a real copy) before the first test runs, on every call. A function whose hot clause never reaches its map pattern still pays for every key it could have read.\n\nChange: the prepared vector holds lazily filled cells, filled at dispatch_const_key_value (dispatch_exec.rs ~715-723) and memoized per run so a key reached on two paths sees one word.\n\nSignal: map_binary_keys and 00553_match_map_nonatom_keys on three doors; a fixture whose map clause is not reached pins zero bitstring allocations through Process.heap_alloc_stats().",
+  "description": "Folded into fz-21x.27 (punch two of the interpreter dispatch pair): prepared keys materialize on first read inside the context fz-acn.4 introduces.",
   "id": "fz-acn.5",
   "labels": [],
   "parent": "fz-acn",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Prepared dispatch keys materialize on first read",
   "type": "task",
-  "updated_at": "2026-09-14T17:16:23Z"
+  "updated_at": "2026-09-14T22:20:17Z"
 }
