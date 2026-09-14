@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T19:56:35Z",
+  "description": "Reproduced 2026-09-14 at main f26264572 on every door:\n\n    def main() do\n      k = :a\n      case %{a: 7} do\n        %{^k =\u003e v} -\u003e dbg({:got, v})\n        _ -\u003e dbg(:no)\n      end\n    end\n\nthread 'main' panicked at src/dispatch_matrix/pattern/source.rs:211: resolved source-pattern dispatch analysis must compile: SourcePattern(UnsupportedMapKey). Elixir prints {:got, 7}: a map key in a pattern may be a literal or a pinned variable (elixir_map.erl:73-77, :263-268).\n\nTwo defects: the exhaustiveness analysis calls expect() on a user-input outcome, and the producer has no map-key region for a pinned key (Region::MapKeyPresent takes a constant). Fix: the analysis maps SourcePatternError to a diagnostic like every other producer error; the producer models a pinned key as a prepared-key question fed by the pin's runtime word on the three doors. Signal: the program above with an oracle twin; a fixture with a non-literal, non-pinned key (`%{k =\u003e v}`) pins Elixir's diagnostic \"cannot use variable k as map key inside a pattern\".",
+  "id": "fz-8ae",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "A pinned map key in a pattern panics the compiler",
+  "type": "bug",
+  "updated_at": "2026-09-14T19:56:35Z"
+}
