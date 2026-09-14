@@ -1521,13 +1521,20 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             let product = report.product_totals();
             let formula = report.formula_totals();
             let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
-            // fz-5xp.30: cold range-map, predicate, and take/drop/split paths
-            // are 228 -> 237, 603 -> 614, and 1106 -> 1115 body walks. Their
-            // reached arithmetic result/status helpers remain ordinary generic
-            // calls; the edit scenarios do not reach those helpers.
+            // Body walks per fixture per scenario. The cold column carries
+            // the whole program, including the arithmetic result/status
+            // helpers the reached paths call as ordinary generic functions;
+            // the three edit scenarios walk only what their edit moves, which
+            // is why `unchanged` and `unreachable_edit` are zero and the two
+            // reached edits are a fraction of cold. Tuple-field demands join
+            // as prefixes, so a field one consumer reads stays distinct from
+            // a field another ignores -- take/drop/split pays two extra cold
+            // walks for that and saves eighteen on the replacement edit, which
+            // no longer re-walks the bodies a coarsened whole-tuple demand
+            // reached.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[240, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1128, 0, 0, 70, 661]][fixture_index][scenario],
+                [[240, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1130, 0, 0, 70, 643]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

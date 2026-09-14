@@ -1,4 +1,12 @@
 use super::*;
+use crate::compiler2::pull::TransportCarrier;
+use crate::compiler2::transport::{LaneDescr, TransportClass};
+use crate::compiler2::{
+    AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendSemanticInputLayout, BackendValueLayout, CallSiteId,
+    ControlEntryId, ExecutableNeed, ModuleId, RootId, Ty, World,
+};
+use crate::source::Span;
+use crate::telemetry::ConfiguredTelemetry;
 use fz_runtime::ir_runtime::{fz_list_head_ref, fz_list_tail_ref};
 
 /// Entry dispatch refuses to decide when an input its plan reads never
@@ -599,72 +607,6 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
 }
 
 #[test]
-fn only_a_missing_callee_selects_the_exact_direct_target() {
-    let mut world = crate::compiler2::World::new();
-    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "exact_target", 0);
-    let key = ExecutableKey {
-        activation: crate::compiler2::ActivationKey::from_inputs(
-            crate::compiler2::RootId::for_test(0),
-            function,
-            &[],
-            world.types_mut(),
-        ),
-        need: crate::compiler2::ExecutableNeed::Value,
-    };
-    let nothing = world.intern_shape(ShapeDescr::Nothing);
-    let ty = world.types_mut().int();
-    let executable = Rc::new(BackendExecutable::for_test(key.clone(), ty, nothing));
-    let mut program = BackendProgram::empty(key.clone());
-    program.add_executable(executable.clone(), world.types());
-    let callee = ValueId::from_u32(0);
-    let entries = [BackendEntry {
-        span: crate::source::Span::DUMMY,
-        origin: crate::compiler2::BackendEntryOrigin::Branch,
-        params: Vec::new(),
-        captures: Vec::new(),
-        physical_captures: Vec::new(),
-        physical_params: Vec::new(),
-        steps: Vec::new(),
-        tail: BackendTail::ClosureCall {
-            value: ValueId::from_u32(1),
-            callsite: crate::compiler2::CallSiteId::from_u32(0),
-            callee,
-            target: Some(key.clone()),
-            args: Vec::new(),
-            dest: ControlDestination::Return,
-            return_flow: None,
-        },
-    }];
-    let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
-    runtime.current_proc = runtime.process_ptr(1).unwrap();
-    let transport = TransportStore::new();
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut invoke = |env| {
-        step_eval_entry(
-            &mut runtime,
-            world.types_mut(),
-            &transport,
-            &tel,
-            &program,
-            &Module::default(),
-            &executable,
-            &entries,
-            crate::compiler2::ControlEntryId::from_u32(0),
-            env,
-            Vec::new(),
-        )
-    };
-    assert!(
-        matches!(invoke(HashMap::new()), Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key)
-    );
-    let explicit_absence = invoke(HashMap::from([(callee, BackendBoundValue::Absent)]));
-    assert!(
-        matches!(explicit_absence, Err(error) if error.contains("absent and cannot be materialized")),
-        "an explicit absent binding cannot select the missing-callee fallback"
-    );
-}
-
-#[test]
 fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
     use crate::dispatch_matrix::demand::DispatchDemand;
     use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
@@ -1232,4 +1174,155 @@ fn direct_callable_lanes_cannot_be_published_as_a_runtime_environment() {
 fn backend_destructor_closure_unpack_errors_propagate() {
     let error = unpack_pending_dtor_closure(RuntimeAnyValue::null()).expect_err("non-closure destructor must fail");
     assert!(error.contains("backend dtor drain: invalid closure"), "{error}");
+}
+
+/// A direct closure edge names its target, so the call goes there whatever
+/// the callee binding looks like: the binding is only where the captures
+/// come from. A capture-free target asks for none, so an unbound callee and
+/// an explicitly absent one are the same nothing and both reach it.
+#[test]
+fn a_direct_closure_edge_calls_its_named_target_from_what_the_caller_holds() {
+    let mut edge = DirectClosureEdge::new(&[]);
+    let key = edge.key.clone();
+
+    assert!(matches!(
+        edge.step(HashMap::new()),
+        Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key
+    ));
+    assert!(
+        matches!(
+            edge.step(HashMap::from([(edge.callee, BackendBoundValue::Absent)])),
+            Ok(BackendEvalTransition::Next(BackendEvalState::Executable { executable: target, .. })) if target.key == key
+        ),
+        "a capture-free target asks for nothing, which is what an absent binding holds"
+    );
+}
+
+/// A direct closure edge takes its target's captures out of the callee value.
+/// A target that declares a capture lane and a callee value that carries none
+/// is a plan that cannot be run, and the call says so rather than inventing a
+/// capture.
+#[test]
+fn a_direct_closure_edge_refuses_a_callee_that_carries_none_of_the_target_captures() {
+    let mut edge = DirectClosureEdge::new(&[Capture::Int]);
+
+    let refused = edge.step(HashMap::from([(edge.callee, BackendBoundValue::Absent)]));
+
+    assert!(
+        matches!(&refused, Err(error) if error.contains("carries no capture 0")),
+        "a declared capture the callee does not carry is a refusal, not an invented zero: {:?}",
+        refused.err()
+    );
+}
+
+/// The capture types a target may declare in these tests. Only the count and
+/// the lane form matter here, so one type is enough to say "a capture".
+#[derive(Clone, Copy)]
+enum Capture {
+    Int,
+}
+
+/// One executable entry whose tail is a direct closure call naming a target
+/// that declares `captures`, with an interpreter ready to step it.
+struct DirectClosureEdge {
+    world: World,
+    runtime: IrInterpRuntime,
+    transport: TransportStore,
+    tel: ConfiguredTelemetry,
+    program: BackendProgram,
+    executable: Rc<BackendExecutable>,
+    entries: [BackendEntry; 1],
+    key: ExecutableKey,
+    callee: ValueId,
+}
+
+impl DirectClosureEdge {
+    fn new(captures: &[Capture]) -> Self {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let capture_tys = captures
+            .iter()
+            .map(|capture| match capture {
+                Capture::Int => int,
+            })
+            .collect::<Vec<Ty>>();
+        let function = world.reference_function(ModuleId::GLOBAL, "target", 0);
+        let key = ExecutableKey {
+            activation: ActivationKey::from_inputs(RootId::for_test(0), function, &capture_tys, world.types_mut()),
+            need: ExecutableNeed::Value,
+        };
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let mut executable = BackendExecutable::for_test(key.clone(), int, nothing);
+        Rc::make_mut(&mut executable.abi).semantic_inputs = capture_tys
+            .iter()
+            .enumerate()
+            .map(|(semantic_index, ty)| {
+                let lane = world.intern_lane(LaneDescr {
+                    ty: *ty,
+                    class: TransportClass::Value,
+                });
+                BackendSemanticInputLayout {
+                    semantic_index,
+                    layout: BackendValueLayout {
+                        structural: world.intern_shape(ShapeDescr::Lane(lane)),
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([*ty]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                }
+            })
+            .collect();
+        let executable = Rc::new(executable);
+        let mut program = BackendProgram::empty(key.clone());
+        program.add_executable(executable.clone(), world.types());
+
+        let callee = ValueId::from_u32(0);
+        let entries = [BackendEntry {
+            span: Span::DUMMY,
+            origin: BackendEntryOrigin::Branch,
+            params: Vec::new(),
+            captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
+            steps: Vec::new(),
+            tail: BackendTail::ClosureCall {
+                value: ValueId::from_u32(1),
+                callsite: CallSiteId::from_u32(0),
+                callee,
+                target: Some(key.clone()),
+                args: Vec::new(),
+                dest: ControlDestination::Return,
+                return_flow: None,
+            },
+        }];
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        Self {
+            world,
+            runtime,
+            transport: TransportStore::new(),
+            tel: ConfiguredTelemetry::new(),
+            program,
+            executable,
+            entries,
+            key,
+            callee,
+        }
+    }
+
+    fn step(&mut self, env: HashMap<ValueId, BackendBoundValue>) -> Result<BackendEvalTransition, String> {
+        step_eval_entry(
+            &mut self.runtime,
+            self.world.types_mut(),
+            &self.transport,
+            &self.tel,
+            &self.program,
+            &Module::default(),
+            &self.executable,
+            &self.entries,
+            ControlEntryId::from_u32(0),
+            env,
+            Vec::new(),
+        )
+    }
 }

@@ -348,10 +348,14 @@ impl CallableDemand {
 /// AXIS 1 — how much of a value's *data representation* a consumer needs.
 ///
 /// A pure join-semilattice: `Ignore` is bottom, `Whole` is the absorbing top,
-/// and a same-arity `TupleFields` joins pointwise while a mismatched arity joins
-/// up to `Whole`. Coarsening here is always correctness-safe — it only means
-/// "materialize the whole box." Each field is a full [`RuntimeDemand`], so a
-/// tuple of callables keeps each field's callable obligations.
+/// and `TupleFields` joins pointwise. The field vector is a PREFIX — a consumer
+/// that reads field 0 names one field, and one that reads field 1 names two, so
+/// the vectors two consumers of one tuple state are rarely the same length.
+/// Joining them pads the shorter with `ignore` and joins field by field: the
+/// fields nobody named are the fields nobody needs. Coarsening here is always
+/// correctness-safe — it only means "materialize the whole box." Each field is a
+/// full [`RuntimeDemand`], so a tuple of callables keeps each field's callable
+/// obligations.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ShapeDemand {
     #[default]
@@ -365,11 +369,37 @@ impl ShapeDemand {
         matches!(self, Self::Ignore)
     }
 
+    /// This demand read against a tuple of `arity` fields: one demand per
+    /// field, in order.
+    ///
+    /// The field vector is a prefix, so reading it is padding and trimming.
+    /// Fields it does not name are not needed, and pad with `ignore`. Entries
+    /// past `arity` describe a tuple this one is not -- a value whose type
+    /// spans arities is read further in one clause than in another -- and are
+    /// dropped: they name no field here. `Whole` needs every field, and
+    /// `Ignore` is not a field reading at all.
+    pub fn field_prefix(&self, arity: usize) -> Option<Vec<RuntimeDemand>> {
+        let mut fields = match self {
+            Self::TupleFields(fields) => fields.clone(),
+            Self::Whole => vec![RuntimeDemand::whole(); arity],
+            Self::Ignore => return None,
+        };
+        fields.resize_with(arity, RuntimeDemand::ignore);
+        Some(fields)
+    }
+
+    /// The canonical form of this demand. Because the field vector is a prefix,
+    /// a trailing `ignore` says exactly what saying nothing says, so trimming
+    /// them is what makes one demand one value: two consumers that ask for the
+    /// same fields compare, hash and key alike however far either wrote out.
     fn normalized(self) -> Self {
         match self {
             Self::TupleFields(fields) => {
-                let normalized = fields.into_iter().map(RuntimeDemand::normalized).collect::<Vec<_>>();
-                if normalized.iter().all(RuntimeDemand::is_ignore) {
+                let mut normalized = fields.into_iter().map(RuntimeDemand::normalized).collect::<Vec<_>>();
+                while normalized.last().is_some_and(RuntimeDemand::is_ignore) {
+                    normalized.pop();
+                }
+                if normalized.is_empty() {
                     Self::Ignore
                 } else {
                     Self::TupleFields(normalized)
@@ -383,10 +413,10 @@ impl ShapeDemand {
         match (self.normalized(), other.normalized()) {
             (Self::Ignore, other) | (other, Self::Ignore) => other,
             (Self::Whole, _) | (_, Self::Whole) => Self::Whole,
-            (Self::TupleFields(left), Self::TupleFields(right)) => {
-                if left.len() != right.len() {
-                    return Self::Whole;
-                }
+            (Self::TupleFields(mut left), Self::TupleFields(mut right)) => {
+                let width = left.len().max(right.len());
+                left.resize_with(width, RuntimeDemand::ignore);
+                right.resize_with(width, RuntimeDemand::ignore);
                 Self::TupleFields(
                     left.into_iter()
                         .zip(right)
@@ -406,9 +436,11 @@ impl ShapeDemand {
 /// cannot erase callable obligations, and accumulating callable obligations
 /// cannot disturb the shape. This is what makes the join monotone — there is no
 /// arm where one axis collapses the other, so callable surfaces, `opaque`, and
-/// `escape` only ever grow. (Previously a `Value ⊔ Callable` join collapsed the
-/// callable axis to a representation-agnostic top, which then had to be
-/// non-monotonically *re-grounded* from the value's type at boundaries.)
+/// `escape` only ever grow.
+///
+/// That holds at every depth, because a field's demand is a `RuntimeDemand` of
+/// its own and the shape join reaches it field by field. A callable sitting in
+/// a tuple field keeps its axis however coarsely the tuple around it is read.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct RuntimeDemand {
     pub shape: ShapeDemand,
@@ -1474,6 +1506,23 @@ impl CallSiteSummary {
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {
         (self.targets.len() == 1).then_some(&self.targets[0])
+    }
+
+    /// The one compiler-owned activation this callsite resolves to, if it
+    /// resolves to exactly one.
+    ///
+    /// Three conditions say that, and every consumer needs all three: one
+    /// target, a compiler-owned callee (a provider boundary is somebody
+    /// else's code), and a named activation (the executable to call). A
+    /// closure callsite that answers here is the only kind that can be
+    /// grounded — the artifact edge and the return claim both ask this
+    /// question, so they ask it once.
+    pub fn single_owned_target(&self) -> Option<(&CallTargetSummary, &ActivationKey)> {
+        let target = self.single_target()?;
+        let (SelectedCallee::Function(_), Some(activation)) = (&target.callee, &target.activation) else {
+            return None;
+        };
+        Some((target, activation))
     }
 }
 

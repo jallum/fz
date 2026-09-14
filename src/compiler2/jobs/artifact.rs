@@ -30,8 +30,7 @@ use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, ModuleId, RootId};
 use super::super::pull::{
-    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportCarrier,
-    TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 #[cfg(test)]
@@ -40,11 +39,10 @@ use super::super::semantic::SemanticOrd;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
-use super::super::transport::{
-    ActivationSymbol, ExecutableSymbol, LaneId, PhysicalLaneSource, ShapeId, TransportPosition,
-};
+use super::super::transport::{ActivationSymbol, ExecutableSymbol, PhysicalLaneSource, TransportPosition};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
+use super::transport::{callee_supplies_target_captures, layout_is_one_public_word};
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -125,7 +123,9 @@ pub(crate) fn produce_materialized_executable_product(
     }
     let transport = materialized_executable_transport(position_layouts, executable, world.types());
     let transport_plan = transport_lookup(&transport.position_layouts);
-    let call_edges = materialize_call_edges(
+    // A call this program cannot lower has already said why through a
+    // diagnostic; the root stops on that diagnostic rather than unwinding here.
+    let Ok(call_edges) = materialize_call_edges(
         world,
         tel,
         context.session().root(),
@@ -137,9 +137,10 @@ pub(crate) fn produce_materialized_executable_product(
         &body,
         &pruned.original_entry_ids,
         &callsite_args,
-    )
-    .expect("product materialization should use settled semantic facts")
-    .expect("product materialization should have complete call edges after waits");
+    ) else {
+        return PullOutcome::Failed;
+    };
+    let call_edges = call_edges.expect("product materialization should have complete call edges after waits");
     let retained_values = super::body::retained_value_ids(&body);
     analysis.value_types.retain(|value, _| retained_values.contains(value));
     let effects = local_effects(&body, &call_edges);
@@ -461,8 +462,8 @@ fn materialized_executable_transport(
     }
 }
 
-struct ArtifactTransportLookup<'a> {
-    positions: &'a [(TransportPosition, TransportLayout)],
+pub(super) struct ArtifactTransportLookup<'a> {
+    pub(super) positions: &'a [(TransportPosition, TransportLayout)],
 }
 
 fn transport_lookup<'a>(positions: &'a [(TransportPosition, TransportLayout)]) -> ArtifactTransportLookup<'a> {
@@ -1063,7 +1064,7 @@ fn materialize_direct_call_edge(
     }))
 }
 
-fn materialize_closure_call_edge(
+pub(super) fn materialize_closure_call_edge(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -1080,16 +1081,49 @@ fn materialize_closure_call_edge(
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     let summary = summaries.get(&callsite).cloned();
-    let target = summary.as_ref().and_then(|summary| summary.single_target().cloned());
-    // The callee's CARRIER decides whether this call happens, not the static
-    // target evidence standing behind it. A `ValueRef` carrier means a real
-    // callable value reaches this callsite at runtime and the boxed-apply
-    // wrapper can call it, however little the analysis managed to name. That is
-    // the standing state for a closure that arrived from outside the analysed
-    // world — a mailbox message — where no target is ever named and none ever
-    // will be: "no targets" there is UNKNOWN, not `none` (fz-kdt.130).
-    let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef(_));
-    if public_callable {
+    // One question decides the call: can this caller supply the target's
+    // capture inputs out of what it holds? `callee_supplies_target_captures`
+    // answers it, and native lowering emits the captures that answer promised.
+    let direct_target = summary
+        .as_ref()
+        .and_then(CallSiteSummary::single_owned_target)
+        .filter(|(_, activation)| callee_supplies_target_captures(world, callee_layout, activation))
+        .map(|(target, _)| target.clone());
+    // One public word means a real callable value reaches this callsite at
+    // runtime and the boxed-apply wrapper can call it, however little the
+    // analysis managed to name. That is the standing state for a closure that
+    // arrived from outside the analysed world — a mailbox message — where no
+    // target is ever named and none ever will be: "no targets" there is
+    // UNKNOWN, not `none` (fz-kdt.130). It is also where a lambda goes when
+    // the tuple carrying it is used whole beside being taken apart.
+    let boxed = layout_is_one_public_word(world, callee_layout);
+    if direct_target.is_none() && !boxed {
+        // The callsite summary names a target with captures, and transport
+        // delivered a callee that carries neither those captures nor a word
+        // the seam could open. The two authorities have contradicted each
+        // other about one value: that is a compiler defect, not a program
+        // this compiler declines.
+        if let Some(summary) = summary.as_ref() {
+            panic!(
+                "closure callsite {} names {} target(s) whose captures the callee layout {callee_layout:?} does not carry, and the layout is not one public word either",
+                callsite.as_u32(),
+                summary.targets.len()
+            );
+        }
+        // No callable carrier AND no evidence at all: nothing can be called
+        // here, so this call really never happens. Lower it as the dead call it
+        // is — every `ClosureCall` tail needs a return flow, and `NoReturn` is
+        // the name for one that never returns. Emitting no edge at all instead
+        // leaves native lowering with a `Deliver` destination and nothing to
+        // deliver (fz-f98.18). An `Unresolved` edge (fz-kdt.69.2) reaches this
+        // same answer.
+        let never = world.types_mut().none();
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
+            return_ty: never,
+        }));
+    }
+    let Some(target) = direct_target else {
         let return_ty =
             public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
         let return_flow = if world.types().is_empty(&return_ty) {
@@ -1111,30 +1145,6 @@ fn materialize_closure_call_edge(
         return Ok(Some(MaterializedCallEdge {
             target: CallEdge::Indirect(return_flow),
             return_ty,
-        }));
-    }
-    let Some(target) = target else {
-        if summary.is_some() {
-            return Err(incomplete_semantic_plan(
-                tel,
-                root_id,
-                format!(
-                    "closure callsite {} has no runtime callable carrier or single direct target",
-                    callsite.as_u32()
-                ),
-            ));
-        }
-        // No callable carrier AND no evidence at all: nothing can be called
-        // here, so this call really never happens. Lower it as the dead call it
-        // is — every `ClosureCall` tail needs a return flow, and `NoReturn` is
-        // the name for one that never returns. Emitting no edge at all instead
-        // leaves native lowering with a `Deliver` destination and nothing to
-        // deliver (fz-f98.18). An `Unresolved` edge (fz-kdt.69.2) reaches this
-        // same answer.
-        let never = world.types_mut().none();
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
-            return_ty: never,
         }));
     };
     let (direct, return_ty) = lower_materialized_call_target(
@@ -1757,9 +1767,7 @@ fn build_executable_abi_plan(
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
             let shape = layout.structural;
-            let contract = physical_layout_contract(world, layout, |world, _, lane| {
-                abi_value_repr(world, world.lane(lane).ty)
-            });
+            let contract = abi_layout_contract(world, layout);
             Some(BackendSemanticInputLayout {
                 semantic_index: *semantic_index,
                 layout: BackendValueLayout {
@@ -1780,9 +1788,7 @@ fn build_executable_abi_plan(
     let return_layout = transport_plan
         .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
-    let return_contract = physical_layout_contract(world, return_layout, |world, _, lane| {
-        abi_value_repr(world, world.lane(lane).ty)
-    });
+    let return_contract = abi_layout_contract(world, return_layout);
     let mut value_layouts: HashMap<ValueId, BackendValueLayout> = transport
         .value_positions
         .iter()
@@ -1793,10 +1799,7 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized value position {position:?}"));
-            let contract = physical_layout_contract(world, layout, |world, _, lane| {
-                let ty = world.lane(lane).ty;
-                abi_value_repr(world, ty)
-            });
+            let contract = abi_layout_contract(world, layout);
             Some((
                 *value,
                 BackendValueLayout {
@@ -1830,9 +1833,7 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized return endpoint {position:?}"));
-            let contract = physical_layout_contract(world, layout, |world, _, lane| {
-                abi_value_repr(world, world.lane(lane).ty)
-            });
+            let contract = abi_layout_contract(world, layout);
             (
                 position.clone(),
                 BackendReturnLayout {
@@ -1898,38 +1899,22 @@ fn build_abi_executable(
     })
 }
 
-pub(super) fn physical_layout_contract(
-    world: &mut World,
-    layout: TransportLayout,
-    mut structural_repr: impl FnMut(&mut World, ShapeId, LaneId) -> AbiValueRepr,
-) -> Vec<(Ty, AbiValueRepr)> {
+/// The typed lanes a layout occupies, and the physical form each travels in.
+/// A carrier lane is always the one public word; a structural lane takes the
+/// form its own type asks for.
+pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) -> Vec<(Ty, AbiValueRepr)> {
     world
         .layout_physical_lanes(layout)
         .into_iter()
         .map(|physical| {
             let ty = world.lane(physical.lane).ty;
             let repr = match physical.source {
-                PhysicalLaneSource::Structural => structural_repr(world, physical.structural, physical.lane),
+                PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
                 PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
             };
             (ty, repr)
         })
         .collect()
-}
-
-fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
-    if world.types().is_floating(&ty) {
-        return AbiValueRepr::RawF64;
-    }
-    if world.types().is_integer(&ty) {
-        return AbiValueRepr::RawInt;
-    }
-    let atom = world.types_mut().atom();
-    if world.types().is_subtype(&ty, &atom) {
-        AbiValueRepr::RawAtom
-    } else {
-        AbiValueRepr::ValueRef
-    }
 }
 
 /// A tail-position direct call whose callsite settled on no reachable target.
@@ -1999,11 +1984,12 @@ fn incomplete_semantic_plan(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::compiler2::semantic::{
         CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
     };
+    use crate::compiler2::transport::{LaneId, TransportCarrier};
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::fz_ir::{ExternAbi, ExternTy};
     use crate::telemetry::ConfiguredTelemetry;
@@ -2068,16 +2054,13 @@ mod tests {
             class: super::super::super::transport::TransportClass::Value,
         });
         let shape = world.intern_shape(ShapeDescr::Lane(lane));
-        let structural = physical_layout_contract(&mut world, TransportLayout::structural(shape), |world, _, lane| {
-            abi_value_repr(world, world.lane(lane).ty)
-        });
-        let carrier = physical_layout_contract(
+        let structural = abi_layout_contract(&mut world, TransportLayout::structural(shape));
+        let carrier = abi_layout_contract(
             &mut world,
             TransportLayout {
                 structural: shape,
                 carrier: TransportCarrier::ValueRef(lane),
             },
-            |world, _, lane| abi_value_repr(world, world.lane(lane).ty),
         );
 
         assert_eq!(structural, vec![(int, AbiValueRepr::RawInt)]);
@@ -2118,7 +2101,7 @@ mod tests {
         assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
     }
 
-    fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
+    pub(crate) fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
         let activation = ActivationKey::from_inputs(
             RootId::for_test(root),
             FunctionId::for_test(function),
@@ -2333,11 +2316,13 @@ mod tests {
         );
     }
 
+    /// Several targets and no word to call through: transport and the
+    /// callsite summary contradict each other about one value, which is a
+    /// compiler defect and stops as one.
     #[test]
+    #[should_panic(expected = "is not one public word either")]
     fn materialize_closure_call_edge_rejects_absent_multi_target_carrier() {
-        let (_world, edge) =
-            try_materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning, TransportCarrier::Absent);
-        assert!(edge.is_err());
+        let _ = try_materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning, TransportCarrier::Absent);
     }
 
     /// fz-kdt.130. A callable that arrived through the mailbox names no target

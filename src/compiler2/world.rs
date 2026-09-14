@@ -1784,6 +1784,16 @@ impl World {
         self.functions.reference_for(function).arity
     }
 
+    /// How many of an activation's inputs are captures: the inputs it holds
+    /// beyond the arity its source was written with. A closure's captures sit
+    /// in front of the surface arguments, so this is also where the surface
+    /// begins.
+    pub(crate) fn activation_capture_count(&self, activation: &super::identity::ActivationKey) -> usize {
+        activation
+            .input_len(self.types())
+            .saturating_sub(self.function_arity(activation.function))
+    }
+
     pub(crate) fn function_variadic(&self, function: FunctionId) -> bool {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { surface, .. } => surface.variadic,

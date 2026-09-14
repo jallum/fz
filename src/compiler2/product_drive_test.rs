@@ -36,7 +36,7 @@ use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
 use super::pull::{
-    ProductFailure, ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
+    ProductKey, ProductProducers, ProductSettlement, ProductValue, PullOutcome, PullSession, PullWait,
     WorldProductProducers,
 };
 use super::scheduler::{DriveOutcome, FatalError};
@@ -122,7 +122,7 @@ impl ProductProducers for FailingNativeProducers {
                     return PullOutcome::wait_on_product(dependency);
                 }
                 if std::mem::take(&mut self.fail_once) {
-                    PullOutcome::Failed(ProductFailure::NativeLowering)
+                    PullOutcome::Failed
                 } else {
                     PullOutcome::Produced(ProductValue::NativeProgram(std::rc::Rc::new(super::NativeProgram {
                         entry: crate::fz_ir::FnId(0),

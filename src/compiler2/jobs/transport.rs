@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
+use super::super::artifact::AbiValueRepr;
 use super::super::body::{
     CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
     callsite_input_modes,
@@ -744,7 +745,7 @@ fn record_generic_owner_facts(
     match world.shape(shape).clone() {
         ShapeDescr::Callable(callable) => {
             let surfaces = &demand.callable.resolved;
-            let surface_layouts = surface_layouts(world, surfaces, facts);
+            let surface_layouts = surface_layouts(world, surfaces);
             let surface_shapes = surface_shapes_from_layouts(&surface_layouts);
             let boundary_ids = if demand.callable.is_first_class() && !surfaces.is_empty() {
                 publish_boundaries_for_callable(
@@ -778,16 +779,98 @@ fn record_generic_owner_facts(
     }
 }
 
+/// Whether this layout carries its value as ONE public word: a pointer, and
+/// nothing structural beside it.
+///
+/// An explicit `ValueRef` carrier is that word by definition. So is a bare
+/// structural lane holding a callable, because a callable has no raw form --
+/// its single lane IS the closure pointer. Either way the caller holds a
+/// pointer it cannot take apart, so a callable arriving this way is called
+/// through the apply seam.
+///
+/// A callable that travels DECOMPOSED is not a public word however wide it is:
+/// a direct callable whose one capture happens to be boxed still hands the
+/// caller that capture, not a closure pointer. So the question is asked of the
+/// carrier and of a bare lane, and the lane's form comes from the ABI's own
+/// rule.
+///
+/// The `&mut` is that rule's: `AbiValueRepr::for_ty` interns the atom type to
+/// ask whether a lane is one. Interning it once at world construction would
+/// let both take `&World`, but it would also move every type minted after it,
+/// which is a large change of ids for a smaller change of signature.
+pub(crate) fn layout_is_one_public_word(world: &mut World, layout: TransportLayout) -> bool {
+    if layout.carrier.is_value_ref() {
+        return true;
+    }
+    let ShapeDescr::Lane(lane) = world.shape(layout.structural) else {
+        return false;
+    };
+    let ty = world.lane(*lane).ty;
+    AbiValueRepr::for_ty(world, ty) == AbiValueRepr::ValueRef
+}
+
+/// Whether a caller holding `callee` can invoke `target` directly, rather than
+/// through the boxed apply seam: it must be able to supply every capture input
+/// the target declares.
+///
+/// The caller supplies captures out of the lanes it holds. A public word holds
+/// none -- only the seam opens it. An uncarried callable naming the target
+/// holds one layout per capture that target declares, so counting them answers
+/// whether the caller can fill every one. Three places build a descriptor that
+/// names a function, and each keeps that one-to-one:
+///
+/// - `direct_callable_descr` reads the target's own
+///   `TransportPosition::ExecutableInput` capture positions, in order;
+/// - `produce_local_callable_construction` reads the producing lambda's own
+///   capture value positions, and a lambda's captures are exactly its
+///   activation's capture inputs, in the same order;
+/// - `combine_callable_requirements` keeps the function of the descriptor it
+///   combines into and refuses two whose capture-layout lengths differ, so
+///   combining moves neither.
+///
+/// The layouts themselves are not compared here. The target's capture input
+/// positions are another executable's transport products, and the artifact
+/// layer that mints the edge holds only its own; reading them would make the
+/// question a product read at a layer that does none.
+///
+/// A callable naming a DIFFERENT function carries another function's
+/// environment and is never direct to this target. Any other uncarried value
+/// holds no captures, which is all a target that declares none asks for.
+///
+/// This is the single authority. The artifact layer mints the call edge from
+/// it, the closure-call return claim grounds on it, and the native and
+/// interpreter lowerings emit the captures the same answer promised.
+pub(crate) fn callee_supplies_target_captures(
+    world: &mut World,
+    callee: TransportLayout,
+    target: &ActivationKey,
+) -> bool {
+    if layout_is_one_public_word(world, callee) {
+        return false;
+    }
+    let held = match world.shape(callee.structural) {
+        ShapeDescr::Callable(callable) => {
+            let descr = world.callable(*callable);
+            match descr.function {
+                Some(function) if function != target.function => return false,
+                _ => descr.capture_layouts.len(),
+            }
+        }
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => 0,
+    };
+    held == world.activation_capture_count(target)
+}
+
 #[derive(Clone)]
 enum TransportRecipe {
     Terminal,
     PublicCallableReturn,
     /// A closure-call result: grounded to the singleton target's return fact
-    /// when the callee value's carrier is exact, public boxed when the callee
-    /// is a `ValueRef` (the construction-wrapper convention).
+    /// when the caller can call that target directly, public boxed when the
+    /// call has to go through the construction wrapper.
     ClosureCallReturn {
         callee: TransportPosition,
-        grounded: Option<Box<TransportRecipe>>,
+        grounded: Option<Box<DirectClosureTarget>>,
     },
     Alias(TransportPosition),
     /// A recursion edge cut at construction: a child whose transport layout can
@@ -800,6 +883,14 @@ enum TransportRecipe {
         source: Box<Self>,
         kind: crate::dispatch_matrix::ProjectionKind,
     },
+}
+
+/// The one target a closure callsite could call directly, and the recipe its
+/// result would then alias.
+#[derive(Clone)]
+struct DirectClosureTarget {
+    target: ActivationKey,
+    return_recipe: TransportRecipe,
 }
 
 enum RecipeLayout {
@@ -823,16 +914,17 @@ fn evaluate_transport_recipe(
     position: &TransportPosition,
 ) -> RecipeLayout {
     match recipe {
-        TransportRecipe::Terminal => exact_direct_callable_layout(world, tel, context, ty, demand, position)
-            .unwrap_or_else(|| RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))),
+        TransportRecipe::Terminal => {
+            joined_transport_layout(world, Some(CallableReads { tel, context, position }), ty, demand, &[])
+        }
         TransportRecipe::PublicCallableReturn => {
-            let layout = joined_transport_layout(world, ty, demand, position, &[]);
-            RecipeLayout::Exact(with_value_ref_carrier(world, ty, position, layout))
+            let layout = derived_transport_layout(world, ty, demand, &[]);
+            RecipeLayout::Exact(with_value_ref_carrier(world, ty, layout))
         }
         TransportRecipe::ClosureCallReturn { callee, grounded } => {
             // One authority: `materialize_closure_call_edge` goes direct only
-            // when the callee value's carrier is exact; the claim grounds on
-            // exactly that condition.
+            // when the caller can supply the target's captures; the claim
+            // grounds on exactly that condition.
             let callee_key = ProductKey::TransportShape(callee.clone());
             let callee_layout = match context.read_product(tel, callee_key.clone(), world.types()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
@@ -840,8 +932,8 @@ fn evaluate_transport_recipe(
                 None => return RecipeLayout::Waiting(callee_key),
             };
             match grounded {
-                Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef(_)) => {
-                    evaluate_transport_recipe(world, tel, context, grounded, ty, demand, position)
+                Some(grounded) if callee_supplies_target_captures(world, callee_layout, &grounded.target) => {
+                    evaluate_transport_recipe(world, tel, context, &grounded.return_recipe, ty, demand, position)
                 }
                 _ => evaluate_transport_recipe(
                     world,
@@ -879,7 +971,13 @@ fn evaluate_transport_recipe(
             if cut {
                 RecipeLayout::Cut(layouts)
             } else {
-                RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &layouts))
+                joined_transport_layout(
+                    world,
+                    Some(CallableReads { tel, context, position }),
+                    ty,
+                    demand,
+                    &layouts,
+                )
             }
         }
         TransportRecipe::Tuple(fields) => {
@@ -895,7 +993,7 @@ fn evaluate_transport_recipe(
         }
         TransportRecipe::Projection { source, kind } => {
             let crate::dispatch_matrix::ProjectionKind::TupleField(index) = kind else {
-                return RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]));
+                return RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]));
             };
             match evaluate_transport_recipe(world, tel, context, source, ty, demand, position) {
                 RecipeLayout::Exact(layout) => match world.shape(layout.structural) {
@@ -910,11 +1008,11 @@ fn evaluate_transport_recipe(
                                 },
                             })
                         } else {
-                            RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))
+                            RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]))
                         }
                     }
                     ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
-                        RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))
+                        RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]))
                     }
                 },
                 other => other,
@@ -1099,7 +1197,7 @@ fn direct_callable_descr(
             // without it. A longer capture chain cannot close a cycle -- a
             // closure's captures exist before the closure does, so none of
             // them can reach back to it.
-            let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
+            let mut layout = derived_transport_layout(world, ty, demand, &[]);
             layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
             return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
         }
@@ -1121,22 +1219,17 @@ fn direct_callable_descr(
     })
 }
 
-/// The one compiler-owned target a closure callsite could ground its return
-/// against. Whether the
-/// grounding APPLIES is decided at recipe evaluation from the callee value's
-/// own transport carrier — the same fact `materialize_closure_call_edge` uses
-/// to choose a direct edge — so claim and call share one authority.
+/// The executable a closure callsite could ground its return against:
+/// `CallSiteSummary::single_owned_target` paired with the need this callsite
+/// asks of it. Whether the grounding APPLIES is decided at recipe evaluation
+/// by `callee_supplies_target_captures` — the same question
+/// `materialize_closure_call_edge` asks to choose a direct edge — so claim and
+/// call share one authority.
 fn singleton_closure_call_target(
     facts: &ExecutableFacts,
     callsite: &CallSiteId,
 ) -> Option<(ActivationKey, ExecutableNeed)> {
-    let summary = facts.callsites().get(callsite)?;
-    let [target] = summary.targets.as_slice() else {
-        return None;
-    };
-    let (SelectedCallee::Function(_), Some(activation)) = (&target.callee, &target.activation) else {
-        return None;
-    };
+    let (_, activation) = facts.callsites().get(callsite)?.single_owned_target()?;
     let need = facts
         .callsite_needs()
         .get(callsite)
@@ -1194,24 +1287,33 @@ fn origin_transport_recipe(
         }
         TransportSource::ClosureCallReturn { callsite, callee } => {
             // A closure-call result refines the settled singleton target
-            // forward (fz-9i4.4.5): when the callee VALUE travels in its exact
-            // (non-ValueRef) carrier, `materialize_closure_call_edge` lowers
-            // the call as a direct edge to the settled singleton target, so
-            // the result aliases that executable's own return fact — caller
-            // and callee read one shape and agree by construction. A boxed
-            // callee dispatches through the construction wrapper, whose
-            // return is the public boxed contract; the claim stays public
-            // with it. The gate is deferred to recipe evaluation because the
-            // callee's carrier is itself a transport product.
+            // forward (fz-9i4.4.5): when the caller can supply that target's
+            // captures, `materialize_closure_call_edge` lowers the call as a
+            // direct edge to it, so the result aliases that executable's own
+            // return fact — caller and callee read one shape and agree by
+            // construction. A callee that has to go through the construction
+            // wrapper returns the public boxed contract instead, and the claim
+            // stays public with it. The gate is deferred to recipe evaluation
+            // because the callee's own layout is itself a transport product.
             TransportRecipe::ClosureCallReturn {
                 callee: TransportPosition::Value {
                     executable: symbol.clone(),
                     value: *callee,
                 },
                 grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
-                    Box::new(TransportRecipe::Alias(TransportPosition::ExecutableReturn {
-                        executable: executable_symbol(&ExecutableKey { activation, need }, world.types()),
-                    }))
+                    let recipe = TransportRecipe::Alias(TransportPosition::ExecutableReturn {
+                        executable: executable_symbol(
+                            &ExecutableKey {
+                                activation: activation.clone(),
+                                need,
+                            },
+                            world.types(),
+                        ),
+                    });
+                    Box::new(DirectClosureTarget {
+                        target: activation,
+                        return_recipe: recipe,
+                    })
                 }),
             }
         }
@@ -1342,8 +1444,8 @@ fn produce_local_callable_construction(
     }
 
     let mut builder = TransportFactsBuilder::default();
-    let direct_surfaces = surface_shapes(world, &flow.direct_surfaces, &mut builder);
-    let direct_edges = callable_direct_edges(world, &flow.direct_edges, &mut builder);
+    let direct_surfaces = surface_shapes(world, &flow.direct_surfaces);
+    let direct_edges = callable_direct_edges(world, &flow.direct_edges);
     let arity = callable_ty_arity(world, callable_ty);
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
@@ -1351,7 +1453,7 @@ fn produce_local_callable_construction(
         capture_layouts: capture_layouts.clone().into_boxed_slice(),
     });
     let boundary_surfaces = flow.first_class_surfaces.clone();
-    let boundary_layouts = surface_layouts(world, &boundary_surfaces, &mut builder);
+    let boundary_layouts = surface_layouts(world, &boundary_surfaces);
     let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces, world.types());
     let producer_position = TransportPosition::Value {
         executable: symbol,
@@ -1380,7 +1482,7 @@ fn produce_local_callable_construction(
     let construction = if flow.first_class_edges.is_empty() {
         None
     } else {
-        let construction_edges = callable_direct_edges(world, &flow.first_class_edges, &mut builder);
+        let construction_edges = callable_direct_edges(world, &flow.first_class_edges);
         // ONE ROUTING RULE, MEMBER SELECTION INCLUDED (fz-kdt.179). The
         // selection names which edges are destinations at all and the order
         // the wrapper tests them in; the member list below is built by walking
@@ -1645,13 +1747,10 @@ fn produce_named_transport_position(
                     .and_then(|demands| demands.get(*semantic_index))
                     .cloned()
                     .unwrap_or_default();
-                return Some(produce_generic_transport_layout(
-                    world,
-                    facts.as_ref(),
-                    ty,
-                    demand,
-                    position,
-                ));
+                let layout = derived_transport_layout(world, ty, &demand, &[]);
+                return Some(PullOutcome::Produced(ProductValue::TransportShape(
+                    TransportShapeFact::Layout(layout),
+                )));
             };
             let args_len = callsite_call_args(facts.body()).get(callsite).map_or(0, Vec::len);
             let mode = callsite_input_modes(facts.body()).get(callsite).copied();
@@ -1806,12 +1905,12 @@ fn produce_named_transport_position(
         //
         // The arms are still read: they are this position's dependencies
         // whether or not they decide it.
-        _ if cycle_return => contract_transport_layout(world, ty, &demand, position),
+        _ if cycle_return => contract_transport_layout(world, ty, &demand),
         RecipeLayout::Exact(layout) => layout,
-        RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, position, &evidence),
+        RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, &evidence),
     };
     if extern_position_requires_value_ref(world, facts.body(), position, layout) {
-        layout = with_value_ref_carrier(world, ty, position, layout);
+        layout = with_value_ref_carrier(world, ty, layout);
     }
     Some(PullOutcome::Produced(ProductValue::TransportShape(
         TransportShapeFact::Layout(layout),
@@ -1841,18 +1940,13 @@ fn extern_position_requires_value_ref(
     }
 }
 
-fn with_value_ref_carrier(
-    world: &mut World,
-    ty: Ty,
-    position: &TransportPosition,
-    mut layout: TransportLayout,
-) -> TransportLayout {
+fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout) -> TransportLayout {
     if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
         return layout;
     }
     if !layout_carries(world, layout, ty) {
         let complete = tuple_refined_demand(world, ty, &RuntimeDemand::whole());
-        layout = joined_transport_layout(world, ty, &complete, position, &[]);
+        layout = derived_transport_layout(world, ty, &complete, &[]);
     }
     layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
     layout
@@ -1870,16 +1964,15 @@ fn cut_transport_layout(
     world: &mut World,
     ty: Ty,
     demand: &RuntimeDemand,
-    position: &TransportPosition,
     evidence: &[TransportLayout],
 ) -> TransportLayout {
     if !evidence.is_empty() {
-        let layout = joined_transport_layout(world, ty, demand, position, evidence);
+        let layout = derived_transport_layout(world, ty, demand, evidence);
         if layout_carries(world, layout, ty) {
             return layout;
         }
     }
-    contract_transport_layout(world, ty, demand, position)
+    contract_transport_layout(world, ty, demand)
 }
 
 /// The form a position's own type and demand describe -- the ONE contract
@@ -1890,14 +1983,9 @@ fn cut_transport_layout(
 /// recursion cycle publishes. Two positions that share a type and a demand
 /// reach the same form here by construction, which is the whole point: a
 /// calling convention has more than one view of it, and they must agree.
-fn contract_transport_layout(
-    world: &mut World,
-    ty: Ty,
-    demand: &RuntimeDemand,
-    position: &TransportPosition,
-) -> TransportLayout {
+fn contract_transport_layout(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> TransportLayout {
     let contract = tuple_refined_demand(world, ty, demand);
-    joined_transport_layout(world, ty, &contract, position, &[])
+    derived_transport_layout(world, ty, &contract, &[])
 }
 
 /// A whole-value demand on an exact tuple type, read as the per-field demand it
@@ -2043,11 +2131,11 @@ fn cut_in_component_returns(
             // instead of the contract. The edge is indirect through the boxed
             // apply seam, so no direct-call tail is at stake (fz-kdt.100
             // records the residual).
-            if let Some(target) = grounded.as_deref_mut()
-                && let TransportRecipe::Alias(child) = target
+            if let Some(grounded) = grounded.as_deref_mut()
+                && let TransportRecipe::Alias(child) = &grounded.return_recipe
                 && statically_reaches(world, context, child.executable().activation.function, owner)?
             {
-                *target = TransportRecipe::CutEdge;
+                grounded.return_recipe = TransportRecipe::CutEdge;
             }
         }
         TransportRecipe::Terminal
@@ -2200,56 +2288,107 @@ fn append_origin_children(
     true
 }
 
-fn produce_joined_transport_layout(
-    world: &mut World,
-    _facts: &ExecutableFacts,
-    ty: Ty,
-    demand: RuntimeDemand,
-    position: &TransportPosition,
-    layouts: &[TransportLayout],
-) -> PullOutcome {
-    PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
-        joined_transport_layout(world, ty, &demand, position, layouts),
-    )))
+/// What a position needs to name a callable demand's EXACT direct layout: the
+/// position itself -- a closure standing among its own captures cannot read
+/// them -- and a way to read the target's capture positions.
+///
+/// A derivation with nothing to read still answers; it answers with the generic
+/// boxed callable, the one shape both ends of an unread edge can name.
+struct CallableReads<'a, 'ctx, T: crate::telemetry::Telemetry> {
+    tel: &'a T,
+    context: &'a mut ProductReadContext<'ctx>,
+    position: &'a TransportPosition,
 }
 
-fn joined_transport_layout(
+impl<'ctx, T: crate::telemetry::Telemetry> CallableReads<'_, 'ctx, T> {
+    fn reborrow(&mut self) -> CallableReads<'_, 'ctx, T> {
+        CallableReads {
+            tel: self.tel,
+            context: self.context,
+            position: self.position,
+        }
+    }
+}
+
+fn reborrow_reads<'r, 'ctx, T: crate::telemetry::Telemetry>(
+    reads: &'r mut Option<CallableReads<'_, 'ctx, T>>,
+) -> Option<CallableReads<'r, 'ctx, T>> {
+    reads.as_mut().map(CallableReads::reborrow)
+}
+
+/// The layout a type and demand describe with nothing read.
+///
+/// Naming a callable's exact direct layout means reading its target's capture
+/// positions, so a derivation with no reads settles every callable on the
+/// generic boxed shape -- and, having nothing to wait on and no capture cycle
+/// to cut, it always answers exactly.
+///
+/// Only the reads make an interrupted answer possible, so a return type that
+/// could not express one would have to be chosen by the presence of the reads:
+/// that means a second return type threaded through the whole recursion, for
+/// one call site. The claim is cheaper stated here than paid for there.
+fn derived_transport_layout(
     world: &mut World,
     ty: Ty,
     demand: &RuntimeDemand,
-    position: &TransportPosition,
     layouts: &[TransportLayout],
 ) -> TransportLayout {
+    let no_reads: Option<CallableReads<'_, '_, crate::telemetry::sink::NullTelemetry>> = None;
+    match joined_transport_layout(world, no_reads, ty, demand, layouts) {
+        RecipeLayout::Exact(layout) => layout,
+        RecipeLayout::Cut(_) | RecipeLayout::Waiting(_) => {
+            unreachable!("a derivation that reads nothing has nothing to wait on and no capture cycle to cut")
+        }
+    }
+}
+
+fn joined_transport_layout<T: crate::telemetry::Telemetry>(
+    world: &mut World,
+    mut reads: Option<CallableReads<'_, '_, T>>,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    layouts: &[TransportLayout],
+) -> RecipeLayout {
     if let [first, rest @ ..] = layouts
         && rest.iter().all(|layout| layout == first)
     {
-        return *first;
+        return RecipeLayout::Exact(*first);
     }
-    let mut facts = TransportFactsBuilder::default();
-    let generic = generic_layout_from_demand(world, ty, demand, &mut facts, Some(position.clone()));
+    let generic = match layout_from_demand(world, reborrow_reads(&mut reads), ty, demand) {
+        RecipeLayout::Exact(layout) => layout,
+        interrupted => return interrupted,
+    };
     if layouts.is_empty() {
-        return generic;
+        return RecipeLayout::Exact(generic);
     }
-    let structural = joined_tuple_structural(world, ty, demand, position, layouts).unwrap_or(generic.structural);
+    let structural = match joined_tuple_structural(world, reborrow_reads(&mut reads), ty, demand, layouts) {
+        Ok(Some(structural)) => structural,
+        Ok(None) => generic.structural,
+        Err(interrupted) => return interrupted,
+    };
     let carrier = layouts.iter().any(|layout| layout.carrier.is_value_ref()) || generic.carrier.is_value_ref();
-    TransportLayout {
+    RecipeLayout::Exact(TransportLayout {
         structural,
         carrier: if carrier {
             TransportCarrier::ValueRef(value_lane(world, ty))
         } else {
             TransportCarrier::Absent
         },
-    }
+    })
 }
 
-fn joined_tuple_structural(
+/// `Ok(None)` means these alternatives are not a tuple join at all -- the
+/// position falls back to the layout its own demand describes.
+fn joined_tuple_structural<T: crate::telemetry::Telemetry>(
     world: &mut World,
+    mut reads: Option<CallableReads<'_, '_, T>>,
     ty: Ty,
     demand: &RuntimeDemand,
-    position: &TransportPosition,
     layouts: &[TransportLayout],
-) -> Option<ShapeId> {
-    let field_tys = exact_tuple_field_tys(world, ty)?;
+) -> Result<Option<ShapeId>, RecipeLayout> {
+    let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
+        return Ok(None);
+    };
     let arity = field_tys.len();
     let alternatives = layouts
         .iter()
@@ -2257,28 +2396,19 @@ fn joined_tuple_structural(
             ShapeDescr::Tuple(fields) if fields.len() == arity => Some(fields.to_vec()),
             _ => None,
         })
-        .collect::<Option<Vec<_>>>()?;
-    let field_demands = tuple_field_demands(&demand.shape, arity)?;
-    let fields = field_tys
-        .into_iter()
-        .zip(field_demands)
-        .enumerate()
-        .map(|(index, (field_ty, field_demand))| {
-            let layouts = alternatives.iter().map(|fields| fields[index]).collect::<Vec<_>>();
-            joined_transport_layout(world, field_ty, &field_demand, position, &layouts)
-        })
-        .collect::<Vec<_>>();
-    Some(world.intern_shape(ShapeDescr::Tuple(fields.into_boxed_slice())))
-}
-
-fn produce_generic_transport_layout(
-    world: &mut World,
-    facts: &ExecutableFacts,
-    ty: Ty,
-    demand: RuntimeDemand,
-    position: &TransportPosition,
-) -> PullOutcome {
-    produce_joined_transport_layout(world, facts, ty, demand, position, &[])
+        .collect::<Option<Vec<_>>>();
+    let (Some(alternatives), Some(field_demands)) = (alternatives, demand.shape.field_prefix(arity)) else {
+        return Ok(None);
+    };
+    let mut fields = Vec::with_capacity(arity);
+    for (index, (field_ty, field_demand)) in field_tys.into_iter().zip(field_demands).enumerate() {
+        let layouts = alternatives.iter().map(|fields| fields[index]).collect::<Vec<_>>();
+        match joined_transport_layout(world, reborrow_reads(&mut reads), field_ty, &field_demand, &layouts) {
+            RecipeLayout::Exact(layout) => fields.push(layout),
+            interrupted => return Err(interrupted),
+        }
+    }
+    Ok(Some(world.intern_shape(ShapeDescr::Tuple(fields.into_boxed_slice()))))
 }
 
 fn executable_key_for_transport_position(root: RootId, position: &TransportPosition) -> ExecutableKey {
@@ -2321,12 +2451,8 @@ fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
     }
 }
 
-fn surface_shapes(
-    world: &mut World,
-    surfaces: &BTreeSet<CallableSurface>,
-    facts: &mut TransportFactsBuilder,
-) -> Vec<Box<[ShapeId]>> {
-    surface_shapes_from_layouts(&surface_layouts(world, surfaces, facts))
+fn surface_shapes(world: &mut World, surfaces: &BTreeSet<CallableSurface>) -> Vec<Box<[ShapeId]>> {
+    surface_shapes_from_layouts(&surface_layouts(world, surfaces))
 }
 
 fn surface_shapes_from_layouts(layouts: &[Box<[TransportLayout]>]) -> Vec<Box<[ShapeId]>> {
@@ -2336,11 +2462,7 @@ fn surface_shapes_from_layouts(layouts: &[Box<[TransportLayout]>]) -> Vec<Box<[S
         .collect()
 }
 
-fn surface_layouts(
-    world: &mut World,
-    surfaces: &BTreeSet<CallableSurface>,
-    facts: &mut TransportFactsBuilder,
-) -> Vec<Box<[TransportLayout]>> {
+fn surface_layouts(world: &mut World, surfaces: &BTreeSet<CallableSurface>) -> Vec<Box<[TransportLayout]>> {
     // One shape row per surface, in the SAME order the surfaces are walked:
     // `publish_boundaries_for_callable` zips this result positionally with the
     // same `surfaces` set, so a boundary's `surface_arg_layouts` must be the
@@ -2358,7 +2480,7 @@ fn surface_layouts(
                 .copied()
                 .map(|ty| {
                     let demand = boundary_runtime_demand(world, ty);
-                    generic_layout_from_demand(world, ty, &demand, facts, None)
+                    derived_transport_layout(world, ty, &demand, &[])
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice()
@@ -2369,13 +2491,12 @@ fn surface_layouts(
 fn callable_direct_edges(
     world: &mut World,
     edges: &[super::super::semantic::CallableFlowEdge],
-    facts: &mut TransportFactsBuilder,
 ) -> Vec<CallableDirectEdge> {
     edges
         .iter()
         .map(|edge| CallableDirectEdge {
             surface_inputs: edge.surface.inputs.clone().into_boxed_slice(),
-            surface_arg_shapes: surface_shape(world, &edge.surface, facts),
+            surface_arg_shapes: surface_shape(world, &edge.surface),
             resolution: executable_symbol(&edge.resolution, world.types()),
             capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
             surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
@@ -2383,87 +2504,93 @@ fn callable_direct_edges(
         .collect()
 }
 
-fn surface_shape(world: &mut World, surface: &CallableSurface, facts: &mut TransportFactsBuilder) -> Box<[ShapeId]> {
+fn surface_shape(world: &mut World, surface: &CallableSurface) -> Box<[ShapeId]> {
     surface
         .inputs
         .iter()
         .copied()
         .map(|ty| {
             let demand = boundary_runtime_demand(world, ty);
-            generic_shape_from_demand(world, ty, &demand, facts, None)
+            derived_transport_layout(world, ty, &demand, &[]).structural
         })
         .collect::<Vec<_>>()
         .into_boxed_slice()
 }
 
-fn generic_shape_from_demand(
+/// The layout one type and demand describe, walked recursively. A tuple field
+/// is derived exactly as the whole value would be, from the field's own type
+/// and its own demand.
+fn layout_from_demand<T: crate::telemetry::Telemetry>(
     world: &mut World,
+    mut reads: Option<CallableReads<'_, '_, T>>,
     ty: Ty,
     demand: &RuntimeDemand,
-    facts: &mut TransportFactsBuilder,
-    publication: Option<TransportPosition>,
-) -> ShapeId {
-    generic_layout_from_demand(world, ty, demand, facts, publication).structural
-}
-
-fn generic_layout_from_demand(
-    world: &mut World,
-    ty: Ty,
-    demand: &RuntimeDemand,
-    facts: &mut TransportFactsBuilder,
-    publication: Option<TransportPosition>,
-) -> TransportLayout {
+) -> RecipeLayout {
     if demand.is_ignore() || world.types().is_empty(&ty) {
-        return TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
+        return RecipeLayout::Exact(TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)));
     }
     if demand.is_callable() {
-        let structural = generic_callable_shape(world, ty, &demand.callable, facts, publication);
-        return TransportLayout {
-            structural,
-            carrier: if demand.callable.is_first_class() {
-                TransportCarrier::ValueRef(value_lane(world, ty))
-            } else {
-                TransportCarrier::Absent
-            },
-        };
+        return callable_layout_from_demand(world, reads, ty, demand);
     }
-    match &demand.shape {
-        ShapeDemand::Ignore => TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)),
-        ShapeDemand::Whole => {
-            let Some(fields) = exact_tuple_field_tys(world, ty) else {
-                return TransportLayout::structural(value_lane_shape(world, ty));
-            };
-            let items = fields
-                .into_iter()
-                .map(|field_ty| generic_layout_from_demand(world, field_ty, &RuntimeDemand::whole(), facts, None))
-                .collect::<Vec<_>>();
-            TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
+    let field_demands = match &demand.shape {
+        ShapeDemand::Ignore => {
+            return RecipeLayout::Exact(TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing)));
         }
-        ShapeDemand::TupleFields(_) => {
+        ShapeDemand::Whole | ShapeDemand::TupleFields(_) => {
             let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
-                return TransportLayout::structural(value_lane_shape(world, ty));
+                return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
             };
-            let Some(field_demands) = tuple_field_demands(&demand.shape, field_tys.len()) else {
-                return TransportLayout::structural(value_lane_shape(world, ty));
+            let Some(field_demands) = demand.shape.field_prefix(field_tys.len()) else {
+                return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
             };
-            let items = field_tys
-                .into_iter()
-                .zip(field_demands.iter())
-                .map(|(field_ty, field_demand)| generic_layout_from_demand(world, field_ty, field_demand, facts, None))
-                .collect::<Vec<_>>();
-            TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
+            field_tys.into_iter().zip(field_demands).collect::<Vec<_>>()
+        }
+    };
+    let mut items = Vec::with_capacity(field_demands.len());
+    for (field_ty, field_demand) in field_demands {
+        match layout_from_demand(world, reborrow_reads(&mut reads), field_ty, &field_demand) {
+            RecipeLayout::Exact(layout) => items.push(layout),
+            interrupted => return interrupted,
         }
     }
+    RecipeLayout::Exact(TransportLayout::structural(
+        world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())),
+    ))
 }
 
-fn tuple_field_demands(shape: &ShapeDemand, arity: usize) -> Option<Vec<RuntimeDemand>> {
-    let mut fields = match shape {
-        ShapeDemand::TupleFields(fields) if fields.len() <= arity => fields.clone(),
-        ShapeDemand::Whole => vec![RuntimeDemand::whole(); arity],
-        ShapeDemand::Ignore | ShapeDemand::TupleFields(_) => return None,
-    };
-    fields.resize_with(arity, RuntimeDemand::ignore);
-    Some(fields)
+/// The layout a CALLABLE demand produces, at every depth.
+///
+/// A demand that names its targets, and can read their capture positions, gets
+/// the exact direct layout: the target's own identity beside the capture lanes
+/// the caller will have to supply. Everything else gets the generic callable,
+/// which names no function and carries no captures; a first-class demand puts
+/// that one in the `ValueRef` carrier and calls it through the apply seam.
+fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
+    world: &mut World,
+    reads: Option<CallableReads<'_, '_, T>>,
+    ty: Ty,
+    demand: &RuntimeDemand,
+) -> RecipeLayout {
+    if let Some(reads) = reads
+        && let Some(exact) = exact_direct_callable_layout(world, reads.tel, reads.context, ty, demand, reads.position)
+    {
+        return exact;
+    }
+    let callable = world.intern_callable(CallableDescr {
+        function: None,
+        // A generic callable names no function, so it has no arity of its own;
+        // it is never minted into a closure value.
+        arity: 0,
+        capture_layouts: Box::default(),
+    });
+    RecipeLayout::Exact(TransportLayout {
+        structural: world.intern_shape(ShapeDescr::Callable(callable)),
+        carrier: if demand.callable.is_first_class() {
+            TransportCarrier::ValueRef(value_lane(world, ty))
+        } else {
+            TransportCarrier::Absent
+        },
+    })
 }
 
 fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
@@ -2482,33 +2609,6 @@ fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
             && predicate.callables.is_none()
             && !predicate.resources
     })
-}
-
-fn generic_callable_shape(
-    world: &mut World,
-    ty: Ty,
-    demand: &CallableDemand,
-    facts: &mut TransportFactsBuilder,
-    publication: Option<TransportPosition>,
-) -> ShapeId {
-    generic_callable_shape_with_resolutions(world, ty, demand, facts, publication)
-}
-
-fn generic_callable_shape_with_resolutions(
-    world: &mut World,
-    _ty: Ty,
-    _demand: &CallableDemand,
-    _facts: &mut TransportFactsBuilder,
-    _publication: Option<TransportPosition>,
-) -> ShapeId {
-    let callable = world.intern_callable(CallableDescr {
-        function: None,
-        // A generic callable names no function, so it has no arity of its own;
-        // it is never minted into a closure value.
-        arity: 0,
-        capture_layouts: Box::default(),
-    });
-    world.intern_shape(ShapeDescr::Callable(callable))
 }
 
 fn publish_boundaries_for_callable(
@@ -2826,26 +2926,10 @@ mod tests {
         };
         let structural_tuple = tuple_layout(&mut world, &[structural_child]);
         let carried_tuple = tuple_layout(&mut world, &[carried_child]);
-        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "join", 0);
-        let arrow = world
-            .types_mut()
-            .fn_ref_lit(crate::types::ClosureTarget(function.as_u32()), 0);
-        let position = TransportPosition::Value {
-            executable: ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function,
-                    arrow,
-                    input: Box::default(),
-                },
-                need: ExecutableNeed::Value,
-            },
-            value: ValueId::from_u32(0),
-        };
-        let joined = joined_transport_layout(
+        let joined = derived_transport_layout(
             &mut world,
             tuple_ty,
             &RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole()]),
-            &position,
             &[structural_tuple, carried_tuple],
         );
 
@@ -2866,8 +2950,7 @@ mod tests {
             RuntimeDemand::whole(),
             RuntimeDemand::callable(CallableDemand::escaped()),
         ]);
-        let mut facts = TransportFactsBuilder::default();
-        let layout = generic_layout_from_demand(&mut world, tuple_ty, &demand, &mut facts, None);
+        let layout = derived_transport_layout(&mut world, tuple_ty, &demand, &[]);
 
         assert_eq!(layout.carrier, TransportCarrier::Absent);
         let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
@@ -2882,9 +2965,7 @@ mod tests {
         let mut world = World::new();
         let int = world.types_mut().int();
         let tuple_ty = world.types_mut().tuple(&[int, int]);
-        let mut facts = TransportFactsBuilder::default();
-
-        let layout = generic_layout_from_demand(&mut world, tuple_ty, &RuntimeDemand::whole(), &mut facts, None);
+        let layout = derived_transport_layout(&mut world, tuple_ty, &RuntimeDemand::whole(), &[]);
 
         assert_eq!(layout.carrier, TransportCarrier::Absent);
         let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
@@ -2910,9 +2991,7 @@ mod tests {
             RuntimeDemand::ignore(),
             RuntimeDemand::whole(),
         ]);
-        let mut facts = TransportFactsBuilder::default();
-
-        let layout = generic_layout_from_demand(&mut world, tuple_ty, &demand, &mut facts, None);
+        let layout = derived_transport_layout(&mut world, tuple_ty, &demand, &[]);
 
         assert_eq!(layout.carrier, TransportCarrier::Absent);
         let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
@@ -2924,11 +3003,23 @@ mod tests {
         assert!(matches!(world.shape(fields[2].structural), ShapeDescr::Lane(_)));
         assert!(matches!(world.shape(fields[3].structural), ShapeDescr::Nothing));
 
+        // A demand vector longer than the tuple it is read against describes a
+        // DIFFERENT tuple -- one clause of a value spanning arities read
+        // further than this one has fields. The surplus names no field here and
+        // is dropped; the fields that do exist keep their own lanes rather than
+        // boxing the whole value over a position it never had.
         let overlong = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); 5]);
-        let layout = generic_layout_from_demand(&mut world, tuple_ty, &overlong, &mut facts, None);
+        let layout = derived_transport_layout(&mut world, tuple_ty, &overlong, &[]);
+
+        assert_eq!(layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
+            panic!("a surplus field demand must not box the positions the tuple does have")
+        };
+        assert_eq!(fields.len(), 4);
         assert!(
-            matches!(world.shape(layout.structural), ShapeDescr::Lane(_)),
-            "a demanded index beyond the exact tuple arity must use the safe boxed contract"
+            fields
+                .iter()
+                .all(|field| matches!(world.shape(field.structural), ShapeDescr::Lane(_)))
         );
     }
 
@@ -2938,24 +3029,9 @@ mod tests {
         let int = world.types_mut().int();
         let nothing = world.intern_shape(ShapeDescr::Nothing);
         let exact = TransportLayout::structural(nothing);
-        let function = world.reference_function(super::super::super::identity::ModuleId::GLOBAL, "join", 0);
-        let arrow = world
-            .types_mut()
-            .fn_ref_lit(crate::types::ClosureTarget(function.as_u32()), 0);
-        let position = TransportPosition::Value {
-            executable: ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function,
-                    arrow,
-                    input: Box::default(),
-                },
-                need: ExecutableNeed::Value,
-            },
-            value: ValueId::from_u32(0),
-        };
         let before = (world.shape_count(), world.lane_count());
 
-        let joined = joined_transport_layout(&mut world, int, &RuntimeDemand::whole(), &position, &[exact, exact]);
+        let joined = derived_transport_layout(&mut world, int, &RuntimeDemand::whole(), &[exact, exact]);
 
         assert_eq!(joined, exact);
         assert_eq!(

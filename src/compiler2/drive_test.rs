@@ -12626,23 +12626,37 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// observation denominator falls 373 -> 362 while escapes stay at zero.
 /// Exact input alternatives retain separate callable surfaces, so runtime
 /// member selection observes more type questions while every escape stays zero.
+///
+/// WHAT SETS EACH DENOMINATOR. The count is matched `Region::Type` questions,
+/// and those only arise inside a member selection, so what fixes it is how
+/// many selections a program runs. Two facts decide that. A boxed closure
+/// call selects ONCE: the interpreter reads the call decision it recorded
+/// rather than selecting a member to find the target executable and selecting
+/// again to encode the inputs. A DIRECT closure call selects NO member at all,
+/// because the target is named and its captures come from the callee value.
+///
+/// So a fixture whose closure calls are all boxed counts every one of them
+/// (`00418_enum_count_range` has 2 closure calls, `00183_enum_take_list_range`
+/// 4), while a fixture with both counts only its boxed share:
+/// `enum_take_drop_split` has 65 closure calls, 53 of them direct, and the
+/// twelve that remain are what its 265 is measured over.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 82, 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 82, 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 12, 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 82, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 382, 0),
-    ("fixtures2/behavior/unused_range_binding.fz", "", 12, 0),
+    ("fixtures2/00183_enum_take_list_range.fz", "", 64, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 64, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 9, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 64, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 265, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 265, 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 9, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 382, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 382, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 265, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 265, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 265, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 265, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
-    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 82, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 64, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
@@ -15397,9 +15411,8 @@ end
     );
 }
 
-/// fz-f98.14.11, re-aimed by fz-kdt.155 — the two halves of one indirect
-/// calling convention are compiled against ONE contract. `Enum.each`'s step
-/// discards the mapper's result:
+/// The two halves of one indirect calling convention are compiled against
+/// ONE contract. `Enum.each`'s step discards the mapper's result:
 ///
 /// ```fz
 /// defp each_step(entry, acc, fun) do
@@ -15408,27 +15421,24 @@ end
 /// end
 /// ```
 ///
-/// and the question is which lane count both halves settle on. Deriving the
-/// payload from the CALLER's own return was the original break (`each_step`
-/// returns a demanded `acc`, so a discarded result claimed a lane the boundary
-/// never delivered). Deriving it from the callsite's own appetite -- zero
-/// lanes for a discarded result -- only moved the disagreement: a callsite
-/// reaching a FIRST-CLASS callee owns none of the members behind the wrapper,
-/// so its "ignore" never reaches them and the wrapper hands a value back
-/// anyway (`mailbox_closure_each`).
+/// and the question is which lane count both halves settle on. No single
+/// answer is right on its own: deriving the payload from the CALLER's own
+/// return claims a lane the boundary never delivers, and deriving it from the
+/// callsite's appetite claims none where the wrapper hands one back anyway,
+/// because a callsite reaching a first-class callee owns none of the members
+/// behind that wrapper.
 ///
-/// So the claim is not about any one lane count. It is that the two halves
-/// AGREE: every boxed closure callsite delivers exactly what the wrappers it
-/// can reach publish. `a_mixed` is the program that made the difference
-/// visible -- one lambda reached both grounded and boxed, and wrappers of two
-/// different arities in one program, so the honest comparison is per wrapper
-/// and not a single set over the whole program.
+/// So the claim is that the halves AGREE, and the `BoxedContracts` ledger is
+/// what says so: it holds every boxed callsite's delivered lanes beside every
+/// wrapper's published lanes per call arity, and refuses the root with a
+/// diagnostic when one arity carries two answers. These two programs are the
+/// corpus that makes the disagreement reachable -- `a_mixed` reaches one
+/// lambda both grounded and boxed and builds wrappers of two arities in one
+/// program -- so a settled backend product for them IS the agreement.
 #[test]
 fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
     fn assert_seam_halves_agree(name: &str, text: &str) {
         let tel = ConfiguredTelemetry::new();
-        let backend = BackendProgramCapture::new();
-        backend.install(&tel);
         let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some(name.to_string()),
@@ -15441,67 +15451,9 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
             need: ExecutableNeed::Value,
         });
         demand_backend_product(&mut compiler, root);
-        assert_resolved(compiler.drive(), "the seam-agreement root should settle");
-        let program = backend.last(root).program;
-
-        let mut checked = 0;
-        for executable in program.executables() {
-            let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
-                continue;
-            };
-            for entry in entries {
-                let crate::compiler2::BackendTail::ClosureCall {
-                    callee,
-                    args,
-                    return_flow,
-                    ..
-                } = &entry.tail
-                else {
-                    continue;
-                };
-                // A grounded callee is lowered as a direct edge and aliases its
-                // target's own return fact; only a boxed one reaches a wrapper.
-                if !executable.abi.value_layouts.get(callee).is_some_and(|layout| {
-                    matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef(_))
-                }) {
-                    continue;
-                }
-                let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
-                    continue;
-                };
-                let delivered = source.layout.reprs.len();
-                for wrapper in program
-                    .construction_wrappers()
-                    .iter()
-                    .filter(|wrapper| wrapper.call_arity == args.len())
-                    .filter(|wrapper| {
-                        !matches!(
-                            wrapper.return_form,
-                            crate::compiler2::artifact::BackendCallableReturn::Diverges
-                        )
-                    })
-                {
-                    let published = match wrapper.return_form {
-                        crate::compiler2::artifact::BackendCallableReturn::ValueRef => 1,
-                        crate::compiler2::artifact::BackendCallableReturn::Absent
-                        | crate::compiler2::artifact::BackendCallableReturn::Diverges => 0,
-                    };
-                    assert_eq!(
-                        published,
-                        delivered,
-                        "{name}: a boxed closure call taking {} argument(s) delivers {delivered} lane(s) while \
-                         wrapper {:?} it can reach publishes {published} ({:?})",
-                        args.len(),
-                        wrapper.identity,
-                        wrapper.return_form,
-                    );
-                    checked += 1;
-                }
-            }
-        }
-        assert!(
-            checked > 0,
-            "{name} should contain at least one boxed closure callsite reaching a wrapper",
+        assert_resolved(
+            compiler.drive(),
+            &format!("{name}: the boxed-seam ledger should accept one contract per call arity"),
         );
     }
 
@@ -21497,5 +21449,56 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
          reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
          supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
          keeps asking the local question: {moved:#?}",
+    );
+}
+
+/// A producer that refuses a program says why, once. `Enum.count(:atom)` has
+/// no `Enumerable` implementation for an atom, so materializing the call edge
+/// reports `Protocol.UndefinedError` in the reader's terms and fails. The
+/// pull-drive boundary above it must forward that failure, not restate it:
+/// a second `artifact/incomplete-semantic-plan` under the same code, phrased
+/// as a product key, tells the reader nothing the first did not.
+#[test]
+fn a_refused_program_reports_its_one_diagnostic() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "diag"]);
+    let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    world.submit_code(
+        Some("protocol_without_impl.fz".to_string()),
+        "def main(), do: Enum.count(:atom)\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    let outcome = super::product_drive::drive_retained_product(
+        &mut world,
+        &tel,
+        &mut sessions,
+        super::drive::ProductAddress {
+            root,
+            key: ProductKey::RootBackendProduct(root),
+        },
+    );
+
+    assert!(
+        outcome.is_err(),
+        "a protocol call with no implementation has no backend product",
+    );
+    let reported = capture
+        .find(&["fz", "diag"])
+        .into_iter()
+        .filter_map(|event| event.diagnostic)
+        .filter(|diagnostic| diagnostic.code == codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN)
+        .map(|diagnostic| diagnostic.message)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reported.len(),
+        1,
+        "the refusal is reported once, by the producer that knows why: {reported:#?}",
+    );
+    assert!(
+        reported[0].contains("`Enumerable.count/1` has no implementation"),
+        "the one diagnostic names the protocol and the call: {reported:#?}",
     );
 }

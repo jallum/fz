@@ -530,23 +530,44 @@ boundary publication names the one position that publishes it, and no member
 speaks for a group-mate. Which member's job happens to close the cycle therefore
 cannot change what any member says.
 
-Closure-call materialization reads the callee's positioned transport carrier.
-`ValueRef` calls through the public wrapper even when semantic resolution has
-one target; target cardinality cannot turn a transported value back into a
-private call. `Absent` leaves one exact target eligible for direct invocation
-and cannot support a call without one exact target. Callable-construction
-ownership remains the authority for wrapper construction and packaging, not for
-rediscovering the invocation carrier. Public delivery names the caller-owned
-`ReturnPayload` as its source and adapts it into the separate delivered-resume
-destination.
+Closure-call materialization asks ONE question of the callee's positioned
+layout: can this caller supply every capture input the target declares?
+`callee_supplies_target_captures` answers it, and the artifact edge, the
+closure-call return claim, and both lowerings read that one answer — native
+emits the captures it promised, and the interpreter calls the recorded target
+the same way instead of re-deriving a route from the runtime value.
 
-That decision is carried by the emitted call form itself. A grounded call
-lowers as a `Call`/`TailCall` direct edge to the selected executable; a
-`CallClosure`/`TailCallClosure` term is indirect by construction and always
-dispatches through the callee value's published callable boundary. Native
-codegen consumes the form as-is — there is no per-FnId closure-target surface
-registry and no consumer-side re-derivation of a direct target from an
-indirect call.
+The caller supplies captures out of the lanes it holds, so a value travelling as
+one public word supplies none: only the seam opens it, and target cardinality
+cannot turn a transported value back into a private call. `layout_is_one_public_word`
+names that form — a `ValueRef` carrier, or a bare structural lane whose ABI form
+is `ValueRef`, which is what a callable with no raw representation comes to. A
+DECOMPOSED callable is never that word however wide it is: a direct callable
+whose single capture happens to be boxed still hands the caller that capture.
+The rustdoc on `callee_supplies_target_captures` owns how the answer is derived
+from the callee's descriptor. A callee that is neither — no word to call
+through and no captures to supply — cannot come from a program: the callsite
+summary and the transport layout describe one value, so that state is a
+contradiction between two authorities and stops the compiler as an internal
+error. Callable-construction ownership remains the authority for
+wrapper construction and packaging, not for rediscovering how the call is made.
+Public delivery names the caller-owned `ReturnPayload` as its source and adapts
+it into the separate delivered-resume destination.
+
+That decision is carried by the emitted call form itself. A `BackendTail::ClosureCall`
+names its target when the edge is direct and names none when it is boxed, and
+that one field is what every consumer reads. Native lowers a named target to a
+`Call`/`TailCall` direct edge to the selected executable and an unnamed one to a
+`CallClosure`/`TailCallClosure` term, which is indirect by construction and
+always dispatches through the callee value's published callable boundary. The
+backend interpreter reads the same field the same way: a named target is called
+with the captures decoded out of the callee value's own callable lanes, and an
+unnamed one materializes the word and goes through the construction wrapper. It
+does not ask whether the function it finds at runtime happens to have a wrapper.
+The boxed-apply contract reads it too — a named target never meets the seam, so
+it records no requirement. There is no per-FnId closure-target surface registry
+and no consumer-side re-derivation of a direct target from an indirect call, on
+any door.
 
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
@@ -596,9 +617,9 @@ follow, and they are two halves of one convention:
   callee VALUE, not of the callsite: a callsite that names an exact target is
   still a boxed call when the same lambda is handed out of the function two
   lines later, and `materialize_closure_call_edge` lowers a direct edge only
-  while the callee's carrier stays exact.
+  while the caller can still supply that target's captures.
 
-A callee that does stay in its exact carrier needs no rule at all: its result
+A callee the caller can supply needs no rule at all: its result
 aliases the named target executable's own return fact, so caller and callee
 read one shape by construction. So a callable **no** seam ever boxes builds no
 wrapper, and a discarded call through it really does reach zero lanes on both
@@ -607,13 +628,18 @@ the effect and returns the accumulator — compiling to zero delivered lanes for
 a lambda named where it is used, and one boxed lane for the same lambda once a
 mailbox round trip has erased the name (`static_closure_each`, `a_mixed`).
 
-Getting either half alone is an abort, not a diagnostic: the wrapper writes its
+Getting either half alone is never a diagnostic on its own. Where the lane
+COUNTS differ the program dies at the first call — the wrapper writes its
 returned value into the register the continuation reads as its own closure
-pointer, and the program dies in `fz_closure_get_capture_atom` at the first
-call. Each backend body records its boxed-call argument arities and delivered
-lane counts. `BoxedContracts` indexes those requirements and wrapper publications
-by arity, retaining an exact mismatch witness when their lanes disagree. Root
-packaging checks that witness without scanning every body and wrapper.
+pointer, and it aborts in `fz_closure_get_capture_atom`. Where the counts agree
+and the LANES do not, nothing dies: the caller reads the seam's boxed word as a
+raw integer and prints an address. So each backend body records its boxed-call
+argument arities and the exact reprs its destination expects, a tail call
+through the seam recording its own return reprs because that is what its caller
+will read back. `BoxedContracts` indexes those requirements and the reprs
+wrapper publications hand back (`BackendCallableReturn::return_reprs`) by arity,
+retaining an exact mismatch witness when they disagree. Root packaging checks
+that witness without scanning every body and wrapper.
 
 The exact callable surfaces demand reads originate in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
@@ -640,6 +666,29 @@ explicit arg 0 to callee semantic input 0, while closure calls bind explicit
 args after the callee capture prefix. `DeriveRuntimeDemand(E)` records Current
 reads of exact target input sub-facts, so a changed callee input vector wakes
 only formulas that read it; return/value-only movement does not wake them.
+
+A callable demand yields the exact direct-callable layout at every depth: a
+tuple field holding a lambda that is called publishes the lambda's identity and
+capture lanes exactly as a whole position does, because both ask the same
+function for it. That reaches the field because the demand does: a
+`ShapeDemand::TupleFields` vector is a PREFIX, so two consumers of one tuple —
+one reading field 0, one reading field 1 — join by padding the shorter with
+`ignore` and joining field by field, rather than coarsening to `Whole` and
+taking the field's callable axis down with it. Read as a prefix, the vector can
+also be longer than a given layout's arity, where a value spans tuple arities
+and one clause reads further than another. `ShapeDemand::field_prefix` is the
+one place a demand vector is fitted to a layout's arity: it pads what the
+vector does not name with `ignore` and drops the surplus, which describes a
+tuple this layout is not and names no lane in it. Every reader that fits a
+demand vector to an arity goes through it — layout derivation, native's
+ignored-lane marking, how a tuple construction divides its demand among its
+items, what a destination-passing return delivers — so they cannot disagree.
+The owner-fact walks in `project_generic_owner_node` and
+`record_generic_owner_facts` are not fitting: they visit the fields a demand
+actually named, and padding to arity there would mint empty callable drafts
+for fields nobody reads. A trailing `ignore` says what saying nothing says, so
+the normal form trims them and one demand is one value for equality, hashing
+and keying.
 
 A tuple value can cross several positions whose exact layouts retain different
 fields. The producer layout remains the authority for the lanes already in

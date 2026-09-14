@@ -29,10 +29,10 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
 use super::super::artifact::{
-    AbiValueRepr, BackendBody, BackendCallableReturn, BackendClause, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge,
-    CallTarget, DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
-    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
+    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, DispatchCallEdge, EffectSummary,
+    NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember,
+    NativeEntryAbi, NativeExecutableEntry, NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
@@ -62,14 +62,7 @@ pub(crate) fn produce_native_program(
             emit_list_retention(telemetry, &root_id, &backend);
             PullOutcome::Produced(ProductValue::NativeProgram(Rc::new(program)))
         }
-        Err(_) => PullOutcome::Failed(super::super::pull::ProductFailure::NativeLowering),
-    }
-}
-
-fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
-    match form {
-        BackendCallableReturn::Diverges | BackendCallableReturn::Absent => Vec::new(),
-        BackendCallableReturn::ValueRef => vec![AbiValueRepr::ValueRef],
+        Err(_) => PullOutcome::Failed,
     }
 }
 
@@ -204,7 +197,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let capture_reprs = wrapper
                 .captures
                 .iter()
-                .map(|capture| abi_value_repr(world, capture.ty))
+                .map(|capture| AbiValueRepr::for_ty(world, capture.ty))
                 .collect();
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
@@ -363,17 +356,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     fn lower_callable_construction_wrapper(&mut self, boundary: &NativeCallableBoundary) -> Result<(), FatalError> {
-        let all_members_diverge = boundary.members.iter().all(|member| member.target_return.diverges);
-        if matches!(boundary.return_form, BackendCallableReturn::Diverges) != all_members_diverge {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "callable construction {} return form disagrees with its member return contracts",
-                    boundary.id.as_u32()
-                ),
-            ));
-        }
         let mut ctx = NativeFnCtx::new(
             boundary.wrapper_fn,
             &format!("callable_wrapper_{}", boundary.id.as_u32()),
@@ -389,7 +371,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .chain(std::iter::repeat_n(AbiValueRepr::ValueRef, boundary.call_arity))
                 .collect(),
             self.world.types_mut().any(),
-            callable_return_reprs(boundary.return_form),
+            // A wrapper over members that all diverge never reaches a
+            // return, so it declares no return lanes.
+            boundary.return_form.return_reprs().unwrap_or_default().into_vec(),
             None,
             EffectSummary::default(),
         );
@@ -662,7 +646,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             if member.target_return.layout.reprs.is_empty() {
                 Vec::new()
             } else {
-                callable_return_reprs(boundary.return_form)
+                boundary
+                    .return_form
+                    .return_reprs()
+                    .expect("a wrapper reached through a returning member returns")
+                    .into_vec()
             },
             None,
             EffectSummary::default(),
@@ -1515,90 +1503,100 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ..
             } => {
                 let callee_value = env.cloned_value(*callee);
-                let direct_capture_lanes = self.direct_closure_capture_lanes(
-                    ctx,
-                    executable,
-                    *callee,
-                    callee_value.as_ref(),
-                    target.as_ref(),
-                    args.len(),
-                )?;
-                let direct_call = if let Some(capture_lanes) = direct_capture_lanes {
-                    let target = target.as_ref().ok_or_else(|| {
-                        incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            "native direct-only closure call did not settle an exact local target",
-                        )
-                    })?;
-                    let target = self
-                        .program
-                        .executable_index(target, self.world.types())
-                        .ok_or(FatalError)?;
-                    let callee_executable = &self.program.executables()[target];
-                    let mut call_args = capture_lanes;
-                    let mut direct_ok = true;
-                    let capture_inputs_end = callee_executable
-                        .key
-                        .activation
-                        .input_len(self.world.types())
-                        .checked_sub(args.len())
-                        .ok_or(FatalError)?;
-                    for (surface_index, arg) in args.iter().enumerate() {
-                        let semantic_index = capture_inputs_end + surface_index;
-                        let Some(target_input) = callee_executable
-                            .abi
-                            .semantic_inputs
-                            .iter()
-                            .find(|input| input.semantic_index == semantic_index)
-                        else {
-                            continue;
-                        };
-                        if target_input.layout.reprs.is_empty() {
-                            continue;
-                        }
-                        let local = env_local_value(env, arg.value)?;
-                        if matches!(
-                            target_input.layout.carrier,
-                            super::super::pull::TransportCarrier::ValueRef(_)
-                        ) {
-                            self.encode_runtime_value_for_layout(
-                                ctx,
-                                callee_executable,
-                                Some(arg.value),
-                                &local,
-                                &target_input.layout,
-                                &mut call_args,
-                            )?;
-                        } else {
-                            if !self.closure_fast_path_arg_is_structural(&local, target_input.layout.structural) {
-                                direct_ok = false;
-                                break;
+                // The call form already carries the decision: a named target is
+                // a direct edge the artifact layer minted from
+                // `callee_supplies_target_captures`. Native emits what that
+                // answer promised; it does not re-decide.
+                let direct_call = match target {
+                    Some(target) => {
+                        let capture_lanes = self.direct_closure_capture_lanes(
+                            ctx,
+                            executable,
+                            *callee,
+                            callee_value.as_ref(),
+                            target,
+                            args.len(),
+                        )?;
+                        let target = self
+                            .program
+                            .executable_index(target, self.world.types())
+                            .ok_or(FatalError)?;
+                        let callee_executable = &self.program.executables()[target];
+                        let mut call_args = capture_lanes;
+                        let capture_inputs_end = callee_executable
+                            .key
+                            .activation
+                            .input_len(self.world.types())
+                            .checked_sub(args.len())
+                            .ok_or(FatalError)?;
+                        for (surface_index, arg) in args.iter().enumerate() {
+                            let semantic_index = capture_inputs_end + surface_index;
+                            let Some(target_input) = callee_executable
+                                .abi
+                                .semantic_inputs
+                                .iter()
+                                .find(|input| input.semantic_index == semantic_index)
+                            else {
+                                continue;
+                            };
+                            if target_input.layout.reprs.is_empty() {
+                                continue;
                             }
-                            self.encode_runtime_value(
-                                ctx,
-                                callee_executable,
-                                Some(arg.value),
-                                &local,
-                                target_input.layout.structural,
-                                &mut call_args,
-                            )?;
+                            let local = env_local_value(env, arg.value)?;
+                            if matches!(
+                                target_input.layout.carrier,
+                                super::super::pull::TransportCarrier::ValueRef(_)
+                            ) {
+                                self.encode_runtime_value_for_layout(
+                                    ctx,
+                                    callee_executable,
+                                    Some(arg.value),
+                                    &local,
+                                    &target_input.layout,
+                                    &mut call_args,
+                                )?;
+                            } else {
+                                self.encode_runtime_value(
+                                    ctx,
+                                    callee_executable,
+                                    Some(arg.value),
+                                    &local,
+                                    target_input.layout.structural,
+                                    &mut call_args,
+                                )?;
+                            }
                         }
-                    }
-                    if call_args.len() != callee_executable.abi.param_reprs.len() {
-                        direct_ok = false;
-                    }
-                    if !return_flow.as_ref().is_some_and(|flow| match flow {
-                        BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
-                        BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
-                            source.as_ref() == &callee_executable.abi.return_layout
+                        if call_args.len() != callee_executable.abi.param_reprs.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                format!(
+                                    "native direct closure call owner={:?} target={:?} encoded {} argument lane(s) for {} parameter(s)",
+                                    executable.key,
+                                    callee_executable.key,
+                                    call_args.len(),
+                                    callee_executable.abi.param_reprs.len(),
+                                ),
+                            ));
                         }
-                    }) {
-                        direct_ok = false;
+                        if !return_flow.as_ref().is_some_and(|flow| match flow {
+                            BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
+                            BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
+                                source.as_ref() == &callee_executable.abi.return_layout
+                            }
+                        }) {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                format!(
+                                    "native direct closure call owner={:?} target={:?} reads a return flow {:?} the target does not publish",
+                                    executable.key, callee_executable.key, return_flow,
+                                ),
+                            ));
+                        }
+                        Some((target, call_args))
                     }
-                    direct_ok.then_some((target, call_args))
-                } else {
-                    None
+                    None => None,
                 };
                 if let Some((target, call_args)) = direct_call {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
@@ -1729,7 +1727,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let input_vars = self.env_runtime_vars(ctx, executable, env, inputs);
                 let pinned_vars = self.env_runtime_vars(ctx, executable, env, &bindings.pinned);
                 let prepared = self.env_runtime_vars(ctx, executable, env, &bindings.prepared);
-                let mut state = DispatchState::from_words(
+                let mut state = DispatchState::resolved(
                     input_vars,
                     Vec::new(),
                     DispatchBindings {
@@ -2218,14 +2216,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let mut param_reprs = param_tys
                     .iter()
                     .copied()
-                    .map(|ty| abi_value_repr(self.world, ty))
+                    .map(|ty| AbiValueRepr::for_ty(self.world, ty))
                     .collect::<Vec<_>>();
                 param_reprs.extend(capture_lane_reprs.iter().copied());
                 param_reprs.extend(
                     physical_capture_tys
                         .iter()
                         .copied()
-                        .map(|ty| abi_value_repr(self.world, ty)),
+                        .map(|ty| AbiValueRepr::for_ty(self.world, ty)),
                 );
                 param_tys.extend(capture_lane_tys.iter().copied());
                 let mut entry_tys = param_tys;
@@ -2236,7 +2234,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let mut param_reprs = param_tys
                     .iter()
                     .copied()
-                    .map(|ty| abi_value_repr(self.world, ty))
+                    .map(|ty| AbiValueRepr::for_ty(self.world, ty))
                     .collect::<Vec<_>>();
                 param_reprs.extend(capture_lane_reprs.iter().copied());
                 param_tys.extend(capture_lane_tys.iter().copied());
@@ -2244,7 +2242,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     physical_capture_tys
                         .iter()
                         .copied()
-                        .map(|ty| abi_value_repr(self.world, ty)),
+                        .map(|ty| AbiValueRepr::for_ty(self.world, ty)),
                 );
                 param_tys.extend(physical_capture_tys.iter().copied());
                 (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
@@ -2253,7 +2251,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (mut entry_tys, mut param_reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
                 let extra_params = param_reprs.len();
                 entry_tys.extend(param_tys.iter().copied());
-                param_reprs.extend(param_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                param_reprs.extend(param_tys.iter().copied().map(|ty| AbiValueRepr::for_ty(self.world, ty)));
                 entry_tys.extend(capture_lane_tys.iter().copied());
                 param_reprs.extend(capture_lane_reprs.iter().copied());
                 entry_tys.extend(physical_capture_tys.iter().copied());
@@ -2261,7 +2259,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     physical_capture_tys
                         .iter()
                         .copied()
-                        .map(|ty| abi_value_repr(self.world, ty)),
+                        .map(|ty| AbiValueRepr::for_ty(self.world, ty)),
                 );
                 (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
             }
@@ -2599,7 +2597,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             physical_capture_tys
                 .iter()
                 .copied()
-                .map(|ty| abi_value_repr(self.world, ty)),
+                .map(|ty| AbiValueRepr::for_ty(self.world, ty)),
         );
 
         let fn_id = self.module.fresh_fn_id();
@@ -3306,7 +3304,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut dispatch_state = DispatchState::from_words(
+        let mut dispatch_state = DispatchState::resolved(
             input_vars,
             Vec::new(),
             DispatchBindings {
@@ -4022,22 +4020,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         )))
     }
 
+    /// The capture lanes a direct closure call hands its target.
+    ///
+    /// Whether the call IS direct was decided by
+    /// `callee_supplies_target_captures` when the edge was minted, so this only
+    /// emits what that answer promised. A callee value that turns out not to
+    /// carry the target's captures is a broken plan, not a reason to call
+    /// through the seam instead.
     fn direct_closure_capture_lanes(
         &mut self,
         ctx: &mut NativeFnCtx,
         caller: &BackendExecutable,
         callee: ValueId,
         value: Option<&NativeBoundValue>,
-        target: Option<&ExecutableKey>,
+        target: &ExecutableKey,
         surface_arity: usize,
-    ) -> Result<Option<Vec<Var>>, FatalError> {
-        let mut absent = true;
-        if let Some(value) = value {
-            absent = matches!(value, NativeBoundValue::Absent);
-        }
-        let Some(target) = target else {
-            return Ok(None);
-        };
+    ) -> Result<Vec<Var>, FatalError> {
         let target = self
             .program
             .executable_index(target, self.world.types())
@@ -4065,7 +4063,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let capture = captures.get(input.semantic_index).ok_or(FatalError)?;
                 self.encode_runtime_value_for_layout(ctx, caller, None, capture, &input.layout, &mut lanes)?;
             }
-            return Ok(Some(lanes));
+            return Ok(lanes);
         }
         if executable
             .abi
@@ -4073,9 +4071,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .iter()
             .any(|input| input.semantic_index < capture_inputs_end && !input.layout.reprs.is_empty())
         {
-            if !absent {
-                return Ok(None);
-            }
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
@@ -4092,20 +4087,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ),
             ));
         }
-        Ok(Some(Vec::new()))
-    }
-
-    fn closure_fast_path_arg_is_structural(&self, value: &NativeBoundValue, shape: ShapeId) -> bool {
-        if !self.world.shape_contains_callable(shape) {
-            return true;
-        }
-        matches!(
-            value,
-            NativeBoundValue::Transport {
-                shape: value_shape,
-                ..
-            } if *value_shape == shape
-        )
+        Ok(Vec::new())
     }
 
     fn tuple_field_values_for_encoding(
@@ -4655,9 +4637,9 @@ impl DispatchState {
         }
     }
 
-    /// Every input is one runtime word: the caller resolved them before it
-    /// reached here, so nothing arrives in lane form.
-    fn from_words(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
+    /// A state whose dispatch inputs are each already one runtime word,
+    /// rather than a value still in lane form.
+    fn resolved(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
         Self::new(
             dispatch_inputs.into_iter().map(NativeBoundValue::Runtime).collect(),
             forwarded_args,
@@ -5116,23 +5098,8 @@ fn lower_bit_size_ir(
     })
 }
 
-fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
-    if world.types().is_floating(&ty) {
-        return AbiValueRepr::RawF64;
-    }
-    if world.types().is_integer(&ty) {
-        return AbiValueRepr::RawInt;
-    }
-    let atom = world.types_mut().atom();
-    if world.types().is_subtype(&ty, &atom) {
-        AbiValueRepr::RawAtom
-    } else {
-        AbiValueRepr::ValueRef
-    }
-}
-
 fn block_param_abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
-    match abi_value_repr(world, ty) {
+    match AbiValueRepr::for_ty(world, ty) {
         repr @ (AbiValueRepr::RawInt | AbiValueRepr::RawAtom) => repr,
         AbiValueRepr::RawF64 | AbiValueRepr::ValueRef => AbiValueRepr::ValueRef,
     }
@@ -5166,23 +5133,13 @@ fn mark_ignored_lanes_for_demand(
                     }
                     Ok(())
                 }
-                ShapeDemand::TupleFields(demands) => {
-                    if demands.len() > fields.len() {
-                        return Err(FatalError);
-                    }
-                    for (index, field) in fields.iter().copied().enumerate() {
-                        if let Some(field_demand) = demands.get(index) {
-                            mark_ignored_layout_lanes_for_demand(
-                                world,
-                                builder,
-                                vars,
-                                field,
-                                field_demand,
-                                lane_index,
-                            )?;
-                        } else {
-                            mark_all_layout_lanes_ignored(world, builder, vars, field, lane_index)?;
-                        }
+                ShapeDemand::TupleFields(_) => {
+                    let field_demands = demand
+                        .shape
+                        .field_prefix(fields.len())
+                        .expect("a field demand reads as a field prefix");
+                    for (field, field_demand) in fields.iter().copied().zip(field_demands) {
+                        mark_ignored_layout_lanes_for_demand(world, builder, vars, field, &field_demand, lane_index)?;
                     }
                     Ok(())
                 }
