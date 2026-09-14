@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:17Z",
+  "description": "def same(x, ^x), do: 1 fails today with \"entry dispatch pin has no runtime argument operand\" on interp and with artifact/incomplete-semantic-plan carrying the same string on run. Elixir rejects a pin of an unbound name in a head at compile time. Entry plans never bind pins (only guard-helper plans do), so the pin reaches two backends as an unresolved runtime operand and each reports it in its own words.\n\nFix: a construction-time diagnostic from the entry-dispatch planner when a head pins a name no enclosing scope binds, with a message that names the pin and says a head binds names rather than matching them. Signal: a fixture with an expected.diagnostics sidecar, red on every door today with different text per door.",
+  "id": "fz-acn.10",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 2,
+  "status": "open",
+  "title": "A pin in an ordinary function head fails at the backend instead of at construction",
+  "type": "bug",
+  "updated_at": "2026-09-14T17:16:17Z"
+}
