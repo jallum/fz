@@ -39,6 +39,7 @@ pub(crate) mod surface;
 mod terminator;
 mod type_pred;
 mod value;
+pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
@@ -59,6 +60,7 @@ pub(crate) use surface::*;
 pub(crate) use terminator::*;
 pub(crate) use type_pred::*;
 pub(crate) use value::*;
+pub(crate) use variadic::*;
 
 pub(crate) use crate::ir_codegen::{
     AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, build_frame_schema,

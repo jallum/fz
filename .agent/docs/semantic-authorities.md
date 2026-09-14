@@ -224,7 +224,7 @@ asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 
 **Where a symbol lives** — owner `fz_extern_symbol_addr`
-(`runtime/src/extern_variadic.rs`), for fz's own exports and foreign ones
+(`runtime/src/symbol_lookup.rs`), for fz's own exports and foreign ones
 alike. The interpreter's `resolve_symbol` and its variadic path call it, and
 the JIT is built with it as its `symbol_lookup_fn` rather than cranelift's own
 dlsym. Neither door keeps an address table: the compiler's binaries and test
@@ -232,6 +232,15 @@ binaries export dynamically (`build.rs`), so fz's own exports are in the
 process to be found. The AOT door is answered by the linker instead, which is a
 fourth place and why `-lm` is hardcoded until a declaration can say which
 library it comes from.
+
+**How a C variadic call is made** — owner `emit_variadic_c_call`
+(`native_codegen/variadic.rs`). Cranelift cannot mark a call variadic, so the
+platform's variadic placement is produced by choosing the call's parameter
+list, and one function makes that choice for every target. Native codegen calls
+it directly; the interpreter reaches it through a generated trampoline, so
+there is no second description of the ABI to drift. Its correctness rests on
+variadic arguments being integers and pointers only, which the marshal front
+end enforces.
 
 **How a runtime helper is typed at a compiled call site** — owner the Rust
 function item. `runtime_call!(body, fz_list_cons_int, [process, head, tail])`

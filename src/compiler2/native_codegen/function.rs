@@ -158,7 +158,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             body.b.set_srcloc(span_to_srcloc(span));
             match stmt {
                 Stmt::Let(v, prim) => {
-                    let out = lower_prim(&mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env)?;
+                    let out = lower_prim(&mut body, t, env, &var_env, prim, *v, blk.id, idx, block_env)?;
                     if !matches!(out, LowerOut::DeadUnit) {
                         let binding = match out {
                             LowerOut::StrictConst(value) => {

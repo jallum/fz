@@ -1,13 +1,17 @@
 use super::*;
 use crate::compiler2::LoweredExtern;
+use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c_call, host_isa};
 use crate::fz_ir::{ExternReturn, ExternTy};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, types};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{Linkage, Module, default_libcall_names};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
-use fz_runtime::extern_variadic::{
-    fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
-};
+use fz_runtime::symbol_lookup::fz_extern_symbol_addr;
+use std::collections::HashMap;
+use std::ffi::CString;
 #[cfg(not(unix))]
 use std::ffi::c_void;
-use std::ffi::{CString, c_char};
 use std::mem::transmute;
 #[cfg(not(unix))]
 use std::ptr::null_mut;
@@ -15,20 +19,6 @@ use std::ptr::null_mut;
 use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-
-fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
-    let fixed = fixed
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let variadic = variadic
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
-}
 
 /// `fz_abi` selects what a declared parameter type MEANS, exactly as it does in
 /// the backend: a C function taking `binary` wants a `*const u8` into the
@@ -73,76 +63,7 @@ pub(super) fn call_lowered_extern(
     args: &[AnyValue],
 ) -> Result<ExternCallValue, String> {
     if signature.variadic {
-        let arg_tys = marshals.ok_or_else(|| {
-            format!(
-                "variadic extern `{}` has unresolved marshal metadata in backend execution",
-                signature.symbol
-            )
-        })?;
-        if arg_tys.len() != args.len() {
-            return Err(format!(
-                "variadic extern `{}` expected {} marshal classes but saw {} args",
-                signature.symbol,
-                arg_tys.len(),
-                args.len()
-            ));
-        }
-        let fixed_count = signature.params.len();
-        let fixed = &arg_tys[..fixed_count];
-        let variadic = &arg_tys[fixed_count..];
-        let cname = CString::new(signature.symbol.as_str()).map_err(|e| format!("bad symbol name: {e}"))?;
-        let fp = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
-        if fp == 0 {
-            return Err(format!("dlsym: symbol `{}` not found", signature.symbol));
-        }
-        // Every dispatcher below is an all-integer shape (`cstring` and `i64`),
-        // which is what makes indexing these as words correct here.
-        let raw_args: Vec<u64> = args
-            .iter()
-            .zip(arg_tys.iter().copied())
-            .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::int))
-            .collect::<Result<_, _>>()?;
-        let ret_ty = signature
-            .ret
-            .scalar_ty()
-            .ok_or_else(|| format!("variadic extern `{}` cannot return an aggregate", signature.symbol))?;
-        let ret = match (ret_ty, fixed, variadic) {
-            (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => unsafe {
-                fz_call_var_i64_cstring_i64_i64_to_i64(
-                    fp,
-                    raw_args[0] as *const c_char,
-                    raw_args[1] as i64,
-                    raw_args[2] as i64,
-                ) as u64
-            },
-            (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => unsafe {
-                fz_call_var_i64_cstring_i64_to_i64(fp, raw_args[0] as *const c_char, raw_args[1] as i64) as u64
-            },
-            _ => {
-                return Err(format!(
-                    "unsupported variadic extern shape: {}",
-                    format_extern_shape(ret_ty, fixed, variadic)
-                ));
-            }
-        };
-        return match ret_ty {
-            ExternTy::I64 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
-            ExternTy::Bool => Ok(ExternCallValue::Scalar(decode_bool_word(ret))),
-            ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
-                interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
-            }
-            ExternTy::Unit => Ok(ExternCallValue::Scalar(interp_nil_value())),
-            ExternTy::Never => Err(format!("extern `{}` declared Never returned", signature.symbol)),
-            // Every dispatcher above returns `I64`; a float-returning variadic
-            // is refused as an unsupported shape before reaching here. Reading
-            // `ret` as float bits would be exactly the integer-bank mistake the
-            // fixed-arity path was just fixed for, so it is refused rather than
-            // written out and left to look correct.
-            ExternTy::F64 => Err(format!(
-                "variadic extern `{}` returns a float, which no dispatcher provides",
-                signature.symbol
-            )),
-        };
+        return call_variadic_extern(runtime, signature, marshals, args);
     }
 
     // Arity is enforced where the call is lowered; this guards the transmute
@@ -189,6 +110,176 @@ pub(super) fn call_lowered_extern(
         return Err(error);
     }
     result
+}
+
+/// A C variadic call, made through a generated trampoline.
+///
+/// The interpreter has no linker, so it resolves the foreign address by name
+/// and then needs a machine that can call it. That machine is one small JIT'd
+/// function per call shape, which reads the marshalled argument words out of
+/// an array and reaches `emit_variadic_c_call` — the same lowering compiled
+/// code uses, so both doors make the identical machine call. Handing the words
+/// over through a pointer keeps the trampoline at two parameters, so the
+/// argument ceiling the fixed-arity path lives under never applies here.
+fn call_variadic_extern(
+    runtime: &mut IrInterpRuntime,
+    signature: &LoweredExtern,
+    marshals: Option<&[ExternTy]>,
+    args: &[AnyValue],
+) -> Result<ExternCallValue, String> {
+    let arg_tys = marshals.ok_or_else(|| {
+        format!(
+            "variadic extern `{}` has unresolved marshal metadata in backend execution",
+            signature.symbol
+        )
+    })?;
+    if arg_tys.len() != args.len() {
+        return Err(format!(
+            "variadic extern `{}` expected {} marshal classes but saw {} args",
+            signature.symbol,
+            arg_tys.len(),
+            args.len()
+        ));
+    }
+    let ret_ty = signature
+        .ret
+        .scalar_ty()
+        .ok_or_else(|| format!("variadic extern `{}` cannot return an aggregate", signature.symbol))?;
+    if ret_ty == ExternTy::F64 {
+        return Err(format!(
+            "variadic extern `{}` returns a float, which the generated variadic call does not carry",
+            signature.symbol
+        ));
+    }
+    let cname = CString::new(signature.symbol.as_str()).map_err(|e| format!("bad symbol name: {e}"))?;
+    let callee = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
+    if callee == 0 {
+        return Err(format!("dlsym: symbol `{}` not found", signature.symbol));
+    }
+
+    // Each argument is one machine word in the array the trampoline reads. A
+    // fixed float parameter travels in the float bank, and the trampoline
+    // loads its slot as an `f64` to put it there.
+    let words: Vec<u64> = args
+        .iter()
+        .zip(arg_tys.iter().copied())
+        .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::int))
+        .collect::<Result<_, _>>()?;
+
+    let fixed_count = signature.params.len();
+    let shape = VariadicShape {
+        // A parameter that carries no value has no lane; `marshal_arg` refuses
+        // one above, so the word it would occupy is never reached.
+        fixed: arg_tys[..fixed_count]
+            .iter()
+            .map(|ty| ty.lane().unwrap_or(types::I64))
+            .collect(),
+        variadic: arg_tys.len() - fixed_count,
+        ret: ret_ty.lane(),
+    };
+    let trampoline = runtime.variadic_trampolines().get_or_generate(&shape)?;
+    let ret = unsafe { trampoline(callee, words.as_ptr()) };
+
+    match ret_ty {
+        ExternTy::I64 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
+        ExternTy::Bool => Ok(ExternCallValue::Scalar(decode_bool_word(ret))),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+            interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
+        }
+        ExternTy::Unit => Ok(ExternCallValue::Scalar(interp_nil_value())),
+        ExternTy::Never => Err(format!("extern `{}` declared Never returned", signature.symbol)),
+        ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
+    }
+}
+
+/// Everything about a variadic call that decides the trampoline's code, and
+/// nothing about the particular call: the fixed parameters' register lanes,
+/// how many variadic words follow them, and the result lane.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) struct VariadicShape {
+    fixed: Vec<ir::Type>,
+    variadic: usize,
+    ret: Option<ir::Type>,
+}
+
+/// `extern "C" fn(callee: usize, words: *const u64) -> u64`. A call with no
+/// result answers zero.
+type VariadicTrampoline = unsafe extern "C" fn(usize, *const u64) -> u64;
+
+/// The generated variadic trampolines, and the JIT module holding their code.
+///
+/// The module owns the machine code its finalized pointers name, so the two
+/// live together and the interpreter that hands out a pointer is the owner of
+/// the module it points into.
+pub(super) struct VariadicTrampolines {
+    module: JITModule,
+    fbctx: FunctionBuilderContext,
+    generated: HashMap<VariadicShape, VariadicTrampoline>,
+}
+
+impl VariadicTrampolines {
+    pub(super) fn new() -> Self {
+        let builder = JITBuilder::with_isa(host_isa(), default_libcall_names());
+        Self {
+            module: JITModule::new(builder),
+            fbctx: FunctionBuilderContext::new(),
+            generated: HashMap::new(),
+        }
+    }
+
+    fn get_or_generate(&mut self, shape: &VariadicShape) -> Result<VariadicTrampoline, String> {
+        if let Some(&trampoline) = self.generated.get(shape) {
+            return Ok(trampoline);
+        }
+        let trampoline = self.generate(shape)?;
+        self.generated.insert(shape.clone(), trampoline);
+        Ok(trampoline)
+    }
+
+    fn generate(&mut self, shape: &VariadicShape) -> Result<VariadicTrampoline, String> {
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let name = format!("fz_variadic_trampoline_{}", self.generated.len());
+        let func_id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|error| format!("declare {name}: {error}"))?;
+        emit_fn_body(&mut self.module, &mut self.fbctx, sig, func_id, |module, b| {
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let callee = b.block_params(entry)[0];
+            let words = b.block_params(entry)[1];
+            let fixed: Vec<(ir::Value, ir::Type)> = shape
+                .fixed
+                .iter()
+                .enumerate()
+                .map(|(index, &lane)| (load_word(b, words, index, lane), lane))
+                .collect();
+            let variadic: Vec<ir::Value> = (0..shape.variadic)
+                .map(|index| load_word(b, words, shape.fixed.len() + index, types::I64))
+                .collect();
+            let result = emit_variadic_c_call(b, module.isa(), callee, &fixed, &variadic, shape.ret);
+            let answer = result.unwrap_or_else(|| b.ins().iconst(types::I64, 0));
+            b.ins().return_(&[answer]);
+        })
+        .map_err(|error| format!("define {name}: {error}"))?;
+        self.module
+            .finalize_definitions()
+            .map_err(|error| format!("finalize {name}: {error}"))?;
+        let code = self.module.get_finalized_function(func_id);
+        // Safety: the body just emitted has exactly this signature, and the
+        // module that owns its code outlives this cache entry.
+        Ok(unsafe { transmute::<*const u8, VariadicTrampoline>(code) })
+    }
+}
+
+/// One argument word out of the array, in the register lane it travels in.
+fn load_word(b: &mut FunctionBuilder<'_>, words: ir::Value, index: usize, lane: ir::Type) -> ir::Value {
+    b.ins().load(lane, MemFlags::trusted(), words, (index * 8) as i32)
 }
 
 /// The declared RETURN picks the lane the answer comes back in. A float is

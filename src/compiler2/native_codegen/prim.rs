@@ -17,9 +17,6 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValue, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind, struct_size_for_payload};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
-use fz_runtime::extern_variadic::{
-    fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
-};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
     fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_alloc_struct, fz_bs_begin, fz_bs_field_spec,
@@ -641,79 +638,6 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
     })
 }
 
-fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
-    let fixed = fixed
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let variadic = variadic
-        .iter()
-        .map(|ty| format!("{:?}", ty))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
-}
-
-/// Emit the call to the fixed-arity dispatcher for one variadic shape.
-/// `args` is the resolved foreign function pointer followed by the marshalled
-/// arguments, so the shape and the emitted call are decided together.
-fn emit_variadic_dispatch<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    ret: ExternTy,
-    fixed: &[ExternTy],
-    variadic: &[ExternTy],
-    args: &[ir::Value],
-) -> Result<ir::Inst, CodegenError> {
-    match (ret, fixed, variadic, args) {
-        (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64], &[fn_ptr, fmt, fixed0, var0]) => {
-            Ok(runtime_call!(
-                body,
-                fz_call_var_i64_cstring_i64_i64_to_i64,
-                [fn_ptr, fmt, fixed0, var0]
-            ))
-        }
-        (ExternTy::I64, [ExternTy::CString], [ExternTy::I64], &[fn_ptr, fmt, var0]) => Ok(runtime_call!(
-            body,
-            fz_call_var_i64_cstring_i64_to_i64,
-            [fn_ptr, fmt, var0]
-        )),
-        _ => Err(CodegenError::new(format!(
-            "unsupported variadic extern shape: {}",
-            format_extern_shape(ret, fixed, variadic)
-        ))),
-    }
-}
-
-fn emit_extern_symbol_name<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    caller_fn_id: FnId,
-    block_id: BlockId,
-    stmt_idx: usize,
-    symbol: &str,
-) -> Result<ir::Value, CodegenError> {
-    if symbol.as_bytes().contains(&0) {
-        return Err(CodegenError::new(format!(
-            "extern symbol `{}` contains a NUL byte",
-            symbol
-        )));
-    }
-    let name = format!(".fz_extern_symbol_{}_{}_{}", caller_fn_id.0, block_id.0, stmt_idx);
-    let data_id = jmod
-        .declare_data(&name, Linkage::Local, false, false)
-        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-    let mut payload = symbol.as_bytes().to_vec();
-    payload.push(0);
-    let mut desc = DataDescription::new();
-    desc.define(payload.into_boxed_slice());
-    desc.set_align(1);
-    jmod.define_data(data_id, &desc)
-        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
-    let gv = jmod.declare_data_in_func(data_id, b.func);
-    Ok(b.ins().symbol_value(types::I64, gv))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
@@ -722,7 +646,6 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     eid: ExternId,
     args: &[ExternArg],
     dest_var: Var,
-    caller_fn_id: FnId,
     block_id: BlockId,
     stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
@@ -744,47 +667,75 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     }
 
     let fixed_count = decl.params.len();
-    let fixed = &arg_tys[..fixed_count];
-    let variadic = &arg_tys[fixed_count..];
     let ret = decl
         .ret
         .scalar_ty()
         .ok_or_else(|| CodegenError::new("variadic extern aggregate returns are unsupported"))?;
-    let symbol_ptr = emit_extern_symbol_name(
-        body.b,
-        body.jmod,
-        caller_fn_id,
-        block_id,
-        stmt_idx,
-        decl.symbol.as_str(),
-    )?;
-    let fn_ptr = runtime_call1!(body, fz_extern_symbol_addr, [symbol_ptr]);
-
-    let mut call_args = Vec::with_capacity(args.len() + 1);
-    call_args.push(fn_ptr);
-    for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
-        call_args.push(marshal_extern_arg(body, var_env, arg.var, ty, false)?);
+    if ret == ExternTy::F64 {
+        return Err(CodegenError::new(format!(
+            "variadic extern `{}` returns a float, which the generated variadic call does not carry",
+            decl.symbol
+        )));
     }
 
-    let inst = emit_variadic_dispatch(body, ret, fixed, variadic, &call_args)?;
-    if matches!(ret, ExternTy::Unit | ExternTy::Never) {
+    let mut marshalled = Vec::with_capacity(args.len());
+    for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
+        marshalled.push((marshal_extern_arg(body, var_env, arg.var, ty, false)?, ty));
+    }
+    // A parameter that carries no value has no lane; `marshal_extern_arg`
+    // refuses one above, so the word it would occupy here is never reached.
+    let fixed: Vec<(ir::Value, ir::Type)> = marshalled[..fixed_count]
+        .iter()
+        .map(|(value, ty)| (*value, ty.lane().unwrap_or(types::I64)))
+        .collect();
+    // Every variadic value is one integer word: the marshal classes a variadic
+    // argument can resolve to are all integer-lane, which is what makes the
+    // generated call correct on every target (see `variadic.rs`).
+    let variadic: Vec<ir::Value> = marshalled[fixed_count..].iter().map(|(value, _)| *value).collect();
+
+    let callee = foreign_symbol_addr(body, eid, decl.symbol.as_str())?;
+    let isa = body.jmod.isa();
+    let result = emit_variadic_c_call(body.b, isa, callee, &fixed, &variadic, ret.lane());
+
+    let Some(raw) = result else {
         if body.cache.used_vars.contains(&dest_var.0) {
             return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
         }
         return Ok(LowerOut::DeadUnit);
-    }
-    let raw = body.b.inst_results(inst)[0];
+    };
     match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
         ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
-        // `variadic_dispatcher` accepts only `I64`-returning shapes, so the
-        // dispatcher's result is an i64 whatever the declaration says. Tagging
-        // it `RawF64` would be the mislabelling this arm looks like it guards
-        // against, so the refusal stays upstream where it can be one message.
-        ExternTy::F64 => unreachable!("variadic_dispatcher refuses a non-I64 return"),
-        ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
+        ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
+        ExternTy::Unit | ExternTy::Never => unreachable!("a lane-less return produced no result"),
     }
+}
+
+/// The address of a foreign symbol, for a call emitted indirectly.
+///
+/// A variadic call's parameter list is built per call site, so the symbol is
+/// declared once as an ordinary import to name it for the linker (or the JIT's
+/// symbol lookup) and then reached through its address. The declared signature
+/// is a placeholder: nothing ever calls through it.
+fn foreign_symbol_addr<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    eid: ExternId,
+    symbol: &str,
+) -> Result<ir::Value, CodegenError> {
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(&eid) {
+        cached
+    } else {
+        let sig = body.jmod.make_signature();
+        let func_id = body
+            .jmod
+            .declare_function(symbol, Linkage::Import, &sig)
+            .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", symbol, e)))?;
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(eid, fref);
+        fref
+    };
+    Ok(body.b.ins().func_addr(types::I64, fref))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -795,9 +746,8 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
     dest_var: Var,
-    // `caller_fn_id`/`block_id`/`stmt_idx` identify per-stmt side tables such
-    // as variadic extern marshal plans and generated static data symbols.
-    caller_fn_id: FnId,
+    // `block_id`/`stmt_idx` identify the per-stmt side table holding a
+    // variadic extern call's resolved marshal classes.
     block_id: BlockId,
     stmt_idx: usize,
     block_env: Option<&HashMap<Var, Ty>>,
@@ -890,17 +840,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             if decl.variadic {
-                return emit_variadic_extern_call(
-                    body,
-                    env,
-                    var_env,
-                    *eid,
-                    args,
-                    dest_var,
-                    caller_fn_id,
-                    block_id,
-                    stmt_idx,
-                );
+                return emit_variadic_extern_call(body, env, var_env, *eid, args, dest_var, block_id, stmt_idx);
             }
             lower_extern_generic(body, var_env, decl, eid, args, dest_var)
         }

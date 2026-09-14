@@ -512,7 +512,6 @@ dependencies = [
  "libc",
  "loom",
  "ryu",
- "serial_test",
 ]
 
 [[package]]

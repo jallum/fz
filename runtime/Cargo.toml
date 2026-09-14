@@ -13,10 +13,6 @@ crate-type = ["staticlib", "rlib"]
 libc = "0.2"
 ryu = "1.0.23"
 
-[dev-dependencies]
-# Tests that change process-global state, such as umask, require exclusivity.
-serial_test = "3"
-
 # fz-q8d.3 — loom model-checker for SharedBin retain/release ordering.
 # Default builds (no `--cfg loom`) do not pull this dep at all; under
 # `RUSTFLAGS="--cfg loom"` it replaces `std::sync::atomic` via the

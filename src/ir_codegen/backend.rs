@@ -87,7 +87,7 @@ impl JitBackend {
         // library, while the interp door did not.
         builder.symbol_lookup_fn(Box::new(|name| {
             let name = std::ffi::CString::new(name).ok()?;
-            let addr = unsafe { fz_runtime::extern_variadic::fz_extern_symbol_addr(name.as_ptr()) };
+            let addr = unsafe { fz_runtime::symbol_lookup::fz_extern_symbol_addr(name.as_ptr()) };
             (addr != 0).then_some(addr as *const u8)
         }));
         Self {

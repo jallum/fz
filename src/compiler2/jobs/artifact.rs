@@ -1586,7 +1586,11 @@ fn resolve_extern_marshals(
         }
 
         if let Some(ascription) = &arg.ascription {
-            marshals.push(parse_extern_ascription(world, tel, root_id, ascription)?);
+            let ascribed = parse_extern_ascription(world, tel, root_id, ascription)?;
+            if ascribed == crate::fz_ir::ExternTy::F64 {
+                return Err(refuse_float_variadic_marshal(tel, root_id));
+            }
+            marshals.push(ascribed);
             continue;
         }
 
@@ -1641,7 +1645,7 @@ fn resolve_auto_variadic_marshal(
         return Ok(crate::fz_ir::ExternTy::I64);
     }
     if world.types().is_floating(&arg_ty) {
-        return Ok(crate::fz_ir::ExternTy::F64);
+        return Err(refuse_float_variadic_marshal(tel, root_id));
     }
     let str_ty = world.types_mut().str_t();
     if world.types().is_subtype(&arg_ty, &str_ty) {
@@ -1968,6 +1972,19 @@ fn call_reaches_no_target(
     );
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+/// A variadic argument carries an integer or a pointer and nothing else.
+///
+/// The call a backend generates for a variadic function lists its variadic
+/// values as ordinary integer parameters; a float would additionally need the
+/// x86-64 vector-register count that such a call has no way to set.
+fn refuse_float_variadic_marshal(tel: &impl crate::telemetry::Telemetry, root_id: RootId) -> FatalError {
+    incomplete_semantic_plan(
+        tel,
+        root_id,
+        "a variadic extern argument must be an integer or pointer value, not a float",
+    )
 }
 
 fn incomplete_semantic_plan(

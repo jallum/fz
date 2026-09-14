@@ -1,21 +1,15 @@
-//! Runtime support for C variadic externs.
+//! Where a foreign symbol lives.
 //!
-//! Dispatcher names are mechanical:
-//!
-//! `fz_call_var_<ret>_<fixed...>_<var...>_to_<ret>`
-//!
-//! Every argument token names the fz marshal class at the call boundary, not
-//! necessarily the exact C parameter type after ABI-specific casts. Dispatchers
-//! keep the unsafe C-variadic call surface in one place so codegen can call a
-//! normal fixed-arity runtime helper.
+//! One resolver answers for every symbol an fz program names — fz's own
+//! runtime exports and foreign C functions alike — so every execution door
+//! asks the same question in the same way and gets the same answer.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::mem::transmute;
-use std::process::abort;
 use std::sync::{Mutex, OnceLock};
 
-use libc::{RTLD_DEFAULT, RTLD_GLOBAL, RTLD_LAZY, c_int, c_longlong, c_uint, c_void, dlopen, dlsym};
+use libc::{RTLD_DEFAULT, RTLD_GLOBAL, RTLD_LAZY, c_void, dlopen, dlsym};
 
 type SymbolCache = HashMap<Vec<u8>, usize>;
 
@@ -109,48 +103,6 @@ fn resolve_symbol_addr(_name: *const c_char) -> usize {
     0
 }
 
-fn abort_null_fn_ptr(dispatcher: &str) -> ! {
-    eprintln!("fz panic: {} received null C function pointer", dispatcher);
-    abort();
-}
-
-/// Call a C function shaped like `int f(const char*, int, ...)` with one
-/// integer variadic argument. This covers libc `open(path, flags, mode)`.
-///
-/// # Safety
-/// `fn_ptr` must point to a C function with this ABI shape, and `path` must
-/// satisfy that function's pointer contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_i64_to_i64(
-    fn_ptr: usize,
-    path: *const c_char,
-    fixed0: i64,
-    var0: i64,
-) -> i64 {
-    if fn_ptr == 0 {
-        abort_null_fn_ptr("fz_call_var_i64_cstring_i64_i64_to_i64");
-    }
-    type FnPtr = unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int;
-    let f: FnPtr = unsafe { transmute(fn_ptr) };
-    unsafe { f(path, fixed0 as c_int, var0 as c_uint) as i64 }
-}
-
-/// Call a C function shaped like `int f(const char*, ...)` with one integer
-/// variadic argument. This covers simple `printf("%lld", n)`-style calls.
-///
-/// # Safety
-/// `fn_ptr` must point to a C function with this ABI shape, and `fmt` must
-/// satisfy that function's pointer contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_to_i64(fn_ptr: usize, fmt: *const c_char, var0: i64) -> i64 {
-    if fn_ptr == 0 {
-        abort_null_fn_ptr("fz_call_var_i64_cstring_i64_to_i64");
-    }
-    type FnPtr = unsafe extern "C" fn(*const c_char, ...) -> c_int;
-    let f: FnPtr = unsafe { transmute(fn_ptr) };
-    unsafe { f(fmt, var0 as c_longlong) as i64 }
-}
-
 #[cfg(test)]
-#[path = "extern_variadic_test.rs"]
-mod extern_variadic_test;
+#[path = "symbol_lookup_test.rs"]
+mod symbol_lookup_test;

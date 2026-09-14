@@ -75,21 +75,21 @@ exporting by default is what made
 `fz_bitstring_is_binary` resolve on macOS and die on Linux with
 `can't resolve symbol` while the whole six-target local gate was green.
 
-There is no variadic form of the `fz` ABI: every variadic call goes through a
-fixed-arity C dispatcher, which has nowhere to put the implicit process
-argument. The combination is refused at the declaration rather than in each
-door's lowering.
+There is no variadic form of the `fz` ABI: a variadic call's parameter list is
+built per call site from the C rules alone, which leaves nowhere to put the
+implicit process argument. The combination is refused at the declaration rather
+than in each door's lowering.
 
 ### A foreign symbol has to be in the process to be found
 
-`fz_extern_symbol_addr` is the ONE resolver for a symbol, fz's own exports
-included, and every runtime door goes through it: the interpreter's
-`resolve_symbol` and its variadic path call it, and the JIT is built with it as
-its `symbol_lookup_fn` rather than cranelift's own `dlsym`. That matters because
-the question had THREE answers, each a separate `dlsym(RTLD_DEFAULT, ..)`, and
-they disagreed one at a time: teaching the resolver to open libm fixed the
-variadic path, routing the JIT through it fixed `run`, and `resolve_symbol`'s
-own raw dlsym kept `interp` failing after both.
+`fz_extern_symbol_addr` (`runtime/src/symbol_lookup.rs`) is the ONE resolver for
+a symbol, fz's own exports included, and every runtime door goes through it: the
+interpreter's `resolve_symbol` and its variadic path call it, and the JIT is
+built with it as its `symbol_lookup_fn` rather than cranelift's own `dlsym`.
+That matters because the question had THREE answers, each a separate
+`dlsym(RTLD_DEFAULT, ..)`, and they disagreed one at a time: teaching the
+resolver to open libm fixed the variadic path, routing the JIT through it fixed
+`run`, and `resolve_symbol`'s own raw dlsym kept `interp` failing after both.
 
 It tries `dlsym(RTLD_DEFAULT, ..)` first, which searches the loaded global
 scope, and then a fixed list of standard C libraries it opens itself
@@ -145,8 +145,8 @@ as. A foreign function accepts neither, so a foreign declaration of `"fz"` is
 refused. `resolve_extern_abi` raises that in the shared front end, which is the
 only place a refusal reaches every door identically.
 
-A variadic `extern "fz"` is refused for a related reason: a variadic call goes
-through a fixed-arity C dispatcher, which has nowhere to put the process.
+A variadic `extern "fz"` is refused for a related reason: a variadic call's
+parameter list follows the C rules, which leave nowhere to put the process.
 
 Both checks are DEMAND-GATED. An extern that is declared and never called is
 never lowered, so neither fires — the declaration compiles silently.
@@ -310,15 +310,20 @@ inferred fz type, into a concrete `ExternTy` at an `ExternMarshalSite`:
 
 ```text
 integer type   -> I64
-float type     -> F64
+float type     -> error: a variadic argument is an integer or a pointer
 binary/string  -> error: must be written `:: cstring` (NUL) or `:: binary` (raw bytes)
 anything else  -> error
 ```
 
-The defaults are deliberately narrow — only integer and float auto-resolve — so
+The defaults are deliberately narrow — only an integer auto-resolves — so
 pointer-shaped wire types are always spelled out at the call. Resolution is per
 specialization, because one syntactic call can need different marshal classes in
 different contexts, so there is no single answer baked onto the declaration.
+
+A float is refused whether it is inferred or ascribed `:: float`, because the
+generated variadic call cannot carry one (see below). The refusal lives in
+`resolve_extern_marshals`, which is the shared front end, so all three doors
+refuse the same program with the same message.
 
 ```fz
 extern "C" defp libc::printf(fmt :: cstring, ...) :: integer
@@ -361,23 +366,56 @@ this coercion on the way out. The declared bound answers only where the call
 pinned nothing, so `t` is whatever the caller passed, the empty list included:
 `dbg([])` is typed `[]` and not `any` (`types::arrow_match`, fz-kdt.120).
 
-## Runtime variadic dispatchers
+## Variadic calls
 
-A C-variadic call does not emit a backend call directly; it goes through an
-exported fixed-arity helper in `runtime/src/extern_variadic.rs`. Helper names are
-mechanical — `fz_call_var_<ret>_<fixed...>_<var...>_to_<ret>` — and each token is
-the fz marshal class at the boundary; the helper body owns the C cast (e.g.
-casting fz integer lanes to `c_int`/`c_uint`). The indirection exists because
-Cranelift exposes a fixed `Signature` with no variadic marker, so emitting `open`
-as a plain fixed-arity call would not be ABI-correct. The backend (and the
-interpreter) select a concrete dispatcher from the call's resolved marshal shape;
-an unsupported shape is a diagnostic listing the concrete `ExternTy`s.
+A C variadic function has two argument lists at the machine level: the fixed
+prefix, passed like any other C call's arguments, and the variadic tail, whose
+placement the platform ABI describes separately so `va_arg` can walk it.
+Cranelift cannot express the distinction — a `Signature` is a flat parameter
+list with no marker (bytecodealliance/wasmtime#1030) — so fz produces the
+placement by choosing the parameter list, in one lowering that every door
+reaches: `emit_variadic_c_call` in `native_codegen/variadic.rs`.
 
-`fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)`, caching hits
-and misses; it returns `0` for an unresolved symbol (treated as failure, not a
-callable pointer). All execution paths share these symbols: the JIT and
-interpreter resolve at run time; AOT reaches the same exported runtime symbols
-through the staticlib link.
+With variadic arguments restricted to integer and pointer values:
+
+- on **x86-64 SysV** and **Linux AArch64** a variadic argument goes exactly
+  where an ordinary argument of the same type would, so an ordinary call whose
+  signature lists the variadic values as extra integer parameters IS the
+  variadic call;
+- on **Apple AArch64** variadic arguments never use registers: each occupies its
+  own 8-byte stack slot starting at the stack pointer. The lowering produces
+  that by padding the parameter list with dummy `I64` parameters until all eight
+  integer argument registers are spoken for, so every parameter after them is
+  assigned to the stack. It is exact, not approximate: an Apple variadic slot is
+  8 bytes, a stack integer or pointer parameter is 8 bytes, and both areas begin
+  at the stack pointer, so the padded call's overflow area is byte-for-byte the
+  variadic area the callee reads. A fixed parameter in the float bank does not
+  consume an integer register and is not counted.
+
+The strategy and the measurement behind it come from rustc's own Cranelift
+backend, [rustc_codegen_cranelift
+#1500](https://github.com/rust-lang/rustc_codegen_cranelift/pull/1500).
+
+The integer-only restriction is what makes one lowering right on all three
+targets. A float variadic argument would additionally need the caller to set
+x86-64's `%al` to the number of vector registers used, which a generated
+ordinary call has no way to say. That is why the marshal front end refuses one.
+
+Each door supplies the callee's address its own way. Native codegen declares the
+foreign symbol as an ordinary `Linkage::Import` function — a placeholder
+signature nothing calls through — and takes its `func_addr`, so the linker or
+the JIT's symbol lookup resolves it like any other extern. The interpreter has
+no linker, so it resolves the address through `fz_extern_symbol_addr` and then
+calls a generated trampoline: one JIT'd
+`extern "C" fn(callee: usize, words: *const u64) -> u64` per call shape, which
+loads the marshalled argument words out of the array and reaches the same
+lowering. The trampolines and the module holding their code live together on
+`IrInterpRuntime`, built on first use and memoized by shape (fixed lanes,
+variadic count, result lane). Two parameters is all the trampoline takes, so
+`MAX_INTERP_EXTERN_ARGS` never applies to a variadic call.
+
+A variadic call's result is a scalar integer lane; a float-returning variadic
+declaration is refused at each door.
 
 ## Resource typing
 
@@ -412,4 +450,6 @@ cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
 cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
 cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic
 cargo test --test fixture_matrix extern_float_lanes   # register banks, 3 doors
+cargo test --test fixture_matrix variadic_three_integers  # variadic ABI, 3 doors
+cargo test --test aot_variadic_open                   # variadic call through the linker
 ```

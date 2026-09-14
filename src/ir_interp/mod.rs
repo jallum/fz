@@ -88,6 +88,10 @@ pub(crate) struct IrInterpRuntime {
     node: Rc<Node>,
     current_proc: *mut Process,
     callback_error: Option<String>,
+    /// Generated trampolines for C variadic calls, built on first use. They
+    /// carry the machine code the interpreter calls out through, so the
+    /// runtime that hands out a trampoline owns the module it lives in.
+    variadic_trampolines: Option<Box<extern_call::VariadicTrampolines>>,
 }
 
 impl IrInterpRuntime {
@@ -103,6 +107,7 @@ impl IrInterpRuntime {
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
             callback_error: None,
+            variadic_trampolines: None,
         }
     }
 
@@ -154,6 +159,11 @@ impl IrInterpRuntime {
             process.detach_runtime_state();
             process
         })
+    }
+
+    fn variadic_trampolines(&mut self) -> &mut extern_call::VariadicTrampolines {
+        self.variadic_trampolines
+            .get_or_insert_with(|| Box::new(extern_call::VariadicTrampolines::new()))
     }
 
     #[inline]

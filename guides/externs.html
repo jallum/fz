@@ -185,17 +185,21 @@ Use <code>binary</code>. Calling <code>open(path, flags)</code>? Use
 
 <p>Fixed arguments use the declaration's marshal classes. Extra arguments
 are resolved at the call site after type inference: integers default to
-<code>integer</code>, floats default to <code>float</code>, and binaries must
-be written explicitly because C cannot infer whether the pointer should be
-<code>binary</code> or <code>cstring</code>.</p>
+<code>integer</code>, and binaries must be written explicitly because C cannot
+infer whether the pointer should be <code>binary</code> or
+<code>cstring</code>.</p>
 
 <pre><span class="fn">libc::printf</span>(<span class="str">"answer=%lld\n"</span> <span class="kw">::</span> <span class="ty">cstring</span>, <span class="num">42</span>)</pre>
 
-<p>The currently implemented variadic dispatcher set is deliberately small:
-<code>open(path, flags, mode)</code> and simple printf-style calls with one
-integer argument. If a call's fixed and variadic marshal classes do not match
-one of the supported shapes, fz reports an unsupported variadic extern shape
-instead of guessing.</p>
+<p>An extra argument carries an integer or a pointer, and nothing else. That
+covers <code>integer</code>, <code>cstring</code>, <code>binary</code>,
+<code>boolean</code> and <code>any</code>; a <code>float</code> is refused,
+whether it is inferred or written <code>:: float</code>. The reason is the
+machine call: the platform describes where a variadic argument goes, fz builds
+that placement itself, and a float would additionally need a register count
+that the generated call has no way to set. There is no fixed list of supported
+shapes — any number of extra integer and pointer arguments works, on every
+door.</p>
 
 <h3>Opening a file with mode bits</h3>
 
