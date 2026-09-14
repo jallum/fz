@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-acn.4"
+  ],
   "blocks": [],
   "created": "2026-09-14T12:19:36Z",
   "description": "src/ir_interp/dispatch_exec.rs: DispatchExecState is HashMap\u003cSubjectId, BackendBoundValue\u003e, cloned whole at every DispatchNode::Test (:117) and at every Outcome, so a plan with k tests performs k map clones per decision; every cache hit clones a lane vector (:245, :302). The native lowering has the same shape (DispatchState::clone per Test in lower_dispatch_node) but pays it once per plan at compile time. About a quarter of interpreter samples on tail_recursion sit under execute_dispatch_node.\n\nSubjects are dense ids (plan.matrix.subjects[id]). Every writer into the state is a pure resolution of (subject, operands), so entries carried across a miss are value-identical. The one non-obvious case is a bitstring shape that writes extracted field subjects and then fails (:781 then :787/:795) while dispatch_bit_size_value (:801-810) reads state for BitstringFieldSize::Binding.\n\nChange: DispatchExecState becomes Vec\u003cOption\u003cBackendBoundValue\u003e\u003e sized by the plan's subject count plus an undo journal (Vec\u003cSubjectId\u003e of writes since the branch point; on miss, truncate and clear). Accessors return references so a cache hit no longer clones. Lines go up slightly; allocations go from one clone per Test node to one vector per run. The journal keeps the bitstring case closed by construction.\n\nSignal: the bitstring fixtures (00309, 00326, 00339) and entry_dispatch_decides_a_lane_form_tuple_from_its_lanes on three doors; a unit test over a plan with nested tests asserting one state allocation per run.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Dispatch state is a dense vector with an undo journal; no clone per Test node",
   "type": "task",
-  "updated_at": "2026-09-14T17:16:12Z"
+  "updated_at": "2026-09-14T17:16:23Z"
 }
