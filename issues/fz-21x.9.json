@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T00:20:11Z",
+  "description": "Step 6 of the extern door collapse (approved 2026-09-13). Native codegen refers to the runtime helpers it calls by string name, so an 88-row table maps name to Cranelift signature, and every module declares all 88 imports up front into RuntimeRefs (88 FuncId fields) through eleven intermediate structs threaded through 31 function signatures to 136 call sites. The helper's identity is the Rust function item: its type is the signature, stringify! is the linker name. Replace with runtime_call!(body, fz_list_cons_int, [args]): a CLane trait maps Rust lane types to Cranelift types (i64/u64/usize/pointers -\u003e I64, i32/u32 -\u003e I32, u8/bool -\u003e I8, f64 -\u003e F64, unit -\u003e no return); a RuntimeFn trait implemented over unsafe extern \"C\" fn pointer types per arity derives the Signature; the macro coerces the item with one _ per argument so arity comes from the call and types from the item; call_runtime declares the import on first use in a body, memoized by the item's address, and emits the call. Probed in a scratch crate 2026-09-13: derived signatures match today's table rows exactly for safe and unsafe items, arities 0 to 10. Deleted: runtime_import_types, decl_import, import_sig, runtime_import_sig_for_module, declare_runtime_symbols, the eleven *Refs structs, RuntimeRefs, call_named, the 31 \u0026RuntimeRefs parameters, and aot_main.rs's hand-typed fz_aot_* signatures (same mechanism). Remains: a small struct of ids for the seven local bodies codegen itself emits (halt-continuation bodies, entry thunk, main trampoline, drain-dtor entry), owned by driver.rs. No behaviour change; proof is the full gate and the fixture matrix; a helper with an uncovered type is a compile error.",
+  "id": "fz-21x.9",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Runtime calls declared on demand from the function item; delete the import table and RuntimeRefs",
+  "type": "task",
+  "updated_at": "2026-09-14T00:20:11Z"
+}
