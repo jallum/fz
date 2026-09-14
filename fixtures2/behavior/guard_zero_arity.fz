@@ -1,0 +1,22 @@
+#---
+# purpose: "a zero-arity clause may carry a guard, and the guard decides it"
+# oracle: oracle.exs
+#---
+#
+# # guard_zero_arity
+#
+# A guard rides a carrier subject in its plan. A function with no parameters
+# has no input for that carrier, so the plan mints a subject for it. The plan
+# reads nothing of its inputs through that subject, and the compiler must not
+# ask a caller for an argument that does not exist: the guard is decided on
+# its own terms, and the clause it guards is chosen or skipped like any other.
+def main() do
+  dbg(pick())
+  dbg(fallback())
+end
+
+defp pick() when 1 > 0, do: :guarded
+defp pick(), do: :plain
+
+defp fallback() when 1 > 2, do: :guarded
+defp fallback(), do: :plain
