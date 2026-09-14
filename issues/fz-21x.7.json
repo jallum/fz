@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-14T00:31:19Z",
   "created": "2026-09-13T23:56:45Z",
   "description": "Step 5 of the extern door collapse (approved 2026-09-13). Two questions about ExternTy are each answered in several places. (1) Which machine lane a wire type rides in: F64 is the float register, everything else one integer word; written four times (lower_extern_generic params and return, lower_extern_pair_call, c_pair_return_types::natural). Fix: one method on ExternTy; the four sites call it. (2) Which wire type a source spelling names: extern_ty_from_name (variadic call ascriptions; knows any/atom/boolean/integer/float/nil/never/binary/cstring), explicit_extern_wire_hint (declared params; knows binary/cstring/unit/nil), normalize_extern_semantic_body (rewrites cstring-\u003ebinary, unit-\u003enil for the type checker). Fix: one table from spelling to wire type with a flag for the two wire-only spellings; the three functions become lookups. ty_to_extern_ty stays (semantic type -\u003e lane through the type calculator, a different question). No behaviour change; proof is the full gate, the fixture matrix, extern_float_lanes and the pair-return fixtures.",
   "id": "fz-21x.7",
   "labels": [],
   "parent": "fz-21x",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "One wire alphabet: one lane rule and one spelling table for ExternTy",
   "type": "task",
-  "updated_at": "2026-09-13T23:56:45Z"
+  "updated_at": "2026-09-14T00:31:19Z"
 }
