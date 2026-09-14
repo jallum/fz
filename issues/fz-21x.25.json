@@ -10,11 +10,15 @@
     {
       "text": "Second aggravating case, measured 2026-09-14 on 7123a9061: fixtures2/behavior/tail_recursion.fz (count(100000, 0) with 'count(n - 1, acc + 1)') on the interpreter door takes 4.2s against 1.35s at 4f49465f9; compile is 0.1s of that, the rest is execution. Heap counters around the loop: 200,000 struct allocations on interp and on run (one per + and -), zero at the baseline. The JIT runs the same loop in 0.32s despite the allocations, so on the interpreter the arithmetic route (a Kernel clause call, the extern, an arithmetic_result call whose entry re-boxes the pair) costs about 14us per operation. Consequence: matrix::tail_recursion::interp trips CI's 20s guard under contention (run 34839703161), so PR #158 has a flaky lane until this lands. Signal for the fix: interp time on tail_recursion returns to the baseline's order and struct_allocs is 0 across the loop.",
       "timestamp": "2026-09-14T12:03:03Z"
+    },
+    {
+      "text": "GitHub issue: https://github.com/jallum/fz/issues/163",
+      "timestamp": "2026-09-14T12:28:37Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Entry dispatch re-boxes a lane-form tuple parameter to destructure it: one heap struct per destructuring call",
   "type": "bug",
-  "updated_at": "2026-09-14T12:19:11Z"
+  "updated_at": "2026-09-14T12:28:37Z"
 }
