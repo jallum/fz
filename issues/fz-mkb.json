@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T19:56:37Z",
+  "description": "`def take(n, \u003c\u003cs :: binary-size(n), _ :: binary\u003e\u003e)` reports \"undefined variable \\\"n\\\"\" with the caret under `s`, because `BitSize::Var(String)` in the AST has no span and the producer uses the field value's span (pattern.rs pin_for_name call site). Elixir points at `n`. Fix: `BitSize::Var` carries a Spanned name from the parser; pin_for_name records it. One parser change, one field. Signal: the head_size_pins_nothing fixture's expected.stderr moves its caret to the size name.",
+  "id": "fz-mkb",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "A bitstring size name carries no span, so its diagnostic points at the field value",
+  "type": "task",
+  "updated_at": "2026-09-14T19:56:37Z"
+}
