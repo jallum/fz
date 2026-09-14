@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T12:19:36Z",
+  "description": "src/ir_interp/dispatch_exec.rs: DispatchExecState (HashMap\u003cSubjectId, value\u003e) is cloned for the match branch at every DispatchNode::Test and at every Outcome, so a plan with k tests performs k map clones per decision. Pre-existing before fz-21x.25; that ticket makes the cell a BackendBoundValue whose Transport arm carries a lane vector, so each clone gets slightly heavier. The native lowering has the same shape (DispatchState::clone per Test in lower_dispatch_node) but pays it at compile time once per plan, not per call.\n\nFix direction: the match branch only ever ADDS projections, so a scoped undo (record the subjects inserted along the match path, remove them when lowering the miss path) or a persistent map replaces the clone. One implementation of the scoping for both the interpreter executor and the native lowering.\n\nSignal: an evaluation counter on the executor, or a unit test over a plan with several nested tests asserting the number of state copies.",
+  "id": "fz-21x.27",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 3,
+  "status": "open",
+  "title": "Interpreter dispatch executor clones its whole subject state at every Test node",
+  "type": "task",
+  "updated_at": "2026-09-14T12:19:36Z"
+}
