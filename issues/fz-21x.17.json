@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-21x.22"
+  ],
   "blocks": [],
   "created": "2026-09-14T03:26:20Z",
   "description": "Found 2026-09-14 while grokking selective receive for 8b. runtime/src/park.rs:21-23 states the matcher allocates nothing and cites check_pure_codegen, which does not exist anywhere in the tree. Violations: fz_bs_reader_init_ref allocates a 3-tuple on process-\u003eheap (runtime/src/ir_runtime.rs:1287-1300) and is called from the matcher (native_codegen/receive.rs:1103); the interpreter's guard evaluation can allocate a UTF-8 binary on the SENDER's heap at probe time (src/ir_interp/dispatch_exec.rs:451-467). Heap asymmetry: JIT (src/exec/runtime.rs:203) and interp (src/ir_interp/backend.rs:282) run the receiver's matcher against a message still in the sender's heap while passing the receiver's *mut Process; AOT deep-copies into the receiver first (aot_shim.rs:535-542). Nothing records whose heap a matcher may touch. Also: receive.rs module doc (lines 4-17) omits the process parameter of MatcherFn. Resolution path: the per-function purity fact planned for 8b (no allocation, no process) becomes the enforced contract for everything the matcher runs; projection helpers that allocate must stop allocating or leave the matcher; the doc states the heap rule per door.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Matcher purity contract is asserted, unenforced, and violated; whose heap at probe time is per-door",
   "type": "bug",
-  "updated_at": "2026-09-14T03:26:20Z"
+  "updated_at": "2026-09-14T10:58:51Z"
 }
