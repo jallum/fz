@@ -11873,8 +11873,15 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// entry dispatch. They all ask `Region::TupleArity`, which this census counts
 /// as unreadable; the readable denominator stays 8 and every blind population
 /// is unchanged.
+/// fz-21x.5: `entry` 179 -> 184 plans, 171 unreadable either way. `==` and
+/// `===` gained a typed clause per numeric pair, so each now has an entry
+/// dispatch asking `Region::Type` where the lone `any`/`any` clause asked
+/// nothing. The five plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
+/// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
+/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are READABLE, so
+/// the denominator rises 8 -> 13 and every blind population stays empty.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 179, 171), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 184, 171), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13441,7 +13448,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
 
     let program = backend.last(root_id).program;
     let summaries = callsites.all();
-    let mut found = false;
+    let mut dispatching = Vec::new();
     for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
@@ -13465,12 +13472,20 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
                 "multi-target summary should lower as a multi-arm dispatch edge: {:?}",
                 summary.summary,
             );
-            found = true;
+            dispatching.push(crate::compiler2::canon::function_label(
+                compiler.world(),
+                executable.key.activation.function,
+            ));
         }
     }
-    assert!(
-        !found,
-        "membership_operator should now settle each protocol receiver to a direct impl instead of lowering a spurious dispatch edge",
+    dispatching.sort();
+    dispatching.dedup();
+    assert_eq!(
+        dispatching,
+        ["Kernel.===/2"],
+        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the one \
+         multi-target callsite left is inside `===`, whose `any`/`any` clause serves every non-numeric pair \
+         at once and calls an extern that is keyed per operand type",
     );
 }
 

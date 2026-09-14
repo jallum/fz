@@ -1671,11 +1671,17 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
-    ("fixtures2/behavior/enum_predicate_search.fz", 75, 12, 162, 85),
+    // fz-21x.5: 162/85 -> 170/89 StaticCallees evaluations/blocks. `==` gained
+    // a typed clause per numeric pair, and this fixture reaches four of them;
+    // the callees of each are derived once, so component work stays at 75.
+    ("fixtures2/behavior/enum_predicate_search.fz", 75, 12, 170, 89),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
-    ("fixtures2/behavior/enum_take_drop_split.fz", 128, 26, 265, 136),
+    // fz-21x.5: 128 -> 129 component evaluations and 265/136 -> 273/140
+    // StaticCallees evaluations/blocks, for the typed `==` clauses this
+    // fixture's predicates reach.
+    ("fixtures2/behavior/enum_take_drop_split.fz", 129, 26, 273, 140),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -2152,6 +2158,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // every other formula-family count and the final artifacts stay flat.
         // fz-5xp.30: 545 -> 551 reached helper/status analyses; equal
         // re-derivations remain flat at 3.
+        // fz-21x.5: the typed `==` clauses add reached formulas but no
+        // activation, so this stays at 551.
         analyze_evaluations: 551,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
@@ -2176,7 +2184,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retained claim or final executable population.
         // fz-5xp.30: 1459 -> 1495. The generic arithmetic helper boundary
         // adds reached formulas; every evaluation remains causally attributed.
-        total_evaluations: 1495,
+        // fz-21x.5: 1495 -> 1535. `==` carries a typed clause per numeric pair,
+        // so the predicates that compare here reach that family's clauses and
+        // externs; analysis evaluations and every claim population stay flat.
+        total_evaluations: 1535,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2353,7 +2364,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // reproductions remain flat.
         // fz-5xp.30: 891 -> 903. The ordinary generic result/status helpers
         // add twelve reached analyses; equal re-derivations remain 15.
-        analyze_evaluations: 903,
+        // fz-21x.5: 903 -> 904. One more analysis for the typed `==` family
+        // this fixture's predicates reach.
+        analyze_evaluations: 904,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
@@ -2366,7 +2379,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // retained claim or final executable population.
         // fz-5xp.30: 2469 -> 2507. The ordinary generic arithmetic boundary
         // accounts for thirty-six additional semantic evaluations.
-        total_evaluations: 2507,
+        // fz-21x.5: 2507 -> 2551. The typed `==` clauses and their externs are
+        // reached formulas; the activation and callsite populations are flat.
+        total_evaluations: 2551,
     },
 ];
 

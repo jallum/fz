@@ -1079,9 +1079,12 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // prerequisite set one arbiter boundary and made the job span timing-only;
     // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
     // steps. The bounds retain modest headroom while unrelated public-stream
-    // creep still trips.
+    // creep still trips. fz-21x.5 raised 00181's event bound: `==` carries a
+    // typed clause per numeric pair, and this fixture compares, so the stream
+    // gained that family's completions -- measured 3,000 -> 3,012 events and
+    // 1,466,887 -> 1,474,958 bytes with only `lib/kernel.fz` swapped.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_060, 1_600 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");

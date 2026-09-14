@@ -2273,6 +2273,9 @@ end
         let second_activation = world.activation_key(root, second, &[]);
         let sink_activation = world.activation_key(root, sink, &[int_list]);
         let other_activation = world.activation_key(root, other, &[int_list]);
+        // `sink` forwards its argument into `==`, which asks whether an operand
+        // is a number, so the two element types stay apart in `sink`'s key.
+        let sink_atom_activation = world.activation_key(root, sink, &[atom_list]);
 
         let first_effects = analyze_activation(&mut world, &tel, &first_activation)
             .expect("the actual AnalyzeActivation job should conclude");
@@ -2281,7 +2284,7 @@ end
             vec![
                 (sink_activation.clone(), vec![int_list]),
                 (other_activation, vec![int_list]),
-                (sink_activation.clone(), vec![atom_list]),
+                (sink_atom_activation, vec![atom_list]),
             ],
             "the emission boundary should remove only the repeated key+row and preserve first-observed order",
         );

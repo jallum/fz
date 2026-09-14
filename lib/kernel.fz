@@ -14,8 +14,10 @@ defmodule Kernel do
     * `dbg/1`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
 
   Every arithmetic and comparison operator is a typed clause family: one
-  clause per pair of operand types it supports, and no catch-all. A pair
-  outside that set is refused at compile time rather than answered.
+  clause per pair of operand types it supports. Arithmetic and ordering have
+  no catch-all, so a pair outside that set is refused at compile time rather
+  than answered. Equality and identity are total, and add an `any`/`any`
+  clause for every other pair of values.
   """
 
   extern "fz" defp fz_dbg_value(any) :: any
@@ -68,6 +70,18 @@ defmodule Kernel do
   extern "fz" defp fz_op_neq(any, any) :: boolean
   extern "fz" defp fz_op_identical(any, any) :: boolean
   extern "fz" defp fz_op_not_identical(any, any) :: boolean
+  extern "C" defp fz_op_eq_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_eq_ff(float, float) :: boolean
+  extern "C" defp fz_op_eq_if(integer, float) :: boolean
+  extern "C" defp fz_op_eq_fi(float, integer) :: boolean
+  extern "C" defp fz_op_neq_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_neq_ff(float, float) :: boolean
+  extern "C" defp fz_op_neq_if(integer, float) :: boolean
+  extern "C" defp fz_op_neq_fi(float, integer) :: boolean
+  extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_identical_ff(float, float) :: boolean
+  extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean
+  extern "C" defp fz_op_not_identical_ff(float, float) :: boolean
   extern "C" defp fz_op_lt_if(integer, float) :: boolean
   extern "C" defp fz_op_lt_fi(float, integer) :: boolean
   extern "C" defp fz_op_lte_if(integer, float) :: boolean
@@ -444,11 +458,14 @@ defmodule Kernel do
   # four numeric combinations out one clause at a time; comparison does the
   # same, so a mixed pair is answered by a typed clause on unboxed lanes
   # rather than by codegen boxing an operand and coercing it behind our back.
-  # Ordering is a partial function: there is a clause per pair it can order and
-  # no `any`/`any` default, so an unsupported combination has no matching clause
-  # and is refused rather than answered wrongly. Equality is total and keeps its
-  # single structural clause; `==` widens numerics inside the comparator, where
-  # structural identity can stay strict beside it.
+  # Every comparison operator is a typed clause family over those numeric
+  # pairs. Ordering is a partial function: it has a clause per pair it can
+  # order and no `any`/`any` default, so an unsupported combination has no
+  # matching clause and is refused rather than answered wrongly. Equality and
+  # identity are total, so they keep an `any`/`any` clause beside the typed
+  # ones: two numbers are answered on unboxed lanes, and every other pair
+  # falls through to the structural comparator, which widens numerics for `==`
+  # and stays strict for `===`.
 
   @doc """
   Returns whether `left` is less than `right`.
@@ -615,7 +632,15 @@ defmodule Kernel do
       #=> true
 
   """
+  @spec integer == integer :: boolean
+  @spec float == float :: boolean
+  @spec integer == float :: boolean
+  @spec float == integer :: boolean
   @spec any == any :: boolean
+  def (left :: integer) == (right :: integer), do: fz_op_eq_ii(left, right)
+  def (left :: float) == (right :: float), do: fz_op_eq_ff(left, right)
+  def (left :: integer) == (right :: float), do: fz_op_eq_if(left, right)
+  def (left :: float) == (right :: integer), do: fz_op_eq_fi(left, right)
   def left == right, do: fz_op_eq(left, right)
 
   @doc """
@@ -630,7 +655,15 @@ defmodule Kernel do
       #=> false
 
   """
+  @spec integer != integer :: boolean
+  @spec float != float :: boolean
+  @spec integer != float :: boolean
+  @spec float != integer :: boolean
   @spec any != any :: boolean
+  def (left :: integer) != (right :: integer), do: fz_op_neq_ii(left, right)
+  def (left :: float) != (right :: float), do: fz_op_neq_ff(left, right)
+  def (left :: integer) != (right :: float), do: fz_op_neq_if(left, right)
+  def (left :: float) != (right :: integer), do: fz_op_neq_fi(left, right)
   def left != right, do: fz_op_neq(left, right)
 
   # `===` asks whether two values are the same value, where `==` compares
@@ -651,7 +684,15 @@ defmodule Kernel do
       #=> true
 
   """
+  @spec integer === integer :: boolean
+  @spec float === float :: boolean
+  @spec integer === float :: boolean
+  @spec float === integer :: boolean
   @spec any === any :: boolean
+  def (left :: integer) === (right :: integer), do: fz_op_identical_ii(left, right)
+  def (left :: float) === (right :: float), do: fz_op_identical_ff(left, right)
+  def (_left :: integer) === (_right :: float), do: false
+  def (_left :: float) === (_right :: integer), do: false
   def left === right, do: fz_op_identical(left, right)
 
   @doc """
@@ -667,6 +708,14 @@ defmodule Kernel do
       #=> false
 
   """
+  @spec integer !== integer :: boolean
+  @spec float !== float :: boolean
+  @spec integer !== float :: boolean
+  @spec float !== integer :: boolean
   @spec any !== any :: boolean
+  def (left :: integer) !== (right :: integer), do: fz_op_not_identical_ii(left, right)
+  def (left :: float) !== (right :: float), do: fz_op_not_identical_ff(left, right)
+  def (_left :: integer) !== (_right :: float), do: true
+  def (_left :: float) !== (_right :: integer), do: true
   def left !== right, do: fz_op_not_identical(left, right)
 end

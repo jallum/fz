@@ -119,11 +119,16 @@ here — see the JIT symbol table above.
 ## Comparison exports are ordinary calls
 
 `<`, `<=`, `>`, `>=`, `==`, `!=`, `===` and `!==` are ordinary `Kernel`
-functions. Each ordering has one typed clause per operand pair it can order —
-integer/integer, float/float, integer/float, float/integer, binary/binary —
-whose body calls the matching `fz_op_*` extern declaration; `==` and its
-siblings have one `any`/`any` clause each calling `fz_op_eq`, `fz_op_neq`,
-`fz_op_identical` or `fz_op_not_identical`.
+functions, and each is a typed clause family whose clause bodies call the
+matching `fz_op_*` extern declaration. An ordering has one clause per operand
+pair it can order — integer/integer, float/float, integer/float,
+float/integer, binary/binary — and nothing else. Equality and identity have
+the four numeric pairs too, on raw `extern "C"` lanes, so comparing two
+unboxed numbers boxes neither; mixed-pair identity is answered in source,
+since an integer is never the same value as a float. Because they are total,
+they each also keep a trailing `any`/`any` clause calling the ref-carrying
+`fz_op_eq`, `fz_op_neq`, `fz_op_identical` or `fz_op_not_identical`, which is
+what answers every other pair of values.
 
 Every one of those declarations crosses its door the same way every other
 declaration does: `lower_extern_generic` on the native doors, the ordinary FFI

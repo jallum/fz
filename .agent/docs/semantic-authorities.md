@@ -100,13 +100,15 @@ signed-zero identity; widening mode equates signed zeros.
 `fz_value_cmp_raw_const` compares a ref against an unboxed payload without
 allocating a scalar box.
 
-`Kernel` declares a typed clause per orderable pair — numbers and binaries —
-and NO `any`/`any` clause, so `1 < :atom` is refused at compile time rather
-than answered wrongly at run time. The total order is reached through
-`Kernel.compare/2`, which `Enum.sort/1` uses. That split is not tidiness:
-giving the operators a catch-all makes every comparison callsite with an
-unresolved operand blind to the dispatcher, which the blind-escape census
-catches as a latent miscompile (fz-5xp.64).
+For the ORDERING operators `Kernel` declares a typed clause per orderable
+pair — numbers and binaries — and NO `any`/`any` clause, so `1 < :atom` is
+refused at compile time rather than answered wrongly at run time. The total
+order is reached through `Kernel.compare/2`, which `Enum.sort/1` uses. That
+split is not tidiness: giving an ordering a catch-all makes every ordering
+callsite with an unresolved operand blind to the dispatcher, which the
+blind-escape census catches as a latent miscompile (fz-5xp.64). Equality and
+identity are total functions, so their `any`/`any` clause answers a real pair
+rather than standing in for a missing one.
 
 **Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
 real C functions, and the `Kernel` extern declarations own how they are called.
@@ -118,9 +120,12 @@ calls in native code too.
 Fallible arithmetic returns an unboxed `{result, boolean}` C scalar pair.
 The runtime returns initialized values and a canonical status word; Kernel's
 sole `arithmetic_error/0` helper turns `true` into the temporary `panic(:badarith)`
-policy. Binary and general-value comparisons use the ref-carrying `fz` ABI, so
-they retain process/schema context rather than pretending a C byte pointer has
-a length.
+policy. Numeric comparisons — ordering, equality and identity alike — are raw
+`extern "C"` calls on unboxed integer and float lanes. Binary and
+general-value comparisons use the ref-carrying `fz` ABI instead, so they
+retain process/schema context rather than pretending a C byte pointer has a
+length; that ABI is what `==` and `===` reach through their `any`/`any`
+clause.
 
 `%` is the one operator with no Elixir counterpart to be checked against —
 Elixir has no `%`, and its `rem/2` is integer-only. fz's `%` is C's `fmod`, so

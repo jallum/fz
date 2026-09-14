@@ -235,7 +235,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // fz-5xp.30: ordinary generic arithmetic result/status calls add 54
         // applications and seven executable-fact derivations; their resolved
         // Kernel definitions replace two source-module derivations.
-        (4137, 11, 19, 408),
+        // fz-21x.5: 4137 -> 4181. `==` carries a typed clause per numeric pair
+        // now, so every `x == 1` site lowers and plans that whole family; the
+        // module and executable-fact tallies are untouched because the fixture's
+        // operands stay integers and each site still settles on one clause.
+        (4181, 11, 19, 408),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -244,14 +248,18 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         starts.changed_revision_wake - demand_wake_starts,
         // fz-5xp.30: 1430 -> 1447. The generic result/status helper facts
         // publish sixteen additional non-demand changed revisions.
-        1447,
+        // fz-21x.5: 1447 -> 1464. The typed `==` clauses and their externs
+        // publish seventeen more.
+        1464,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
         starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
         // fz-5xp.30: 1162 -> 1184. The ordinary generic result/status
         // contracts retain twenty-two more blocked prerequisite waits.
-        1184,
+        // fz-21x.5: 1184 -> 1211. The typed `==` clauses retain twenty-seven
+        // more.
+        1211,
         "the blocked-waiter census includes every ordinary generic helper prerequisite",
     );
     assert_eq!(

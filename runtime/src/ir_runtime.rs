@@ -2423,6 +2423,23 @@ numeric_bool_export!(fz_op_lte_fi, (left: f64, right: i64) => crate::term::compa
 numeric_bool_export!(fz_op_gt_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_lt());
 numeric_bool_export!(fz_op_gte_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_le());
 
+// Equality and identity differ only on floats, and on exactly the same rule the
+// structural comparator uses: `==` widens, so `0.0 == -0.0` is true, while
+// `===` is strict, so `0.0 === -0.0` is false. A non-finite float is not a
+// language value, so neither rule has a NaN case to answer.
+numeric_bool_export!(fz_op_eq_ii, (left: i64, right: i64) => left == right);
+numeric_bool_export!(fz_op_eq_ff, (left: f64, right: f64) => left == right);
+numeric_bool_export!(fz_op_eq_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_eq());
+numeric_bool_export!(fz_op_eq_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_eq());
+numeric_bool_export!(fz_op_neq_ii, (left: i64, right: i64) => left != right);
+numeric_bool_export!(fz_op_neq_ff, (left: f64, right: f64) => left != right);
+numeric_bool_export!(fz_op_neq_if, (left: i64, right: f64) => crate::term::compare_int_float(left, right).is_ne());
+numeric_bool_export!(fz_op_neq_fi, (left: f64, right: i64) => crate::term::compare_int_float(right, left).is_ne());
+numeric_bool_export!(fz_op_identical_ii, (left: i64, right: i64) => left == right);
+numeric_bool_export!(fz_op_identical_ff, (left: f64, right: f64) => left.total_cmp(&right).is_eq());
+numeric_bool_export!(fz_op_not_identical_ii, (left: i64, right: i64) => left != right);
+numeric_bool_export!(fz_op_not_identical_ff, (left: f64, right: f64) => left.total_cmp(&right).is_ne());
+
 fn compare_ref_words(process: *mut Process, left: u64, right: u64, mode: NumericMode) -> std::cmp::Ordering {
     let left = any_value_from_ref_word(left, "runtime comparison lhs");
     let right = any_value_from_ref_word(right, "runtime comparison rhs");
