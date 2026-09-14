@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T14:52:18Z",
+  "description": "Pre-existing fork noticed during the fz-21x.25 cold review. The interpreter's boxed matcher (matches_other_struct_axis, src/runtime_type_predicate.rs) admits any struct whose arity the tuple axis does not name at the TOP level: it reads tuples.arities().values. The native boxed emitter (other_flag in src/compiler2/native_codegen/runtime_test.rs ~338-346) excludes every schema id in tuple_schema_ids, which is registered from tuple_arities_at_every_depth and so includes NESTED arities. For a predicate with allow_other_structs whose tuple axis names arity 3 with a nested arity 2, a 2-tuple is refused by the native boxed emitter and admitted by the interpreter's boxed matcher. RuntimeTypePredicate::tuple_positions (the lane-form calculator both lowerings and the boxed emitter's shape enumeration now use) follows the interpreter's reading, so three readers now hang on this fork without a recorded authority.\n\nFix: decide which reading is the denotation (the top-level arity set is the natural one: a nested arity says nothing about the outer value), make the other door read the same set, and pin it with a fixture whose predicate has allow_other_structs plus a nested tuple arity, run on all three doors. Also record the decision in the moduledoc of runtime_test.rs where the axis table lives.",
+  "id": "fz-wof",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] allow_other_structs admits different arities on the interpreter matcher and the native boxed emitter when the tuple axis names a nested arity",
+  "type": "bug",
+  "updated_at": "2026-09-14T14:52:18Z"
+}
