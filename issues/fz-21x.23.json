@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-21x.22"
+    "fz-21x.22",
+    "fz-5xp.20"
   ],
   "blocks": [
     "fz-21x.17",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "One effects fact per function on the World: allocates and fails",
   "type": "task",
-  "updated_at": "2026-09-14T11:12:36Z"
+  "updated_at": "2026-09-14T11:12:37Z"
 }
