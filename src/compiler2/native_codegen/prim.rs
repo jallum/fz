@@ -1,5 +1,6 @@
 //! Primitive lowering helpers for codegen.
 
+use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
 use crate::fz_ir::{
@@ -1924,28 +1925,20 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     if takes_process {
         param_tys.push(types::I64);
     }
-    param_tys.extend(decl.params.iter().map(|t| match t {
-        ExternTy::F64 => types::F64,
-        _ => types::I64,
-    }));
+    // A parameter that carries no value has no lane; `marshal_extern_arg`
+    // refuses one, so the word it would occupy here is never reached.
+    param_tys.extend(decl.params.iter().map(|t| t.lane().unwrap_or(types::I64)));
     let ret = decl.ret.scalar_ty().ok_or_else(|| {
         CodegenError::new(format!(
             "extern `{}` aggregate result reached scalar Prim::Extern lowering",
             decl.symbol
         ))
     })?;
-    let returns_value = !matches!(ret, ExternTy::Unit | ExternTy::Never);
-    let ret_tys: &[ir::Type] = if returns_value {
-        match ret {
-            ExternTy::F64 => &[types::F64],
-            _ => &[types::I64],
-        }
-    } else {
-        &[]
-    };
+    let ret_lane = ret.lane();
+    let returns_value = ret_lane.is_some();
     let mut sig = body.jmod.make_signature();
     sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
-    sig.returns.extend(ret_tys.iter().copied().map(ir::AbiParam::new));
+    sig.returns.extend(ret_lane.map(ir::AbiParam::new));
     let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
         cached
     } else {
@@ -2048,7 +2041,7 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
     sig.params.extend(
         decl.params
             .iter()
-            .map(|ty| ir::AbiParam::new(if *ty == ExternTy::F64 { types::F64 } else { types::I64 })),
+            .map(|ty| ir::AbiParam::new(ty.lane().unwrap_or(types::I64))),
     );
     let physical = c_pair_return_types(body.jmod.isa().triple(), fields)?;
     sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
@@ -2079,7 +2072,7 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
 }
 
 fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
-    let natural = |field| if field == ExternTy::F64 { types::F64 } else { types::I64 };
+    let natural = |field: ExternTy| field.lane().unwrap_or(types::I64);
     match triple.architecture {
         Architecture::X86_64 | Architecture::X86_64h
             if matches!(

@@ -1,6 +1,7 @@
-//! ArgRepr (per-spec ABI shape) and signature builders.
+//! ArgRepr (per-spec ABI shape), extern wire lanes, and signature builders.
 
 use super::*;
+use crate::fz_ir::ExternTy;
 use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
@@ -52,6 +53,30 @@ impl ArgRepr {
             ArgRepr::RawF64 => 2,
             ArgRepr::RawAtom => 3,
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
+        }
+    }
+}
+
+/// The machine lane an extern wire type rides in.
+///
+/// `ExternTy` lives in `fz_ir`, which is free of cranelift, so the lane is an
+/// extension trait here beside `ArgRepr::cl_type`, which answers the same
+/// question for fz's own calling convention.
+pub(crate) trait ExternLane {
+    /// `F64` rides the float register; every other value-carrying wire type
+    /// is one integer-width word. `Unit` and `Never` carry no value, so they
+    /// have no lane. The match is exhaustive on purpose: a new wire type has
+    /// to say which bank it travels in rather than defaulting into the
+    /// integer one.
+    fn lane(self) -> Option<types::Type>;
+}
+
+impl ExternLane for ExternTy {
+    fn lane(self) -> Option<types::Type> {
+        match self {
+            ExternTy::F64 => Some(types::F64),
+            ExternTy::I64 | ExternTy::Bool | ExternTy::Any | ExternTy::Binary | ExternTy::CString => Some(types::I64),
+            ExternTy::Unit | ExternTy::Never => None,
         }
     }
 }

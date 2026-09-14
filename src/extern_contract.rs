@@ -1,10 +1,14 @@
-//! The mapping between an extern declaration's source spellings and the wire
-//! alphabet the boundary speaks.
+//! Extern wire types, from two directions.
 //!
-//! A declaration names its symbol, its parameter and result types, and its
-//! ABI in source syntax. This module turns those spellings into the
-//! `ExternTy` lanes both compilers and the interpreter marshal with, and
-//! carries the extern's semantic contract alongside them.
+//! One table names every source spelling an extern declaration may write —
+//! the `ExternTy` lane it means, whether a declared parameter takes its lane
+//! from the spelling, and, for a wire-only spelling that names a calling
+//! convention the type system has no type for, the semantic spelling the type
+//! checker must see instead.
+//!
+//! `ty_to_extern_ty` answers the other direction: it derives a lane from a
+//! semantic type through the type calculator, which is where every declared
+//! parameter whose spelling does not name its own lane is answered.
 
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::function_surface::CallableSurface;
@@ -29,18 +33,88 @@ pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
     fz_name
 }
 
-pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
-    match name {
-        "any" | "atom" => Some(ExternTy::Any),
-        "boolean" => Some(ExternTy::Bool),
-        "integer" => Some(ExternTy::I64),
-        "float" => Some(ExternTy::F64),
-        "nil" => Some(ExternTy::Unit),
-        "never" => Some(ExternTy::Never),
-        "binary" => Some(ExternTy::Binary),
-        "cstring" => Some(ExternTy::CString),
-        _ => None,
+/// One source spelling of an extern wire type.
+struct WireSpelling {
+    /// The spelling as it is written in a declaration or a call-site
+    /// ascription.
+    name: &'static str,
+    /// The lane the spelling names.
+    ty: ExternTy,
+    /// Whether a declared parameter takes its lane from the spelling rather
+    /// than from its semantic type.
+    lane_from_spelling: bool,
+    /// The semantic spelling a wire-only spelling is rewritten to before the
+    /// type checker sees the contract.
+    semantic: Option<&'static str>,
+}
+
+impl WireSpelling {
+    /// A spelling a declared parameter's lane is read off the semantic type
+    /// for, so an alias or a constraint can widen it.
+    const fn from_semantic_type(name: &'static str, ty: ExternTy) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: false,
+            semantic: None,
+        }
     }
+
+    /// A spelling that names its own lane, because the semantic type cannot:
+    /// `binary` is a pointer convention the calculator reads as `Any`, and
+    /// `nil` carries no value at all.
+    const fn names_its_lane(name: &'static str, ty: ExternTy) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: true,
+            semantic: None,
+        }
+    }
+
+    /// A spelling the type system has no type for. It names its own lane, and
+    /// the contract the type checker sees is rewritten to `semantic`.
+    const fn wire_only(name: &'static str, ty: ExternTy, semantic: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            lane_from_spelling: true,
+            semantic: Some(semantic),
+        }
+    }
+}
+
+const WIRE_SPELLINGS: &[WireSpelling] = &[
+    WireSpelling::from_semantic_type("any", ExternTy::Any),
+    WireSpelling::from_semantic_type("atom", ExternTy::Any),
+    WireSpelling::from_semantic_type("boolean", ExternTy::Bool),
+    WireSpelling::from_semantic_type("integer", ExternTy::I64),
+    WireSpelling::from_semantic_type("float", ExternTy::F64),
+    WireSpelling::from_semantic_type("never", ExternTy::Never),
+    WireSpelling::names_its_lane("nil", ExternTy::Unit),
+    WireSpelling::names_its_lane("binary", ExternTy::Binary),
+    WireSpelling::wire_only("cstring", ExternTy::CString, "binary"),
+    WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
+];
+
+fn wire_spelling(name: &str) -> Option<&'static WireSpelling> {
+    WIRE_SPELLINGS.iter().find(|row| row.name == name)
+}
+
+/// The token the lexer produces for a spelling: `nil` is its own token,
+/// everything else is an identifier.
+fn token_for_spelling(name: &str) -> Tok {
+    if name == "nil" {
+        Tok::Nil
+    } else {
+        Tok::Ident(name.to_string())
+    }
+}
+
+/// The lane a bare type name means, as written in a variadic call site's
+/// `arg :: ty` ascription.
+pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
+    wire_spelling(name).map(|row| row.ty)
 }
 
 #[cfg(test)]
@@ -69,21 +143,20 @@ pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option
     Some(contract)
 }
 
+/// The lane a declared parameter's type tokens name outright. `None` leaves
+/// the answer to `ty_to_extern_ty` and the semantic type.
 pub(crate) fn explicit_extern_wire_hint(body: &TypeExprBody) -> Option<ExternTy> {
-    match body.0.as_slice() {
+    let spelling = match body.0.as_slice() {
         [
             Token {
                 tok: Tok::Ident(name), ..
             },
-        ] => match name.as_str() {
-            "binary" => Some(ExternTy::Binary),
-            "cstring" => Some(ExternTy::CString),
-            "unit" => Some(ExternTy::Unit),
-            _ => None,
-        },
-        [Token { tok: Tok::Nil, .. }] => Some(ExternTy::Unit),
-        _ => None,
-    }
+        ] => name.as_str(),
+        [Token { tok: Tok::Nil, .. }] => "nil",
+        _ => return None,
+    };
+    let row = wire_spelling(spelling)?;
+    row.lane_from_spelling.then_some(row.ty)
 }
 
 /// Derive a coarse C-ABI wire type from a semantic Ty.
@@ -119,18 +192,15 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     ExternTy::Any
 }
 
+/// Rewrite a wire-only spelling to its semantic spelling, so the type checker
+/// sees a type it has.
 fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
     let mut normalized = body.clone();
-    if let [token] = normalized.0.as_mut_slice() {
-        match &token.tok {
-            Tok::Ident(name) if name == "cstring" => {
-                token.tok = Tok::Ident("binary".to_string());
-            }
-            Tok::Ident(name) if name == "unit" => {
-                token.tok = Tok::Nil;
-            }
-            _ => {}
-        }
+    if let [token] = normalized.0.as_mut_slice()
+        && let Tok::Ident(name) = &token.tok
+        && let Some(semantic) = wire_spelling(name).and_then(|row| row.semantic)
+    {
+        token.tok = token_for_spelling(semantic);
     }
     normalized
 }

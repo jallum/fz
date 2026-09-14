@@ -189,6 +189,14 @@ CString   under "C": *const u8 to the bytes with a guaranteed trailing NUL.
 Never     no return lane; returning is a runtime contract violation
 ```
 
+One table in `src/extern_contract.rs` names every source spelling of a wire
+type. Each row carries the `ExternTy` the spelling means, whether a declared
+parameter takes its lane from the spelling (`binary`, `cstring`, `unit`, `nil`)
+or from its semantic type through `ty_to_extern_ty` (everything else, so an
+alias or a constraint can widen it), and, for a wire-only spelling the type
+system has no type for, the semantic spelling the contract is rewritten to
+before the type checker sees it: `cstring` to `binary`, `unit` to `nil`.
+
 ### Fixed C scalar-pair results
 
 An `extern "C"` result written as a fixed two-field tuple of `integer`,
@@ -239,6 +247,12 @@ failed Cranelift verification (fz-5xp.31, fz-5xp.19).
 
 What follows from the invariant:
 
+- `ExternLane::lane` (`native_codegen/repr.rs`) is the one definition of which
+  bank a wire type travels in: `F64` is the float register, every other
+  value-carrying type is one integer-width word, `Unit` and `Never` have no
+  lane at all. It is an extension trait rather than a method on `ExternTy`
+  because `fz_ir` is free of cranelift. Every native signature — fixed params,
+  scalar return, pair fields — reads the bank from it.
 - `lower_extern_generic` gives `F64` its own `LowerOut::RawF64` lane, and the
   return match is exhaustive on purpose. A wildcard there is what let `F64`
   default into the `ValueRef` arm in the first place.
