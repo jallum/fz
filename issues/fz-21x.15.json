@@ -8,10 +8,10 @@
   "description": "Measured 2026-09-14 on interp and run (JIT): a dispatch-pure guard helper 'defp int?(_n :: integer), do: true' used as 'def g(x) when int?(x)' answers :matched for g(:a). The annotated parameter is named with a leading underscore, and its type does not become a plan precondition in reify_guard_dispatch, so the helper admits every value. Repro: scratchpad/8b/t_typed.fz from the 8b research (recreate from this description). Resolved by fz-21x.24, which deletes the reify path: a helper called from a guard is an ordinary call in the guard function's body, and its parameters keep their preconditions like any other parameters. Closes with that commit; the repro becomes a fixture there.",
   "id": "fz-21x.15",
   "labels": [],
-  "parent": "fz-21x",
+  "parent": "fz-tqd",
   "priority": 1,
   "status": "open",
   "title": "Guard helper with a wildcard-named annotated parameter loses its type precondition",
   "type": "bug",
-  "updated_at": "2026-09-14T10:58:54Z"
+  "updated_at": "2026-09-14T11:12:33Z"
 }
