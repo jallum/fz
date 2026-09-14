@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T22:12:11Z",
+  "description": "Rule (2026-09-14): new tests go in a sibling \u003cmodule\u003e_test.rs, never inline in the module. fz-21x.25 (PR #167, dcf745b41) landed before the rule and added five inline tests: src/ir_interp/dispatch_exec.rs (an_unresolvable_subject_misses_its_arity_question, in a new mod tests), src/ir_interp/backend.rs (entry_dispatch_decides_a_lane_form_tuple_from_its_lanes), src/compiler2/jobs/native.rs (entry_dispatch_decides_a_lane_form_tuple_from_its_lanes), src/runtime_type_predicate.rs (tuple_positions_answers_for_a_value_that_is_a_tuple_of_that_arity, tuple_positions_admits_every_arity_the_other_structs_axis_covers). Move each to the sibling _test.rs (creating src/ir_interp/dispatch_exec_test.rs, src/ir_interp/backend_test.rs, src/compiler2/jobs/native_test.rs, src/runtime_type_predicate_test.rs as needed, wired with #[cfg(test)] mod x_test;), give the helpers they use pub(super) visibility, delete any inline mod tests block that becomes empty, keep the lib test count unchanged. fz-kdt.137 (PR #169) starts src/ir_interp/backend_test.rs; land after it to avoid a conflict.",
+  "id": "fz-pwu",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "Move the inline tests fz-21x.25 added into sibling _test.rs files",
+  "type": "task",
+  "updated_at": "2026-09-14T22:12:11Z"
+}
