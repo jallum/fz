@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-14T12:13:25Z",
   "created": "2026-09-13T21:26:28Z",
   "description": "Delete every table that restates an extern declaration. Proposal at ../extern-proposal.html (2026-09-13). Steps, in order: 1 debris sweep; 2 export the compiler binary and test symbols dynamically (measured: with -rdynamic or -export_dynamic every rlib no_mangle export survives and dlsym finds it; delete JIT registry + interp address book); 3 comparison inlining keyed on resolved Kernel clause identity; 4 delete the manifest (syn conformance test + fz_ symbol namespace reserved to bootstrap); 5 one wire alphabet mapping; 6 import table without *Refs ceremony; 7 one variadic dispatcher table, native variadic via imported symbol; 9 docs + migration-proof test collapse. Supersedes fz-5xp.32.\n\nStep 8 (one arithmetic denotation for guards) was never part of the fz-5xp.30 contract, which deliberately defers arithmetic substitution and keeps comparison replacement separate; it grew into its own epic, fz-tqd (guards are code), stacked on PR #158. What remains here closes PR #158: fz-21x.10, fz-21x.2, fz-21x.14.\n\nThe arithmetic allocation this branch made loud (one struct per '+') is an older defect in entry dispatch, fz-21x.25, fixed against main in its own session and merged forward; PR #158 does not wait on it.",
   "id": "fz-21x",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] Extern door collapse: the declaration is the definition",
   "type": "epic",
-  "updated_at": "2026-09-14T11:30:52Z"
+  "updated_at": "2026-09-14T12:13:25Z"
 }
