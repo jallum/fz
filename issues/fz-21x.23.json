@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T10:58:45Z",
+  "description": "One fact per function on the World with two bits. `allocates`: the lowered body contains a heap-allocating primitive, or calls a function whose fact says allocates. `fails`: the body reaches `fz_panic` (the only `never` extern) directly or through a callee. Both bits only turn on, so the formula is monotone and a call cycle converges through the ordinary dependency scheduler: no SCC solver, no private cone. The fact reads LoweredBody(f), StaticCallees(f) and the callees' effects facts, and moves only when one of those moves.\n\nExterns. `extern \"C\"`: allocates = false, fails = false; it has no process, so it cannot touch the fz heap, and its own memory is not ours. `extern \"fz\"` is opaque Rust, so the bit is declared on the declaration line. Finding: `fz_value_cmp_ref` is `extern \"fz\"` because atom order reads the atom table through the process, not because it allocates; deriving the bit from the ABI would refuse every `\u003c` in a guard except number against number. Proposed spelling, open for decision: `extern \"fz\" pure defp fz_value_cmp_ref(any, any) :: integer`, where `pure` means allocates = false; `:: never` already means fails.\n\nAllocation is judged after lowering. A construction of static shape whose value does not escape the activation rides in lanes and is not an allocation; anything of unbounded size (list construction, binary concatenation, map update) is. That line is where the BEAM's guard BIF set sits (hd, tl, element, byte_size, map_get, binary_part and arithmetic; no ++, no \u003c\u003e, no map construction), reproduced by construction rather than by a list. Hence the two prerequisites: the arithmetic pair in lanes and the bitstring reader in lanes, or the fact classifies `+/2` and every binary pattern as allocating.\n\nConsumers: guard compilation refuses an `allocates` callee and activates a `fails` callee in guard mode; the matcher contract is this fact enforced on everything the matcher runs.\n\nWhat goes away once the consumers land: the syntactic whitelist in `guard_expr_from_ast`, `resolve_guard_callee*`, `collect_guard_calls_in_*`, `GuardCallCycle`, the \"not dispatch-pure\" diagnostics.\n\nProof: a unit test stating the fact for `+/2`, `compare/2`, `\u003c/2`, `send/2`, a list literal, and a mutually recursive pair; a telemetry pin that an edit to an unrelated body moves no effects fact and an edit to a leaf callee moves exactly its transitive callers' facts.",
+  "id": "fz-21x.23",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "One effects fact per function on the World: allocates and fails",
+  "type": "task",
+  "updated_at": "2026-09-14T10:58:45Z"
+}
