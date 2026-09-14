@@ -2438,7 +2438,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
         "`struct_allocs = 10`",
-        "fz-5xp.20 owns the",
+        "a general inliner",
         "final list/struct/map heap headline is `400`",
     ] {
         assert!(
