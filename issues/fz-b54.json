@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T19:36:02Z",
+  "description": "Found by the fz-kdt.137 cold review; reproduced at main f26264572 on interp and run (build not separately checked). Not caused by that change.\n\nWitness 1 (one element, all doors):\n\n    def main() do\n      fs = [fn x -\u003e x + 1 end, fn x -\u003e x + 2 end]\n      dbg(Enum.count(fs))                       # 1  (expected 2)\n      dbg(Enum.map(fs, fn f -\u003e f.(10) end))     # [11]  (expected [11, 12])\n    end\n\nThe same with two IDENTICAL lambdas ([fn x -\u003e x + 1 end, fn x -\u003e x + 1 end]) also counts 1. [1, 1.0] and [:a, 1] count 2, and [mk(5), mk(6)] built from one lambda-returning function counts 2, so the loss is specific to lambda LITERALS as list elements.\n\nWitness 2 (crash): putting the two count lines and dbg(Enum.count([1, 1.0])) together in one main gives\n  interp: 'backend dispatch call requires semantic argument 1 value 0: backend value 0 is unbound'\n  run: 'native attempted to materialize absent value as runtime value with ty Some(Ty(116)) in Continuation' followed by a panic at src/compiler2/jobs/native.rs:3804 (native lowering invariant failed: backend value ValueId(0) ... must be runtime-materializable; value=Absent).\n\nWhere to look: the list-literal lowering / cons-chain construction when an element is a lambda literal (each lambda literal is its own function item; the second element's construction may be folded onto the first, or the tail of the cons is dropped), and the element type join for a list whose elements are distinct closure types (a union of two closure types collapsing to one member). Signal: a behavior fixture with the two witnesses and an Elixir oracle (expected 2 / [11, 12] / 2 / 2), red on all three doors today; the crash witness must become either a right answer or a diagnostic, never a panic.",
+  "id": "fz-b54",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[BUG] A list literal of two lambdas has one element on every door; three such lines in one body crash the compiler",
+  "type": "bug",
+  "updated_at": "2026-09-14T19:36:02Z"
+}
