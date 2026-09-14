@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T12:19:35Z",
+  "description": "Measured 2026-09-14 at main cb9f7d440, on interp, run and build alike:\n\n    defp flag(n), do: n \u003e 0\n    defp pick(false), do: 1\n    defp pick(true), do: 2\n\nwarns 'function clauses don't cover every input' on the last clause. The input type is boolean (:false | :true) and the two Equal(Const) questions cover it, so the warning is a false positive. The same warning fires for a tuple field, defp unwrap({v, false}) / defp unwrap({_, true}) over {integer, boolean}, which is how it was found (fz-21x.25). Not tuple-specific.\n\nExpected: no warning when the union of the Equal(Const) regions over a subject equals the subject's static type. Where the coverage question is answered: calculate_dispatch_reachability (src/compiler2/dispatch_reachability.rs) models regions as types via predicate_target; an Equal(Const(false)) region should subtract the singleton from the remaining type so two singleton tests exhaust a two-element union.\n\nSignal: a fixture with the three lines above and an empty expected.diagnostics sidecar; today it is red on every door.",
+  "id": "fz-21x.26",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Clause heads over a boolean input warn type/no-matching-clause when false and true are both covered",
+  "type": "bug",
+  "updated_at": "2026-09-14T12:19:35Z"
+}
