@@ -6,9 +6,15 @@
   "description": "Seen 2026-09-13 on PR #158 at 2200b6c18 (CI run 34790466804): matrix::tail_recursion::interp failed with 'fz2 exceeded 20s' while run and build passed and the same commit's lint job was green; the two previous commits passed the same lane with job times of 12m36s and 16m5s. Measured locally: the lane takes 4.4s at that commit and 4.4s before fz-21x.3, so the extern-door commits did not change its cost. CI runs the matrix with RUST_TEST_THREADS=4 (four fz2 subprocesses at once on a shared runner) against DEFAULT_FIXTURE_HANG_TIMEOUT = 20s, so a lane that is 4.4s alone can exceed the guard under contention; wall clock is corroborative, not authoritative (project priorities). Two things to fix, separately: (1) the guard must not decide correctness under parallel load: either run the matrix single-threaded in CI (the reliable gate per experience) or scale the guard by the parallelism; (2) the underlying signal: 100k iterations of count(n - 1, acc + 1) cost 44us each under interp, i.e. two Kernel operator wrapper calls, two C extern calls and two arithmetic_result calls per iteration; tiny-fixture slowness is a correctness signal and the interpreter has no inliner (fz-5xp.20 covers native).",
   "id": "fz-ex9",
   "labels": [],
+  "comments": [
+    {
+      "text": "Rerun of the same commit (2200b6c18) passed: test job 9m51s vs 16m9s on the failing run. Same code, same lane; only runner load differed. Confirms the guard, not the program, decided the first result.",
+      "timestamp": "2026-09-14T00:11:49Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] fixture_matrix wall-clock hang guard fails tail_recursion::interp on the Linux runner under contention",
   "type": "bug",
-  "updated_at": "2026-09-14T00:02:06Z"
+  "updated_at": "2026-09-14T00:11:49Z"
 }
