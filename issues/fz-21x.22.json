@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T10:58:44Z",
+  "description": "Today every binary match allocates twice per pattern plus once per field, on every door: `fz_bs_reader_init_ref` builds a 3-tuple (bitstring, bit length, position) on process-\u003eheap (runtime/src/ir_runtime.rs:1286-1300) and `fz_bs_read_field_ref` builds a result tuple per field, `{ok, value, reader}` or `{false}` (ir_runtime.rs:1336-1420). The receive matcher (native_codegen/receive.rs:1093-1110) and the interpreter (ir_interp/dispatch_exec.rs:560-600) both go through them. Neither tuple is inherent: deciding whether a binary pattern matches needs a cursor of three words.\n\nChange: the reader is a lane value (base, bit length, position) in registers or on the stack; a field read returns its fixed-size result in lanes (ok, value, new position), as a fixed C pair already does; the bound value of a `binary`/`bits` field is, inside a matcher or a guard, a view of three words (base, bit offset, bit length). The view becomes a heap sub-binary only where it escapes: at clause entry, on the heap of the process that runs the clause body. For the receive matcher, `out` carries the view's words and the receiver materializes after delivery. That removes the object the matcher builds today on the receiver's heap pointing into the sender's heap (the asymmetry fz-21x.17 records). A non-suffix binary field is copied at materialization, if it is used at all, never inside the decision.\n\nOpen piece: the interpreter has no lanes; its stack-held form of an unmaterialized view is not sized yet.\n\nWhat goes away: both tuples; `bs_tuple_arity1_schema` and `bs_tuple_arity3_schema` on Process; the in-match copy.\n\nProof: heap counters around a match with an integer field, a sized binary field and a `rest::binary` tail show struct_allocs 0 on three doors, and exactly one sub-binary where the bound value is used; existing bitstring and byte-scanner fixtures unchanged in output, allocation pins unchanged or lower. Prerequisite of the effects fact classifying binary patterns, and of the matcher contract.",
+  "id": "fz-21x.22",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 1,
+  "status": "open",
+  "title": "Bitstring matching decides in lanes: no reader tuple, no per-field result tuple, views materialize at clause entry",
+  "type": "task",
+  "updated_at": "2026-09-14T10:58:44Z"
+}
