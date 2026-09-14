@@ -23,11 +23,15 @@
     {
       "text": "PR #169 amended to 47e7502f4: the six tests this ticket adds now live in sibling _test.rs files (semantic_test.rs, backend_program/boxed_contract_test.rs, jobs/artifact_test.rs, ir_interp/backend_test.rs) per the new rule; lib 2134/0 unchanged.",
       "timestamp": "2026-09-14T22:25:22Z"
+    },
+    {
+      "text": "Review comment addressed: the callee-neither-supplies-captures-nor-is-one-word state is an internal compiler error (panic naming callsite, target count, callee layout), not an artifact/incomplete-semantic-plan diagnostic; both pinning tests are should_panic; pipeline.md updated. PR #169 amended to c6f299d3f.",
+      "timestamp": "2026-09-14T22:39:26Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "P1: native loses callable identity and captures when invoking a closure projected from a tuple",
   "type": "task",
-  "updated_at": "2026-09-14T22:25:22Z"
+  "updated_at": "2026-09-14T22:39:26Z"
 }
