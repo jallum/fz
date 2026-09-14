@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T11:44:01Z",
+  "description": "Found while building fz-21x.10 (2026-09-14). With the Option-guarded helper table gone, about ten emitters in src/compiler2/native_codegen/receive.rs (emit_receive_value_ref, receive_value_tag, emit_truthy_cmp, emit_typed_eq_cmp, emit_map_kind_test, emit_list_cons_test, emit_struct_get_field_value, and neighbours) return Result with no remaining error path. The RuntimeTestEmitter trait methods they serve are Result-shaped, so the change is a trait-and-callers sweep, not a local edit. Also: emit_tuple_arity_test takes tuple_schema_ids as a parameter while receiving the ctx that owns it. Proof: workspace gate green; grep that no infallible fn in receive.rs returns Result.",
+  "id": "fz-knz",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "Receive dispatch emitters return Result but can no longer fail",
+  "type": "task",
+  "updated_at": "2026-09-14T11:44:01Z"
+}
