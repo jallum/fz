@@ -1,6 +1,7 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::compiler2::{Ty, Types};
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -352,7 +353,7 @@ fn compile_source_order_uses_first_matching_arm() {
         .expect("source fallback arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
 
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(fallback));
@@ -386,7 +387,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .expect("second orthogonal arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected root test");
     };
@@ -435,7 +436,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .expect("second cons arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected shared root test");
     };
@@ -461,7 +462,7 @@ fn compile_closed_residual_fails_unmatched_values() {
         .expect("specific arm");
     let matrix = builder.build().expect("matrix");
 
-    let closed = compile_dispatch_matrix(&matrix).expect("closed compile");
+    let closed = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("closed compile");
 
     assert_eq!(eval_graph(&closed.graph, subject, TestValue::Int(2)), None);
     assert_eq!(closed.stats.fail_nodes, 1);
@@ -494,7 +495,7 @@ fn compile_places_projection_only_on_proven_edge() {
         .expect("map presence arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix, one_input(&matrix)).expect("compile");
     let Some(DispatchNode::Test {
         predicate,
         on_match,
@@ -521,7 +522,8 @@ fn compile_places_projection_only_on_proven_edge() {
 
 #[test]
 fn graph_builder_preserves_node_identity_and_validates_edges() {
-    let mut builder = DispatchGraphBuilder::<Ty>::typed();
+    let subjects = [input_subject()];
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
     let fail = builder.add_node(DispatchNode::Fail);
     let out = builder.add_node(DispatchNode::Outcome {
         outcome: OutcomeId(0),
@@ -543,14 +545,15 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
 
 #[test]
 fn graph_builder_rejects_unknown_root_or_edge_node() {
-    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed();
+    let subjects = [input_subject()];
+    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
     unknown_root.add_node(DispatchNode::Fail);
     assert_eq!(
         unknown_root.build(GraphNodeId(9)).expect_err("root must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(9))
     );
 
-    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed();
+    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed(one_input_subject(&subjects));
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
         predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
@@ -561,6 +564,36 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
         unknown_edge.build(test).expect_err("edge target must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(42))
     );
+}
+
+/// The inputs of a matrix whose questions read one declared input and neither
+/// pins nor guards.
+fn one_input<TypeHandle>(matrix: &DispatchMatrix<TypeHandle>) -> PlanInputs<'_> {
+    PlanInputs {
+        count: 1,
+        subjects: &matrix.subjects,
+        pinned: &[],
+        guard_leaves: &[],
+    }
+}
+
+/// The one subject a hand-assembled graph's nodes question.
+fn input_subject() -> Subject {
+    Subject {
+        id: SubjectId(0),
+        source: SubjectSource::Input { ordinal: 0 },
+    }
+}
+
+/// The same, for a graph assembled node by node rather than compiled from a
+/// matrix: the caller owns the subject the nodes question.
+fn one_input_subject(subjects: &[Subject]) -> PlanInputs<'_> {
+    PlanInputs {
+        count: 1,
+        subjects,
+        pinned: &[],
+        guard_leaves: &[],
+    }
 }
 
 fn sp<T>(node: T) -> Spanned<T> {
@@ -1117,4 +1150,136 @@ fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
     assert_eq!(plan.outcomes[0].body_id, 0);
     assert!(plan.guards.is_empty());
     assert!(plan.matrix.arms[0].questions.is_empty());
+}
+
+/// What a plan reads of its inputs is recorded while its graph is built, one
+/// slot per declared input. These tests state what each kind of question
+/// charges.
+fn input_demand(plan: &pattern::PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
+    plan.input_demand().to_vec()
+}
+
+#[test]
+fn a_literal_head_demands_the_input_it_compares_and_nothing_else() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        2,
+        vec![
+            pattern_row(vec![Pattern::Int(0), Pattern::Var("acc".to_string())], 0),
+            pattern_row(vec![Pattern::Var("n".to_string()), Pattern::Var("acc".to_string())], 1),
+        ],
+    ));
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::Whole, DispatchDemand::Ignore],
+        "the counter is compared; the accumulator is only bound"
+    );
+}
+
+#[test]
+fn a_guard_demands_what_it_reads_not_the_subject_that_carries_it() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        3,
+        vec![pattern_row_with_guard_preconditions(
+            vec![Pattern::Wildcard, Pattern::Wildcard, Pattern::Var("value".to_string())],
+            0,
+            Expr::Var("value".to_string()),
+            Vec::new(),
+        )],
+    ));
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::Ignore, DispatchDemand::Ignore, DispatchDemand::Whole],
+        "a guard question rides input zero, but reads only the value it names"
+    );
+}
+
+#[test]
+fn a_pinned_head_demands_the_input_that_delivers_the_pin() {
+    let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(
+        2,
+        vec![PatternRow::<Ty> {
+            patterns: vec![sp(Pattern::Wildcard), sp(Pattern::Pinned("x".to_string()))],
+            preconditions: Vec::new(),
+            guard: None,
+            body_id: 0,
+        }],
+        vec![("x".to_string(), 0)],
+    ))
+    .expect("a lambda head may pin what it closed over");
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::Whole, DispatchDemand::Whole],
+        "the comparison reads the pinned capture as well as the value compared to it"
+    );
+}
+
+#[test]
+fn a_bitstring_head_demands_the_input_that_delivers_a_pinned_size() {
+    let plan = pattern::pattern_dispatch_from_source(SourcePatternRows::entry(
+        2,
+        vec![PatternRow::<Ty> {
+            patterns: vec![
+                sp(Pattern::Wildcard),
+                sp(Pattern::Bitstring(vec![BitField {
+                    value: sp(Pattern::Var("payload".to_string())),
+                    spec: BitFieldSpec {
+                        ty: BitType::Binary,
+                        size: Some(BitSize::Var("n".to_string())),
+                        ..Default::default()
+                    },
+                }])),
+            ],
+            preconditions: Vec::new(),
+            guard: None,
+            body_id: 0,
+        }],
+        vec![("n".to_string(), 0)],
+    ))
+    .expect("a size bound before the pattern arrives as a pin");
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::Whole, DispatchDemand::Whole],
+        "reading the field needs the size the capture delivers"
+    );
+}
+
+#[test]
+fn a_head_after_a_catch_all_demands_nothing() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![
+            pattern_row(vec![Pattern::Wildcard], 0),
+            pattern_row(vec![Pattern::Int(0)], 1),
+        ],
+    ));
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::Ignore],
+        "the catch-all decides every value, so the comparison below it is never asked"
+    );
+}
+
+#[test]
+fn a_tuple_head_demands_the_shape_it_takes_apart() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
+            vec![Pattern::Tuple(vec![
+                sp(Pattern::Var("a".to_string())),
+                sp(Pattern::Var("b".to_string())),
+            ])],
+            0,
+        )],
+    ));
+
+    assert_eq!(
+        input_demand(&plan),
+        vec![DispatchDemand::TupleFields(BTreeMap::new())],
+        "the arity is the question; the fields are projected, not asked about"
+    );
 }

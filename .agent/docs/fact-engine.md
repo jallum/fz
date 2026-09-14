@@ -702,8 +702,8 @@ its exact direct target to run. `bind_executable_inputs` decodes every published
 layout: `Nothing` becomes explicit `BackendBoundValue::Absent`, and zero-lane
 tuples or callables retain their concrete `Transport` binding. Neither is a
 missing input. `BackendStep::Omitted` likewise installs explicit absence.
-Entry selection materializes only
-`ExecutableDispatch::required_input_ordinals`; unused structural inputs can
+Entry selection materializes only the inputs the plan records as read --
+`PatternDispatchPlan::required_input`; unused structural inputs can
 contain absent fields and stay decomposed for the body.
 
 Root membership is a distinct dependency relation, not a read of every member's

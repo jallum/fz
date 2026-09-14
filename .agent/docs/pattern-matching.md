@@ -14,6 +14,7 @@ source clauses
        matrix: DispatchMatrix
        graph: DispatchGraph
        payloads: outcomes, bindings, guards, pinned inputs, prepared keys
+       graph payload: input_demand -- what the questions read of each input
   -> inline lowering / interpreter execution / receive codegen
 ```
 
@@ -84,6 +85,10 @@ matrix:
   size), and the input that delivers it when the rows carry a prematch.
 - `prepared_keys`: heap values, such as atom/binary/float map keys, materialized
   once outside the dispatch graph.
+
+The graph carries one payload of its own: `input_demand`, a slot per declared
+input saying what the plan's questions read of it. `input_demand` and
+`required_input` on the plan are how every door asks.
 
 ## Pins Resolve Against The Prematch
 

@@ -3,15 +3,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
-use crate::dispatch_matrix::{ListRegion, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
 use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::keying::{BodyKeying, InputDemand};
 use super::super::scheduler::FatalError;
-use super::super::types::Ty;
 use super::super::world::World;
 use crate::telemetry::TelemetryExt as _;
 
@@ -416,7 +413,9 @@ fn collect_input_forwarding_graph(
     }
     reads.push(dispatch);
     reads.push(lowered);
-    let local = local_dispatch_mask(&world.entry_dispatch(function));
+    // The plan states what it reads of its inputs; this walk only joins that
+    // across the bodies a value is forwarded to.
+    let local = world.entry_dispatch(function).input_demand().to_vec();
     let local_result = return_flow_mask(world, function, local.len());
     let forwards = forwarded_inputs(world, function, local.len());
     let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
@@ -1079,88 +1078,5 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}
-    }
-}
-
-/// What THIS body's own entry dispatch asks about each of its inputs: the LOCAL
-/// half of `InputDemand`, before any forwarding join.
-fn local_dispatch_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
-    let mut mask = vec![DispatchDemand::Ignore; plan.input_count];
-    for arm in &plan.matrix.arms {
-        for question in &arm.questions {
-            mark_predicate_inputs(&plan.matrix.subjects, &question.predicate, &mut mask);
-        }
-    }
-    for guard in &plan.guards {
-        mark_guard_inputs(plan, guard, &mut mask);
-    }
-    mask
-}
-
-fn mark_predicate_inputs(subjects: &[Subject], predicate: &RegionPredicate<Ty>, mask: &mut [DispatchDemand]) {
-    let demand = demand_for_region(&predicate.region);
-    mark_subject_demand(subjects, predicate.subject, demand, mask);
-}
-
-fn demand_for_region(region: &Region<Ty>) -> DispatchDemand {
-    match region {
-        Region::List(ListRegion::Empty | ListRegion::Cons) => {
-            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore))
-        }
-        Region::TupleArity(_) => DispatchDemand::TupleFields(BTreeMap::new()),
-        Region::Equal(_)
-        | Region::Type(_)
-        | Region::MapKind
-        | Region::MapKeyPresent { .. }
-        | Region::Bitstring(_)
-        | Region::Guard(_) => DispatchDemand::Whole,
-    }
-}
-
-fn mark_subject_demand(subjects: &[Subject], subject: SubjectId, demand: DispatchDemand, mask: &mut [DispatchDemand]) {
-    let Some((ordinal, path)) = subject_path(subjects, subject) else {
-        return;
-    };
-    if let Some(slot) = mask.get_mut(ordinal as usize) {
-        slot.join_assign(demand_at_path(&path, demand));
-    }
-}
-
-fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<DemandPathStep>)> {
-    let subject = subjects.get(subject.0 as usize)?;
-    match &subject.source {
-        SubjectSource::Input { ordinal } => Some((*ordinal, Vec::new())),
-        SubjectSource::Projection(projection) => {
-            let (ordinal, mut path) = subject_path(subjects, projection.source)?;
-            path.push(DemandPathStep::from(&projection.kind));
-            Some((ordinal, path))
-        }
-    }
-}
-
-fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [DispatchDemand]) {
-    match guard {
-        PatternGuardExpr::Const(_) => {}
-        // A pin the rows' prematch bound demands the input that delivers it.
-        PatternGuardExpr::Pinned(id) => {
-            if let Some(input) = plan.pinned.get(id.0 as usize).and_then(|pin| pin.input)
-                && let Some(demand) = mask.get_mut(input as usize)
-            {
-                demand.join_assign(DispatchDemand::Whole);
-            }
-        }
-        PatternGuardExpr::Subject(subject) => {
-            mark_subject_demand(&plan.matrix.subjects, *subject, DispatchDemand::Whole, mask)
-        }
-        PatternGuardExpr::Unary { expr, .. } => mark_guard_inputs(plan, expr, mask),
-        PatternGuardExpr::Binary { lhs, rhs, .. } => {
-            mark_guard_inputs(plan, lhs, mask);
-            mark_guard_inputs(plan, rhs, mask);
-        }
-        PatternGuardExpr::Dispatch { inputs, .. } => {
-            for input in inputs {
-                mark_guard_inputs(plan, input, mask);
-            }
-        }
     }
 }

@@ -7,6 +7,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::dispatch_matrix::demand::DispatchDemand;
+
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
@@ -26,7 +28,6 @@ pub(crate) struct ExecutableFacts {
     pub(super) analysis: ActivationAnalysis,
     pub(super) body: LoweredBody,
     pub(super) entry_dispatch: Option<ExecutableDispatch>,
-    pub(super) entry_dispatch_inputs: HashSet<usize>,
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -43,7 +44,8 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) body: &'a LoweredBody,
     pub(crate) reachable_clauses: &'a [u32],
     pub(crate) value_types: &'a HashMap<ValueId, Ty>,
-    pub(crate) entry_dispatch_inputs: &'a HashSet<usize>,
+    /// What this executable's own entry dispatch reads of each input.
+    pub(crate) entry_dispatch_demand: &'a [DispatchDemand],
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
     pub(crate) callsite_needs: &'a HashMap<CallSiteId, ExecutableNeed>,
     pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
@@ -104,6 +106,15 @@ impl ExecutableFacts {
         self.entry_dispatch.as_ref()
     }
 
+    /// What this executable's own entry dispatch reads of each input. An
+    /// executable with no entry dispatch reads nothing.
+    pub(crate) fn entry_dispatch_demand(&self) -> &[DispatchDemand] {
+        self.entry_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.plan().input_demand())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn callsite_return_origin(&self, callsite: CallSiteId) -> Option<&TransportOrigin> {
         self.callsite_return_origins.get(&callsite)
     }
@@ -128,7 +139,7 @@ impl ExecutableFacts {
             body: &self.body,
             reachable_clauses: self.analysis.entry_reachability.clauses(),
             value_types: &self.analysis.value_types,
-            entry_dispatch_inputs: &self.entry_dispatch_inputs,
+            entry_dispatch_demand: self.entry_dispatch_demand(),
             callsites: &self.callsites,
             callsite_needs: &self.callsite_needs,
             delivered_value_joins: &self.delivered_value_joins,
@@ -240,13 +251,13 @@ pub(crate) fn project_executable_facts(
         .collect();
     let return_origins = collect_return_origins(&body, &analysis);
     let entry_dispatch = executable_dispatch(world, activation.function, &analysis.entry_reachability);
-    let entry_dispatch_inputs = entry_dispatch
+    let entry_dispatch_demand = entry_dispatch
         .as_ref()
-        .map(ExecutableDispatch::required_input_ordinals)
+        .map(|dispatch| dispatch.plan().input_demand())
         .unwrap_or_default();
     let callsite_needs = executable_callsite_needs(&body, analysis.entry_reachability.clauses(), executable.need);
     let mut demand_builder =
-        prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, &entry_dispatch_inputs, &callsites);
+        prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, entry_dispatch_demand, &callsites);
     let capture_count = executable
         .activation
         .input_len(world.types())
@@ -271,7 +282,6 @@ pub(crate) fn project_executable_facts(
         analysis,
         body,
         entry_dispatch,
-        entry_dispatch_inputs,
         callsites,
         callsite_needs,
         delivered_value_joins,
@@ -326,7 +336,7 @@ fn prepare_runtime_demand_type_inputs(
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
-    entry_dispatch_inputs: &HashSet<usize>,
+    entry_dispatch_demand: &[DispatchDemand],
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
 ) -> RuntimeDemandTypeBuilder {
     let any = world.types_mut().any();
@@ -334,9 +344,11 @@ fn prepare_runtime_demand_type_inputs(
     let mut tys = analysis.value_types.values().copied().collect::<HashSet<_>>();
     let activation_inputs = executable.activation.inputs(world.types());
     tys.extend(
-        entry_dispatch_inputs
+        entry_dispatch_demand
             .iter()
-            .filter_map(|index| activation_inputs.get(*index).copied()),
+            .enumerate()
+            .filter(|(_, demand)| demand.asks_anything())
+            .filter_map(|(index, _)| activation_inputs.get(index).copied()),
     );
     if let LoweredBody::Extern { signature } = body {
         tys.extend(activation_inputs.iter().skip(signature.params.len()).copied());

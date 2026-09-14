@@ -9858,8 +9858,9 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
             .world()
             .executable_facts(&count_result.key)
             .expect("count-result executable facts should be settled")
-            .entry_dispatch_inputs
-            .is_empty(),
+            .entry_dispatch_demand()
+            .iter()
+            .all(|demand| !demand.asks_anything()),
         "the directly selected ok clause must not consume the omitted variant tag",
     );
 
@@ -16759,8 +16760,8 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
         "the guard should have been reified as a nested helper plan",
     );
     assert_eq!(
-        crate::compiler2::artifact::required_dispatch_input_ordinals(&plan),
-        HashSet::from([0]),
+        plan.input_demand(),
+        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
         "the helper's own ordinals must not become demands on the caller",
     );
 }
@@ -16789,11 +16790,11 @@ fn compiler2_nested_guard_demand_names_only_caller_arguments() {
             .unwrap()
             .local_dispatch,
         [
-            crate::dispatch_matrix::demand::DispatchDemand::Whole,
+            crate::dispatch_matrix::demand::DispatchDemand::Ignore,
             crate::dispatch_matrix::demand::DispatchDemand::Ignore,
             crate::dispatch_matrix::demand::DispatchDemand::Whole
         ],
-        "helper subject one receives caller input two; it cannot demand unused caller input one"
+        "a guard demands what it reads, not the subject that carries the question"
     );
 }
 

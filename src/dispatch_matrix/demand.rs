@@ -29,6 +29,11 @@ pub(crate) enum DispatchDemand {
 }
 
 impl DispatchDemand {
+    /// Whether anything at all is asked of the value.
+    pub(crate) fn asks_anything(&self) -> bool {
+        *self != Self::Ignore
+    }
+
     pub(crate) fn join_assign(&mut self, other: DispatchDemand) {
         match (self, other) {
             (Self::Whole, _) | (_, Self::Ignore) => {}

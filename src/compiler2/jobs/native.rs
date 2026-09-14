@@ -33,7 +33,6 @@ use super::super::artifact::{
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge,
     CallTarget, DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
-    required_dispatch_input_ordinals,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
@@ -859,12 +858,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .entry_dispatch
             .as_ref()
             .expect("clause dispatch lowering requires a settled entry dispatch");
-        let required_inputs = dispatch.required_input_ordinals();
         let inputs = semantic_inputs
             .iter()
             .enumerate()
             .map(
-                |(semantic_index, value)| match (required_inputs.contains(&semantic_index), value) {
+                |(semantic_index, value)| match (dispatch.plan().required_input(semantic_index), value) {
                     // Dispatch reads an input in whatever form it arrived in: a
                     // tuple delivered as lanes is questioned lane-wise.
                     (true, Some(value)) => Ok(value.clone()),
@@ -1867,12 +1865,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         dest: &ControlDestination,
     ) -> Result<(), FatalError> {
         let input_ids = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
-        let required_inputs = required_dispatch_input_ordinals(&dispatch.plan);
         let input_vars = input_ids
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                if required_inputs.contains(&index) {
+                if dispatch.plan.required_input(index) {
                     self.env_runtime_var(ctx, executable, env, *value)
                 } else {
                     ctx.emit_let(Prim::Const(Const::Nil)).0
@@ -5464,7 +5461,9 @@ mod tests {
     /// be built here anyway: the absent field has no runtime value to put in it.
     #[test]
     fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+        use crate::dispatch_matrix::demand::DispatchDemand;
         use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        use std::collections::BTreeMap;
         let mut world = World::new();
         let int = world.types_mut().int();
         let nothing = world.intern_shape(ShapeDescr::Nothing);
@@ -5522,8 +5521,11 @@ mod tests {
             vec![0],
         );
         assert_eq!(
-            dispatch.required_input_ordinals(),
-            HashSet::from([0]),
+            dispatch.plan().input_demand(),
+            [DispatchDemand::TupleFields(BTreeMap::from([(
+                1,
+                DispatchDemand::Whole
+            )]))],
             "the clause head questions its tuple parameter"
         );
         let materialized = Rc::make_mut(&mut abi.materialized);

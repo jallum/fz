@@ -1525,9 +1525,15 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             // are 228 -> 237, 603 -> 614, and 1106 -> 1115 body walks. Their
             // reached arithmetic result/status helpers remain ordinary generic
             // calls; the edit scenarios do not reach those helpers.
+            // A guard no longer charges the subject that carries it, so a
+            // local demand that used to start at `Whole` starts at `Ignore`
+            // and the fixpoint climbs one more step over bodies it already
+            // reached: three more walks on the cold range-map path, thirteen
+            // more on the cold take/drop/split path, none in the edit
+            // scenarios, which replay settled facts.
             assert_eq!(
                 runtime_demand.runtime_demand_evaluations,
-                [[237, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1115, 0, 0, 70, 661]][fixture_index][scenario],
+                [[240, 0, 0, 9, 155], [614, 0, 0, 64, 392], [1128, 0, 0, 70, 661]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -2319,7 +2325,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The ordering families this fixture's predicates reach end in an
         // `any`/`any` clause through `compare/2`; three of the rebased
         // completions are standing completions of those families.
-        shifts: shifts(25, 79),
+        // A guard stops charging the subject that carries it, so one local
+        // demand starts at `Ignore` instead of `Whole`: that `InputDemand`
+        // moves once more on its way up, and one completion rebases behind it.
+        shifts: shifts(26, 80),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2386,8 +2395,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // predicates reach.
         // The ordering families carry no `binary` clause, so no analysis of
         // one is counted here; equal reproductions stay at 15.
-        analyze_evaluations: 901,
-        analyze_zero_change: 15,
+        // The extra demand climb wakes one more analysis of `main/0`, which
+        // reproduces its previous answer.
+        analyze_evaluations: 902,
+        analyze_zero_change: 16,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
@@ -2403,7 +2414,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // activation and callsite populations do not see them.
         // The ordering families' `any`/`any` clauses contribute four formulas
         // and no `binary` clause analyses; the claim populations stay put.
-        total_evaluations: 2552,
+        // That one extra analysis is one more semantic evaluation.
+        total_evaluations: 2553,
     },
 ];
 

@@ -18,7 +18,7 @@ use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, Transpor
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
-    ExecutableDispatch, ValueId, required_dispatch_input_ordinals,
+    ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
@@ -713,7 +713,8 @@ fn select_clause(
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
     let mut inputs = vec![BackendBoundValue::Absent; args.len()];
-    for ordinal in dispatch.required_input_ordinals() {
+    let plan = dispatch.plan();
+    for ordinal in (0..plan.input_demand().len()).filter(|ordinal| plan.required_input(*ordinal)) {
         let value = args
             .get(ordinal)
             .and_then(Option::as_ref)
@@ -1068,12 +1069,11 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             let (callee, extern_marshals) = match target {
                 CallEdge::Direct(direct) => (&direct.callee, direct.extern_marshals.as_deref()),
                 CallEdge::Dispatch(dispatch) => {
-                    let required_inputs = required_dispatch_input_ordinals(&dispatch.plan);
                     let input_values = args
                         .iter()
                         .enumerate()
                         .map(|(index, arg)| {
-                            if required_inputs.contains(&index) {
+                            if dispatch.plan.required_input(index) {
                                 env_get(transport, runtime.cur_proc(), &env, arg.value).map_err(|error| {
                                     format!(
                                         "backend dispatch call requires semantic argument {index} value {}: {error}",
@@ -4179,6 +4179,7 @@ mod tests {
 
     #[test]
     fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
+        use crate::dispatch_matrix::demand::DispatchDemand;
         use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
         let mut world = crate::compiler2::World::new();
         let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "ignore_tuple", 1);
@@ -4216,7 +4217,11 @@ mod tests {
             .unwrap(),
             vec![0],
         );
-        assert!(dispatch.required_input_ordinals().is_empty());
+        assert_eq!(
+            dispatch.plan().input_demand(),
+            [DispatchDemand::Ignore],
+            "a wildcard head asks nothing of its parameter"
+        );
         Rc::make_mut(&mut abi.materialized).entry_dispatch = Some(dispatch);
         let value = ValueId::from_u32(0);
         let result_value = ValueId::from_u32(1);
@@ -4279,7 +4284,9 @@ mod tests {
     /// could not be built anyway, because the absent field has no value.
     #[test]
     fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+        use crate::dispatch_matrix::demand::DispatchDemand;
         use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        use std::collections::BTreeMap;
         let mut world = crate::compiler2::World::new();
         let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "unwrap_tuple", 1);
         let ty = world.types_mut().any();
@@ -4328,8 +4335,11 @@ mod tests {
             vec![0],
         );
         assert_eq!(
-            dispatch.required_input_ordinals(),
-            std::collections::HashSet::from([0]),
+            dispatch.plan().input_demand(),
+            [DispatchDemand::TupleFields(BTreeMap::from([(
+                1,
+                DispatchDemand::Whole
+            )]))],
             "the clause head questions its tuple parameter"
         );
         Rc::make_mut(&mut abi.materialized).entry_dispatch = Some(dispatch);

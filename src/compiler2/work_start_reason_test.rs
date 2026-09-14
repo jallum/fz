@@ -244,7 +244,14 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // reaches `<` and `>`, one application apiece, and the operands stay
         // integers, so the module and executable-fact tallies count nothing
         // for the catch-all.
-        (4183, 11, 19, 408),
+        // A guard rides a carrier subject it need not read, and the plan no
+        // longer charges that subject, so a local demand that used to start at
+        // `Whole` starts at `Ignore`. The demand fixpoint climbs one more step
+        // from there: thirteen more `DeriveRuntimeDemand` applications and one
+        // more `AnalyzeActivation` of `main/0`. No key moves and no body is
+        // newly reached -- the source, module and executable-fact tallies do
+        // not budge, and the backend program is byte-identical.
+        (4197, 11, 19, 408),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -257,7 +264,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // revisions of their own.
         // Each ordering operator's `any`/`any` clause publishes one non-demand
         // changed revision, and this fixture reaches `<` and `>`.
-        1466,
+        // The extra climb step publishes one more of them.
+        1467,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -272,7 +280,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         (*demand_completions, *demand_wake_starts, *demand_wake_causes.borrow()),
         // fz-5xp.30: generic helper result/status facts add thirteen demand
         // completions and nine attributed wakes; no unclassified cause appears.
-        (1167, 935, [58, 232, 145, 500, 0]),
+        // The extra climb step adds thirteen more of each, all of them
+        // attributed to the same cause.
+        (1180, 948, [58, 232, 145, 513, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

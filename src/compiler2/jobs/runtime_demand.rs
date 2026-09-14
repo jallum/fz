@@ -957,7 +957,10 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     }
 
     let activation_inputs = executable.activation.inputs(types);
-    for &semantic_index in facts.entry_dispatch_inputs {
+    for (semantic_index, dispatch_demand) in facts.entry_dispatch_demand.iter().enumerate() {
+        if !dispatch_demand.asks_anything() {
+            continue;
+        }
         let Some(&ty) = activation_inputs.get(semantic_index) else {
             continue;
         };
@@ -2605,7 +2608,6 @@ mod tests {
             },
             body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             entry_dispatch: None,
-            entry_dispatch_inputs: HashSet::new(),
             callsites: HashMap::new(),
             callsite_needs: HashMap::new(),
             delivered_value_joins: HashMap::new(),
