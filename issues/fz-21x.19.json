@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T03:59:31Z",
+  "description": "Follow-on to fz-21x.16. Once LoweredBody carries its definition and use tables, ownership derivation (construct_call_ownership, construct_tuple_ownership, list rewrite permission in src/compiler2/jobs/body.rs construct_entry_captures) can leave lowering and become its own fact: body in, ownership modes out, reusable when a body is re-lowered unchanged (north-star priority 6, body-incremental native compilation). Not needed for correctness; measure with the lowering span's steps-visited measurement and the evaluation ratchets.",
+  "id": "fz-21x.19",
+  "labels": [],
+  "parent": "fz-21x",
+  "priority": 2,
+  "status": "open",
+  "title": "Lift tuple and call ownership out of lowering into a job over the published body",
+  "type": "task",
+  "updated_at": "2026-09-14T03:59:31Z"
+}
