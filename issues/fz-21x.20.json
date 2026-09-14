@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-09-14T10:42:52Z",
-  "description": "Measured 2026-09-14 (scratchpad 8b_probe/recv_float.fz): 'send(self(), 2.5); receive do x when x \u003e 1.5 -\u003e :big; x -\u003e {:small, x} end' prints :big on interp and fails on run and build with 'codegen: expected int receive value'. The receive matcher lowers a guard's ordering operators through emit_int_cmp_value with IntCC::SignedLessThan (src/compiler2/native_codegen/receive.rs, PatternGuardBinOp::Lt..GtEq), and receive_value_int refuses a Float receive value outright, so the matcher's '\u003c' is an integer compare while the body's and the interpreter's '\u003c' are the total term order. Same guard, three evaluators, two answers. The fix is 8b (guards compiled as ordinary code and called from the matcher), which deletes this evaluator; this ticket is its proof fixture: the recv_float program on three doors.",
+  "description": "Measured 2026-09-14 (scratchpad 8b_probe/recv_float.fz): 'send(self(), 2.5); receive do x when x \u003e 1.5 -\u003e :big; x -\u003e {:small, x} end' prints :big on interp and fails on run and build with 'codegen: expected int receive value'. The receive matcher lowers a guard's ordering operators through emit_int_cmp_value with IntCC::SignedLessThan (src/compiler2/native_codegen/receive.rs, PatternGuardBinOp::Lt..GtEq), and receive_value_int refuses a Float receive value outright, so the matcher's '\u003c' is an integer compare while the body's and the interpreter's '\u003c' are the total term order. Same guard, three evaluators, two answers. Resolved by fz-21x.24, which deletes this evaluator; the recv_float program on three doors is its proof fixture. Closes with that commit.",
   "id": "fz-21x.20",
   "labels": [],
   "parent": "fz-21x",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A receive guard that orders a float fails to compile on run and build; interp answers it",
   "type": "bug",
-  "updated_at": "2026-09-14T10:58:50Z"
+  "updated_at": "2026-09-14T10:58:55Z"
 }
