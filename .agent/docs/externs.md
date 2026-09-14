@@ -28,7 +28,7 @@ into `ExternAbi` when the extern is lowered. Only two names exist; anything
 else is a `lower/unsupported` error, never a silent fall back:
 
 ```fz
-extern "C"  defp libc::close(integer) :: integer            # a plain C symbol
+extern "C"  defp libc::close(c_int) :: c_int                # a plain C symbol
 extern "fz" defp fz_binary_concat(binary, binary) :: binary # an fz runtime helper
 ```
 
@@ -210,6 +210,7 @@ the code that emits them, as `LocalBodies` in `native_codegen/driver.rs`.
 
 ```text
 I64       proven i64                       F64    proven f64
+I32       C `int`: the low 32 bits of an integer register, read as signed
 Bool      C `uint64_t`: false=0, true=any nonzero word (never an atom id or C _Bool)
 Any       one opaque fz value word         Unit   maps to 0 on return
 Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
@@ -221,11 +222,53 @@ Never     no return lane; returning is a runtime contract violation
 
 One table in `src/extern_contract.rs` names every source spelling of a wire
 type. Each row carries the `ExternTy` the spelling means, whether a declared
-parameter takes its lane from the spelling (`binary`, `cstring`, `unit`, `nil`)
-or from its semantic type through `ty_to_extern_ty` (everything else, so an
-alias or a constraint can widen it), and, for a wire-only spelling the type
-system has no type for, the semantic spelling the contract is rewritten to
-before the type checker sees it: `cstring` to `binary`, `unit` to `nil`.
+parameter takes its lane from the spelling (`binary`, `cstring`, `c_int`,
+`unit`, `nil`) or from its semantic type through `ty_to_extern_ty` (everything
+else, so an alias or a constraint can widen it), and, for a wire-only spelling
+the type system has no type for, the semantic spelling the contract is
+rewritten to before the type checker sees it: `cstring` to `binary`, `c_int` to
+`integer`, `unit` to `nil`.
+
+The spellings, and what a declaration writes:
+
+```text
+integer  float  boolean  atom  any  binary  cstring  c_int  unit  nil  never
+```
+
+### A C `int` is narrower than an fz integer
+
+`c_int` is fz `integer` semantically — a parameter accepts one and a result is
+one — and 32 bits physically. The width is what the declaration is for:
+
+```fz
+extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
+```
+
+A C function returning `int` writes only the low half of the integer return
+register and says nothing about the upper half. x86-64 glibc leaves that half
+zero; arm64 libcs happen to write a full 64-bit value. So a result read as a
+whole register is the right answer on one machine and `4294967295` for
+`open`'s -1 on another — the same program, two answers, and the fixture that
+would catch it passes on the development host. Declaring the width instead
+makes each door narrow and widen it:
+
+- the fixed-arity native path reduces a `c_int` argument to `i32` at the call
+  and sign-extends a `c_int` result back to `i64`;
+- a variadic call's FIXED `c_int` parameter is an `i32` lane, while a `c_int`
+  in the variadic TAIL is one whole word, because C promotes a narrower
+  integer there; the generated call sign-extends the reduced value back;
+- the interpreter's fixed path reads the result through a `-> i32` function
+  type, and its variadic trampoline sign-extends before returning the word it
+  hands back. An argument still travels as a 64-bit word: SysV and AAPCS64
+  both have the callee read an `int` parameter out of the low 32 bits.
+
+A pair return field rides a whole return register, so `c_int` is not one of
+the three wire types a fixed scalar-pair result is built from.
+
+`behavior/c_int_negative_return` pins both signs on all three doors, and
+`compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results`
+pins the reduce and the sign extension in the lowered CLIF, which is what the
+declaration means on every host rather than on this one.
 
 ### Fixed C scalar-pair results
 
@@ -243,7 +286,8 @@ ignores a field. x86-64 uses each field's natural integer/SSE return bank. On
 Linux and Darwin AArch64 only `{float, float}` uses `[F64, F64]`; every other
 pair uses `[I64, I64]`, with float bitcasts at the adapter. The target module's
 default call convention is authoritative. Larger/nested aggregates and
-aggregate arguments are rejected at the shared extern boundary.
+aggregate arguments are rejected at the shared extern boundary, as is a field
+that is not one of those three wire types.
 
 Compiler2 maps each declared `extern_params` name to its `ExternTy` (an unknown
 name defaults to `Any`) and lowers the declared return to `ret` plus the
@@ -315,6 +359,9 @@ binary/string  -> error: must be written `:: cstring` (NUL) or `:: binary` (raw 
 anything else  -> error
 ```
 
+An ascription names any spelling in the alphabet, so `:: c_int` says a tail
+argument is a C `int` where the callee's format string reads one.
+
 The defaults are deliberately narrow — only an integer auto-resolves — so
 pointer-shaped wire types are always spelled out at the call. Resolution is per
 specialization, because one syntactic call can need different marshal classes in
@@ -326,7 +373,7 @@ generated variadic call cannot carry one (see below). The refusal lives in
 refuse the same program with the same message.
 
 ```fz
-extern "C" defp libc::printf(fmt :: cstring, ...) :: integer
+extern "C" defp libc::printf(fmt :: cstring, ...) :: c_int
 def main() do libc::printf("%d", 7) end
 ```
 
@@ -450,6 +497,8 @@ cargo test --lib compiler2_unknown_extern_abi_is_a_lower_diagnostic
 cargo test --lib compiler2_fz_abi_is_reserved_to_the_runtime_library
 cargo test --lib compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic
 cargo test --test fixture_matrix extern_float_lanes   # register banks, 3 doors
+cargo test --test fixture_matrix c_int_negative_return    # C int width, 3 doors
+cargo test --lib compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results
 cargo test --test fixture_matrix variadic_three_integers  # variadic ABI, 3 doors
 cargo test --test aot_variadic_open                   # variadic call through the linker
 ```

@@ -1,0 +1,33 @@
+#---
+# purpose: "a C `int` result is its low 32 bits read as signed, so a negative one stays negative on every door"
+#---
+#
+# # c_int_negative_return
+#
+# `open`, `close` and `abs` all return C `int`, which is 32 bits wide. A C
+# function returning one writes only the low half of the integer return
+# register and says nothing about the upper half. x86-64 glibc leaves that
+# half zero, so reading the whole register turns `open`'s -1 error sentinel
+# into 4294967295. arm64 libcs happen to write a full 64-bit -1, which is why
+# the same program answered correctly on one machine and wrongly on another.
+#
+# The width belongs to the declaration, not to the reader: `c_int` says the
+# symbol returns a C `int`, and each door sign-extends the half register it
+# actually got. This fixture pins both signs, because sign extension of a
+# non-negative value is indistinguishable from reading the whole register.
+#
+# Both call shapes are here. `open` is declared variadic, so its result comes
+# back through the generated variadic call; `close` and `abs` are fixed-arity
+# and come back through the ordinary extern call. A `c_int` parameter is the
+# same fact on the way in: `close(-1)` hands over the low 32 bits of -1 and
+# the kernel reports EBADF rather than being handed a 64-bit value it has no
+# way to read.
+extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
+extern "C" defp libc::close(fd :: c_int) :: c_int
+extern "C" defp libc::abs(c_int) :: c_int
+
+def main() do
+  dbg(libc::open("/fz_c_int_negative_return_missing", 0, 0o644 :: integer))
+  dbg(libc::close(-1))
+  dbg(libc::abs(-7))
+end

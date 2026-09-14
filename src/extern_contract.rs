@@ -70,8 +70,10 @@ impl WireSpelling {
         }
     }
 
-    /// A spelling the type system has no type for. It names its own lane, and
-    /// the contract the type checker sees is rewritten to `semantic`.
+    /// A spelling the type system has no type for: a C width or pointer
+    /// convention. It names its own lane, and the contract the type checker
+    /// sees is rewritten to `semantic`, which is the fz type the values in
+    /// that lane are.
     const fn wire_only(name: &'static str, ty: ExternTy, semantic: &'static str) -> Self {
         Self {
             name,
@@ -91,6 +93,7 @@ const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::from_semantic_type("never", ExternTy::Never),
     WireSpelling::names_its_lane("nil", ExternTy::Unit),
     WireSpelling::names_its_lane("binary", ExternTy::Binary),
+    WireSpelling::wire_only("c_int", ExternTy::I32, "integer"),
     WireSpelling::wire_only("cstring", ExternTy::CString, "binary"),
     WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
 ];

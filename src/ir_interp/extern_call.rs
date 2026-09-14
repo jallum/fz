@@ -30,6 +30,15 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
                 .as_i64()
                 .ok_or_else(|| "extern integer arg must be Int".to_string())? as u64,
         ),
+        // A C `int` parameter is the low half of the fz integer. The word is
+        // still handed over whole -- a callee reading an `int` reads the low
+        // 32 bits of the register -- so narrowing here is what makes the
+        // variadic tail, which promotes the same word back, agree.
+        ExternTy::I32 => ArgWord::Int(
+            value
+                .as_i64()
+                .ok_or_else(|| "extern integer arg must be Int".to_string())? as i32 as i64 as u64,
+        ),
         ExternTy::F64 => ArgWord::Float(
             value
                 .as_float()
@@ -180,8 +189,10 @@ fn call_variadic_extern(
     let trampoline = runtime.variadic_trampolines().get_or_generate(&shape)?;
     let ret = unsafe { trampoline(callee, words.as_ptr()) };
 
+    // The trampoline sign extends a `c_int` result before returning it, so
+    // every integer-lane answer arrives here as a full 64-bit word.
     match ret_ty {
-        ExternTy::I64 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
+        ExternTy::I64 | ExternTy::I32 => Ok(ExternCallValue::Scalar(AnyValue::Int(ret as i64))),
         ExternTy::Bool => Ok(ExternCallValue::Scalar(decode_bool_word(ret))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
             interp_value_from_extern_ref_word(ret).map(ExternCallValue::Scalar)
@@ -263,7 +274,13 @@ impl VariadicTrampolines {
                 .map(|index| load_word(b, words, shape.fixed.len() + index, types::I64))
                 .collect();
             let result = emit_variadic_c_call(b, module.isa(), callee, &fixed, &variadic, shape.ret);
-            let answer = result.unwrap_or_else(|| b.ins().iconst(types::I64, 0));
+            // The trampoline hands one 64-bit word back, so a half-width C
+            // result is widened here rather than by every caller.
+            let answer = match result {
+                Some(value) if shape.ret == Some(types::I32) => b.ins().sextend(types::I64, value),
+                Some(value) => value,
+                None => b.ins().iconst(types::I64, 0),
+            };
             b.ins().return_(&[answer]);
         })
         .map_err(|error| format!("define {name}: {error}"))?;
@@ -310,6 +327,13 @@ unsafe fn call_declared_return(
         }
         ExternReturn::Scalar(ExternTy::I64) => {
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
+            Ok(ExternCallValue::Scalar(AnyValue::Int(value as i64)))
+        }
+        // A C `int` result occupies only the low half of the return register.
+        // Reading the whole register is how `open`'s -1 becomes 4294967295 on
+        // a platform whose libc leaves the upper half zero.
+        ExternReturn::Scalar(ExternTy::I32) => {
+            let value = unsafe { dispatch_fn_returning_c_int(fp, raw_args) };
             Ok(ExternCallValue::Scalar(AnyValue::Int(value as i64)))
         }
         ExternReturn::Scalar(ExternTy::Bool) => {
@@ -468,6 +492,10 @@ macro_rules! dispatch_shapes {
 
 unsafe fn dispatch_fn_returning_int(fp: *const (), args: &[ArgWord]) -> u64 {
     dispatch_shapes!(fp, args, u64)
+}
+
+unsafe fn dispatch_fn_returning_c_int(fp: *const (), args: &[ArgWord]) -> i32 {
+    dispatch_shapes!(fp, args, i32)
 }
 
 unsafe fn dispatch_fn_returning_float(fp: *const (), args: &[ArgWord]) -> f64 {

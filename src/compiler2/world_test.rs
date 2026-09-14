@@ -16,7 +16,7 @@ fn private_extern_is_lexically_callable_but_absent_from_module_interface() {
     let mut world = World::new();
     let owner = world.submit_code(
         Some("private-extern.fz".to_string()),
-        "defmodule PrivateForeign do\n  extern \"C\" defp abs(integer) :: integer\n  def call_abs(value), do: abs(value)\nend\n"
+        "defmodule PrivateForeign do\n  extern \"C\" defp abs(c_int) :: c_int\n  def call_abs(value), do: abs(value)\nend\n"
             .to_string(),
     );
     assert!(matches!(

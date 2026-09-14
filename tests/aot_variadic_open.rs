@@ -49,8 +49,8 @@ fn aot_variadic_open_creates_file_with_mode_bits() {
     let flags = libc::O_CREAT | libc::O_EXCL | libc::O_RDWR;
     let src = format!(
         r#"
-extern "C" defp libc::open(path :: cstring, flags :: integer, ...) :: integer
-extern "C" defp libc::close(fd :: integer) :: integer
+extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
+extern "C" defp libc::close(fd :: c_int) :: c_int
 def main() do
   fd = libc::open("{}", {}, {} :: integer)
   libc::close(fd)
@@ -211,7 +211,7 @@ fn aot_c_extern_nonzero_boolean_is_true() {
     let out_bin = unique_temp_path("fz_nonzero_boolean_aot", ".bin");
     write(
         &source_path,
-        "extern \"C\" defp abs(integer) :: boolean\ndef main(), do: if abs(7), do: dbg(42), else: dbg(0)\n",
+        "extern \"C\" defp abs(c_int) :: boolean\ndef main(), do: if abs(7), do: dbg(42), else: dbg(0)\n",
     )
     .expect("write nonzero Boolean fixture");
 

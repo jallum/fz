@@ -508,7 +508,7 @@ fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_private_externs(
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "contextual_def.fz",
-        "defprotocol Fold do\n  def reduce(value)\nend\nextern \"C\" defp libc::abs(integer) :: integer\n",
+        "defprotocol Fold do\n  def reduce(value)\nend\nextern \"C\" defp libc::abs(c_int) :: c_int\n",
         &tel,
     )
     .expect("quoted parse");
@@ -550,7 +550,7 @@ fn compiler2_frontdoor_accepts_contextual_def_for_protocols_and_private_externs(
 #[test]
 fn compiler2_frontdoor_requires_private_extern_declarations() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("private_extern.fz", "extern \"C\" defp abs(integer) :: integer\n", &tel)
+    let root = parse_quoted_program("private_extern.fz", "extern \"C\" defp abs(c_int) :: c_int\n", &tel)
         .expect("private extern declaration should parse");
     let form = root.cursor().list_items().unwrap()[0]
         .ast_node(&root.sources)
@@ -563,7 +563,7 @@ fn compiler2_frontdoor_requires_private_extern_declarations() {
         "quoted extern visibility must survive as source data"
     );
 
-    let error = parse_quoted_program("public_extern.fz", "extern \"C\" def abs(integer) :: integer\n", &tel)
+    let error = parse_quoted_program("public_extern.fz", "extern \"C\" def abs(c_int) :: c_int\n", &tel)
         .expect_err("public extern syntax is not supported");
     assert!(
         error.msg.contains("expected `defp` after extern ABI string"),
@@ -1555,7 +1555,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
-        "extern \"C\" defp libc::open(path :: cstring, flags :: integer, ...) :: integer\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
+        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\ndef run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
         &tel,
     )
     .expect("quoted parse");

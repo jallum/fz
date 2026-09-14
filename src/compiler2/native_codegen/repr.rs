@@ -63,11 +63,12 @@ impl ArgRepr {
 /// extension trait here beside `ArgRepr::cl_type`, which answers the same
 /// question for fz's own calling convention.
 pub(crate) trait ExternLane {
-    /// `F64` rides the float register; every other value-carrying wire type
-    /// is one integer-width word. `Unit` and `Never` carry no value, so they
-    /// have no lane. The match is exhaustive on purpose: a new wire type has
-    /// to say which bank it travels in rather than defaulting into the
-    /// integer one.
+    /// `F64` rides the float register; `I32` is a half-width value in the
+    /// integer register; every other value-carrying wire type is one
+    /// integer-width word. `Unit` and `Never` carry no value, so they have no
+    /// lane. The match is exhaustive on purpose: a new wire type has to say
+    /// which bank and width it travels in rather than defaulting into the
+    /// full integer word.
     fn lane(self) -> Option<types::Type>;
 }
 
@@ -75,6 +76,7 @@ impl ExternLane for ExternTy {
     fn lane(self) -> Option<types::Type> {
         match self {
             ExternTy::F64 => Some(types::F64),
+            ExternTy::I32 => Some(types::I32),
             ExternTy::I64 | ExternTy::Bool | ExternTy::Any | ExternTy::Binary | ExternTy::CString => Some(types::I64),
             ExternTy::Unit | ExternTy::Never => None,
         }

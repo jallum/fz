@@ -5535,9 +5535,9 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     match &open_exec.body {
         crate::compiler2::BackendBody::Extern { signature } => {
             assert_eq!(signature.symbol, "open");
-            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I64]);
+            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I32]);
             assert!(signature.variadic);
-            assert_eq!(signature.ret, ExternTy::I64);
+            assert_eq!(signature.ret, ExternTy::I32);
         }
         other => panic!("expected backend extern body for libc::open, got {other:?}"),
     }
@@ -5555,7 +5555,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
             );
             assert_eq!(
                 direct.extern_marshals.as_deref(),
-                Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
+                Some(&[ExternTy::CString, ExternTy::I32, ExternTy::I64][..]),
                 "backend direct-call steps should carry the exact settled C wire classes for a variadic extern site",
             );
             assert_eq!(
@@ -7251,12 +7251,12 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     );
     let decl = &program.module.externs[0];
     assert_eq!(decl.symbol, "open");
-    assert_eq!(decl.params, vec![ExternTy::CString, ExternTy::I64]);
+    assert_eq!(decl.params, vec![ExternTy::CString, ExternTy::I32]);
     assert!(decl.variadic);
-    assert_eq!(decl.ret, ExternTy::I64);
+    assert_eq!(decl.ret, ExternTy::I32);
     assert_eq!(
         sorted_extern_marshals(body),
-        vec![ExternTy::CString, ExternTy::I64, ExternTy::I64],
+        vec![ExternTy::CString, ExternTy::I32, ExternTy::I64],
         "native extern wrapper bodies should carry the exact settled C wire classes for a variadic site",
     );
 }
@@ -7804,6 +7804,84 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
     );
 }
 
+/// The lowered CLIF for every function a program compiles, joined.
+///
+/// A machine's answer cannot tell a correct C `int` boundary from a lucky
+/// one: an arm64 libc writes a full 64-bit -1 where x86-64 glibc writes only
+/// the low half, so a fixture that reads -1 here proves nothing about there.
+/// The instructions the boundary emits are the same on every host, so that is
+/// what a `c_int` declaration is pinned by.
+fn lowered_clif_text(source: &str) -> String {
+    struct ClifCapture(Rc<RefCell<Vec<String>>>);
+
+    impl crate::compiler2::dump::RequestedOutputSink for ClifCapture {
+        fn wants_clif(&self) -> bool {
+            true
+        }
+
+        fn clif(&mut self, _: &crate::fz_ir::Module, _: FnId, function: &cranelift_codegen::ir::Function) {
+            self.0.borrow_mut().push(function.display().to_string());
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.set_requested_output(Box::new(ClifCapture(Rc::clone(&observed))));
+    compiler.submit_code(CodeSubmission {
+        name: Some("c_int_lowering.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .compile_root_jit(root)
+        .expect("c_int program should JIT-compile");
+    let text = observed.borrow().join("\n");
+    assert!(!text.is_empty(), "compiling should have lowered at least one function");
+    text
+}
+
+/// A C `int` result fills only the low half of the integer return register,
+/// so the fz integer is its sign extension; a C `int` parameter is the low
+/// half of the fz integer. Both the ordinary extern call and the generated
+/// variadic call carry that, and a declaration that says `integer` instead
+/// keeps the whole register.
+#[test]
+fn compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results() {
+    let fixed_c_int = lowered_clif_text("extern \"C\" defp abs(c_int) :: c_int\ndef main(), do: abs(-7)\n");
+    assert!(
+        fixed_c_int.contains("ireduce.i32"),
+        "a c_int parameter is the low half of the fz integer:\n{fixed_c_int}"
+    );
+    assert!(
+        fixed_c_int.contains("sextend.i64"),
+        "a c_int result is sign extended to the fz integer:\n{fixed_c_int}"
+    );
+
+    let fixed_integer = lowered_clif_text("extern \"C\" defp abs(integer) :: integer\ndef main(), do: abs(-7)\n");
+    assert!(
+        !fixed_integer.contains("ireduce.i32") && !fixed_integer.contains("sextend.i64"),
+        "an integer declaration crosses the boundary as a whole 64-bit word:\n{fixed_integer}"
+    );
+
+    let variadic_c_int = lowered_clif_text(
+        "extern \"C\" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int\n\
+         def main(), do: libc::open(\"/fz_c_int_clif_probe\", 0, 420 :: integer)\n",
+    );
+    assert!(
+        variadic_c_int.contains("ireduce.i32"),
+        "a fixed c_int parameter of a variadic call is the low half of the fz integer:\n{variadic_c_int}"
+    );
+    assert!(
+        variadic_c_int.contains("sextend.i64"),
+        "a variadic call's c_int result is sign extended to the fz integer:\n{variadic_c_int}"
+    );
+}
+
 #[test]
 fn compiler2_private_extern_capture_flows_through_an_ordinary_higher_order_call() {
     let tel = ConfiguredTelemetry::new();
@@ -7815,7 +7893,7 @@ fn compiler2_private_extern_capture_flows_through_an_ordinary_higher_order_call(
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/private_extern_capture.fz".to_string()),
-        text: "extern \"C\" defp abs(integer) :: integer\ndef apply_one(fun, value), do: fun.(value)\ndef main(), do: apply_one(&abs/1, -42)\n".to_string(),
+        text: "extern \"C\" defp abs(c_int) :: c_int\ndef apply_one(fun, value), do: fun.(value)\ndef main(), do: apply_one(&abs/1, -42)\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,

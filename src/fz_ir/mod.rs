@@ -238,6 +238,10 @@ pub struct ExternMarshalSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
     I64,
+    /// C `int`: a 32-bit value in an integer-bank register. A C function
+    /// returning one leaves the upper half of the return register alone, so
+    /// the answer is only the low 32 bits, read as signed.
+    I32,
     F64,
     /// C wire boolean: one `u64` word, with zero false and nonzero true.
     /// Source arguments are emitted as 0 or 1; this is neither Rust/C `bool`

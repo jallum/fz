@@ -610,6 +610,11 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     Ok(match ty {
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
+        // A C `int` parameter is the low half of the fz integer.
+        ExternTy::I32 => {
+            let word = body.as_raw_i64(var_env, var.0);
+            body.b.ins().ireduce(types::I32, word)
+        }
         ExternTy::F64 => body.as_raw_f64(var_env, var.0),
         ExternTy::Bool => {
             let atom = body.coerce_binding_to(
@@ -690,8 +695,16 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
         .collect();
     // Every variadic value is one integer word: the marshal classes a variadic
     // argument can resolve to are all integer-lane, which is what makes the
-    // generated call correct on every target (see `variadic.rs`).
-    let variadic: Vec<ir::Value> = marshalled[fixed_count..].iter().map(|(value, _)| *value).collect();
+    // generated call correct on every target (see `variadic.rs`). C promotes a
+    // narrower integer to a full word in the tail, so a `c_int` there is sign
+    // extended back to the word it was reduced from.
+    let variadic: Vec<ir::Value> = marshalled[fixed_count..]
+        .iter()
+        .map(|(value, ty)| match ty {
+            ExternTy::I32 => body.b.ins().sextend(types::I64, *value),
+            _ => *value,
+        })
+        .collect();
 
     let callee = foreign_symbol_addr(body, eid, decl.symbol.as_str())?;
     let isa = body.jmod.isa();
@@ -705,6 +718,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     };
     match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
+        ExternTy::I32 => Ok(LowerOut::RawI64(body.b.ins().sextend(types::I64, raw))),
         ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
@@ -1833,6 +1847,11 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         // to an f64 that failed Cranelift verification.
         return Ok(match ret {
             ExternTy::I64 => LowerOut::RawI64(raw),
+            // A C `int` result fills only the low half of the return
+            // register, so the fz integer is its sign extension. Reading the
+            // whole register instead is what turned `open`'s -1 into
+            // 4294967295 on a platform whose libc leaves the upper half zero.
+            ExternTy::I32 => LowerOut::RawI64(body.b.ins().sextend(types::I64, raw)),
             ExternTy::Bool => LowerOut::Strict(decode_foreign_boolean_word(body, raw)),
             ExternTy::F64 => LowerOut::RawF64(raw),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
@@ -1921,6 +1940,17 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
 }
 
 fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
+    // A pair field rides a whole return register. The shared front end builds
+    // a pair only out of the three wire types that do, and naming them here
+    // keeps a narrower lane from being mapped into one of those registers.
+    if let Some(field) = fields
+        .iter()
+        .find(|field| !matches!(field, ExternTy::I64 | ExternTy::F64 | ExternTy::Bool))
+    {
+        return Err(CodegenError::new(format!(
+            "{field:?} is not a scalar C pair field; a pair field is integer, float, or boolean"
+        )));
+    }
     let natural = |field: ExternTy| field.lane().unwrap_or(types::I64);
     match triple.architecture {
         Architecture::X86_64 | Architecture::X86_64h

@@ -1,5 +1,5 @@
 
-extern "C" defp libc::open(path :: cstring, flags :: integer, ...) :: integer
+extern "C" defp libc::open(path :: cstring, flags :: c_int, ...) :: c_int
 
 def main() do
   libc::open("x")
