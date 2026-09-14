@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-14T11:26:10Z",
@@ -13,8 +13,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Entry dispatch re-boxes a lane-form tuple parameter to destructure it: one heap struct per destructuring call",
   "type": "bug",
-  "updated_at": "2026-09-14T12:03:03Z"
+  "updated_at": "2026-09-14T12:19:11Z"
 }
