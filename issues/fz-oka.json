@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T18:57:25Z",
+  "description": "Reproduced 2026-09-14 at main f26264572 on interp, run and build:\n\n    def main() do\n      n = 2\n      take = fn \u003c\u003cs::binary-size(n), _::binary\u003e\u003e -\u003e s end\n      dbg(take.(\"hello\"))\n    end\n\nElixir prints \"he\" (n is in the lambda's prematch snapshot; 1.20 warns that it should be pinned as size(^n)). fz: error[lower/unbound]: compiler2 lowering found unbound bit size name `n` (single clause) or \"compiler2 local dispatch pinned name `n` is unresolved\" (multi-clause).\n\nCause: collect_pattern_free_names (src/compiler2/jobs/body.rs ~4667-4671) recurses into a bitstring field's value and never inspects its size expression, so a size variable never becomes a capture, never becomes an input of the lambda, and never lands in env. The fix is one arm: a size name that no earlier field binds is a free name of the pattern. After fz-acn.2 binds pins from the prematch, the captured n then binds like any other pin.\n\nSignal: the program above on three doors with an oracle twin; the same shape with size(^n) once the parser accepts a pin inside size.",
+  "id": "fz-oka",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A lambda whose bitstring size names a captured variable fails to compile",
+  "type": "bug",
+  "updated_at": "2026-09-14T18:57:25Z"
+}
