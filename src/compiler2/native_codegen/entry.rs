@@ -19,7 +19,7 @@ pub(crate) struct EntryHarnessOut {
 }
 
 pub(crate) fn build_entry_harness<M: ClModule>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     f: &FnIr,
@@ -116,7 +116,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 ///
 /// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_cont_fn<M: ClModule>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],

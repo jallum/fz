@@ -233,6 +233,14 @@ process to be found. The AOT door is answered by the linker instead, which is a
 fourth place and why `-lm` is hardcoded until a declaration can say which
 library it comes from.
 
+**How a runtime helper is typed at a compiled call site** — owner the Rust
+function item. `runtime_call!(body, fz_list_cons_int, [process, head, tail])`
+reads the linker symbol off the identifier and the Cranelift signature off the
+item's type (`native_codegen/runtime_call.rs`), so a compiled call cannot
+describe a helper differently from the function it reaches. The helper is
+declared on first use in each body; there is no table of helpers to keep in
+step with the runtime.
+
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid
 width or the first byte offset at which that prefix becomes impossible. The

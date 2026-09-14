@@ -1,6 +1,6 @@
 use super::*;
 use crate::diag::Diagnostics;
-use cranelift_codegen::ir::types;
+use cranelift_codegen::ir::{AbiParam, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{Configurable, Flags};
 use cranelift_frontend::FunctionBuilderContext;
@@ -188,9 +188,9 @@ impl Backend for JitBackend {
 }
 
 /// AOT backend: wraps a cranelift_object ObjectModule. Drives the same
-/// codegen as the JIT (through the Backend trait + declare_runtime_symbols)
-/// but finalizes by emitting object-file bytes for a linker rather than
-/// resolving fn pointers in memory.
+/// codegen as the JIT (through the Backend trait) but finalizes by emitting
+/// object-file bytes for a linker rather than resolving fn pointers in
+/// memory.
 pub struct AotBackend {
     omod: ObjectModule,
 }
@@ -230,95 +230,6 @@ impl Backend for AotBackend {
         let Some(main_fn_id) = meta.main_fn_id else {
             return Ok(());
         };
-
-        // AOT C-main is a thin driver around the Tail-CC entry bodies
-        // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted by
-        // planned codegen. Three fz-runtime FFI fns handle Process
-        // setup, static-closure registration, and run-main+teardown.
-        // Setup takes the four halt_cont_body addrs (ValueRef, RawInt,
-        // RawF64, RawAtom) in slots 2-5.
-        let setup_sig = import_sig(
-            &mut self.omod,
-            &[
-                types::I64,
-                types::I32,
-                types::I64,
-                types::I64,
-                types::I64,
-                types::I64,
-                types::I64,
-            ],
-            &[types::I64],
-        );
-        let setup_id = self
-            .omod
-            .declare_function("fz_aot_setup", Linkage::Import, &setup_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
-
-        // Trailing i32 carries halt_kind.
-        let reg_sig = import_sig(
-            &mut self.omod,
-            &[types::I64, types::I32, types::I32, types::I64, types::I32, types::I32],
-            &[],
-        );
-        let reg_id = self
-            .omod
-            .declare_function("fz_aot_register_static_closure", Linkage::Import, &reg_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_static_closure: {}", e)))?;
-
-        let run_sig = import_sig(
-            &mut self.omod,
-            &[types::I64, types::I64, types::I64, types::I32],
-            &[types::I32],
-        );
-        let run_id = self
-            .omod
-            .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_run_main: {}", e)))?;
-
-        // Registers the SystemV→Tail-CC `fz_drain_dtor_entry` shim so
-        // the AOT run-queue loop can dispatch pending dtor closures at
-        // task-exit. `(proc, addr)` — proc carries the scheduler handle.
-        let set_drain_sig = import_sig(&mut self.omod, &[types::I64, types::I64], &[]);
-        let set_drain_id = self
-            .omod
-            .declare_function("fz_aot_set_drain_dtor_entry", Linkage::Import, &set_drain_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e)))?;
-
-        // Registers the SystemV `fz_resume(cont)` shim so the AOT run-queue
-        // loop can resume `runnable` (entry thunk or selective-receive/
-        // mid-flight continuation) on parity with the JIT.
-        // `(proc, addr)` — proc carries the scheduler handle.
-        let set_resume_sig = import_sig(&mut self.omod, &[types::I64, types::I64], &[]);
-        let set_resume_id = self
-            .omod
-            .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
-
-        // `fz_aot_register_tuple_schemas(proc, arities_ptr, len)` populates
-        // the AOT process's SchemaRegistry with one Tuple{N} entry per
-        // arity in array order. That order matches the planned codegen
-        // schema iteration, so the schema ids baked into the CLIF
-        // (via tuple_schema_ids) resolve correctly.
-        let reg_tuples_sig = import_sig(&mut self.omod, &[types::I64, types::I64, types::I32], &[]);
-        let reg_tuples_id = self
-            .omod
-            .declare_function("fz_aot_register_tuple_schemas", Linkage::Import, &reg_tuples_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e)))?;
-        let reg_named_schemas_sig = import_sig(&mut self.omod, &[types::I64, types::I64, types::I32], &[]);
-        let reg_named_schemas_id = self
-            .omod
-            .declare_function("fz_aot_register_named_schemas", Linkage::Import, &reg_named_schemas_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_named_schemas: {}", e)))?;
-        let reg_closure_denotations_sig = import_sig(&mut self.omod, &[types::I64, types::I64, types::I32], &[]);
-        let reg_closure_denotations_id = self
-            .omod
-            .declare_function(
-                "fz_aot_register_closure_denotations",
-                Linkage::Import,
-                &reg_closure_denotations_sig,
-            )
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_closure_denotations: {}", e)))?;
 
         let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) = if meta.tuple_arities.is_empty() {
             (None, 0)
@@ -409,7 +320,12 @@ impl Backend for AotBackend {
             (Some(id), len)
         };
 
-        let c_main_sig = import_sig(&mut self.omod, &[types::I32, types::I64], &[types::I32]);
+        // C `main(argc, argv) -> int`: not a runtime item, so its signature
+        // is written out here.
+        let mut c_main_sig = self.omod.make_signature();
+        c_main_sig.params.push(AbiParam::new(types::I32));
+        c_main_sig.params.push(AbiParam::new(types::I64));
+        c_main_sig.returns.push(AbiParam::new(types::I32));
         let c_main_id = self
             .omod
             .declare_function("main", Linkage::Export, &c_main_sig)
@@ -427,21 +343,13 @@ impl Backend for AotBackend {
             &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,
-            reg_closure_denotations_id,
             closure_denotations_data,
             closure_denotations_len,
-            setup_id,
-            reg_id,
-            run_id,
-            reg_tuples_id,
             tuple_arities_data,
             tuple_arities_len,
-            reg_named_schemas_id,
             named_schemas_data,
             named_schemas_len,
-            set_drain_id,
             meta.drain_dtor_entry_id,
-            set_resume_id,
             meta.resume_id,
         )?;
         Ok(())

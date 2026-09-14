@@ -10,21 +10,31 @@ use super::*;
 use crate::fz_ir::Var;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Module};
 use fz_runtime::any_value::{AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, NIL_ATOM_ID, TaggedRefArch, ValueKind};
 use fz_runtime::heap::{FieldKind, Schema};
+use fz_runtime::ir_runtime::{
+    fz_alloc_closure, fz_alloc_frame, fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any,
+    fz_closure_code_ref, fz_closure_get_capture_atom, fz_closure_get_capture_f64, fz_closure_get_capture_i64,
+    fz_closure_get_capture_ref, fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64,
+    fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_get_halt_cont, fz_halt_implicit_atom,
+    fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref,
+    fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
+    fz_mark_published_ref_aliased, fz_materialize_cont, fz_struct_set_field_atom, fz_struct_set_field_float,
+    fz_struct_set_field_int, fz_struct_set_field_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float,
+    fz_unbox_int,
+};
 use std::collections::HashMap;
 
-/// Per-function semantic codegen machine: runtime refs + the function-local
-/// import table, plus the `FunctionBuilder`, module, and cache bound for the
-/// body currently being emitted. Every runtime-BIF operation is an inherent
-/// method built on `call`/`call1`; semantic lowering code drives all emission
+/// Per-function semantic codegen machine: the function-local import table
+/// plus the `FunctionBuilder`, module, and cache bound for the body
+/// currently being emitted. Every runtime-BIF operation is an inherent
+/// method over `runtime_call!`; semantic lowering code drives all emission
 /// through this one type.
-pub(crate) struct CodegenFn<'a, 'env, 'fb, M>
+pub(crate) struct CodegenFn<'a, 'fb, M>
 where
     M: Module,
 {
-    runtime: &'env RuntimeRefs,
     imports: HashMap<FuncId, ir::FuncRef>,
     /// Memoized current-`Process*` value per block: `get_pinned_reg` reads a
     /// register that is constant for the whole function invocation, so each
@@ -37,33 +47,9 @@ where
     pub(super) cache: &'a mut CodegenCache,
 }
 
-impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
-    pub(crate) fn new(
-        env: &'env CodegenEnv<'_>,
-        b: &'a mut FunctionBuilder<'fb>,
-        jmod: &'a mut M,
-        cache: &'a mut CodegenCache,
-    ) -> Self {
+impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
+    pub(crate) fn new(b: &'a mut FunctionBuilder<'fb>, jmod: &'a mut M, cache: &'a mut CodegenCache) -> Self {
         Self {
-            runtime: env.runtime,
-            imports: HashMap::new(),
-            process_by_block: HashMap::new(),
-            b,
-            jmod,
-            cache,
-        }
-    }
-
-    /// Build a semantic machine for generated runtime shim bodies, which
-    /// have runtime refs but no fz `CodegenEnv`.
-    pub(crate) fn for_runtime_shim(
-        runtime: &'env RuntimeRefs,
-        b: &'a mut FunctionBuilder<'fb>,
-        jmod: &'a mut M,
-        cache: &'a mut CodegenCache,
-    ) -> Self {
-        Self {
-            runtime,
             imports: HashMap::new(),
             process_by_block: HashMap::new(),
             b,
@@ -87,16 +73,6 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         self.b.ins().func_addr(types::I64, fref)
     }
 
-    fn call(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
-        let fref = self.func_ref(id);
-        self.b.ins().call(fref, args)
-    }
-
-    fn call1(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
-        let inst = self.call(id, args);
-        self.b.inst_results(inst)[0]
-    }
-
     /// The current task's `Process*` — the value the scheduler placed in the
     /// pinned register at entry. It is valid anywhere in compiled code (it
     /// survives runtime-helper calls), so it is the leading argument every
@@ -112,103 +88,65 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         v
     }
 
-    /// Call a process-taking BIF, prepending the pinned `Process*` to `args`.
-    fn call1_p(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
-        let process = self.process_arg();
-        let mut full = Vec::with_capacity(args.len() + 1);
-        full.push(process);
-        full.extend_from_slice(args);
-        self.call1(id, &full)
-    }
-
-    /// Like `call1_p`, for a process-taking BIF with no return value.
-    fn call_p(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
-        let process = self.process_arg();
-        let mut full = Vec::with_capacity(args.len() + 1);
-        full.push(process);
-        full.extend_from_slice(args);
-        self.call(id, &full)
-    }
-
-    /// Declare a runtime import by symbol name (idempotent) and call it. The
-    /// single declare→fref→call path for the intrinsics lowered by name rather
-    /// than through a `RuntimeRefs` id; the wire ABI comes from the one
-    /// `runtime_import_types` table and `func_ref` dedups the per-fn import like
-    /// every other call site.
-    pub(crate) fn call_named(&mut self, name: &str, args: &[ir::Value]) -> ir::Inst {
-        let sig = runtime_import_sig_for_module(self.jmod, name);
-        let id = self
-            .jmod
-            .declare_function(name, Linkage::Import, &sig)
-            .expect("declare runtime import");
-        let fref = self.func_ref(id);
-        self.b.ins().call(fref, args)
-    }
-
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.type_of_id;
-        self.call1(id, &[value_ref])
+        runtime_call1!(self, fz_type_of, [value_ref])
     }
 
     pub(crate) fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.truthy_ref_id;
-        self.call1(id, &[value_ref])
+        runtime_call1!(self, fz_truthy_ref, [value_ref])
     }
 
     pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.mark_published_ref_aliased_id;
-        self.call1_p(id, &[value_ref])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_mark_published_ref_aliased, [process, value_ref])
     }
 
     pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        let id = self.runtime.box_int_for_any_id;
-        self.call1_p(id, &[raw])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_box_int_for_any, [process, raw])
     }
 
     pub(crate) fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        let id = self.runtime.box_float_for_any_id;
-        self.call1_p(id, &[raw])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_box_float_for_any, [process, raw])
     }
 
     pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        let id = self.runtime.box_atom_for_any_id;
-        self.call1_p(id, &[raw])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_box_atom_for_any, [process, raw])
     }
 
     pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.unbox_int_id;
-        self.call1(id, &[value_ref])
+        runtime_call1!(self, fz_unbox_int, [value_ref])
     }
 
     pub(crate) fn unbox_float(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.unbox_float_id;
-        self.call1(id, &[value_ref])
+        runtime_call1!(self, fz_unbox_float, [value_ref])
     }
 
     pub(crate) fn unbox_atom(&mut self, value_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.unbox_atom_id;
-        self.call1(id, &[value_ref])
+        runtime_call1!(self, fz_unbox_atom, [value_ref])
     }
 
     pub(crate) fn halt_implicit(&mut self, repr: ArgRepr, value: ir::Value) {
-        let id = match repr {
-            ArgRepr::RawInt => self.runtime.halt_implicit_i64_id,
-            ArgRepr::RawF64 => self.runtime.halt_implicit_f64_id,
-            ArgRepr::RawAtom => self.runtime.halt_implicit_atom_id,
-            ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
+        let process = self.process_arg();
+        match repr {
+            ArgRepr::RawInt => runtime_call!(self, fz_halt_implicit_i64, [process, value]),
+            ArgRepr::RawF64 => runtime_call!(self, fz_halt_implicit_f64, [process, value]),
+            ArgRepr::RawAtom => runtime_call!(self, fz_halt_implicit_atom, [process, value]),
+            ArgRepr::ValueRef => runtime_call!(self, fz_halt_implicit_ref, [process, value]),
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
-        self.call_p(id, &[value]);
     }
 
     pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
-        let id = self.runtime.alloc_id;
-        self.call1_p(id, &[schema_id, size])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_alloc_frame, [process, schema_id, size])
     }
 
     pub(crate) fn get_halt_cont(&mut self, body_addr: ir::Value, halt_kind: ir::Value) -> ir::Value {
-        let id = self.runtime.get_halt_cont_id;
-        self.call1_p(id, &[body_addr, halt_kind])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_get_halt_cont, [process, body_addr, halt_kind])
     }
 
     pub(crate) fn alloc_closure(
@@ -219,33 +157,29 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         halt_kind: ir::Value,
         code_addr: ir::Value,
     ) -> ir::Value {
-        let id = self.runtime.alloc_closure_id;
         let denotation = self.b.ins().iconst(types::I32, denotation.as_u32() as i64);
-        self.call1_p(id, &[denotation, arity, captured_count, halt_kind, code_addr])
-    }
-
-    pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
-        self.call1_p(cons_id, args)
+        let process = self.process_arg();
+        runtime_call1!(
+            self,
+            fz_alloc_closure,
+            [process, denotation, arity, captured_count, halt_kind, code_addr]
+        )
     }
 
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.list_head_fallback_id;
-        self.call1(id, &[list_ref])
+        runtime_call1!(self, fz_list_head_ref, [list_ref])
     }
 
     pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.list_head_int_ref_id;
-        self.call1(id, &[list_ref])
+        runtime_call1!(self, fz_list_head_int_ref, [list_ref])
     }
 
     pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.list_head_float_ref_id;
-        self.call1(id, &[list_ref])
+        runtime_call1!(self, fz_list_head_float_ref, [list_ref])
     }
 
     pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.list_tail_fallback_id;
-        self.call1(id, &[list_ref])
+        runtime_call1!(self, fz_list_tail_ref, [list_ref])
     }
 
     pub(crate) fn list_reuse_or_cons_parts(
@@ -256,8 +190,12 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         tail_ref: ir::Value,
         rewrite: ir::Value,
     ) -> ir::Value {
-        let id = self.runtime.list_reuse_or_cons_parts_id;
-        self.call1_p(id, &[source_ref, head_raw, head_kind, tail_ref, rewrite])
+        let process = self.process_arg();
+        runtime_call1!(
+            self,
+            fz_list_reuse_or_cons_parts,
+            [process, source_ref, head_raw, head_kind, tail_ref, rewrite]
+        )
     }
 
     pub(crate) fn list_reuse_or_cons_ref(
@@ -267,82 +205,77 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         tail: ir::Value,
         rewrite: ir::Value,
     ) -> ir::Value {
-        self.call1_p(self.runtime.list_reuse_or_cons_ref_id, &[source, head, tail, rewrite])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_list_reuse_or_cons_ref, [process, source, head, tail, rewrite])
     }
 
     pub(crate) fn closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_get_capture_i64_id;
-        self.call1(id, &[closure_ref, index])
+        runtime_call1!(self, fz_closure_get_capture_i64, [closure_ref, index])
     }
 
     pub(crate) fn closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_get_capture_f64_id;
-        self.call1(id, &[closure_ref, index])
+        runtime_call1!(self, fz_closure_get_capture_f64, [closure_ref, index])
     }
 
     pub(crate) fn closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_get_capture_atom_id;
-        self.call1(id, &[closure_ref, index])
+        runtime_call1!(self, fz_closure_get_capture_atom, [closure_ref, index])
     }
 
     pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_get_capture_ref_id;
-        self.call1(id, &[closure_ref, index])
+        runtime_call1!(self, fz_closure_get_capture_ref, [closure_ref, index])
     }
 
     pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_code_ref_id;
-        self.call1(id, &[closure_ref])
+        runtime_call1!(self, fz_closure_code_ref, [closure_ref])
     }
 
     pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        let id = self.runtime.closure_halt_kind_ref_id;
-        self.call1(id, &[closure_ref])
+        runtime_call1!(self, fz_closure_halt_kind_ref, [closure_ref])
     }
 
     pub(crate) fn set_closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
-        let id = self.runtime.closure_set_capture_ref_id;
-        self.call_p(id, &[closure_ref, index, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_closure_set_capture_ref, [process, closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
-        let id = self.runtime.closure_set_capture_i64_id;
-        self.call_p(id, &[closure_ref, index, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_closure_set_capture_i64, [process, closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
-        let id = self.runtime.closure_set_capture_f64_id;
-        self.call_p(id, &[closure_ref, index, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_closure_set_capture_f64, [process, closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
-        let id = self.runtime.closure_set_capture_atom_id;
-        self.call_p(id, &[closure_ref, index, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_closure_set_capture_atom, [process, closure_ref, index, value]);
     }
 
     pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
-        let id = self.runtime.materialize_cont_id;
-        self.call1_p(id, &[value])
+        let process = self.process_arg();
+        runtime_call1!(self, fz_materialize_cont, [process, value])
     }
 
     pub(crate) fn struct_set_field_int(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let id = self.runtime.struct_set_field_int_id;
-        self.call_p(id, &[struct_bits, offset, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_struct_set_field_int, [process, struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_float(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let id = self.runtime.struct_set_field_float_id;
-        self.call_p(id, &[struct_bits, offset, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_struct_set_field_float, [process, struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_atom(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let id = self.runtime.struct_set_field_atom_id;
-        self.call_p(id, &[struct_bits, offset, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_struct_set_field_atom, [process, struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_ref(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
-        let id = self.runtime.struct_set_field_ref_id;
-        self.call_p(id, &[struct_bits, offset, value]);
+        let process = self.process_arg();
+        runtime_call!(self, fz_struct_set_field_ref, [process, struct_bits, offset, value]);
     }
 
     // -- value classification reads (cache-free) --

@@ -6,7 +6,7 @@ use fz_runtime::heap::Schema;
 use std::collections::HashMap;
 
 pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     var: u32,
     binding: CodegenValue,
@@ -29,7 +29,7 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
 }
 
 pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
 ) {
     match value {
@@ -59,7 +59,7 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
 /// invariant break into a loud panic at codegen time rather than a
 /// silent load-from-zero.
 pub(crate) fn emit_return<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     frame_ptr: Option<ir::Value>,
     value: CodegenValue,
 ) {
@@ -99,7 +99,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
 ///
 /// Takes no `frame_ptr` because none is read.
 pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
 ) {
     emit_halt_from_codegen_value(body, value);
@@ -111,7 +111,7 @@ pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
 /// frame = [my_cont_ptr, result_placeholder, ...captured]. Callee frame =
 /// [cont_frame_ptr, ...args]. Return callee frame ptr.
 pub(crate) fn emit_call<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     schemas: &[Schema],
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
@@ -168,7 +168,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
 /// frame in place. Otherwise allocate a new frame. Either way, cont_ptr is
 /// preserved (the parent's continuation).
 pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     schemas: &[Schema],
     self_id: u32,
     frame_ptr: Option<ir::Value>,

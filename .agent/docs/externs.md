@@ -175,6 +175,37 @@ turns that report into an owned pending error before the call returns; native
 execution writes the same rendered reason to stderr. It never reuses the
 atom-only `Process.exit_fault` field, which belongs to compiler dispatch traps.
 
+## Helpers the code generator calls itself
+
+Some calls in compiled code come from lowering rather than from source: a cons
+cell, a frame allocation, a boxed integer. Each helper is an ordinary
+`extern "C"` function in the runtime library, and codegen names it by that Rust
+function item:
+
+```rust
+runtime_call!(body, fz_list_cons_int, [process, head, tail])
+```
+
+The item says everything. `stringify!` of the identifier is the linker symbol,
+and the item's type is the signature: `CLane` maps each parameter's Rust type to
+its register lane and `CRet` maps the result, so `*mut Process`, `u32` and `f64`
+travel in I64, I32 and F64 by construction. A parameter type with no lane does
+not compile — the same bank invariant the wire alphabet carries for a
+declaration, read off Rust types instead. Since the signature comes from the
+item, the convention comes from the target module's default
+(`Module::make_signature`), which is the platform C ABI.
+
+A helper is declared `Import` on first use in the body that calls it and
+memoized there, the way `lower_extern_generic` declares a source-visible extern.
+Calling a new helper is one `runtime_call!` and an import of its name. The AOT
+`main` reaches `fz_aot_setup` and its neighbours the same way. All of this lives
+in `native_codegen/runtime_call.rs`.
+
+The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
+`fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so they
+keep written-out `Tail`/`SystemV` signatures. They are declared `Local` beside
+the code that emits them, as `LocalBodies` in `native_codegen/driver.rs`.
+
 ## The wire alphabet
 
 ```text

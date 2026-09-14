@@ -34,7 +34,7 @@ pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
 }
 
 pub(crate) fn emit_list_retention_or_alloc<M: Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     tail: ListTailBits,
@@ -57,7 +57,7 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
 }
 
 pub(crate) fn value_raw_kind_parts<M: Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
 ) -> Option<(ir::Value, ValueKind)> {
     match value {

@@ -98,7 +98,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     // populated from. Builder, module, cache, and import table are bound once,
     // here.
     let mut cache = CodegenCache::default();
-    let mut body = CodegenFn::new(env, &mut b, jmod, &mut cache);
+    let mut body = CodegenFn::new(&mut b, jmod, &mut cache);
     let EntryHarnessOut {
         mut var_env,
         frame_ptr,
@@ -187,7 +187,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 }
                 Stmt::LetMany(vars, Prim::Extern(_, eid, args)) => {
                     let decl = env.module.extern_by_id(*eid);
-                    let values = lower_extern_pair(&mut body, env.runtime, &var_env, decl, eid, args)?;
+                    let values = lower_extern_pair(&mut body, &var_env, decl, eid, args)?;
                     if vars.len() != values.len() {
                         return Err(CodegenError::new(format!(
                             "extern `{}` produced {} result lanes for {} bindings",

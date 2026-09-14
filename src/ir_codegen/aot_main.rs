@@ -1,18 +1,73 @@
 use super::*;
-use cranelift_codegen::ir::{InstBuilder, Signature, types};
+use crate::compiler2::native_codegen::runtime_call::{
+    RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_fn_id,
+};
+use cranelift_codegen::ir::{self, InstBuilder, Signature, types};
 use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::procbin::SHARED_BIN_BYTES;
+use fz_runtime::aot_shim::{
+    fz_aot_register_closure_denotations, fz_aot_register_named_schemas, fz_aot_register_static_closure,
+    fz_aot_register_tuple_schemas, fz_aot_run_main, fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
+};
+use fz_runtime::procbin::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
+use std::collections::HashMap;
 
-fn fn_addr<M: ClModule>(jmod: &mut M, id: FuncId, b: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::Value {
-    let fref = jmod.declare_func_in_func(id, b.func);
-    b.ins().func_addr(types::I64, fref)
+/// The C `main` body under construction: the module that declares a symbol
+/// and the builder that emits the call, together, so the startup calls reach
+/// the runtime through their Rust function items.
+struct AotMain<'a, 'fb, M: ClModule> {
+    jmod: &'a mut M,
+    b: &'a mut FunctionBuilder<'fb>,
+    runtime_funcs: HashMap<&'static str, ir::FuncRef>,
+}
+
+impl<M: ClModule> RuntimeCaller for AotMain<'_, '_, M> {
+    fn runtime_func_ref<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F) -> ir::FuncRef {
+        if let Some(&callee) = self.runtime_funcs.get(name) {
+            return callee;
+        }
+        let id = declare_runtime_fn(self.jmod, name, item);
+        let callee = self.jmod.declare_func_in_func(id, self.b.func);
+        self.runtime_funcs.insert(name, callee);
+        callee
+    }
+
+    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst {
+        self.b.ins().call(callee, args)
+    }
+
+    fn sole_result(&self, call: ir::Inst) -> ir::Value {
+        self.b.inst_results(call)[0]
+    }
+}
+
+impl<M: ClModule> AotMain<'_, '_, M> {
+    /// The address of a Local symbol this object defines.
+    fn local_addr(&mut self, id: FuncId) -> ir::Value {
+        let fref = self.jmod.declare_func_in_func(id, self.b.func);
+        self.b.ins().func_addr(types::I64, fref)
+    }
+
+    /// A data symbol's address, or a null word where there is no data.
+    fn data_addr(&mut self, data: Option<DataId>) -> ir::Value {
+        match data {
+            Some(data_id) => {
+                let gv = self.jmod.declare_data_in_func(data_id, self.b.func);
+                self.b.ins().symbol_value(types::I64, gv)
+            }
+            None => self.b.ins().iconst(types::I64, 0),
+        }
+    }
+
+    fn iconst32(&mut self, value: u32) -> ir::Value {
+        self.b.ins().iconst(types::I32, value as i64)
+    }
 }
 
 /// Emit the AOT C-callable main entry. Drives the cps-in-clif startup:
-/// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →
+/// `fz_aot_setup` -> per-closure `fz_aot_register_static_closure` ->
 /// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
 /// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
 /// against the Local symbols emitted by planned codegen.
@@ -36,21 +91,13 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     )],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
-    reg_closure_denotations_id: FuncId,
     closure_denotations_data: Option<DataId>,
     closure_denotations_len: u32,
-    setup_id: FuncId,
-    reg_id: FuncId,
-    run_id: FuncId,
-    reg_tuples_id: FuncId,
     tuple_arities_data: Option<DataId>,
     tuple_arities_len: u32,
-    reg_named_schemas_id: FuncId,
     named_schemas_data: Option<DataId>,
     named_schemas_len: u32,
-    set_drain_id: FuncId,
     drain_dtor_entry_id: FuncId,
-    set_resume_id: FuncId,
     resume_id: FuncId,
 ) -> Result<(), CodegenError> {
     let mut ctx = jmod.make_context();
@@ -60,33 +107,29 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
+        let mut main = AotMain {
+            jmod,
+            b: &mut b,
+            runtime_funcs: HashMap::new(),
+        };
 
         // Atom blob: symbol address + byte length.
-        let atom_blob_addr = match atom_blob_data {
-            Some(data_id) => {
-                let gv = jmod.declare_data_in_func(data_id, b.func);
-                b.ins().symbol_value(types::I64, gv)
-            }
-            None => b.ins().iconst(types::I64, 0),
-        };
-        let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
+        let atom_blob_addr = main.data_addr(atom_blob_data);
+        let atom_blob_len_v = main.iconst32(atom_blob_len);
 
         // Shim addresses (Local symbols in this object).
-        let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
-        let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
-        let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
-        let hcb_atom_addr = fn_addr(jmod, halt_cont_body_ids[3], &mut b);
-        let mt_addr = fn_addr(jmod, main_trampoline_id, &mut b);
-        let et_addr = fn_addr(jmod, entry_thunk_id, &mut b);
-        let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
+        let hcb_strict_addr = main.local_addr(halt_cont_body_ids[0]);
+        let hcb_i64_addr = main.local_addr(halt_cont_body_ids[1]);
+        let hcb_f64_addr = main.local_addr(halt_cont_body_ids[2]);
+        let hcb_atom_addr = main.local_addr(halt_cont_body_ids[3]);
+        let mt_addr = main.local_addr(main_trampoline_id);
+        let et_addr = main.local_addr(entry_thunk_id);
+        let main_fp = main.local_addr(main_fz_func_id);
 
-        // proc = fz_aot_setup(atom_blob, atom_blob_len,
-        //                     hcb_strict, hcb_i64, hcb_f64, hcb_atom,
-        //                     entry_thunk_addr)
-        let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
-        let setup_call = b.ins().call(
-            setup_fref,
-            &[
+        let setup = runtime_call!(
+            main,
+            fz_aot_setup,
+            [
                 atom_blob_addr,
                 atom_blob_len_v,
                 hcb_strict_addr,
@@ -94,91 +137,82 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 hcb_f64_addr,
                 hcb_atom_addr,
                 et_addr,
-            ],
+            ]
         );
-        let proc_v = b.inst_results(setup_call)[0];
+        let proc_v = main.sole_result(setup);
 
         // Install the same typed source-denotation table used by the compiler
         // before any user closure can participate in term comparison.
         {
-            let denotations_addr = match closure_denotations_data {
-                Some(data_id) => {
-                    let gv = jmod.declare_data_in_func(data_id, b.func);
-                    b.ins().symbol_value(types::I64, gv)
-                }
-                None => b.ins().iconst(types::I64, 0),
-            };
-            let denotations_len = b.ins().iconst(types::I32, closure_denotations_len as i64);
-            let register = jmod.declare_func_in_func(reg_closure_denotations_id, b.func);
-            b.ins().call(register, &[proc_v, denotations_addr, denotations_len]);
+            let denotations_addr = main.data_addr(closure_denotations_data);
+            let denotations_len = main.iconst32(closure_denotations_len);
+            runtime_call!(
+                main,
+                fz_aot_register_closure_denotations,
+                [proc_v, denotations_addr, denotations_len]
+            );
         }
 
         // Register tuple schemas before any code that might allocate one.
-        // Static closures use AllocStruct (not MakeTuple), but keeping
-        // schema setup adjacent to process setup preserves invariant ordering.
+        // Static closures use AllocStruct (not MakeTuple), but keeping schema
+        // setup adjacent to process setup preserves invariant ordering. The
+        // registry takes one Tuple{N} entry per arity in array order, and that
+        // order is the codegen schema iteration order, so the schema ids baked
+        // into the CLIF resolve to the same schemas.
         {
-            let tuple_arities_addr = match tuple_arities_data {
-                Some(data_id) => {
-                    let gv = jmod.declare_data_in_func(data_id, b.func);
-                    b.ins().symbol_value(types::I64, gv)
-                }
-                None => b.ins().iconst(types::I64, 0),
-            };
-            let tuple_arities_len_v = b.ins().iconst(types::I32, tuple_arities_len as i64);
-            let reg_tuples_fref = jmod.declare_func_in_func(reg_tuples_id, b.func);
-            b.ins()
-                .call(reg_tuples_fref, &[proc_v, tuple_arities_addr, tuple_arities_len_v]);
+            let tuple_arities_addr = main.data_addr(tuple_arities_data);
+            let tuple_arities_len_v = main.iconst32(tuple_arities_len);
+            runtime_call!(
+                main,
+                fz_aot_register_tuple_schemas,
+                [proc_v, tuple_arities_addr, tuple_arities_len_v]
+            );
         }
         {
-            let named_schemas_addr = match named_schemas_data {
-                Some(data_id) => {
-                    let gv = jmod.declare_data_in_func(data_id, b.func);
-                    b.ins().symbol_value(types::I64, gv)
-                }
-                None => b.ins().iconst(types::I64, 0),
-            };
-            let named_schemas_len_v = b.ins().iconst(types::I32, named_schemas_len as i64);
-            let reg_named_fref = jmod.declare_func_in_func(reg_named_schemas_id, b.func);
-            b.ins()
-                .call(reg_named_fref, &[proc_v, named_schemas_addr, named_schemas_len_v]);
+            let named_schemas_addr = main.data_addr(named_schemas_data);
+            let named_schemas_len_v = main.iconst32(named_schemas_len);
+            runtime_call!(
+                main,
+                fz_aot_register_named_schemas,
+                [proc_v, named_schemas_addr, named_schemas_len_v]
+            );
         }
 
         for (cl_sid, arity, body_func_id, halt_kind, denotation) in static_closure_targets {
-            let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
-            let arity_v = b.ins().iconst(types::I32, *arity as i64);
-            let body_addr = fn_addr(jmod, *body_func_id, &mut b);
-            let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
-            let denotation_v = b.ins().iconst(types::I32, denotation.as_u32() as i64);
-            let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
-            b.ins()
-                .call(reg_fref, &[proc_v, cl_sid_v, arity_v, body_addr, hk_v, denotation_v]);
+            let cl_sid_v = main.iconst32(*cl_sid);
+            let arity_v = main.iconst32(*arity);
+            let body_addr = main.local_addr(*body_func_id);
+            let hk_v = main.iconst32(*halt_kind);
+            let denotation_v = main.iconst32(denotation.as_u32());
+            runtime_call!(
+                main,
+                fz_aot_register_static_closure,
+                [proc_v, cl_sid_v, arity_v, body_addr, hk_v, denotation_v]
+            );
         }
 
         // Register the drain-dtor entry shim so the AOT run-queue loop
         // can fire pending dtors at task-exit.
         {
-            let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
-            let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
-            b.ins().call(set_drain_fref, &[proc_v, drain_addr]);
+            let drain_addr = main.local_addr(drain_dtor_entry_id);
+            runtime_call!(main, fz_aot_set_drain_dtor_entry, [proc_v, drain_addr]);
         }
 
         // Register the `fz_resume` shim so the AOT run-queue loop can
         // resume `runnable` continuations.
         {
-            let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
-            let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
-            b.ins().call(set_resume_fref, &[proc_v, resume_addr_v]);
+            let resume_addr_v = main.local_addr(resume_id);
+            runtime_call!(main, fz_aot_set_resume_addr, [proc_v, resume_addr_v]);
         }
 
         // fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind):
         // wraps main_fp in a synthetic inner closure (via fz_main_trampoline)
         // + entry thunk. The halt kind must match the entry fn's computed
         // halt seam so the root task picks the right halt continuation body.
-        let run_fref = jmod.declare_func_in_func(run_id, b.func);
-        let main_halt_kind_v = b.ins().iconst(types::I32, main_halt_kind as i64);
-        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr, main_halt_kind_v]);
-        let result = b.inst_results(run_call)[0];
-        b.ins().return_(&[result]);
+        let main_halt_kind_v = main.iconst32(main_halt_kind);
+        let run_call = runtime_call!(main, fz_aot_run_main, [proc_v, main_fp, mt_addr, main_halt_kind_v]);
+        let result = main.sole_result(run_call);
+        main.b.ins().return_(&[result]);
 
         b.seal_all_blocks();
         b.finalize();
@@ -222,7 +256,6 @@ pub(crate) struct BsConstSyms {
 /// as `Linkage::Import` so the linker resolves it to the runtime export.
 pub(crate) fn define_static_sharedbin<M: ClModule>(
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     bytes_id: DataId,
     bytes: &[u8],
     bit_len: u64,
@@ -243,7 +276,8 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     desc.set_align(16);
     let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
     desc.write_data_addr(16, bytes_gv, 0);
-    let dtor_fref = jmod.declare_func_in_data(runtime.shared_bin_destructor_noop_id, &mut desc);
+    let dtor_id = runtime_fn_id!(jmod, shared_bin_destructor_noop(_));
+    let dtor_fref = jmod.declare_func_in_data(dtor_id, &mut desc);
     desc.write_function_addr(32, dtor_fref);
     jmod.define_data(sb_id, &desc)
         .map_err(|e| CodegenError::new(format!("define {}: {}", sb_name, e)))?;

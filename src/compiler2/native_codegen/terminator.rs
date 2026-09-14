@@ -13,6 +13,9 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::AnyValue;
 use fz_runtime::heap::Schema;
+use fz_runtime::ir_runtime::{
+    fz_exit_fault, fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
+};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use std::collections::HashMap;
@@ -67,7 +70,7 @@ fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -80,7 +83,6 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
     callee_sid: u32,
     extra_params: usize,
 ) {
-    let runtime = env.runtime;
     let callee_param_reprs = &env.param_reprs[callee_sid as usize];
     assert!(
         args.len() >= extra_params,
@@ -124,7 +126,7 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
     let payload = ContinuationPayload::from_parts(env, callee_sid, semantic_cap_bindings, vec![], vec![]);
     let self_arg = plan_closure_shaped_continuation(payload, is_native && use_lazy).emit_value(
         body,
-        runtime,
+        env.locals,
         env.halt_reprs,
         is_cont_fn,
         cont_param,
@@ -187,7 +189,7 @@ impl ContinuationPayload {
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
-        body: &mut CodegenFn<'_, '_, '_, M>,
+        body: &mut CodegenFn<'_, '_, M>,
         env: &CodegenEnv<'_>,
         var_env: &HashMap<u32, CodegenValue>,
         cont_sid: u32,
@@ -237,8 +239,8 @@ impl ContinuationPlan {
     #[allow(clippy::too_many_arguments)]
     fn emit_value<M: cranelift_module::Module>(
         &self,
-        body: &mut CodegenFn<'_, '_, '_, M>,
-        runtime: &RuntimeRefs,
+        body: &mut CodegenFn<'_, '_, M>,
+        locals: &LocalBodies,
         return_reprs: &[ArgRepr],
         is_cont_fn: bool,
         cont_param: Option<ir::Value>,
@@ -249,7 +251,7 @@ impl ContinuationPlan {
                 let ref_captures = payload.ref_captures();
                 build_lazy_cont_descriptor(
                     body,
-                    runtime,
+                    locals,
                     return_reprs,
                     is_cont_fn,
                     cont_param,
@@ -265,7 +267,7 @@ impl ContinuationPlan {
                 let ref_captures = payload.ref_captures();
                 build_cont_closure(
                     body,
-                    runtime,
+                    locals,
                     return_reprs,
                     is_cont_fn,
                     cont_param,
@@ -331,7 +333,7 @@ fn continuation_uses_lazy_descriptor<T: Types<Ty = Ty> + ClosureTypes>(
 }
 
 fn native_call_result_value<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     result: ir::Value,
     repr: ArgRepr,
 ) -> CodegenValue {
@@ -361,7 +363,7 @@ fn scalar_or_never_body_return_halt_repr(env: &CodegenEnv<'_>, body_sid: u32) ->
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -523,7 +525,7 @@ fn emit_goto(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_if<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     block_map: &HashMap<u32, ir::Block>,
     caller_fn_id: FnId,
@@ -563,7 +565,7 @@ fn emit_if<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_halt<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     host_ctx: Option<ir::Value>,
@@ -578,7 +580,7 @@ fn emit_halt<M: cranelift_module::Module>(
     // continuations instead. Mark the exit as a fault at this one site so
     // drivers can distinguish it from success without inspecting the value.
     let process = body.process_arg();
-    body.call_named("fz_exit_fault", &[process]);
+    runtime_call!(body, fz_exit_fault, [process]);
     if is_native {
         // fz_halt already recorded process.halt_value; the
         // returned bits are unobservable but the sig requires
@@ -595,7 +597,7 @@ fn emit_halt<M: cranelift_module::Module>(
 }
 
 fn emit_return_lanes<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
@@ -647,7 +649,7 @@ fn emit_return_lanes<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     _t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -715,7 +717,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
 
 #[allow(clippy::too_many_arguments)]
 fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -783,7 +785,7 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
 // indirect-call through it (docs/cps-in-clif.md §2.1).
 #[allow(clippy::too_many_arguments)]
 fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -798,7 +800,6 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     cont_sid: u32,
     cap_vals: &[ir::Value],
 ) {
-    let runtime = env.runtime;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
     // Coerce each arg from its current var repr to the
@@ -822,7 +823,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     };
     let cont_value_opt = continuation_plan
         .as_ref()
-        .map(|plan| plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr));
+        .map(|plan| plan.emit_value(body, env.locals, env.halt_reprs, is_cont_fn, cont_param, frame_ptr));
     // cont arg passed to the callee: cl_ptr for native cont,
     // else cont_param fallback. When the cont-fn is uniform
     // (rare; only main's halt-style cont after the
@@ -843,7 +844,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
                 synth_halt_cont = true;
                 let callee_ret_repr = scalar_or_never_body_return_halt_repr(env, callee_sid)
                     .expect("synthesized halt continuation requires one delivered value lane");
-                synthesize_halt_cont(body, runtime, callee_ret_repr)
+                synthesize_halt_cont(body, env.locals, callee_ret_repr)
             }
         }
     };
@@ -874,14 +875,12 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
         let cont_schema = &schemas[cont_sid as usize];
-        let alloc_fref = body.jmod.declare_func_in_func(runtime.alloc_id, body.b.func);
         let sid = body.b.ins().iconst(types::I32, cont_sid as i64);
         let sz = body
             .b
             .ins()
             .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
-        let alloc_call = body.b.ins().call(alloc_fref, &[sid, sz]);
-        let cf = body.b.inst_results(alloc_call)[0];
+        let cf = body.alloc_frame(sid, sz);
         let my_cont = body.b.ins().load(
             types::I64,
             MemFlags::trusted(),
@@ -910,7 +909,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
 
 #[allow(clippy::too_many_arguments)]
 fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -961,7 +960,7 @@ fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureT
 // return_call is ABI-compatible.
 #[allow(clippy::too_many_arguments)]
 fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -975,7 +974,6 @@ fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     is_back_edge: bool,
     callee_sid: u32,
 ) {
-    let runtime = env.runtime;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
     if let NativeEntryAbi::Continuation { extra_params } = env.body_native(callee_sid).entry_abi {
@@ -1033,7 +1031,7 @@ fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 synth_halt_cont = true;
                 let caller_ret_repr = scalar_or_never_body_return_halt_repr(env, this_spec_id)
                     .expect("top-level native tail delivery must end in one value lane");
-                synthesize_halt_cont(body, runtime, caller_ret_repr)
+                synthesize_halt_cont(body, env.locals, caller_ret_repr)
             }
         }
     };
@@ -1140,13 +1138,12 @@ fn expected_native_tail_arg_count(callee_param_reprs: &[ArgRepr]) -> usize {
 // scheduler-runnable closure and yield it as the primary mid-flight root.
 // Otherwise fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     callee_sid: u32,
     mid_flight_arg_shapes: &[MidFlightArgShape],
     native_args: &[ir::Value],
 ) {
-    let runtime = env.runtime;
     let process = body.b.ins().get_pinned_reg(types::I64);
     let reductions_ptr = body
         .b
@@ -1184,11 +1181,8 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         })
         .collect();
     debug_assert_eq!(abi_cursor, native_args.len());
-    let slow_path_begin_fref = body
-        .jmod
-        .declare_func_in_func(runtime.yield_slow_path_begin_id, body.b.func);
     let process = body.process_arg();
-    body.b.ins().call(slow_path_begin_fref, &[process]);
+    runtime_call!(body, fz_yield_slow_path_begin, [process]);
     let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
     let n_caps_v = body.b.ins().iconst(types::I32, native_root_values.len() as i64);
     let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
@@ -1209,15 +1203,12 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         }
         body.store_closure_capture_ref_word(cont_closure, i, root_ref);
     }
-    let yield_fref = body
-        .jmod
-        .declare_func_in_func(runtime.yield_mid_flight_report_id, body.b.func);
     let reason = body.b.ins().iconst(types::I32, YIELD_REASON_REDUCTIONS as i64);
-    let yield_inst = body
-        .b
-        .ins()
-        .call(yield_fref, &[process, cont_closure, new_remaining, reason]);
-    let yield_ret = body.b.inst_results(yield_inst)[0];
+    let yield_ret = runtime_call1!(
+        body,
+        fz_yield_mid_flight_report,
+        [process, cont_closure, new_remaining, reason]
+    );
     body.b.ins().return_(&[yield_ret]);
 
     body.b.switch_to_block(proceed_blk);
@@ -1226,7 +1217,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1240,7 +1231,6 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
     args: &[Var],
     continuation: &Cont,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     {
         // Closure invocation is opaque to the caller: read code_ptr
         // through the runtime ABI and call it with args, self, and cont.
@@ -1254,7 +1244,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
-        let cf = continuation_plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
+        let cf = continuation_plan.emit_value(body, env.locals, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
         // Load body address from the closure and
         // Tail-CC indirect-call with closure-target sig
         // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
@@ -1294,7 +1284,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
 
 #[allow(clippy::too_many_arguments)]
 fn emit_tail_call_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
@@ -1384,7 +1374,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 // and returns the YIELD sentinel so the trampoline parks.
 #[allow(clippy::too_many_arguments)]
 fn emit_receive_matched<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
@@ -1427,7 +1417,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
 // fz_receive_park_matched and return the YIELD sentinel.
 #[allow(clippy::too_many_arguments)]
 fn build_park_record<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_cont_fn: bool,
@@ -1440,7 +1430,6 @@ fn build_park_record<M: cranelift_module::Module>(
     matcher_addr: ir::Value,
 ) -> ir::Value {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-    let runtime = env.runtime;
 
     // Pinned inputs: alloca [AnyValueRef; n_pinned], take base addr.
     let n_pinned = pinned.len();
@@ -1502,7 +1491,7 @@ fn build_park_record<M: cranelift_module::Module>(
         let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
-            runtime,
+            env.locals,
             env.halt_reprs,
             is_cont_fn,
             cont_param,
@@ -1529,7 +1518,7 @@ fn build_park_record<M: cranelift_module::Module>(
             let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
-                runtime,
+                env.locals,
                 env.halt_reprs,
                 is_cont_fn,
                 cont_param,
@@ -1549,13 +1538,11 @@ fn build_park_record<M: cranelift_module::Module>(
     let n_clauses_v = body.b.ins().iconst(types::I64, n_clauses as i64);
     let bound_arity_v = body.b.ins().iconst(types::I32, bound_arity as i64);
 
-    let park_fref = body
-        .jmod
-        .declare_func_in_func(runtime.receive_park_matched_id, body.b.func);
     let process = body.process_arg();
-    let park_inst = body.b.ins().call(
-        park_fref,
-        &[
+    let park_inst = runtime_call!(
+        body,
+        fz_receive_park_matched,
+        [
             process,
             matcher_addr,
             pinned_ptr,
@@ -1566,7 +1553,7 @@ fn build_park_record<M: cranelift_module::Module>(
             bound_arity_v,
             after_deadline_v,
             after_cont_v,
-        ],
+        ]
     );
     body.b.inst_results(park_inst)[0]
 }

@@ -9,6 +9,12 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{FuncId, Linkage, Module as ClModule};
 use fz_runtime::heap::{FieldKind, Schema, SchemaRegistry};
+use fz_runtime::ir_runtime::{
+    fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_read_field_ref, fz_bs_reader_init_ref,
+    fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes, fz_matcher_map_get_ref,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_eq_ref,
+};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -208,7 +214,6 @@ fn declare_callable_boundary_fns<M: cranelift_module::Module>(
 fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
     fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     surface: &NativeCodegenSurface<'_>,
@@ -235,7 +240,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             let self_value = params[arg_reprs.len()];
             let cont_value = params[arg_reprs.len() + 1];
             let mut shim_cache = CodegenCache::default();
-            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
             let body_fref = cg.func_ref(body_func_id);
             let mut direct_args: Vec<ir::Value> =
                 Vec::with_capacity(boundary.capture_reprs.len() + arg_reprs.len() + 1);
@@ -255,6 +260,76 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
+/// The bodies codegen emits itself and then calls or takes the address of:
+/// the four halt-cont bodies, the entry thunk, the main trampoline and the
+/// dtor-drain entry. They are declared `Local` with written-out signatures
+/// because they are not Rust functions — there is no item to read a signature
+/// off, and their calling conventions (Tail, SystemV) are chosen here.
+#[derive(Clone, Copy)]
+pub(crate) struct LocalBodies {
+    /// Halt-cont bodies, indexed by halt kind: ValueRef, RawInt, RawF64,
+    /// RawAtom.
+    pub(crate) halt_cont_body_ids: [FuncId; 4],
+    pub(crate) entry_thunk_id: FuncId,
+    pub(crate) main_trampoline_id: FuncId,
+    pub(crate) drain_dtor_entry_id: FuncId,
+}
+
+impl LocalBodies {
+    /// The body a return repr halts through. A halt kind is both the index
+    /// here and the word the runtime stores its singleton under.
+    pub(crate) fn halt_cont_body_id(&self, repr: ArgRepr) -> FuncId {
+        self.halt_cont_body_ids[repr.halt_kind() as usize]
+    }
+}
+
+fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalBodies, CodegenError> {
+    let mut declare = |name: &str, sig: Signature| -> Result<FuncId, CodegenError> {
+        m.declare_function(name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
+    };
+    // A halt-cont body takes `(value, self)`, with the value in the lane its
+    // halt kind names, and is the definition emitted by `emit_halt_cont_bodies`.
+    let halt_cont_sig = |repr: ArgRepr| {
+        let mut sig = Signature::new(CallConv::Tail);
+        push_repr_param(&mut sig, repr);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        sig
+    };
+    let strict_id = declare("fz_halt_cont_body_strict", halt_cont_sig(ArgRepr::ValueRef))?;
+    let i64_id = declare("fz_halt_cont_body_i64", halt_cont_sig(ArgRepr::RawInt))?;
+    let f64_id = declare("fz_halt_cont_body_f64", halt_cont_sig(ArgRepr::RawF64))?;
+    let atom_id = declare("fz_halt_cont_body_atom", halt_cont_sig(ArgRepr::RawAtom))?;
+
+    // The entry thunk is resumed like any continuation, so it has the
+    // resume-shaped closure-target signature `(self) -> i64`.
+    let mut entry_thunk_sig = Signature::new(CallConv::Tail);
+    entry_thunk_sig.params.push(AbiParam::new(types::I64));
+    entry_thunk_sig.returns.push(AbiParam::new(types::I64));
+    let entry_thunk_id = declare("fz_entry_thunk", entry_thunk_sig)?;
+
+    let mut main_trampoline_sig = Signature::new(CallConv::Tail);
+    main_trampoline_sig.params.push(AbiParam::new(types::I64));
+    main_trampoline_sig.params.push(AbiParam::new(types::I64));
+    main_trampoline_sig.returns.push(AbiParam::new(types::I64));
+    let main_trampoline_id = declare("fz_main_trampoline", main_trampoline_sig)?;
+
+    // The scheduler calls the drain entry per pending dtor at task exit.
+    let mut drain_sig = Signature::new(CallConv::SystemV);
+    drain_sig.params.push(AbiParam::new(types::I64));
+    drain_sig.params.push(AbiParam::new(types::I64));
+    drain_sig.returns.push(AbiParam::new(types::I64));
+    let drain_dtor_entry_id = declare("fz_drain_dtor_entry", drain_sig)?;
+
+    Ok(LocalBodies {
+        halt_cont_body_ids: [strict_id, i64_id, f64_id, atom_id],
+        entry_thunk_id,
+        main_trampoline_id,
+        drain_dtor_entry_id,
+    })
+}
+
 /// Emit fz_main_trampoline. The closure-target body for a main-style
 /// entry's synthetic inner closure. The inner closure carries the raw
 /// `(cont)` main fn pointer in capture[0] (a raw int, so GC never treats it
@@ -265,13 +340,13 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
 fn emit_main_trampoline<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
+    locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.main_trampoline_id, |m, b| {
+    emit_fn_body(m, fbctx, sig, locals.main_trampoline_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -279,7 +354,7 @@ fn emit_main_trampoline<M: cranelift_module::Module>(
         let self_cl = b.block_params(entry)[0];
         let cont = b.block_params(entry)[1];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
         // capture[0] holds the raw `(cont)` main fn pointer (raw int).
         let zero = cg.b.ins().iconst(types::I64, 0);
         let main_fp = cg.closure_capture_i64(self_cl, zero);
@@ -303,13 +378,13 @@ fn emit_main_trampoline<M: cranelift_module::Module>(
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
+    locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.drain_dtor_entry_id, |m, b| {
+    emit_fn_body(m, fbctx, sig, locals.drain_dtor_entry_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -317,10 +392,10 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let closure = b.block_params(entry)[0];
         let payload_ref = b.block_params(entry)[1];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
-        let strict_addr = cg.func_addr(runtime.halt_cont_body_strict_id);
+        let strict_addr = cg.func_addr(locals.halt_cont_body_id(ArgRepr::ValueRef));
         let zero = cg.b.ins().iconst(types::I32, 0);
         let halt_cl = cg.get_halt_cont(strict_addr, zero);
         let code = cg.closure_code_ref(closure);
@@ -360,29 +435,29 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
+    locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.entry_thunk_id, |m, b| {
+    emit_fn_body(m, fbctx, sig, locals.entry_thunk_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
         let self_cl = b.block_params(entry)[0];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
         // capture[0] is the inner closure to launch.
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx);
         let kind = cg.closure_halt_kind_ref(closure);
         // Select halt_cont_body_addr by kind. Branchless via four
         // func_addrs + a tiny dispatch — keeps the thunk a leaf.
-        let a_strict = cg.func_addr(runtime.halt_cont_body_strict_id);
-        let a_i64 = cg.func_addr(runtime.halt_cont_body_i64_id);
-        let a_f64 = cg.func_addr(runtime.halt_cont_body_f64_id);
-        let a_atom = cg.func_addr(runtime.halt_cont_body_atom_id);
+        let a_strict = cg.func_addr(locals.halt_cont_body_id(ArgRepr::ValueRef));
+        let a_i64 = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawInt));
+        let a_f64 = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawF64));
+        let a_atom = cg.func_addr(locals.halt_cont_body_id(ArgRepr::RawAtom));
         let one = cg.b.ins().iconst(types::I32, 1);
         let two = cg.b.ins().iconst(types::I32, 2);
         let three = cg.b.ins().iconst(types::I32, 3);
@@ -414,49 +489,24 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
+    locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
-    let mut sig = Signature::new(CallConv::Tail);
-    push_repr_param(&mut sig, ArgRepr::ValueRef);
-    sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.halt_cont_body_strict_id, |m, b| {
-        let entry = b.create_block();
-        b.append_block_params_for_function_params(entry);
-        b.switch_to_block(entry);
-        b.seal_block(entry);
-        let value_ref = b.block_params(entry)[0];
-        let hi_fref = m.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
-        let process = b.ins().get_pinned_reg(types::I64);
-        b.ins().call(hi_fref, &[process, value_ref]);
-        let zero = b.ins().iconst(types::I64, 0);
-        b.ins().return_(&[zero]);
-    })
-    .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
-    for (body_id, val_ty, halt_impl_id) in [
-        (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
-        (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
-        (
-            runtime.halt_cont_body_atom_id,
-            types::I64,
-            runtime.halt_implicit_atom_id,
-        ),
-    ] {
+    for repr in [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom] {
         let mut sig = Signature::new(CallConv::Tail);
-        sig.params.push(AbiParam::new(val_ty));
+        push_repr_param(&mut sig, repr);
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(m, fbctx, sig, body_id, |m, b| {
+        emit_fn_body(m, fbctx, sig, locals.halt_cont_body_id(repr), |m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
-            let val = b.block_params(entry)[0];
-            let hi_fref = m.declare_func_in_func(halt_impl_id, b.func);
-            let process = b.ins().get_pinned_reg(types::I64);
-            b.ins().call(hi_fref, &[process, val]);
-            let zero = b.ins().iconst(types::I64, 0);
-            b.ins().return_(&[zero]);
+            let value = b.block_params(entry)[0];
+            let mut shim_cache = CodegenCache::default();
+            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+            cg.halt_implicit(repr, value);
+            let zero = cg.b.ins().iconst(types::I64, 0);
+            cg.b.ins().return_(&[zero]);
         })
         .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
     }
@@ -472,7 +522,6 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
 fn emit_resume<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
 ) -> Result<FuncId, CodegenError> {
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(types::I64)); // cont
@@ -487,7 +536,7 @@ fn emit_resume<M: cranelift_module::Module>(
         b.seal_block(entry);
         let cont = b.block_params(entry)[0];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
         let code = cg.closure_code_ref(cont);
         let mut stub_sig = Signature::new(CallConv::Tail);
         stub_sig.params.push(AbiParam::new(types::I64)); // self
@@ -560,11 +609,39 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
 /// `func_addr` of the still-undefined symbols. Bodies are pure leaf fns
 /// (no allocation, no extern).
 #[allow(clippy::too_many_arguments)]
+/// The runtime helpers a receive dispatch body may call, declared from their
+/// Rust items. A dispatch body is emitted through a bare `FunctionBuilder`,
+/// so it takes its helpers as `FuncId`s rather than calling them through a
+/// `CodegenFn`.
+fn dispatch_runtime_helpers<M: cranelift_module::Module>(m: &mut M) -> DispatchRuntimeHelpers {
+    DispatchRuntimeHelpers {
+        value_eq_typed_id: Some(runtime_fn_id!(m, fz_value_eq_ref(_, _, _))),
+        matcher_eq_bytes_id: Some(runtime_fn_id!(m, fz_matcher_eq_bytes(_, _, _))),
+        matcher_map_get_ref_id: Some(runtime_fn_id!(m, fz_matcher_map_get_ref(_, _, _))),
+        type_of_id: Some(runtime_fn_id!(m, fz_type_of(_))),
+        unbox_int_id: Some(runtime_fn_id!(m, fz_unbox_int(_))),
+        unbox_float_id: Some(runtime_fn_id!(m, fz_unbox_float(_))),
+        unbox_atom_id: Some(runtime_fn_id!(m, fz_unbox_atom(_))),
+        struct_schema_id_ref_id: Some(runtime_fn_id!(m, fz_struct_schema_id_ref(_))),
+        truthy_ref_id: Some(runtime_fn_id!(m, fz_truthy_ref(_))),
+        box_int_for_any_id: Some(runtime_fn_id!(m, fz_box_int_for_any(_, _))),
+        box_float_for_any_id: Some(runtime_fn_id!(m, fz_box_float_for_any(_, _))),
+        box_atom_for_any_id: Some(runtime_fn_id!(m, fz_box_atom_for_any(_, _))),
+        map_is_map_id: Some(runtime_fn_id!(m, fz_map_is_map(_))),
+        bs_reader_init_id: Some(runtime_fn_id!(m, fz_bs_reader_init_ref(_, _))),
+        bs_read_field_id: Some(runtime_fn_id!(m, fz_bs_read_field_ref(_, _, _, _))),
+        struct_get_field_id: Some(runtime_fn_id!(m, fz_struct_get_field_ref(_, _, _))),
+        struct_get_named_field_id: Some(runtime_fn_id!(m, fz_struct_get_named_field_ref(_, _, _))),
+        list_is_cons_id: Some(runtime_fn_id!(m, fz_list_is_cons(_))),
+        list_head_id: Some(runtime_fn_id!(m, fz_list_head_ref(_))),
+        list_tail_id: Some(runtime_fn_id!(m, fz_list_tail_ref(_))),
+    }
+}
+
 fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     module: &Module,
-    runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
     dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
@@ -586,6 +663,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
         let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
         {
             let _span = tel.raw_span2_0(&["fz", "codegen", "lower_function"], module, fn_id);
+            let helpers = dispatch_runtime_helpers(m);
             emit_receive_dispatch_body(
                 m,
                 fbctx,
@@ -596,28 +674,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 pinned.as_slice(),
                 clauses.as_slice(),
                 dispatch,
-                &DispatchRuntimeHelpers {
-                    value_eq_typed_id: Some(runtime.value_eq_ref_id),
-                    matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
-                    matcher_map_get_ref_id: Some(runtime.matcher_map_get_ref_id),
-                    type_of_id: Some(runtime.type_of_id),
-                    unbox_int_id: Some(runtime.unbox_int_id),
-                    unbox_float_id: Some(runtime.unbox_float_id),
-                    unbox_atom_id: Some(runtime.unbox_atom_id),
-                    struct_schema_id_ref_id: Some(runtime.struct_schema_id_ref_id),
-                    truthy_ref_id: Some(runtime.truthy_ref_id),
-                    box_int_for_any_id: Some(runtime.box_int_for_any_id),
-                    box_float_for_any_id: Some(runtime.box_float_for_any_id),
-                    box_atom_for_any_id: Some(runtime.box_atom_for_any_id),
-                    map_is_map_id: Some(runtime.map_is_map_id),
-                    bs_reader_init_id: Some(runtime.bs_reader_init_ref_id),
-                    bs_read_field_id: Some(runtime.bs_read_field_ref_id),
-                    struct_get_field_id: Some(runtime.struct_get_field_id),
-                    struct_get_named_field_id: Some(runtime.struct_get_named_field_id),
-                    list_is_cons_id: Some(runtime.list_is_cons_id),
-                    list_head_id: Some(runtime.list_head_fallback_id),
-                    list_tail_id: Some(runtime.list_tail_fallback_id),
-                },
+                &helpers,
             )?;
         }
     }
@@ -631,7 +688,6 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
 fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
     fn_ids: &HashMap<u32, FuncId>,
     mid_flight_cont_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
@@ -673,7 +729,7 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let self_bits = b.block_params(entry)[0];
             let mut args = Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut shim_cache = CodegenCache::default();
-            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 let value_ref = cg.closure_capture_ref_at(self_bits, i);
                 arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
@@ -919,14 +975,14 @@ pub(crate) fn compile_with_backend_surface<
     // phase span below nests under this one automatically.
     let _compile_span = tel.raw_span1_0(&["fz", "codegen", "compile"], surface.module);
     let declare_span = tel.raw_span1_0(&["fz", "codegen", "declare"], surface.module);
-    let runtime = declare_runtime_symbols(backend.module_mut())?;
+    let locals = declare_local_bodies(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
 
-    emit_main_trampoline(backend.module_mut(), &mut fbctx, &runtime)?;
-    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &runtime)?;
-    emit_entry_thunk(backend.module_mut(), &mut fbctx, &runtime)?;
-    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &runtime)?;
+    emit_main_trampoline(backend.module_mut(), &mut fbctx, &locals)?;
+    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &locals)?;
+    emit_entry_thunk(backend.module_mut(), &mut fbctx, &locals)?;
+    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &locals)?;
 
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
@@ -974,7 +1030,7 @@ pub(crate) fn compile_with_backend_surface<
 
         let display_name = &body_slot.display_name;
         let cg_env = CodegenEnv {
-            runtime: &runtime,
+            locals: &locals,
             surface,
             module,
             active_spec_id: sid,
@@ -1039,7 +1095,6 @@ pub(crate) fn compile_with_backend_surface<
         backend.module_mut(),
         &mut fbctx,
         module,
-        &runtime,
         &tuple_schema_ids,
         &named_schema_ids,
         &receive_dispatch_fn_ids,
@@ -1052,7 +1107,6 @@ pub(crate) fn compile_with_backend_surface<
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
         &mut fbctx,
-        &runtime,
         &fn_ids,
         &mid_flight_cont_fn_ids,
         &mid_flight_cont_tail_fn_ids,
@@ -1060,12 +1114,11 @@ pub(crate) fn compile_with_backend_surface<
     emit_callable_boundary_bodies(
         backend.module_mut(),
         &mut fbctx,
-        &runtime,
         &fn_ids,
         &callable_boundary_fn_ids,
         surface,
     )?;
-    let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &runtime)?;
+    let resume_id = emit_resume(backend.module_mut(), &mut fbctx)?;
     drop(emit_runtime_span);
 
     let metadata = CompiledMetadata {
@@ -1089,15 +1142,10 @@ pub(crate) fn compile_with_backend_surface<
         diagnostics: surface.diagnostics.clone(),
         main_fn_id: surface.main_fn_id,
         static_closure_targets,
-        entry_thunk_id: runtime.entry_thunk_id,
-        main_trampoline_id: runtime.main_trampoline_id,
-        drain_dtor_entry_id: runtime.drain_dtor_entry_id,
-        halt_cont_body_ids: [
-            runtime.halt_cont_body_strict_id,
-            runtime.halt_cont_body_i64_id,
-            runtime.halt_cont_body_f64_id,
-            runtime.halt_cont_body_atom_id,
-        ],
+        entry_thunk_id: locals.entry_thunk_id,
+        main_trampoline_id: locals.main_trampoline_id,
+        drain_dtor_entry_id: locals.drain_dtor_entry_id,
+        halt_cont_body_ids: locals.halt_cont_body_ids,
         fn_halt_kinds: surface.fn_halt_kinds.clone(),
         resume_id,
     };
