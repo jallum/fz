@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T15:57:39Z",
+  "description": "Measured 2026-09-14 on fz-5xp.30 rebased onto main (after fz-21x.25 landed, so no heap allocation remains in the loop). fixtures2/behavior/tail_recursion.fz on the interpreter takes 4.1s against 1.35s before the branch; the JIT takes 0.17s. A sample of the interpreter shows about half of the executable-step time inside select_clause (src/ir_interp/backend.rs:716) calling ExecutableDispatch::required_input_ordinals, which is required_dispatch_input_ordinals (src/compiler2/artifact.rs:1092): a walk of the dispatch graph with a visited HashSet\u003cGraphNodeId\u003e and a result HashSet\u003cusize\u003e, plus the input_count assertion, repeated on every call. The answer is a function of the plan alone. fz-5xp.30 made every arithmetic operator an fz call with entry dispatch, so the loop now performs three dispatches per iteration instead of one, and CI's matrix::tail_recursion::interp lane trips the 20s guard on about two attempts in three.\n\nFix: ExecutableDispatch::new records the required inputs once, in the constructor, as a sorted Vec\u003cusize\u003e (or a small bitset) alongside plan and clause_ids; required_input_ordinals returns a slice; the three consumers (backend.rs select_clause, jobs/native.rs lower_clause_dispatch_executable, executable_facts.rs entry_dispatch_inputs) read it. The free function stays for the one guard-dispatch caller in native.rs until fz-tqd deletes guard dispatch. No new cache, no pass: the same shape as LoweredBody's tables, a fact recorded where the value is built.\n\nSignal (counts): a telemetry counter or test that the dispatch graph is walked once per ExecutableDispatch construction and zero times per call (pin: N calls to a two-clause function walk the graph once); tail_recursion interp time back toward the baseline's order; matrix::tail_recursion::interp green on consecutive CI runs.",
+  "id": "fz-acn",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Interpreted entry dispatch recomputes the plan's required inputs on every call",
+  "type": "bug",
+  "updated_at": "2026-09-14T15:57:39Z"
+}
