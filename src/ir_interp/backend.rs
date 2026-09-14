@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, interp_value_eq, unpack_closure};
 use super::dispatch_exec::{
-    DispatchExecState, DispatchMatch, DispatchValues, execute_dispatch_inputs, resolve_dispatch_subject,
+    DispatchExecState, DispatchMatch, DispatchOperands, DispatchStop, DispatchValues, execute_dispatch_inputs,
+    subject_word,
 };
 use super::extern_call::call_lowered_extern;
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
@@ -22,7 +23,8 @@ use crate::compiler2::{
 use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::{
-    CallableShape, RuntimeValueReader, matches_runtime_type_predicate, surface_membership,
+    CallableShape, RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate,
+    surface_membership,
 };
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
@@ -599,13 +601,15 @@ fn select_clause(
     dispatch: &ExecutableDispatch,
     args: &[Option<BackendBoundValue>],
 ) -> Result<Option<usize>, String> {
-    let mut inputs = vec![interp_nil_value(); args.len()];
+    // Dispatch reads an input in whatever form it arrived in: a tuple delivered
+    // as lanes is questioned lane-wise, never rebuilt.
+    let mut inputs = vec![BackendBoundValue::Absent; args.len()];
     for ordinal in dispatch.required_input_ordinals() {
         let value = args
             .get(ordinal)
             .and_then(Option::as_ref)
             .ok_or_else(|| format!("backend clause dispatch required omitted semantic input {}", ordinal))?;
-        inputs[ordinal] = materialize_backend_value(transport, runtime.cur_proc(), value)?;
+        inputs[ordinal] = value.clone();
     }
     let prepared = prepared_dispatch_keys(runtime, module, dispatch.plan(), &inputs)?;
     let selected = select_dispatch_body(
@@ -639,7 +643,7 @@ fn prepared_dispatch_keys(
     runtime: &mut IrInterpRuntime,
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    inputs: &[AnyValue],
+    inputs: &[BackendBoundValue],
 ) -> Result<DispatchValues, String> {
     use crate::ground_value::DispatchShape;
     let mut prepared = Vec::new();
@@ -659,13 +663,15 @@ fn prepared_dispatch_keys(
         prepared.push(value);
     }
     Ok(DispatchValues {
+        // A pin is compared whole, so its operand is always one runtime word.
         pinned: plan
             .pinned
             .iter()
             .map(|pin| {
                 pin.input
-                    .and_then(|input| inputs.get(input as usize).copied())
-                    .ok_or_else(|| "entry dispatch pin has no argument operand".to_string())
+                    .and_then(|input| inputs.get(input as usize))
+                    .and_then(BackendBoundValue::runtime_word)
+                    .ok_or_else(|| "entry dispatch pin has no runtime argument operand".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?,
         prepared,
@@ -679,7 +685,7 @@ fn select_dispatch_body(
     program: &BackendProgram,
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    args: &[AnyValue],
+    args: &[BackendBoundValue],
     pinned: &DispatchValues,
 ) -> Result<Option<u32>, String> {
     Ok(
@@ -731,6 +737,116 @@ fn backend_callable_function(transport: &TransportStore, program: &BackendProgra
     }
 }
 
+/// Ask a type test of a value in whatever form it is held.
+///
+/// A whole value is offered to the shared matcher. A tuple held as lanes has no
+/// heap object to read a schema off, so it asks the predicate what it wants of a
+/// tuple of that arity and puts one question to each position instead -- the
+/// same decomposition the boxed matcher makes, one level in, against lanes the
+/// caller already delivered.
+///
+/// A position carries runtime demand and so keeps a lane, which is why the
+/// absent arm below is unreachable rather than a case to answer.
+fn lane_form_type_match(
+    runtime: &mut IrInterpRuntime,
+    module: &Module,
+    types: &crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    predicate: &RuntimeTypePredicate,
+    value: &BackendBoundValue,
+) -> Result<bool, DispatchStop> {
+    let (shape, lanes) = match value {
+        BackendBoundValue::Runtime(word) => {
+            return Ok(whole_value_matches_predicate(
+                runtime, module, types, transport, program, predicate, *word,
+            ));
+        }
+        BackendBoundValue::Absent => {
+            return Err(DispatchStop::broken(
+                "backend type test has no value to ask".to_string(),
+            ));
+        }
+        BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
+    };
+    let Some(arity) = transport.interners().tuple_arity(shape) else {
+        return Err(DispatchStop::broken(format!(
+            "backend type test cannot read lane-form {shape:?}"
+        )));
+    };
+    let shapes = match predicate.tuple_positions(arity) {
+        TuplePositions::Never => return Ok(false),
+        TuplePositions::Always => return Ok(true),
+        TuplePositions::AnyOf(shapes) => shapes,
+    };
+    let views = transport_field_views(transport, shape, lanes).map_err(DispatchStop::broken)?;
+    for shape in shapes {
+        let mut matched = true;
+        for (position, view) in shape.iter().zip(&views) {
+            if !lane_form_type_match(runtime, module, types, transport, program, position, view)? {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether one whole runtime value satisfies a test.
+fn whole_value_matches_predicate(
+    runtime: &mut IrInterpRuntime,
+    module: &Module,
+    types: &crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
+    predicate: &RuntimeTypePredicate,
+    value: AnyValue,
+) -> bool {
+    let Ok(runtime_value) = value.value(runtime.cur_proc()) else {
+        return false;
+    };
+    let (tuple_schema_ids, named_schema_ids) = interp_runtime_type_predicate_schema_ids(runtime, module, predicate);
+    // The representation's owner answers what only it can: which callable a
+    // code word denotes, and what a tuple's field holds.
+    let proc = runtime.cur_proc();
+    let callables = |code: u64| backend_callable_identity(types, transport, program, code);
+    let fields = |value: RuntimeAnyValue, index: usize| {
+        let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
+        interp_value_from_ref_word(field, "tuple shape field")
+            .ok()
+            .and_then(|value| value.value(proc).ok())
+    };
+    let list_head = |value: RuntimeAnyValue| {
+        let head = fz_list_head_ref(value.ref_word().raw_word());
+        interp_value_from_ref_word(head, "list head")
+            .ok()
+            .and_then(|value| value.value(proc).ok())
+    };
+    let list_tail = |value: RuntimeAnyValue| {
+        let tail = fz_list_tail_ref(value.ref_word().raw_word());
+        interp_value_from_ref_word(tail, "list tail")
+            .ok()
+            .and_then(|value| value.value(proc).ok())
+    };
+    let reader = RuntimeValueReader {
+        module,
+        tuple_schema_ids: &tuple_schema_ids,
+        named_schema_ids: &named_schema_ids,
+        callables: &callables,
+        fields: &fields,
+        list_head: &list_head,
+        list_tail: &list_tail,
+    };
+    let matched = matches_runtime_type_predicate(predicate, &reader, runtime_value);
+    if matched {
+        surface_membership::observe(predicate, &reader, runtime_value);
+    }
+    matched
+}
+
 fn select_dispatch_match(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
@@ -738,63 +854,26 @@ fn select_dispatch_match(
     program: &BackendProgram,
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
-    args: &[AnyValue],
+    args: &[BackendBoundValue],
     pinned: &DispatchValues,
 ) -> Result<Option<DispatchMatch>, String> {
     let mut state = DispatchExecState::default();
     let types = &*types;
-    let callables = |code: u64| backend_callable_identity(types, transport, program, code);
     let mut type_match =
-        |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: AnyValue| {
+        |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: &BackendBoundValue| {
             let predicate = types.runtime_type_predicate(want);
-            let runtime_value = value.value(runtime.cur_proc()).ok()?;
-            let (tuple_schema_ids, named_schema_ids) =
-                interp_runtime_type_predicate_schema_ids(runtime, module, &predicate);
-            // The representation's owner answers what only it can: which
-            // callable a code word denotes, and what a tuple's field holds.
-            let proc = runtime.cur_proc();
-            let fields = |value: RuntimeAnyValue, index: usize| {
-                let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
-                interp_value_from_ref_word(field, "tuple shape field")
-                    .ok()
-                    .and_then(|value| value.value(proc).ok())
-            };
-            let list_head = |value: RuntimeAnyValue| {
-                let head = fz_list_head_ref(value.ref_word().raw_word());
-                interp_value_from_ref_word(head, "list head")
-                    .ok()
-                    .and_then(|value| value.value(proc).ok())
-            };
-            let list_tail = |value: RuntimeAnyValue| {
-                let tail = fz_list_tail_ref(value.ref_word().raw_word());
-                interp_value_from_ref_word(tail, "list tail")
-                    .ok()
-                    .and_then(|value| value.value(proc).ok())
-            };
-            let reader = RuntimeValueReader {
-                module,
-                tuple_schema_ids: &tuple_schema_ids,
-                named_schema_ids: &named_schema_ids,
-                callables: &callables,
-                fields: &fields,
-                list_head: &list_head,
-                list_tail: &list_tail,
-            };
-            let matched = matches_runtime_type_predicate(&predicate, &reader, runtime_value);
-            if matched {
-                surface_membership::observe(&predicate, &reader, runtime_value);
-            }
-            Some(matched)
+            lane_form_type_match(runtime, module, types, transport, program, &predicate, value)
         };
-    Ok(execute_dispatch_inputs(
-        runtime,
-        module,
-        plan,
-        args,
+    let operands = DispatchOperands {
+        transport,
+        inputs: args,
         pinned,
-        &mut state,
-        &mut type_match,
-    ))
+    };
+    match execute_dispatch_inputs(runtime, module, plan, &operands, &mut state, &mut type_match) {
+        Ok(matched) => Ok(Some(matched)),
+        Err(DispatchStop::NoMatch) => Ok(None),
+        Err(DispatchStop::Broken(error)) => Err(error),
+    }
 }
 
 fn step_eval_entry<T: Telemetry + ?Sized>(
@@ -893,6 +972,11 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             }
                         })
                         .collect::<Result<Vec<_>, String>>()?;
+                    let dispatch_inputs = input_values
+                        .iter()
+                        .copied()
+                        .map(BackendBoundValue::Runtime)
+                        .collect::<Vec<_>>();
                     let body_id = select_dispatch_body(
                         runtime,
                         types,
@@ -900,7 +984,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         program,
                         module,
                         &dispatch.plan,
-                        &input_values,
+                        &dispatch_inputs,
                         &DispatchValues::default(),
                     )?
                     .ok_or_else(|| {
@@ -1133,7 +1217,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             bindings,
             dispatch,
         } => {
-            let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?;
+            let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?
+                .into_iter()
+                .map(BackendBoundValue::Runtime)
+                .collect::<Vec<_>>();
             let pinned_values = local_dispatch_pinned(transport, runtime.cur_proc(), &env, bindings, &dispatch.plan)?;
             let (target, params) = match select_dispatch_match(
                 runtime,
@@ -1147,20 +1234,24 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             )? {
                 Some(mut matched) => {
                     let edge = dispatch.outcome(matched.outcome);
+                    let operands = DispatchOperands {
+                        transport,
+                        inputs: &input_values,
+                        pinned: &pinned_values,
+                    };
                     let params = edge
                         .arguments
                         .iter()
                         .map(|argument| {
-                            let value = resolve_dispatch_subject(
+                            let value = subject_word(
                                 runtime.cur_proc(),
                                 module,
                                 &dispatch.plan,
                                 argument.subject,
-                                &input_values,
-                                &pinned_values,
+                                &operands,
                                 &mut matched.state,
                             )
-                            .ok_or_else(|| format!("winning outcome lacks subject {:?}", argument.subject))?;
+                            .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
                             Ok((argument.parameter, value))
                         })
                         .collect::<Result<Vec<_>, String>>()?;
@@ -1251,8 +1342,9 @@ fn try_match_backend_receive(
     env: &HashMap<ValueId, BackendBoundValue>,
 ) -> Result<Option<OutcomeValues>, String> {
     let pinned = local_dispatch_pinned(transport, runtime.cur_proc(), env, bindings, dispatch)?;
+    let inputs = [BackendBoundValue::Runtime(msg)];
     let Some(mut matched) =
-        select_dispatch_match(runtime, types, transport, program, module, dispatch, &[msg], &pinned)?
+        select_dispatch_match(runtime, types, transport, program, module, dispatch, &inputs, &pinned)?
     else {
         return Ok(None);
     };
@@ -1260,18 +1352,22 @@ fn try_match_backend_receive(
         .iter()
         .find(|edge| edge.outcome == matched.outcome)
         .expect("receive winning edge");
+    let operands = DispatchOperands {
+        transport,
+        inputs: &inputs,
+        pinned: &pinned,
+    };
     let mut params = Vec::with_capacity(edge.arguments.len());
     for argument in &edge.arguments {
-        let value = resolve_dispatch_subject(
+        let value = subject_word(
             runtime.cur_proc(),
             module,
             dispatch,
             argument.subject,
-            &[msg],
-            &pinned,
+            &operands,
             &mut matched.state,
         )
-        .ok_or_else(|| format!("receive outcome lacks subject {:?}", argument.subject))?;
+        .map_err(|_| format!("receive outcome lacks subject {:?}", argument.subject))?;
         params.push((argument.parameter, value));
     }
     Ok(Some((edge.target, params)))
@@ -2277,7 +2373,7 @@ fn select_construction_member<'a>(
             program,
             module,
             selection,
-            args,
+            &args.iter().copied().map(BackendBoundValue::Runtime).collect::<Vec<_>>(),
             &DispatchValues::default(),
         )?
         .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?
@@ -2456,7 +2552,7 @@ fn materialize_backend_value(
     }
 }
 
-fn materialize_transport_value(
+pub(super) fn materialize_transport_value(
     transport: &TransportStore,
     proc: *mut Process,
     shape: ShapeId,
@@ -2796,17 +2892,15 @@ fn transport_tuple_arity(transport: &TransportStore, value: &BackendBoundValue) 
     let BackendBoundValue::Transport { shape, .. } = value else {
         return None;
     };
-    match transport.interners().shape(*shape) {
-        ShapeDescr::Tuple(fields) => Some(fields.len()),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
-    }
+    transport.interners().tuple_arity(*shape)
 }
 
-fn transport_field_views(
+/// The lane spans of a tuple shape's fields, checked against the lanes in hand.
+fn tuple_field_spans_for(
     transport: &TransportStore,
     shape: ShapeId,
     lanes: &[AnyValue],
-) -> Result<Vec<BackendBoundValue>, String> {
+) -> Result<Vec<(TransportLayout, std::ops::Range<usize>)>, String> {
     if lanes.len() != transport.interners().shape_width(shape) {
         return Err(format!(
             "backend tuple transport shape {shape:?} expected {} lane(s), got {}",
@@ -2814,27 +2908,56 @@ fn transport_field_views(
             lanes.len()
         ));
     }
-    let spans = transport
+    transport
         .interners()
         .tuple_field_spans(shape)
-        .ok_or_else(|| format!("backend transport shape {shape:?} is not a tuple"))?;
-    spans
+        .ok_or_else(|| format!("backend transport shape {shape:?} is not a tuple"))
+}
+
+/// One field of a lane-form tuple, read out of the span it occupies.
+fn decode_tuple_field(
+    transport: &TransportStore,
+    shape: ShapeId,
+    lanes: &[AnyValue],
+    field_layout: TransportLayout,
+    span: std::ops::Range<usize>,
+) -> Result<BackendBoundValue, String> {
+    let field_lanes = lanes
+        .get(span)
+        .ok_or_else(|| format!("backend tuple transport shape {shape:?} has an invalid lane span"))?
+        .to_vec();
+    if field_layout.carrier.is_value_ref() {
+        field_lanes
+            .first()
+            .copied()
+            .map(BackendBoundValue::Runtime)
+            .ok_or_else(|| format!("backend ValueRef tuple field in {shape:?} has no runtime lane"))
+    } else {
+        decode_backend_value_from_lanes(transport, field_layout.structural, field_lanes)
+    }
+}
+
+/// The field at `index`, copying only the lanes that field occupies.
+pub(super) fn transport_field_view(
+    transport: &TransportStore,
+    shape: ShapeId,
+    lanes: &[AnyValue],
+    index: usize,
+) -> Result<Option<BackendBoundValue>, String> {
+    let Some((field_layout, span)) = tuple_field_spans_for(transport, shape, lanes)?.into_iter().nth(index) else {
+        return Ok(None);
+    };
+    decode_tuple_field(transport, shape, lanes, field_layout, span).map(Some)
+}
+
+pub(super) fn transport_field_views(
+    transport: &TransportStore,
+    shape: ShapeId,
+    lanes: &[AnyValue],
+) -> Result<Vec<BackendBoundValue>, String> {
+    tuple_field_spans_for(transport, shape, lanes)?
         .into_iter()
-        .map(|(field_layout, span)| {
-            let field_lanes = lanes
-                .get(span)
-                .ok_or_else(|| format!("backend tuple transport shape {shape:?} has an invalid lane span"))?
-                .to_vec();
-            if field_layout.carrier.is_value_ref() {
-                field_lanes
-                    .first()
-                    .copied()
-                    .map(BackendBoundValue::Runtime)
-                    .ok_or_else(|| format!("backend ValueRef tuple field in {shape:?} has no runtime lane"))
-            } else {
-                decode_backend_value_from_lanes(transport, field_layout.structural, field_lanes)
-            }
-        })
+        .map(|(field_layout, span)| decode_tuple_field(transport, shape, lanes, field_layout, span))
         .collect()
 }
 
@@ -3723,6 +3846,115 @@ mod tests {
         assert!(
             matches!(result, BackendEvalTransition::Done(value) if value.as_i64() == Some(42)),
             "dispatch must preserve the partial tuple for its body without trying to box its absent field"
+        );
+    }
+
+    /// A lane-form tuple parameter is decided from its lanes.
+    ///
+    /// The input arrives as a two-field tuple whose first field carries nothing
+    /// and whose second is one lane. The clause head asks about both: the arity,
+    /// and the literal in field 1. Neither question needs a heap tuple, and one
+    /// could not be built anyway, because the absent field has no value.
+    #[test]
+    fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+        use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        let mut world = crate::compiler2::World::new();
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "unwrap_tuple", 1);
+        let ty = world.types_mut().any();
+        let key = ExecutableKey {
+            activation: crate::compiler2::ActivationKey::from_inputs(
+                crate::compiler2::RootId::for_test(0),
+                function,
+                &[ty],
+                world.types_mut(),
+            ),
+            need: crate::compiler2::ExecutableNeed::Value,
+        };
+        let mut transport = TransportStore::new();
+        let int = world.types_mut().int();
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: int,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let tuple = tuple_shape(&mut transport, &[nothing, scalar]);
+        let mut executable = BackendExecutable::for_test(key, ty, nothing);
+        let abi = Rc::make_mut(&mut executable.abi);
+        let mut layout = abi.return_layout.layout.clone();
+        layout.structural = tuple;
+        abi.semantic_inputs = Box::new([crate::compiler2::BackendSemanticInputLayout {
+            semantic_index: 0,
+            layout,
+        }]);
+        let dispatch = ExecutableDispatch::new(
+            pattern_dispatch_from_source(SourcePatternRows {
+                input_count: 1,
+                rows: vec![PatternRow {
+                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
+                        crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
+                        crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
+                    ]))],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 0,
+                }],
+            })
+            .unwrap(),
+            vec![0],
+        );
+        assert_eq!(
+            dispatch.required_input_ordinals(),
+            std::collections::HashSet::from([0]),
+            "the clause head questions its tuple parameter"
+        );
+        Rc::make_mut(&mut abi.materialized).entry_dispatch = Some(dispatch);
+        let value = ValueId::from_u32(0);
+        let result_value = ValueId::from_u32(1);
+        executable.body = BackendBody::Clauses {
+            clauses: vec![crate::compiler2::BackendClause {
+                span: crate::source::Span::DUMMY,
+                params: vec![value],
+                projections: Vec::new(),
+                entry: crate::compiler2::ControlEntryId::from_u32(0),
+            }],
+            entries: vec![BackendEntry {
+                span: crate::source::Span::DUMMY,
+                origin: crate::compiler2::BackendEntryOrigin::Clause,
+                params: Vec::new(),
+                captures: Vec::new(),
+                physical_captures: Vec::new(),
+                physical_params: Vec::new(),
+                steps: vec![ProgramStep::Const {
+                    value: result_value,
+                    literal: crate::ground_value::GroundValue::Int(42),
+                }],
+                tail: BackendTail::Value {
+                    value: result_value,
+                    dest: ControlDestination::Return,
+                },
+            }],
+            generated: Vec::new(),
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        runtime.current_proc = runtime.process_ptr(1).unwrap();
+        let result = step_backend_executable(
+            &mut runtime,
+            world.types_mut(),
+            &transport,
+            &crate::telemetry::ConfiguredTelemetry::new(),
+            &empty_backend_program(),
+            &Module::default(),
+            Rc::new(executable),
+            vec![AnyValue::Int(7)],
+            Vec::new(),
+        );
+        let result = result.unwrap_or_else(|error| panic!("entry dispatch must reach its body: {error}"));
+        assert!(
+            matches!(result, BackendEvalTransition::Done(value) if value.as_i64() == Some(42)),
+            "the clause head decides the lane-form tuple without boxing it"
         );
     }
 

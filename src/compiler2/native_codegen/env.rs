@@ -116,9 +116,4 @@ pub(crate) struct CodegenCache {
     /// Proven list refs already packed in the current block, keyed by fz block
     /// and source Var. CLIF values are only reused inside their defining block.
     pub(super) known_list_refs: HashMap<(BlockId, u32), ir::Value>,
-    /// Entry tuple fields delivered as independent Tail-CC params for
-    /// ExecutableNeed::TupleFields continuation specs. Keyed by the logical
-    /// tuple Var and field index, so ordinary TupleField lowering can read
-    /// the already-delivered value.
-    pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
 }

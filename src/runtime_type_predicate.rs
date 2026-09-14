@@ -253,6 +253,39 @@ impl RuntimeTypePredicate {
         predicate
     }
 
+    /// What this test asks of a value that is an unnamed tuple of `arity`.
+    ///
+    /// The whole-value answer, not one axis of it: a struct value is offered to
+    /// three axes at once, and the other-structs axis admits every struct whose
+    /// arity the tuple axis does not name, so a test carrying it cannot refuse
+    /// such a tuple on its shape. What is left is the tuple axis' own reading:
+    /// an inexact axis is the arity-only one and asks nothing further, and an
+    /// exact one names the shapes of that arity.
+    ///
+    /// The named-structs axis takes no part: it admits only a schema the module
+    /// registered under a name, which an unnamed tuple never carries.
+    ///
+    /// Every door asks through here -- the boxed matcher, the boxed emitter,
+    /// and the two lowerings that hold the fields rather than a value -- so
+    /// they cannot decompose a tuple test differently.
+    pub(crate) fn tuple_positions(&self, arity: usize) -> TuplePositions<'_> {
+        if self.allow_other_structs && !self.tuples.arities().values.contains(&arity) {
+            return TuplePositions::Always;
+        }
+        if !self.tuples.admits_arity(arity) {
+            return TuplePositions::Never;
+        }
+        if !self.tuples.is_exact() {
+            return TuplePositions::Always;
+        }
+        let shapes = self.tuples.of_arity(arity).collect::<Vec<_>>();
+        debug_assert!(
+            !shapes.is_empty(),
+            "an exact axis derives its arities from its shapes' lengths, so an admitted arity has a shape"
+        );
+        TuplePositions::AnyOf(shapes)
+    }
+
     /// Every tuple arity this test can put a question to, at any depth.
     ///
     /// A nested position is only testable where the runtime can name the
@@ -677,6 +710,23 @@ pub(crate) struct TupleShapes {
     exact: bool,
 }
 
+/// What a test asks of a value already known to be an unnamed tuple of one
+/// arity.
+///
+/// A door holding a boxed value reads the arity off a schema id and then asks
+/// each field its own question. A door holding the fields themselves has no
+/// schema to read, so it asks this instead: the arity is a fact it already
+/// knows, and what is left is either settled or a set of shapes to try.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TuplePositions<'a> {
+    /// No tuple of that arity is admitted.
+    Never,
+    /// Every tuple of that arity is admitted, whatever its fields hold.
+    Always,
+    /// Admitted by any one of these shapes, each a question per position.
+    AnyOf(Vec<&'a [RuntimeTypePredicate]>),
+}
+
 /// How much of a value a reading looks at.
 ///
 /// The gap between the two readings is the LIST SPINE, and nothing else. Every
@@ -754,6 +804,15 @@ impl TupleShapes {
             .iter()
             .map(Vec::as_slice)
             .filter(move |shape| shape.len() == arity)
+    }
+
+    /// Whether this axis admits tuples of `arity` at all.
+    ///
+    /// The four `FiniteSet` readings at once: `none` admits nothing, `any`
+    /// admits every arity, a finite set admits the arities it lists and a
+    /// cofinite one admits the arities it does not.
+    fn admits_arity(&self, arity: usize) -> bool {
+        self.arities.values.contains(&arity) != self.arities.cofinite
     }
 
     /// Whether every shape `other` admits, some shape of this axis admits too.
@@ -1247,15 +1306,17 @@ fn matches_tuple_shape(
     schema: u32,
     scope: PositionScope,
 ) -> bool {
-    if !predicate.tuples.is_exact() {
-        return true;
-    }
     let Some(arity) = reader.tuple_arity_of(schema) else {
         // A tuple whose arity this test never named: the arity half above
         // already decided it, and there is no shape to ask.
         return true;
     };
-    predicate.tuples.of_arity(arity).any(|shape| {
+    let shapes = match predicate.tuple_positions(arity) {
+        TuplePositions::Never => return false,
+        TuplePositions::Always => return true,
+        TuplePositions::AnyOf(shapes) => shapes,
+    };
+    shapes.into_iter().any(|shape| {
         shape.iter().enumerate().all(|(index, position)| {
             (reader.fields)(value, index).is_some_and(|field| {
                 RuntimeTestAxis::of_value(field)
@@ -1784,6 +1845,80 @@ mod tests {
             target: ClosureTarget(target),
             captures,
         }
+    }
+
+    fn tuple_of(shapes: Vec<Vec<RuntimeTypePredicate>>) -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.tuples = TupleShapes::exact(shapes);
+        predicate
+    }
+
+    /// The decomposition a lowering reads off a tuple whose fields it holds.
+    ///
+    /// A lowering that already has the positions in hand cannot ask a schema id
+    /// anything, so it asks the predicate instead: refuse outright, admit
+    /// outright, or match one of these shapes.
+    #[test]
+    fn tuple_positions_answers_for_a_value_that_is_a_tuple_of_that_arity() {
+        let tagged = tuple_of(vec![
+            vec![atom("cont"), ints()],
+            vec![atom("halt"), ints()],
+            vec![ints()],
+        ]);
+        assert!(matches!(tagged.tuple_positions(3), TuplePositions::Never));
+        let TuplePositions::AnyOf(pairs) = tagged.tuple_positions(2) else {
+            panic!("an exact axis names the shapes of an arity it admits");
+        };
+        assert_eq!(pairs.len(), 2, "only the shapes of that arity are candidates");
+        assert!(pairs.iter().all(|shape| shape.len() == 2));
+        let TuplePositions::AnyOf(singles) = tagged.tuple_positions(1) else {
+            panic!("the one-field shape is its own candidate set");
+        };
+        assert_eq!(singles.len(), 1);
+
+        let mut arity_only = RuntimeTypePredicate::none();
+        arity_only.tuples = TupleShapes::arity_only(FiniteSet::lit(2));
+        assert!(
+            matches!(arity_only.tuple_positions(2), TuplePositions::Always),
+            "an inexact axis says nothing about the payloads, so every 2-tuple passes"
+        );
+        assert!(matches!(arity_only.tuple_positions(3), TuplePositions::Never));
+
+        let mut cofinite = RuntimeTypePredicate::none();
+        cofinite.tuples = TupleShapes::arity_only(FiniteSet::cofinite([2]));
+        assert!(
+            matches!(cofinite.tuple_positions(2), TuplePositions::Never),
+            "a cofinite arity set names the arities it refuses"
+        );
+        assert!(matches!(cofinite.tuple_positions(3), TuplePositions::Always));
+
+        assert!(matches!(
+            RuntimeTypePredicate::none().tuple_positions(2),
+            TuplePositions::Never
+        ));
+        assert!(matches!(
+            RuntimeTypePredicate::any().tuple_positions(2),
+            TuplePositions::Always
+        ));
+    }
+
+    /// The other-structs axis admits whatever the tuple axis does not name.
+    ///
+    /// So a test carrying it cannot refuse a tuple on its shape: the value is
+    /// admitted by that axis instead, and a lowering deciding per position has
+    /// to say so rather than answer from the shapes alone.
+    #[test]
+    fn tuple_positions_admits_every_arity_the_other_structs_axis_covers() {
+        let mut pairs = tuple_of(vec![vec![atom("cont"), ints()]]);
+        pairs.allow_other_structs = true;
+        assert!(
+            matches!(pairs.tuple_positions(2), TuplePositions::AnyOf(_)),
+            "an arity the tuple axis names is still decided by its shapes"
+        );
+        assert!(
+            matches!(pairs.tuple_positions(3), TuplePositions::Always),
+            "an arity it does not name is admitted by the other-structs axis"
+        );
     }
 
     /// ADMISSION IS CONTAINMENT, NEVER OVERLAP (fz-kdt.167).
