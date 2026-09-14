@@ -1,0 +1,46 @@
+#---
+# purpose: "clause heads decide a lane-form tuple parameter without boxing it"
+#---
+#
+# # tuple_param_dispatch_allocations
+#
+# `pair/1` and `pick/1` each return a two-field tuple that reaches its consumer
+# in lane form: the caller hands over one lane per field instead of a heap
+# struct. The two consumers ask about that parameter in the two ways a clause
+# head can.
+#
+# `unwrap/1` destructures it, so entry dispatch answers a tuple-arity question
+# and reads field 1. `tag/1` annotates it, so entry dispatch asks a whole-value
+# type question, which the predicate decomposes into one question per position.
+#
+# Current contract, all paths:
+#
+# - the arity question is decided from the parameter's transport shape, and a
+#   field is a view over the lanes already in hand;
+# - the annotated type question is answered per position against those same
+#   lanes, so the tag routes the call without a value to read it from;
+# - no struct is allocated between the two snapshots, so `struct_allocs` and
+#   `struct_bytes` are both `0` on `run`, `interp`, and `build` alike.
+#
+# The last `unwrap/1` clause draws a `type/no-matching-clause` warning, which
+# the diagnostics sidecar records.
+defp pair(n), do: if n > 0, do: {n, false}, else: {n, true}
+defp unwrap({v, false}), do: v
+defp unwrap({_, true}), do: -1
+
+defp pick(n), do: if n > 0, do: {:cont, n}, else: {:halt, n}
+defp tag(x :: {:cont, integer}), do: 1
+defp tag(x :: {:halt, integer}), do: 2
+
+def main() do
+  before = Process.heap_alloc_stats()
+  a = unwrap(pair(5))
+  b = unwrap(pair(-5))
+  c = tag(pick(1))
+  d = tag(pick(-1))
+  later = Process.heap_alloc_stats()
+  dbg({a, b})
+  dbg({c, d})
+  dbg({before[:struct_allocs], before[:struct_bytes]})
+  dbg({later[:struct_allocs], later[:struct_bytes]})
+end

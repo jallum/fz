@@ -388,9 +388,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             LowerOut::ValueRef(p)
         }
         Prim::TupleField(c, idx) => {
-            if let Some(binding) = body.cache.tuple_field_params.get(&(c.0, *idx)).copied() {
-                return Ok(lower_out_for_codegen_value(binding));
-            }
             // Every TupleField is gated by a preceding runtime type-test predicate
             // that runtime-checks the subject is a matching-arity Struct
             // heap value, so the load is provably safe. A SIGSEGV here
@@ -642,17 +639,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
     Ok(v)
-}
-
-fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
-    match value {
-        CodegenValue::AnyRef(v) => LowerOut::ValueRef(v),
-        CodegenValue::Known { .. } => LowerOut::Strict(value),
-        CodegenValue::RawInt(v) => LowerOut::RawI64(v),
-        CodegenValue::RawF64(v) => LowerOut::RawF64(v),
-        CodegenValue::RawAtom(_) => LowerOut::Strict(value),
-        CodegenValue::Condition(v) => LowerOut::Condition(v),
-    }
 }
 
 /// `fz_abi` selects what a declared parameter type MEANS.
@@ -1162,11 +1148,9 @@ fn lower_closure_capture<M: cranelift_module::Module>(
 
 /// Lower a `RuntimeTypeTest` prim.
 ///
-/// Two subject shapes reach here. Usually the value is in hand and the shared
-/// emitter reads it. Under destination-passing the tuple was never boxed --
-/// `fz-qwf` delivered its fields as separate parameters -- so there is no
-/// value to read, and the test is answered against the FIELDS instead, which
-/// is exactly what a per-position test wants anyway (fz-kdt.133).
+/// The subject is one value the surrounding code already holds, and the shared
+/// emitter reads it. A tuple a caller delivered lane-wise never reaches here:
+/// entry dispatch answers its arity from the transport shape instead.
 fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -1176,87 +1160,13 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     predicate: &RuntimeTypePredicate,
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
-    let flag = if let Some(delivered) = delivered_tuple_fields(body, v)
-        && !predicate.allow_other_structs
-        && predicate.named_structs.is_none()
-    {
-        emit_delivered_tuple_test(body, env, runtime, predicate, &delivered)?
-    } else {
-        let value = *var_env.get(&v.0).expect("type-test subject");
-        let mut emitter = PrimTestEmitter { body, env, runtime };
-        emit_runtime_type_test(&mut emitter, value, predicate)?
-    };
+    let value = *var_env.get(&v.0).expect("type-test subject");
+    let mut emitter = PrimTestEmitter { body, env, runtime };
+    let flag = emit_runtime_type_test(&mut emitter, value, predicate)?;
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, flag)))
-}
-
-/// The field parameters a destination-passing boundary delivered in place of a
-/// tuple, in position order, or `None` where the subject is an ordinary value.
-fn delivered_tuple_fields<M: cranelift_module::Module>(
-    body: &CodegenFn<'_, '_, '_, M>,
-    tuple: Var,
-) -> Option<Vec<CodegenValue>> {
-    let mut fields = Vec::new();
-    for index in 0.. {
-        match body.cache.tuple_field_params.get(&(tuple.0, index)) {
-            Some(field) => fields.push(*field),
-            None => break,
-        }
-    }
-    (!fields.is_empty()).then_some(fields)
-}
-
-/// Answer a type test about a tuple that was delivered as separate fields.
-///
-/// The arity is a compile-time fact here -- it is how many parameters the
-/// boundary handed over -- so the arity half of the question is decided
-/// without touching a value. The SHAPE half is not: the WHOLE test was answered
-/// with that one constant until fz-kdt.119 made the predicate payload-aware, at
-/// which point a constant would have been silently wrong on exactly the lanes
-/// destination-passing optimized (fz-kdt.133). The fields are right here, so
-/// each position is asked directly, with no tuple to rebuild.
-///
-/// Measured at the landing: `tuple_field_params` is EMPTY at every one of the
-/// 1783 type tests the corpus lowers, so this path is not reached today and the
-/// hazard it repairs was latent rather than live. It is kept rather than
-/// deleted because the alternative is the `expect` below firing on the day
-/// destination-passing does deliver a type-tested tuple, and a correct answer
-/// beats a loud crash.
-fn emit_delivered_tuple_test<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    runtime: &RuntimeRefs,
-    predicate: &RuntimeTypePredicate,
-    fields: &[CodegenValue],
-) -> Result<ir::Value, CodegenError> {
-    if !predicate.tuples.arities().contains(&fields.len()) {
-        return Ok(body.b.ins().iconst(types::I8, 0));
-    }
-    if !predicate.tuples.is_exact() {
-        return Ok(body.b.ins().iconst(types::I8, 1));
-    }
-    let mut emitter = PrimTestEmitter { body, env, runtime };
-    let mut hit = emitter.body.b.ins().iconst(types::I8, 0);
-    for shape in predicate
-        .tuples
-        .shapes()
-        .iter()
-        .filter(|shape| shape.len() == fields.len())
-    {
-        let mut matched: Option<ir::Value> = None;
-        for (field, position) in fields.iter().zip(shape) {
-            let flag = emit_runtime_type_test(&mut emitter, *field, position)?;
-            matched = Some(match matched {
-                None => flag,
-                Some(prev) => emitter.body.b.ins().band(prev, flag),
-            });
-        }
-        let matched = matched.unwrap_or_else(|| emitter.body.b.ins().iconst(types::I8, 1));
-        hit = emitter.body.b.ins().bor(hit, matched);
-    }
-    Ok(hit)
 }
 
 /// The compiled-body door onto the shared runtime-test emitter.

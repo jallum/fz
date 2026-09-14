@@ -48,6 +48,16 @@ enum BackendBoundValue {
     Transport { shape: ShapeId, lanes: Vec<AnyValue> },
 }
 
+impl BackendBoundValue {
+    /// The single runtime word this value is, if it is one.
+    fn runtime_word(&self) -> Option<AnyValue> {
+        match self {
+            Self::Runtime(value) => Some(*value),
+            Self::Absent | Self::Transport { .. } => None,
+        }
+    }
+}
+
 enum BackendResumeEntry {
     Executable {
         executable: Rc<crate::compiler2::BackendExecutable>,

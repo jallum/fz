@@ -659,6 +659,19 @@ project those values to the member's exact layouts through the existing
 semantic input mappings. A zero-lane empty tuple remains a concrete value:
 decoding consults its tuple shape, rather than treating zero lanes as absence.
 
+Entry dispatch reads a parameter in the form it arrived in. A tuple delivered as
+lanes is decided from those lanes on all three doors: the arity is answered from
+the transport shape without a runtime test, a field question is a view over a
+lane already in hand, and a type test is answered one position at a time through
+`RuntimeTypePredicate::tuple_positions`, the same decomposition the boxed matcher
+makes. So clause heads that destructure the parameter and clause heads that
+annotate it both decide without building anything, and the winning clause is
+called with the entry lanes as they came. A runtime value is built only for a
+question no decomposition reaches -- a pinned equality, a guard, or a map, list
+or bitstring region -- and then at that question rather than on entry.
+`TransportInterners::layout_spans` is the one calculator both doors use to say
+which lanes a field occupies.
+
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
 never reach a boundary. A first-class callable that escapes through a generic

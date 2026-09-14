@@ -16,7 +16,6 @@ pub(crate) struct EntryHarnessOut {
     pub(super) host_ctx: Option<ir::Value>,
     /// Some for native fns (trailing cont SSA); None for uniform.
     pub(super) cont_param: Option<ir::Value>,
-    pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
 }
 
 pub(crate) fn build_entry_harness<M: ClModule>(
@@ -32,7 +31,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, CodegenValue> = HashMap::new();
-    let mut tuple_field_params: HashMap<(u32, u32), CodegenValue> = HashMap::new();
     let my_schema = &schemas[this_spec_id as usize];
 
     // (frame_ptr, host_ctx) are Some only for uniform fns (both from
@@ -54,7 +52,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 my_param_reprs,
                 continuation_extra_count,
                 &mut var_env,
-                &mut tuple_field_params,
             )
         } else {
             harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
@@ -94,7 +91,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
         frame_ptr,
         host_ctx,
         cont_param,
-        tuple_field_params,
     }
 }
 
@@ -126,7 +122,6 @@ fn harness_cont_fn<M: ClModule>(
     my_param_reprs: &[ArgRepr],
     extras_count: usize,
     var_env: &mut HashMap<u32, CodegenValue>,
-    _tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {

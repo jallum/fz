@@ -21,7 +21,9 @@ use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
 
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{CallableShapes, ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{
+    CallableShapes, ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate, TuplePositions,
+};
 
 use super::CodegenError;
 
@@ -399,9 +401,14 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
     predicate: &RuntimeTypePredicate,
     arity: usize,
 ) -> Result<ir::Value, CodegenError> {
+    let shapes = match predicate.tuple_positions(arity) {
+        TuplePositions::Never => return Ok(e.builder().ins().iconst(types::I8, 0)),
+        TuplePositions::Always => return Ok(e.builder().ins().iconst(types::I8, 1)),
+        TuplePositions::AnyOf(shapes) => shapes,
+    };
     let mut fields: Vec<Option<E::Value>> = vec![None; arity];
     let mut hit = e.builder().ins().iconst(types::I8, 0);
-    for shape in predicate.tuples.shapes().iter().filter(|shape| shape.len() == arity) {
+    for shape in shapes {
         let mut matched: Option<ir::Value> = None;
         for (index, position) in shape.iter().enumerate() {
             let field = match fields[index] {

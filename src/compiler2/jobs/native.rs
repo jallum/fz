@@ -24,7 +24,7 @@ use crate::fz_ir::{
     ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
-use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
@@ -414,8 +414,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         ),
                     ));
                 }
-                let bindings = self.lower_argument_bindings(&mut ctx, selection, &args)?;
-                let mut state = DispatchState::new(args.clone(), Vec::new(), bindings);
+                let word_args = args.iter().copied().map(NativeBoundValue::Runtime).collect::<Vec<_>>();
+                let bindings = self.lower_argument_bindings(&mut ctx, selection, &word_args)?;
+                let mut state = DispatchState::new(word_args, Vec::new(), bindings);
                 self.lower_callable_construction_wrapper_dispatch_node(
                     &mut ctx,
                     boundary,
@@ -495,45 +496,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 predicate,
                 on_match,
                 on_miss,
-            } => {
-                let mut match_state = state.clone();
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    plan,
-                    predicate.subject,
-                    &predicate.region,
-                    &on_match.evidence,
-                    &mut match_state,
-                )?;
-                let then_b = ctx.builder.block(vec![]);
-                let else_b = ctx.builder.block(vec![]);
-                ctx.set_term(Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    origin: BranchOrigin::ClauseDispatch,
-                });
-                ctx.current_block = then_b;
-                self.lower_callable_construction_wrapper_dispatch_node(
-                    ctx,
-                    boundary,
-                    plan,
-                    on_match.target,
-                    captures,
-                    args,
-                    &mut match_state,
-                )?;
-                ctx.current_block = else_b;
-                self.lower_callable_construction_wrapper_dispatch_node(
-                    ctx,
-                    boundary,
-                    plan,
-                    on_miss.target,
-                    captures,
-                    args,
-                    state,
-                )
-            }
+            } => self.lower_dispatch_test(
+                ctx,
+                plan,
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::ClauseDispatch,
+                state,
+                &mut |lowerer, ctx, target, state| {
+                    lowerer.lower_callable_construction_wrapper_dispatch_node(
+                        ctx, boundary, plan, target, captures, args, state,
+                    )
+                },
+            ),
         }
     }
 
@@ -840,15 +816,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .as_ref()
             .expect("clause dispatch lowering requires a settled entry dispatch");
         let required_inputs = dispatch.required_input_ordinals();
-        let activation_inputs = executable.key.activation.inputs(self.world.types());
         let inputs = semantic_inputs
             .iter()
             .enumerate()
             .map(
                 |(semantic_index, value)| match (required_inputs.contains(&semantic_index), value) {
-                    (true, Some(value)) => {
-                        self.materialize_native_value(&mut ctx, activation_inputs.get(semantic_index).copied(), value)
-                    }
+                    // Dispatch reads an input in whatever form it arrived in: a
+                    // tuple delivered as lanes is questioned lane-wise.
+                    (true, Some(value)) => Ok(value.clone()),
                     (true, None) => Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -858,7 +833,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             executable.key.activation.function.as_u32(),
                         ),
                     )),
-                    (false, _) => Ok(ctx.emit_let(Prim::Const(Const::Nil)).0),
+                    (false, _) => Ok(NativeBoundValue::Absent),
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
@@ -1712,7 +1687,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let input_vars = self.env_runtime_vars(ctx, executable, env, inputs);
                 let pinned_vars = self.env_runtime_vars(ctx, executable, env, &bindings.pinned);
                 let prepared = self.env_runtime_vars(ctx, executable, env, &bindings.prepared);
-                let mut state = DispatchState::new(
+                let mut state = DispatchState::from_words(
                     input_vars,
                     Vec::new(),
                     DispatchBindings {
@@ -1860,8 +1835,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             })
             .collect::<Vec<_>>();
-        let bindings = self.lower_argument_bindings(ctx, &dispatch.plan, &input_vars)?;
-        let mut state = DispatchState::new(input_vars, Vec::new(), bindings);
+        let word_inputs = input_vars
+            .into_iter()
+            .map(NativeBoundValue::Runtime)
+            .collect::<Vec<_>>();
+        let bindings = self.lower_argument_bindings(ctx, &dispatch.plan, &word_inputs)?;
+        let mut state = DispatchState::new(word_inputs, Vec::new(), bindings);
         self.lower_dispatch_call_node(
             ctx,
             executable,
@@ -1929,51 +1908,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 predicate,
                 on_match,
                 on_miss,
-            } => {
-                let mut match_state = state.clone();
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    &dispatch.plan,
-                    predicate.subject,
-                    &predicate.region,
-                    &on_match.evidence,
-                    &mut match_state,
-                )?;
-                let then_b = ctx.builder.block(vec![]);
-                let else_b = ctx.builder.block(vec![]);
-                ctx.set_term(Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    origin: BranchOrigin::User,
-                });
-                ctx.current_block = then_b;
-                self.lower_dispatch_call_node(
-                    ctx,
-                    executable,
-                    entries,
-                    entry_fns,
-                    env,
-                    dispatch,
-                    args,
-                    dest,
-                    on_match.target,
-                    &mut match_state,
-                )?;
-                ctx.current_block = else_b;
-                self.lower_dispatch_call_node(
-                    ctx,
-                    executable,
-                    entries,
-                    entry_fns,
-                    env,
-                    dispatch,
-                    args,
-                    dest,
-                    on_miss.target,
-                    state,
-                )
-            }
+            } => self.lower_dispatch_test(
+                ctx,
+                &dispatch.plan,
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::User,
+                state,
+                &mut |lowerer, ctx, target, state| {
+                    lowerer.lower_dispatch_call_node(
+                        ctx, executable, entries, entry_fns, env, dispatch, args, dest, target, state,
+                    )
+                },
+            ),
         }
     }
 
@@ -2911,29 +2859,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 predicate,
                 on_match,
                 on_miss,
-            } => {
-                let mut match_state = state.clone();
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    dispatch.plan(),
-                    predicate.subject,
-                    &predicate.region,
-                    &on_match.evidence,
-                    &mut match_state,
-                )?;
-                let then_b = ctx.builder.block(vec![]);
-                let else_b = ctx.builder.block(vec![]);
-                ctx.set_term(Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    origin: BranchOrigin::ClauseDispatch,
-                });
-                ctx.current_block = then_b;
-                self.lower_dispatch_node(ctx, dispatch, on_match.target, helper_ids, &mut match_state)?;
-                ctx.current_block = else_b;
-                self.lower_dispatch_node(ctx, dispatch, on_miss.target, helper_ids, state)
-            }
+            } => self.lower_dispatch_test(
+                ctx,
+                dispatch.plan(),
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::ClauseDispatch,
+                state,
+                &mut |lowerer, ctx, target, state| {
+                    lowerer.lower_dispatch_node(ctx, dispatch, target, helper_ids, state)
+                },
+            ),
         }
     }
 
@@ -2992,54 +2929,188 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 predicate,
                 on_match,
                 on_miss,
-            } => {
-                let mut match_state = state.clone();
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    plan,
-                    predicate.subject,
-                    &predicate.region,
-                    &on_match.evidence,
-                    &mut match_state,
-                )?;
+            } => self.lower_dispatch_test(
+                ctx,
+                plan,
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::User,
+                state,
+                &mut |lowerer, ctx, target, state| {
+                    lowerer.lower_control_dispatch_node(
+                        ctx, executable, entries, entry_fns, env, plan, outcomes, miss_entry, target, state,
+                    )
+                },
+            ),
+        }
+    }
+
+    /// Lower one dispatch test: ask its question, then lower the child the
+    /// answer selects.
+    ///
+    /// A question settled statically produces no branch at all -- the surviving
+    /// child is lowered straight into the block the test would have branched
+    /// from -- so the five dispatch graphs share this one shape.
+    fn lower_dispatch_test<F>(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        predicate: &crate::dispatch_matrix::RegionPredicate<Ty>,
+        on_match: &crate::dispatch_matrix::DispatchEdge<Ty>,
+        on_miss: &crate::dispatch_matrix::DispatchEdge<Ty>,
+        origin: BranchOrigin,
+        state: &mut DispatchState,
+        lower_child: &mut F,
+    ) -> Result<(), FatalError>
+    where
+        F: FnMut(&mut Self, &mut NativeFnCtx, GraphNodeId, &mut DispatchState) -> Result<(), FatalError>,
+    {
+        let mut match_state = state.clone();
+        let answer = self.lower_dispatch_region(
+            ctx,
+            plan,
+            predicate.subject,
+            &predicate.region,
+            &on_match.evidence,
+            &mut match_state,
+        )?;
+        match answer {
+            DispatchAnswer::Static(true) => lower_child(self, ctx, on_match.target, &mut match_state),
+            DispatchAnswer::Static(false) => lower_child(self, ctx, on_miss.target, state),
+            DispatchAnswer::Runtime(cond) => {
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
                     cond,
                     then_b,
                     else_b,
-                    origin: BranchOrigin::User,
+                    origin,
                 });
                 ctx.current_block = then_b;
-                self.lower_control_dispatch_node(
-                    ctx,
-                    executable,
-                    entries,
-                    entry_fns,
-                    env,
-                    plan,
-                    outcomes,
-                    miss_entry,
-                    on_match.target,
-                    &mut match_state,
-                )?;
+                lower_child(self, ctx, on_match.target, &mut match_state)?;
                 ctx.current_block = else_b;
-                self.lower_control_dispatch_node(
-                    ctx,
-                    executable,
-                    entries,
-                    entry_fns,
-                    env,
-                    plan,
-                    outcomes,
-                    miss_entry,
-                    on_miss.target,
-                    state,
-                )
+                lower_child(self, ctx, on_miss.target, state)
             }
         }
     }
 
+    /// What a type test answers from transport shapes alone.
+    ///
+    /// A tuple delivered as lanes carries its arity in its shape, so a question
+    /// about it can be settled before any code is emitted. `None` where the
+    /// answer needs a value to read -- the emitting pass then asks it.
+    fn settled_lane_form_type_test(&self, value: &NativeBoundValue, predicate: &RuntimeTypePredicate) -> Option<bool> {
+        let NativeBoundValue::Transport { shape, lanes } = value else {
+            return None;
+        };
+        let ShapeDescr::Tuple(fields) = self.world.shape(*shape) else {
+            return None;
+        };
+        let positions = match predicate.tuple_positions(fields.len()) {
+            TuplePositions::Never => return Some(false),
+            TuplePositions::Always => return Some(true),
+            TuplePositions::AnyOf(shapes) => shapes,
+        };
+        let views = self.transport_field_views(*shape, lanes, fields).ok()?;
+        let mut admitted = Some(false);
+        for shape in positions {
+            let mut matched = Some(true);
+            for (position, view) in shape.iter().zip(&views) {
+                matched = match self.settled_lane_form_type_test(view, position) {
+                    Some(false) => Some(false),
+                    Some(true) => matched,
+                    None => matched.and(None),
+                };
+                if matched == Some(false) {
+                    break;
+                }
+            }
+            admitted = match matched {
+                Some(true) => return Some(true),
+                Some(false) => admitted,
+                None => admitted.and(None),
+            };
+        }
+        admitted
+    }
+
+    /// Ask a type test of a value in whatever form it is held.
+    ///
+    /// A whole value answers with one `RuntimeTypeTest`. A tuple held as lanes
+    /// has no value to read a schema off, so it asks the predicate what it
+    /// wants of a tuple of that arity and puts one question to each position
+    /// instead -- the same decomposition the boxed matcher and the boxed
+    /// emitter make, one level in, against lanes already in hand.
+    ///
+    /// Whatever the shapes settle is decided first, so a shape this value
+    /// cannot match emits nothing at all.
+    ///
+    /// A position carries runtime demand and so keeps a lane, which is why the
+    /// absent arm below is unreachable rather than a case to answer.
+    fn lane_form_type_test(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        value: &NativeBoundValue,
+        predicate: &RuntimeTypePredicate,
+    ) -> Result<DispatchAnswer, FatalError> {
+        if let Some(settled) = self.settled_lane_form_type_test(value, predicate) {
+            return Ok(DispatchAnswer::Static(settled));
+        }
+        let (shape, lanes) = match value {
+            NativeBoundValue::Runtime(var) => {
+                let (flag, _) = ctx.emit_let(Prim::RuntimeTypeTest(*var, Box::new(predicate.clone())));
+                return Ok(DispatchAnswer::Runtime(flag));
+            }
+            NativeBoundValue::Absent => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("native type test has no value to ask in {:?}", ctx.origin),
+                ));
+            }
+            NativeBoundValue::Transport { shape, lanes } => (*shape, lanes.clone()),
+        };
+        let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone() else {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!("native type test cannot read lane-form {shape:?} in {:?}", ctx.origin),
+            ));
+        };
+        let positions = match predicate.tuple_positions(fields.len()) {
+            TuplePositions::Never => return Ok(DispatchAnswer::Static(false)),
+            TuplePositions::Always => return Ok(DispatchAnswer::Static(true)),
+            TuplePositions::AnyOf(shapes) => shapes,
+        };
+        let views = self.transport_field_views(shape, &lanes, &fields)?;
+        let mut admitted = DispatchAnswer::Static(false);
+        for shape in positions {
+            let settled = shape
+                .iter()
+                .zip(&views)
+                .map(|(position, view)| self.settled_lane_form_type_test(view, position))
+                .collect::<Vec<_>>();
+            if settled.contains(&Some(false)) {
+                continue;
+            }
+            let mut matched = DispatchAnswer::Static(true);
+            for ((position, view), settled) in shape.iter().zip(&views).zip(settled) {
+                if settled.is_some() {
+                    continue;
+                }
+                let answer = self.lane_form_type_test(ctx, view, position)?;
+                matched = matched.and(ctx, answer);
+            }
+            admitted = admitted.or(ctx, matched);
+        }
+        Ok(admitted)
+    }
+
+    /// Answer one region question about one subject.
+    ///
+    /// A lane-form subject already knows its own arity, so that question is
+    /// settled here rather than left to a runtime test.
     fn lower_dispatch_region(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3048,13 +3119,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         region: &Region<Ty>,
         evidence: &crate::dispatch_matrix::EdgeEvidence<Ty>,
         state: &mut DispatchState,
-    ) -> Result<Var, FatalError> {
-        Ok(match region {
+    ) -> Result<DispatchAnswer, FatalError> {
+        if let Region::TupleArity(arity) = region {
+            let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
+            if let Some(known) = self.transport_tuple_arity(&value) {
+                return Ok(DispatchAnswer::Static(known == *arity as usize));
+            }
+        }
+        Ok(DispatchAnswer::Runtime(match region {
             Region::Type(ty) => {
-                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                // The value is asked in the form it is held: a tuple delivered
+                // as lanes is decided per position, without one being built.
+                let value = self.dispatch_subject_value(ctx, plan, state, subject)?;
                 let predicate = self.world.types().runtime_type_predicate(ty);
-                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(predicate)));
-                var
+                return self.lane_form_type_test(ctx, &value, &predicate);
             }
             Region::List(ListRegion::Empty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
@@ -3089,7 +3167,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         && projection.source == subject
                         && matches!(&projection.kind, crate::dispatch_matrix::ProjectionKind::MapValue { key: projection_key } if projection_key == key)
                     {
-                        state.values.insert(*result, value);
+                        state.values.insert(*result, NativeBoundValue::Runtime(value));
                     }
                 }
                 let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
@@ -3120,7 +3198,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 var
             }
             Region::Bitstring(shape) => self.lower_bitstring_region(ctx, plan, subject, shape, state)?,
-        })
+        }))
     }
 
     fn lower_guard_expr(
@@ -3201,7 +3279,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut dispatch_state = DispatchState::new(input_vars, Vec::new(), DispatchBindings { pinned, prepared });
+        let mut dispatch_state =
+            DispatchState::from_words(input_vars, Vec::new(), DispatchBindings { pinned, prepared });
         self.lower_guard_dispatch_node(
             ctx,
             &dispatch.plan,
@@ -3264,29 +3343,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 predicate,
                 on_match,
                 on_miss,
-            } => {
-                let mut match_state = state.clone();
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    plan,
-                    predicate.subject,
-                    &predicate.region,
-                    &on_match.evidence,
-                    &mut match_state,
-                )?;
-                let then_b = ctx.builder.block(vec![]);
-                let else_b = ctx.builder.block(vec![]);
-                ctx.set_term(Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    origin: BranchOrigin::ClauseDispatch,
-                });
-                ctx.current_block = then_b;
-                self.lower_guard_dispatch_node(ctx, plan, bodies, on_match.target, done_b, fail_b, &mut match_state)?;
-                ctx.current_block = else_b;
-                self.lower_guard_dispatch_node(ctx, plan, bodies, on_miss.target, done_b, fail_b, state)
-            }
+            } => self.lower_dispatch_test(
+                ctx,
+                plan,
+                &predicate,
+                &on_match,
+                &on_miss,
+                BranchOrigin::ClauseDispatch,
+                state,
+                &mut |lowerer, ctx, target, state| {
+                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, fail_b, state)
+                },
+            ),
         }
     }
 
@@ -3364,7 +3432,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             reader = next_reader;
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
-            state.values.insert(*field_subject, value);
+            state.values.insert(*field_subject, NativeBoundValue::Runtime(value));
             extracted.push((*field_subject, value));
         }
 
@@ -3413,7 +3481,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
         ctx.current_block = done_b;
         for (field_subject, var) in carried {
-            state.values.insert(field_subject, var);
+            state.values.insert(field_subject, NativeBoundValue::Runtime(var));
         }
         Ok(answer)
     }
@@ -3440,6 +3508,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    /// The one runtime word a subject denotes.
+    ///
+    /// A tuple's arity, its field projections and a type test all read a subject
+    /// in the lane form its caller delivered. What is left are the questions
+    /// that want the whole value and cannot be decomposed: a pinned equality, a
+    /// guard, and the map, list and bitstring regions. Those build the value
+    /// here, at the question that asks for it, and keep it for the rest of this
+    /// branch.
     fn dispatch_subject_var(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3447,8 +3523,35 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         state: &mut DispatchState,
         subject: SubjectId,
     ) -> Result<Var, FatalError> {
-        if let Some(var) = state.values.get(&subject).copied() {
-            return Ok(var);
+        let var = match self.dispatch_subject_value(ctx, plan, state, subject)? {
+            NativeBoundValue::Runtime(var) => return Ok(var),
+            NativeBoundValue::Absent => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!("dispatch subject {subject:?} carries no runtime value"),
+                ));
+            }
+            NativeBoundValue::Transport { shape, lanes } => self.materialize_transport_value(ctx, shape, &lanes)?,
+        };
+        state.values.insert(subject, NativeBoundValue::Runtime(var));
+        Ok(var)
+    }
+
+    /// What a subject holds, in whatever form it already has.
+    ///
+    /// A tuple field of a lane-form subject is a view over lanes the entry
+    /// already holds, so it costs nothing. Every other projection reads through
+    /// a runtime value and emits the prim that does so.
+    fn dispatch_subject_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        subject: SubjectId,
+    ) -> Result<NativeBoundValue, FatalError> {
+        if let Some(value) = state.values.get(&subject) {
+            return Ok(value.clone());
         }
         let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
             return Err(incomplete_native_program(
@@ -3457,9 +3560,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("dispatch subject {:?} is out of bounds", subject),
             ));
         };
-        let var = match &subject_data.source {
+        let value = match &subject_data.source {
             crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
-                state.dispatch_inputs.get(*ordinal as usize).copied().ok_or_else(|| {
+                state.dispatch_inputs.get(*ordinal as usize).cloned().ok_or_else(|| {
                     incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -3469,30 +3572,36 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             crate::dispatch_matrix::SubjectSource::Projection(projection) => match &projection.kind {
                 crate::dispatch_matrix::ProjectionKind::TupleField(index) => {
-                    let tuple = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
-                    var
+                    let source = self.dispatch_subject_value(ctx, plan, state, projection.source)?;
+                    match self.transport_tuple_field(&source, *index as usize)? {
+                        Some(field) => field,
+                        None => {
+                            let tuple = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
+                            let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
+                            NativeBoundValue::Runtime(var)
+                        }
+                    }
                 }
                 crate::dispatch_matrix::ProjectionKind::StructField(field) => {
                     let record = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let (var, _) = ctx.emit_let(Prim::StructField(record, field.clone()));
-                    var
+                    NativeBoundValue::Runtime(var)
                 }
                 crate::dispatch_matrix::ProjectionKind::ListHead => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let (var, _) = ctx.emit_let(Prim::ListHead(list));
-                    var
+                    NativeBoundValue::Runtime(var)
                 }
                 crate::dispatch_matrix::ProjectionKind::ListTail => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let (var, _) = ctx.emit_let(Prim::ListTail(list));
-                    var
+                    NativeBoundValue::Runtime(var)
                 }
                 crate::dispatch_matrix::ProjectionKind::MapValue { key } => {
                     let map = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let key = self.dispatch_key_var(ctx, plan, state, key)?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(map, key));
-                    var
+                    NativeBoundValue::Runtime(var)
                 }
                 crate::dispatch_matrix::ProjectionKind::BitstringField(index) => {
                     // `lower_bitstring_region` records every field it extracts
@@ -3507,8 +3616,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             },
         };
-        state.values.insert(subject, var);
-        Ok(var)
+        state.values.insert(subject, value.clone());
+        Ok(value)
     }
 
     fn dispatch_pinned_var(
@@ -3525,11 +3634,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    /// A pin is compared whole, so its operand is always one runtime word.
     fn lower_argument_bindings(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
-        inputs: &[Var],
+        inputs: &[NativeBoundValue],
     ) -> Result<DispatchBindings<Var>, FatalError> {
         let prepared = plan
             .prepared_keys
@@ -3542,12 +3652,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .iter()
                 .map(|pin| {
                     pin.input
-                        .and_then(|input| inputs.get(input as usize).copied())
+                        .and_then(|input| inputs.get(input as usize))
+                        .and_then(NativeBoundValue::runtime_lane)
                         .ok_or_else(|| {
                             incomplete_native_program(
                                 self.telemetry,
                                 self.root_id,
-                                "entry dispatch pin has no argument operand".to_string(),
+                                "entry dispatch pin has no runtime argument operand".to_string(),
                             )
                         })
                 })
@@ -3832,10 +3943,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let NativeBoundValue::Transport { shape, .. } = value else {
             return None;
         };
-        match self.world.shape(*shape) {
-            ShapeDescr::Tuple(fields) => Some(fields.len()),
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
-        }
+        self.world.tuple_arity(*shape)
     }
 
     fn transport_tuple_field(
@@ -4007,12 +4115,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ),
             ));
         }
-        let mut offset = 0_usize;
         let mut values = Vec::with_capacity(fields.len());
-        for field in fields.iter().copied() {
-            let width = self.world.layout_width(field);
-            let end = offset.checked_add(width).ok_or(FatalError)?;
-            let field_lanes = lanes.get(offset..end).ok_or(FatalError)?.to_vec();
+        for (field, span) in self.world.layout_spans(fields) {
+            let field_lanes = lanes.get(span).ok_or(FatalError)?.to_vec();
             let value = if field.carrier.is_value_ref() {
                 NativeBoundValue::Runtime(*field_lanes.first().ok_or(FatalError)?)
             } else {
@@ -4026,7 +4131,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             };
             values.push(value);
-            offset = end;
         }
         Ok(values)
     }
@@ -4437,11 +4541,10 @@ fn native_return_contract(
     world: &World,
     layout: &super::super::artifact::BackendReturnLayout,
 ) -> (Vec<AbiValueRepr>, Option<usize>) {
-    let tuple_arity = match world.shape(layout.layout.structural) {
-        ShapeDescr::Tuple(fields) => Some(fields.len()),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
-    };
-    (layout.layout.reprs.to_vec(), tuple_arity)
+    (
+        layout.layout.reprs.to_vec(),
+        world.tuple_arity(layout.layout.structural),
+    )
 }
 
 fn native_block_param_reprs(
@@ -4462,22 +4565,67 @@ fn native_block_param_reprs(
     reprs
 }
 
+/// What a region question answered.
+///
+/// A question a subject's transport form already settles has no runtime cost
+/// and no branch: only the surviving child is lowered.
+#[derive(Clone, Copy)]
+enum DispatchAnswer {
+    Static(bool),
+    Runtime(Var),
+}
+
+impl DispatchAnswer {
+    /// Both answers, with the settled side folded away rather than emitted as a
+    /// constant to combine against.
+    fn and(self, ctx: &mut NativeFnCtx, other: Self) -> Self {
+        match (self, other) {
+            (Self::Static(false), _) | (_, Self::Static(false)) => Self::Static(false),
+            (Self::Static(true), answer) | (answer, Self::Static(true)) => answer,
+            (Self::Runtime(left), Self::Runtime(right)) => {
+                Self::Runtime(ctx.emit_let(Prim::BinOp(IrBinOp::And, left, right)).0)
+            }
+        }
+    }
+
+    /// Either answer, folded the same way.
+    fn or(self, ctx: &mut NativeFnCtx, other: Self) -> Self {
+        match (self, other) {
+            (Self::Static(true), _) | (_, Self::Static(true)) => Self::Static(true),
+            (Self::Static(false), answer) | (answer, Self::Static(false)) => answer,
+            (Self::Runtime(left), Self::Runtime(right)) => {
+                Self::Runtime(ctx.emit_let(Prim::BinOp(IrBinOp::Or, left, right)).0)
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DispatchState {
-    dispatch_inputs: Vec<Var>,
+    dispatch_inputs: Vec<NativeBoundValue>,
     forwarded_args: Vec<Var>,
     bindings: DispatchBindings<Var>,
-    values: HashMap<SubjectId, Var>,
+    values: HashMap<SubjectId, NativeBoundValue>,
 }
 
 impl DispatchState {
-    fn new(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
+    fn new(dispatch_inputs: Vec<NativeBoundValue>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
         Self {
             dispatch_inputs,
             forwarded_args,
             bindings,
             values: HashMap::new(),
         }
+    }
+
+    /// Every input is one runtime word: the caller resolved them before it
+    /// reached here, so nothing arrives in lane form.
+    fn from_words(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, bindings: DispatchBindings<Var>) -> Self {
+        Self::new(
+            dispatch_inputs.into_iter().map(NativeBoundValue::Runtime).collect(),
+            forwarded_args,
+            bindings,
+        )
     }
 }
 
@@ -5256,6 +5404,135 @@ mod tests {
             ctx.value_types.get(&params[0]),
             Some(&int),
             "a destination Any lane requires ABI boxing, not relabeling the existing raw integer"
+        );
+    }
+
+    /// A lane-form tuple parameter is decided from its lanes.
+    ///
+    /// The input arrives as a two-field tuple whose first field carries nothing
+    /// and whose second is one lane. Both clause-head questions -- the arity and
+    /// the literal in field 1 -- are answered from that form, so the entry
+    /// function builds no tuple and reads no field out of one. A tuple could not
+    /// be built here anyway: the absent field has no runtime value to put in it.
+    #[test]
+    fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+        use crate::dispatch_matrix::pattern::{PatternRow, SourcePatternRows, pattern_dispatch_from_source};
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let lane = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let scalar = world.intern_shape(ShapeDescr::Lane(lane));
+        let tuple = tuple_shape(&mut world, &[nothing, scalar]);
+        let root = RootId::for_test(0);
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "unwrap_tuple", 1);
+        let activation = ActivationKey::from_inputs(root, function, &[int], world.types_mut());
+        let key = ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        };
+        let scalar_layout = crate::compiler2::artifact::BackendValueLayout {
+            structural: scalar,
+            carrier: TransportCarrier::ValueRef(lane),
+            tys: Box::from([int]),
+            reprs: Box::from([AbiValueRepr::ValueRef]),
+        };
+        let mut executable = test_executable(key.clone(), int, nothing);
+        let abi = Rc::make_mut(&mut executable.abi);
+        abi.param_reprs = vec![AbiValueRepr::ValueRef];
+        abi.return_layout.layout = scalar_layout.clone();
+        let tuple_layout = crate::compiler2::artifact::BackendValueLayout {
+            structural: tuple,
+            carrier: TransportCarrier::Absent,
+            tys: Box::from([int]),
+            reprs: Box::from([AbiValueRepr::ValueRef]),
+        };
+        abi.semantic_inputs = Box::from([crate::compiler2::artifact::BackendSemanticInputLayout {
+            semantic_index: 0,
+            layout: tuple_layout.clone(),
+        }]);
+        let param = ValueId::from_u32(0);
+        let result = ValueId::from_u32(1);
+        abi.value_layouts.insert(param, tuple_layout);
+        abi.value_layouts.insert(result, scalar_layout);
+        let dispatch = crate::compiler2::ExecutableDispatch::new(
+            pattern_dispatch_from_source(SourcePatternRows {
+                input_count: 1,
+                rows: vec![PatternRow {
+                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
+                        crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
+                        crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
+                    ]))],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 0,
+                }],
+            })
+            .unwrap(),
+            vec![0],
+        );
+        assert_eq!(
+            dispatch.required_input_ordinals(),
+            HashSet::from([0]),
+            "the clause head questions its tuple parameter"
+        );
+        let materialized = Rc::make_mut(&mut abi.materialized);
+        materialized.entry_dispatch = Some(dispatch);
+        materialized.value_types.insert(result, int);
+        let clauses = vec![BackendClause {
+            span: Span::DUMMY,
+            params: vec![param],
+            projections: Vec::new(),
+            entry: ControlEntryId::from_u32(0),
+        }];
+        let entries = vec![BackendEntry {
+            span: Span::DUMMY,
+            origin: crate::compiler2::BackendEntryOrigin::Clause,
+            params: Vec::new(),
+            captures: Vec::new(),
+            physical_captures: Vec::new(),
+            physical_params: Vec::new(),
+            steps: vec![BackendStep::Const {
+                value: result,
+                literal: crate::ground_value::GroundValue::Int(42),
+            }],
+            tail: BackendTail::Value {
+                value: result,
+                dest: ControlDestination::Return,
+            },
+        }];
+        executable.body = BackendBody::Clauses {
+            clauses: clauses.clone(),
+            entries: entries.clone(),
+            generated: Vec::new(),
+        };
+        let executable = Rc::new(executable);
+        let mut program = BackendProgram::empty(key);
+        program.add_executable(executable.clone(), world.types());
+        let telemetry = NullTelemetry;
+        let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
+        let mut entry_fns = EntryFns::default();
+        lowerer
+            .lower_clause_dispatch_executable(0, &executable, &clauses, &entries, &mut entry_fns)
+            .expect("a lane-form tuple parameter is decided without being boxed");
+        let module = lowerer.module.build();
+        let entry = module
+            .fns
+            .iter()
+            .find(|function| function.name.contains("__e"))
+            .expect("the dispatch entry function");
+        assert!(
+            entry
+                .blocks
+                .iter()
+                .flat_map(|block| &block.stmts)
+                .all(|statement| !matches!(
+                    statement,
+                    crate::fz_ir::Stmt::Let(_, Prim::MakeTuple(_) | Prim::TupleField(_, _))
+                )),
+            "the entry decides its tuple parameter from the lanes it already holds"
         );
     }
 

@@ -21,6 +21,35 @@ subsystem-specific cascades:
 - `DispatchGraph` is the executable decision shape: tests route to nodes, and
   successful edges carry branch-local proofs and projections.
 
+A plan is syntactic and lane-blind. `Pattern::Tuple` always pushes
+`tuple_arity`, and reachability prunes outcomes rather than questions, so the
+plan says nothing about how a value will physically arrive. The lowerings decide
+that: over a subject that arrives in lane form -- one lane per tuple field
+rather than a heap struct -- `Region::TupleArity` is answered statically from the
+transport shape, and a `ProjectionKind::TupleField` is a view over lanes already
+in hand. Neither builds a value, and a statically settled question emits no
+branch at all.
+
+`Region::Type` is decided from lane form too, per position. An annotated clause
+head -- `def tag(x :: {:cont, integer})` -- asks a whole-value question about a
+parameter that can perfectly well arrive as lanes, so the lowering asks the
+predicate what it wants of a tuple of that arity instead.
+`RuntimeTypePredicate::tuple_positions` is that calculator: `Never` and `Always`
+are settled answers, and `AnyOf` is the shapes of that arity, each a question per
+position, combined with `and` within a shape and `or` across them. Whatever the
+shapes settle is decided before anything is emitted, so a shape the value cannot
+match costs nothing. That one function is also what `matches_tuple_shape` and the
+boxed emitter ask, so no door decomposes a tuple test differently. A position
+lands on a raw lane, and the emitters answer a kind question about one of those
+from its representation rather than a tag, so no lane is boxed to be asked.
+
+What is left needing a whole value is the set of questions no decomposition
+reaches: a pinned equality, a guard, and the map, list and bitstring regions.
+Those build the value at the question that asks for it and keep it for the rest
+of that branch. `DispatchDemand::Whole` does not decide any of this: that lattice
+governs type collapsing and activation keying, not the physical layout a
+parameter arrives in.
+
 `compile_dispatch_matrix` is pure and side-effect-free. It compiles ordered arms
 into a deterministic graph and returns `DispatchCompileStats` so tests can assert
 shape signals such as test count, fallback count, and shared-prefix tests without

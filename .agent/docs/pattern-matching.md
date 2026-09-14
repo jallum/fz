@@ -44,7 +44,13 @@ has succeeded. The graph carries that rule structurally.
 
 For `[head | tail]`, the dispatch asks `ListCons(subject)`. The success edge
 projects `ListHead(subject)` and `ListTail(subject)`; the miss edge does not.
-For tuples, `TupleArity(n)` dominates every `TupleField` projection. For maps,
+For tuples, `TupleArity(n)` dominates every `TupleField` projection. Where the
+subject already arrives in field form -- a caller delivered the tuple as one
+lane per field -- the arity is read from the transport shape and the projection
+is a view over those lanes, so the domination is structural rather than a
+runtime test on a heap value. A `Region::Type` over such a subject is decided the
+same way, one question per position, through the predicate's own
+`tuple_positions` decomposition. For maps,
 `MapKeyPresent(map, key)` projects a map value only on the present edge, so a
 present `nil` value and an absent key remain distinguishable.
 

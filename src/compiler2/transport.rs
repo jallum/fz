@@ -556,21 +556,36 @@ impl TransportInterners {
         }
     }
 
+    /// The lane span each layout in a sequence occupies, in order.
+    ///
+    /// Layouts are laid out end to end, so a span starts where the previous one
+    /// finished. Tuple fields and callable captures are both such sequences.
+    pub fn layout_spans(&self, layouts: &[TransportLayout]) -> Vec<(TransportLayout, Range<usize>)> {
+        let mut offset = 0_usize;
+        let mut spans = Vec::with_capacity(layouts.len());
+        for layout in layouts.iter().copied() {
+            let end = offset
+                .checked_add(self.layout_width(layout))
+                .expect("transport layout lane span overflow");
+            spans.push((layout, offset..end));
+            offset = end;
+        }
+        spans
+    }
+
     pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, Range<usize>)>> {
         let ShapeDescr::Tuple(fields) = self.shape(shape) else {
             return None;
         };
-        let mut offset = 0_usize;
-        let mut spans = Vec::with_capacity(fields.len());
-        for field in fields.iter().copied() {
-            let width = self.layout_width(field);
-            let end = offset
-                .checked_add(width)
-                .expect("transport tuple field lane span overflow");
-            spans.push((field, offset..end));
-            offset = end;
+        Some(self.layout_spans(fields))
+    }
+
+    /// How many fields a tuple shape has; `None` for every other shape.
+    pub fn tuple_arity(&self, shape: ShapeId) -> Option<usize> {
+        match self.shape(shape) {
+            ShapeDescr::Tuple(fields) => Some(fields.len()),
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
         }
-        Some(spans)
     }
 
     pub fn shape_count(&self) -> usize {

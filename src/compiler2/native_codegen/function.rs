@@ -104,7 +104,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         frame_ptr,
         host_ctx,
         cont_param,
-        tuple_field_params,
     } = build_entry_harness(
         &mut body,
         env,
@@ -120,7 +119,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let (if_only, all_used) = classify_var_uses(f);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
-        body.cache.tuple_field_params = tuple_field_params;
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());

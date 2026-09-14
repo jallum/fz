@@ -816,6 +816,90 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 2);
 }
 
+/// A tuple parameter delivered in lane form is decided from those lanes.
+///
+/// `unwrap/1` receives the pair `pair/1` returns as one lane per field and both
+/// of its clause heads destructure it, so entry dispatch answers the arity
+/// question from the parameter's transport shape and reads field 1 as a view
+/// over a lane already in hand. `tag/1` annotates the same kind of parameter
+/// instead, so its question is a whole-value type test, which the predicate
+/// decomposes into one question per position over those same lanes. Neither
+/// entry function builds a tuple or reads a field out of one.
+#[test]
+fn entry_dispatch_decides_a_lane_form_tuple_without_reboxing_it() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("lane_form_tuple_dispatch.fz".into()),
+        text: concat!(
+            "defp pair(n), do: if n > 0, do: {n, false}, else: {n, true}\n",
+            "defp unwrap({v, false}), do: v\n",
+            "defp unwrap({_, true}), do: -1\n",
+            "defp pick(n), do: if n > 0, do: {:cont, n}, else: {:halt, n}\n",
+            "defp tag(x :: {:cont, integer}), do: 1\n",
+            "defp tag(x :: {:halt, integer}), do: 2\n",
+            "def main(), do: unwrap(pair(5)) + tag(pick(1))\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(6));
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "lane-form tuple dispatch should lower natively");
+    let program = native.last(root).program;
+    let entries = program
+        .module
+        .fns
+        .iter()
+        .filter_map(|function| executable_entry_of(&function.name).map(|owner| (owner, function)))
+        .collect::<Vec<_>>();
+    assert!(!entries.is_empty(), "the program has executable entry functions");
+    for owner in ["unwrap", "tag"] {
+        let deciding = entries
+            .iter()
+            .filter(|(entry_owner, _)| *entry_owner == owner)
+            .collect::<Vec<_>>();
+        assert!(!deciding.is_empty(), "{owner} has a clause-dispatch entry of its own");
+        for (_, function) in deciding {
+            let boxed = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.stmts)
+                .filter(|stmt| {
+                    matches!(
+                        stmt,
+                        IrStmt::Let(_, IrPrim::MakeTuple(..)) | IrStmt::Let(_, IrPrim::TupleField(..))
+                    )
+                })
+                .count();
+            assert_eq!(
+                boxed, 0,
+                "dispatch entry {} decides its tuple parameter without boxing it",
+                function.name
+            );
+        }
+    }
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 6);
+}
+
+/// The function an executable entry belongs to, for a name of the form
+/// `<function>__e<index>`.
+///
+/// `None` for every other lowered function: a branch, receive or resume entry
+/// appends its own suffix to that name, and a clause body is `__clause_<index>`.
+fn executable_entry_of(name: &str) -> Option<&str> {
+    let (owner, index) = name.rsplit_once("__e")?;
+    (!index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())).then_some(owner)
+}
+
 #[test]
 fn compiler2_inline_map_binding_reuses_the_key_present_read() {
     let tel = ConfiguredTelemetry::new();
