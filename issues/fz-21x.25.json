@@ -14,11 +14,15 @@
     {
       "text": "GitHub issue: https://github.com/jallum/fz/issues/163",
       "timestamp": "2026-09-14T12:28:37Z"
+    },
+    {
+      "text": "Draft PR https://github.com/jallum/fz/pull/167 (commit 4eeb96835 on fz-21x.25/lane-aware-entry-dispatch off main cb9f7d440). Cold review: no semantic disagreement; all findings applied. Side tickets from the work: fz-21x.26, fz-21x.27, fz-3ai, fz-wof.",
+      "timestamp": "2026-09-14T15:17:23Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Entry dispatch re-boxes a lane-form tuple parameter to destructure it: one heap struct per destructuring call",
   "type": "bug",
-  "updated_at": "2026-09-14T12:28:37Z"
+  "updated_at": "2026-09-14T15:17:23Z"
 }
