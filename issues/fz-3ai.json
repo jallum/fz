@@ -7,9 +7,15 @@
   "description": "Found during the fz-21x.25 cold review; reproduced at main-side baseline 4f49465f9 and at main cb9f7d440, so it predates that change and does not run through entry dispatch (the backend dump shows use/1 has no entry_dispatch).\n\n    defp mk(n), do: {fn x -\u003e x + n end, n}\n    defp use({f, k}), do: f.(k)\n    def main() do\n      before = Process.heap_alloc_stats()\n      a = use(mk(5))\n      later = Process.heap_alloc_stats()\n      dbg(a)\n      dbg({before[:struct_allocs], later[:struct_allocs]})\n    end\n\ninterp: 10 / {0, 0}. run and build: a large garbage integer such as 936748763916397248 / {0, 0}. It reproduces with the tuple forced onto the heap as well (a second clause of a different arity makes mk/1 return a union, one struct alloc, still garbage), so the defect is in how the closure lane of a tuple field is delivered to the call, not in lane-form transport. The closure captures n and is applied to k; the capture or the argument arrives wrong natively.\n\nWhere to look: direct-callable capture transport of a tuple FIELD (transport_field_views hands back Transport{Callable} for a callable field; direct_closure_capture_lanes / lower call of a callable bound from a tuple field), and the boxed-closure path (p3e variant). Signal: the program above as a behavior fixture on all three doors, expected 10 and 0 struct allocs; today red on run and build.",
   "id": "fz-3ai",
   "labels": [],
+  "comments": [
+    {
+      "text": "Duplicate of fz-kdt.137; the full diagnosis (return-convention mismatch across the boxed apply seam, three direct-vs-boxed predicates) now lives in that ticket's description.",
+      "timestamp": "2026-09-14T17:32:57Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "[BUG] A closure carried in a tuple field is called with a garbage argument on run and build; interp answers correctly",
   "type": "bug",
-  "updated_at": "2026-09-14T17:32:56Z"
+  "updated_at": "2026-09-14T17:32:57Z"
 }
