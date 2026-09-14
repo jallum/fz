@@ -1,4 +1,4 @@
-use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
+use super::receive::{declare_receive_dispatch, emit_receive_dispatch_body};
 use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Term};
@@ -9,12 +9,6 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{FuncId, Linkage, Module as ClModule};
 use fz_runtime::heap::{FieldKind, Schema, SchemaRegistry};
-use fz_runtime::ir_runtime::{
-    fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_bs_read_field_ref, fz_bs_reader_init_ref,
-    fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_matcher_eq_bytes, fz_matcher_map_get_ref,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
-    fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_value_eq_ref,
-};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -627,36 +621,6 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
 /// fn-compilation loop so the park-site terminator arm could take
 /// `func_addr` of the still-undefined symbols. Bodies are pure leaf fns
 /// (no allocation, no extern).
-#[allow(clippy::too_many_arguments)]
-/// The runtime helpers a receive dispatch body may call, declared from their
-/// Rust items. A dispatch body is emitted through a bare `FunctionBuilder`,
-/// so it takes its helpers as `FuncId`s rather than calling them through a
-/// `CodegenFn`.
-fn dispatch_runtime_helpers<M: cranelift_module::Module>(m: &mut M) -> DispatchRuntimeHelpers {
-    DispatchRuntimeHelpers {
-        value_eq_typed_id: Some(runtime_fn_id!(m, fz_value_eq_ref(_, _, _))),
-        matcher_eq_bytes_id: Some(runtime_fn_id!(m, fz_matcher_eq_bytes(_, _, _))),
-        matcher_map_get_ref_id: Some(runtime_fn_id!(m, fz_matcher_map_get_ref(_, _, _))),
-        type_of_id: Some(runtime_fn_id!(m, fz_type_of(_))),
-        unbox_int_id: Some(runtime_fn_id!(m, fz_unbox_int(_))),
-        unbox_float_id: Some(runtime_fn_id!(m, fz_unbox_float(_))),
-        unbox_atom_id: Some(runtime_fn_id!(m, fz_unbox_atom(_))),
-        struct_schema_id_ref_id: Some(runtime_fn_id!(m, fz_struct_schema_id_ref(_))),
-        truthy_ref_id: Some(runtime_fn_id!(m, fz_truthy_ref(_))),
-        box_int_for_any_id: Some(runtime_fn_id!(m, fz_box_int_for_any(_, _))),
-        box_float_for_any_id: Some(runtime_fn_id!(m, fz_box_float_for_any(_, _))),
-        box_atom_for_any_id: Some(runtime_fn_id!(m, fz_box_atom_for_any(_, _))),
-        map_is_map_id: Some(runtime_fn_id!(m, fz_map_is_map(_))),
-        bs_reader_init_id: Some(runtime_fn_id!(m, fz_bs_reader_init_ref(_, _))),
-        bs_read_field_id: Some(runtime_fn_id!(m, fz_bs_read_field_ref(_, _, _, _))),
-        struct_get_field_id: Some(runtime_fn_id!(m, fz_struct_get_field_ref(_, _, _))),
-        struct_get_named_field_id: Some(runtime_fn_id!(m, fz_struct_get_named_field_ref(_, _, _))),
-        list_is_cons_id: Some(runtime_fn_id!(m, fz_list_is_cons(_))),
-        list_head_id: Some(runtime_fn_id!(m, fz_list_head_ref(_))),
-        list_tail_id: Some(runtime_fn_id!(m, fz_list_tail_ref(_))),
-    }
-}
-
 fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -682,7 +646,6 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
         let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
         {
             let _span = tel.raw_span2_0(&["fz", "codegen", "lower_function"], module, fn_id);
-            let helpers = dispatch_runtime_helpers(m);
             emit_receive_dispatch_body(
                 m,
                 fbctx,
@@ -693,7 +656,6 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 pinned.as_slice(),
                 clauses.as_slice(),
                 dispatch,
-                &helpers,
             )?;
         }
     }

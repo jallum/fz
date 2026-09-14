@@ -109,8 +109,8 @@ pub(crate) struct CodegenCache {
     pub(super) static_struct_count: usize,
     /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<ExternId, ir::FuncRef>,
-    /// FuncRef for each runtime helper, keyed by the address of its Rust
-    /// function item and deduplicated per function.
+    /// FuncRef for each runtime helper, keyed by its linker name and
+    /// deduplicated per function.
     pub(super) runtime_funcs: HashMap<&'static str, ir::FuncRef>,
     /// Var IDs referenced anywhere in the function's IR. Unit-return
     /// extern results whose dest ID is absent here can skip the nil iconst.

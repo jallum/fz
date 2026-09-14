@@ -205,6 +205,13 @@ Calling a new helper is one `runtime_call!` and an import of its name. The AOT
 `main` reaches `fz_aot_setup` and its neighbours the same way. All of this lives
 in `native_codegen/runtime_call.rs`.
 
+A body that can call helpers is a `RuntimeCaller`: it holds the module that
+declares the symbol, the builder that emits the call, and the memo. `CodegenFn`
+is one, for an fz function; `DispatchBody` (`native_codegen/receive.rs`) is the
+other, for the receive-dispatch function, which is emitted straight onto a
+`FunctionBuilder` and takes its `Process*` as a parameter rather than reading
+the pinned register. Both reach a helper by the same `runtime_call!`.
+
 The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
 `fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their
 signatures are written out where they are declared, `Local`, as `LocalBodies` in
