@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:14Z",
+  "description": "src/compiler2/artifact.rs:221-224 DispatchCallMiss has one variant (Unreachable), one construction site (jobs/artifact.rs:1061) and no reader anywhere in production. The concept \"a dispatch call edge has a miss policy\" does not exist; the field on DispatchCallEdge (artifact.rs:210), the enum, the export at compiler2/mod.rs:61 and the import go. Independent of every other step. Signal: cargo test --lib compiles and is green.",
+  "id": "fz-acn.6",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete DispatchCallMiss",
+  "type": "task",
+  "updated_at": "2026-09-14T17:16:14Z"
+}
