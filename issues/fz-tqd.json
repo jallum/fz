@@ -6,9 +6,15 @@
   "description": "One guard has three evaluators today (interpreter, body native lowering, receive matcher) with three semantics, none of them the body's: arithmetic is unchecked or host-panics, the matcher's ordering is a signed integer compare, and a helper called from a guard is re-planned and inlined under a syntactic purity whitelist. The planner learns nothing from a guard (Region::Guard is opaque to reachability and keying).\n\nEnd state: each `when` is a generated function of its subjects and pins returning boolean, compiled by the ordinary body pipeline and activated in guard mode, where a failing callee returns {value, failed}, a `never` call site is failed = true, and the guard answers false on any failed lane (Elixir's rule: a failure in a guard makes the clause not match). Entry dispatch, the receive matcher (through a func ref) and the interpreter all call that function. The three evaluators, the reify job and its fact, and PatternGuardDispatch are deleted.\n\nPurity is one fact per function on the World, `allocates` and `fails`, monotone, derived over the lowered body and static callees, declared on `extern \"fz\"`. The rule is \"allocates nothing that outlives the decision\": a static-shape intermediate rides in lanes and a guard returns a boolean so nothing escapes; anything of unbounded size (list construction, binary concatenation, map update) is refused. That is the BEAM's guard-BIF line, reached by construction. Binary patterns decide with a three-word cursor and bind three-word views that materialize on the consumer's heap at clause entry, which is also what lets the receive matcher run on the sender's side without touching a heap.\n\nOrder: fz-5xp.20 (no arithmetic_result tuple) and the bitstring reader in lanes, then the effects fact, then guards as code (after fz-21x.10 gives the matcher a caller), then the enforced matcher contract. Proof fixtures: guard_arithmetic_failure (Elixir oracle), guard_overflow, the receive float guard, the ===-in-guard cases, the wildcard-named helper parameter, and heap-counter pins of zero allocation on the probing side.\n\nStacked on PR #158 (fz-5xp.30). Grew out of fz-21x step 8, which was never part of the .30 contract.",
   "id": "fz-tqd",
   "labels": [],
+  "comments": [
+    {
+      "text": "Draft PR #161 (fz-tqd/guards-are-code), stacked on #158; first commit pins the four deferred proof fixtures.",
+      "timestamp": "2026-09-14T11:18:15Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "[EPIC] Guards are code: one guard function per clause, failure is false, the matcher calls it",
   "type": "epic",
-  "updated_at": "2026-09-14T11:12:29Z"
+  "updated_at": "2026-09-14T11:18:15Z"
 }
