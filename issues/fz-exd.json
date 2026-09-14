@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T11:26:11Z",
+  "description": "Measured 2026-09-14 (diagnosis of the arithmetic allocation on fz-5xp.30). At 4f49465f9, Kernel.+/2 lowered to a bare 'return_call fz_op_add_ii(...)'. On 95c3caa3a the pair-returning extern call is a non-tail 'call' that first stores a 41-byte delivery-continuation record in an explicit stack slot and resumes in '+__e1__resume_1'. That is the ordinary non-tail-call cost every non-tail call pays, so it is not a new mechanism, but a fixed C pair delivered into a tail position now costs one frame per arithmetic operation where it cost none. Invisible to heap counters. The fix belongs with return-lane delivery: a pair delivered straight into the caller's return lanes (or into a following direct tail call) needs no continuation record. Proof: the CLIF of the '+' activation has no explicit_slot and ends in a tail call; a count of resume functions in the arithmetic fixtures drops to zero.",
+  "id": "fz-exd",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A pair-returning extern in tail position costs a delivery frame per call",
+  "type": "task",
+  "updated_at": "2026-09-14T11:26:11Z"
+}
