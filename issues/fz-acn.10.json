@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-14T18:57:23Z",
   "created": "2026-09-14T17:16:17Z",
   "description": "Folded into fz-acn.2: the entry planner reports every unbound pin as a diagnostic in Elixir's words (undefined variable ^a. No variable \"a\" has been defined before the current pattern). Fixture head_pins_nothing pins it on three doors.",
   "id": "fz-acn.10",
   "labels": [],
   "parent": "fz-acn",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A pin in an ordinary function head fails at the backend instead of at construction",
   "type": "bug",
-  "updated_at": "2026-09-14T18:57:22Z"
+  "updated_at": "2026-09-14T18:57:23Z"
 }
