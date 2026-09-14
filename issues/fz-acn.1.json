@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-acn.3"
+  ],
   "created": "2026-09-14T17:16:09Z",
   "description": "A per-ordinal fact needs the ordinal count where the graph is built, and the type that describes a plan's demand belongs beside the plan.\n\nToday DispatchMatrixBuilder::build (src/dispatch_matrix/mod.rs ~826-832) drops input_count; PatternDispatchPlan re-carries its own copy. DispatchDemand and join_assign (src/compiler2/keying.rs:17-45) depend on nothing but BTreeMap; dispatch_matrix has no compiler2 dependency, so the move creates no cycle.\n\nChange: DispatchMatrix keeps input_count; the plan reads it from the matrix. DispatchDemand, demand_for_region, the subject path fold and demand_at_path (jobs/keying.rs ~1120-1184) move into dispatch_matrix as plan-level helpers. Users in compiler2/types/mod.rs, world.rs, jobs/keying.rs and their tests re-import.\n\nSignal: byte-identical behaviour. The six-target gate and the canon double-compile equality tests prove it. No new concept; one relocation.",
   "id": "fz-acn.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The dispatch matrix carries input_count; DispatchDemand moves into dispatch_matrix",
   "type": "task",
-  "updated_at": "2026-09-14T17:16:09Z"
+  "updated_at": "2026-09-14T17:16:20Z"
 }
