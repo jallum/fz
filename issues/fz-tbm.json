@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T19:56:36Z",
+  "description": "Reproduced 2026-09-14 at main f26264572: `add = fn a, b -\u003e a + b end` fails to parse with \"expected `-\u003e`, got Comma\". Single-parameter fn and multi-clause fn parse. Elixir accepts any arity, with commas between parameters and `when` guards after them: `fn a, b when a \u003e b -\u003e a; _, _ -\u003e 0 end`.\n\nFix: the fn-clause head parser reads a comma-separated parameter list up to `when` or `-\u003e`, the same list the def head parser reads. Signal: a fixture with two- and three-parameter lambdas, a guarded multi-parameter clause, and a pinned parameter beside a plain one (`fn ^x, y -\u003e y end`), with an oracle twin.",
+  "id": "fz-tbm",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "A multi-parameter anonymous function does not parse",
+  "type": "bug",
+  "updated_at": "2026-09-14T19:56:36Z"
+}
