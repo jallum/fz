@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:10Z",
+  "description": "The loop at src/dispatch_matrix/pattern.rs:285-298 is the only writer of PatternPinnedInput.input in the tree. It runs only inside guard_dispatch_from_surface (guard-helper plans), after the plan is built, and after the guards that read those pins were already constructed. A plan's demand cannot be accrued at construction while a pin's input is patched in afterwards.\n\nBinding cannot be inferred inside the producer from row 0: case, receive and with share the producer, and there input 0 is the scrutinee. Verified: n = 5; case 1 do n when n \u003e 10 -\u003e 100; _ when n \u003e 3 -\u003e 200 end prints 200 today because the pin resolves lexically (jobs/body.rs:2616-2649); inferring from row 0 would bind it to the scrutinee and match nothing.\n\nChange: guard_dispatch_from_surface, which owns the rule, hands the producer its parameter-name table; PatternDispatchProducer::new (pattern.rs:533-541) and pin_for_name (:896-908) bind at creation; the loop is deleted. Body-capture pins added after the plan (:313-324) stay None, as compiler2_nested_guard_missing_lexical_pin_is_a_construction_diagnostic requires. Two stale comments go: :820-825 claims a pass that never runs for entry plans; :892-895 describes the deleted loop.\n\nNo behaviour change for any plan: a pin in an ordinary function head stays what it is today. Signal: the guard fixtures (guard_plan_inputs, cross_kind_operators) and the pinned receive fixtures (00241, 00247, 00485, 00486) on three doors; canon renders input=N so canon equality tests see any drift.",
+  "id": "fz-acn.2",
+  "labels": [],
+  "parent": "fz-acn",
+  "priority": 1,
+  "status": "open",
+  "title": "Pins bind their input at creation; delete the post-build binding loop",
+  "type": "task",
+  "updated_at": "2026-09-14T17:16:10Z"
+}
