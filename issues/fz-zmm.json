@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T11:37:45Z",
+  "description": "Found while building fz-21x.2 (2026-09-14). In src/compiler2/native_codegen/driver.rs, native_abi_fns is built by collecting every program.module.fns id, and build_fn_sigs looks up module.fns[body_slot.fn_idx] from that same vec, so is_native is always true. build_uniform_sig (repr.rs) and the !is_native entry branch in function.rs (the (frame_ptr, host_ctx) -\u003e i64 trampoline lane) are therefore dead. Delete the lane as one coherent motion: build_uniform_sig, the is_native parameter and its plumbing, the uniform entry branch, and whatever docs describe the trampoline ABI. Proof: workspace gate green; a grep that no uniform/trampoline signature construction remains.",
+  "id": "fz-zmm",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "The uniform trampoline lane in native codegen is unreachable",
+  "type": "task",
+  "updated_at": "2026-09-14T11:37:45Z"
+}
