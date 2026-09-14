@@ -4,14 +4,15 @@
     "fz-acn.3"
   ],
   "blocks": [],
+  "closed_at": "2026-09-14T23:51:04Z",
   "created": "2026-09-14T17:16:15Z",
   "description": "Reproduced 2026-09-14 at main f26264572 on run and interp:\n\n    def g() when 1 \u003e 0, do: 11\n    def g(), do: 22\n    def main(), do: g()\n\nthread 'main' panicked at src/compiler2/artifact.rs:1096:5: dispatch plan requires inputs {0} but has only 0 semantic input(s). Removing the guard compiles and runs.\n\nCause: every guard question rides on a carrier subject that is input 0 (src/dispatch_matrix/pattern.rs:529-532); when input_count is 0 the producer mints an extra input subject with ordinal 0, and required_dispatch_input_ordinals charges it. Keying silently drops it (mask.get_mut -\u003e None). No fixture covers a zero-arity guarded clause.\n\nClosed by construction when the graph records input_demand from a guard's leaves and never charges the carrier. This ticket's commit adds fixtures2/behavior/guard_zero_arity (three doors, oracle twin) so the shape stays pinned.",
   "id": "fz-acn.8",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A zero-arity guarded clause panics the compiler on every door",
   "type": "bug",
-  "updated_at": "2026-09-14T17:16:24Z"
+  "updated_at": "2026-09-14T23:51:04Z"
 }
