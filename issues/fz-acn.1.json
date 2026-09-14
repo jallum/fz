@@ -4,14 +4,15 @@
   "blocks": [
     "fz-acn.3"
   ],
+  "closed_at": "2026-09-14T18:21:33Z",
   "created": "2026-09-14T17:16:09Z",
   "description": "The type that describes a plan's demand belongs beside the plan. DispatchDemand and join_assign (src/compiler2/keying.rs:17-45) depend on nothing but BTreeMap; dispatch_matrix has no compiler2 dependency, so the move creates no cycle. The graph builder that records input_demand at add_node (fz-acn.3) needs the lattice in its own module.\n\nChange: a new src/dispatch_matrix/demand.rs holds DispatchDemand, join_assign, DemandPathStep and demand_at_path (from jobs/keying.rs ~1086-1184: a path into a value's structure in demand-relevant detail; only a tuple field or a list head descends, every other step collapses to Whole). jobs/keying.rs holds the ProjectionKind -\u003e DemandPathStep mapping twice (demand_path_step at ~841 and inline inside subject_path at ~1153); it becomes one From\u003c\u0026ProjectionKind\u003e impl beside the type, and the graph builder in .3 is its third user. InputDemand, BodyKeying and FunctionFactMap stay in compiler2/keying.rs (keying facts, not plan facts); its moduledoc loses the lattice paragraph. No re-export from the old path: the seven importers (types/mod.rs, world.rs, jobs/keying.rs, world_test.rs, types_test.rs, drive_test.rs x3 fully qualified) point at the new home.\n\nNot done here, on purpose: making DispatchMatrix carry input_count. The only count a matrix can know is how many input subjects were minted, which differs from the declared arity exactly in the zero-arity guarded clause (the producer mints an extra input subject as the guard carrier). The declared count lives in the producer's finish, the one caller of compile_dispatch_matrix, and .3 passes it as an argument.\n\nTest: one unit test in demand.rs stating what a step means (tuple field nests, list head nests, struct field / list tail / map value / bitstring field are whole). Everything else byte-identical: the six-target gate and the canon double-compile equality tests.\n\nDocs: .agent/docs/dispatch-matrix.md:49 gains the sentence that the lattice is defined here.",
   "id": "fz-acn.1",
   "labels": [],
   "parent": "fz-acn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The demand lattice lives with the plan: DispatchDemand moves into dispatch_matrix",
   "type": "task",
-  "updated_at": "2026-09-14T17:22:48Z"
+  "updated_at": "2026-09-14T18:21:33Z"
 }
