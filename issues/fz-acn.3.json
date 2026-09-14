@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-acn.1"
+    "fz-acn.1",
+    "fz-acn.2"
   ],
   "blocks": [],
   "created": "2026-09-14T17:16:11Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The graph records input_demand at add_node; delete both scanners and the interpreter's per-call walk",
   "type": "bug",
-  "updated_at": "2026-09-14T17:16:20Z"
+  "updated_at": "2026-09-14T17:16:21Z"
 }
