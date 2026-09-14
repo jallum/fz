@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-acn.3"
+  ],
   "blocks": [],
   "created": "2026-09-14T17:16:17Z",
   "description": "Follow-up after the graph records input_demand. tested_input_ordinals (src/compiler2/dispatch_reachability.rs:276-288) asks \"which ordinals does a Test predicate read\", scans every graph node rather than reachable ones, and returns EVERY input whenever plan.guards is non-empty. Its sole consumer, calculate_dispatch_reachability (:37-46), uses it to decide which root slots get runtime_envelope and which pass through so a type variable survives (fz-f98.14.11).\n\nServing it from the recorded fact with a tested flavor (Untouched | Projected | Tested per ordinal) deletes the fourth scanner, but changes the answer for guarded functions: more inputs stay un-enveloped, more type variables survive into outcome_inputs, and the fixpoint can move. That is a decision with its own signal, taken after the recording lands: the guard fixtures' activation counts and the census ratchets, compared before and after.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Reachability reads a tested flavor of the plan's recorded input demand",
   "type": "task",
-  "updated_at": "2026-09-14T17:16:17Z"
+  "updated_at": "2026-09-14T17:16:25Z"
 }
