@@ -6,10 +6,9 @@
   "description": "oracle_goldens_match_elixir (tests/fixture_matrix.rs ~1918) boots elixir once per oracle twin, sequentially: 76 twins x ~0.22s = ~17s here, several times that on CI, growing with every oracle fixture. The work is constant for an unchanged tree. mtime cannot key it (git stores none; a clone or checkout gives every file the same timestamp), so key on content: extend the fixture header line '# oracle: oracle.exs' with a stamp 'sha256:\u003chash of .oracle.exs\u003e:\u003chash of .expected.txt\u003e'. The test hashes both files; if both match the stamp, the pair is known good and elixir does not run; if either differs, run the oracle, compare, and on a match report that the stamp needs refreshing. Editing either file by hand invalidates the stamp by construction; no new file per fixture. Add a regen command (xtask or test flag) that runs elixir and rewrites golden + stamp for one or all fixtures; document it beside the oracle process in .agent/docs and the fixture README. Leave the Elixir version out of the stamp until it bites. Acceptance: unchanged tree runs zero elixir boots; a deliberately edited .exs or golden makes the test run the oracle and fail on drift; fz_fixture_metadata still parses every header.",
   "id": "fz-21x.18",
   "labels": [],
-  "parent": "fz-21x",
   "priority": 1,
   "status": "open",
   "title": "Oracle goldens are verified by content stamp, not by re-running Elixir",
   "type": "task",
-  "updated_at": "2026-09-14T03:40:52Z"
+  "updated_at": "2026-09-14T11:12:35Z"
 }
