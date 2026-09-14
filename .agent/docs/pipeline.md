@@ -329,8 +329,22 @@ Compiler2 lowers one function body as:
   `steps`, and one `LoweredTail`
 - `LoweredTail`: the only place control can branch, call, or return
 - `ControlDestination`: either `Return` or `Deliver(next_entry)`
+- `BodyTables`: which step defines each value, which values each step and tail
+  name as operands, and which list steps retain a source
 
 That makes local control explicit instead of positional.
+
+`LoweredBody::clauses` is the only way to build a clause body, and it records
+the tables from the steps it is handed, so no body exists whose tables disagree
+with its steps and no later pass rebuilds them. Ownership construction reads
+them instead of searching the body: deciding one tuple field or call argument
+costs a lookup and a position comparison rather than a walk over the clauses and
+entries. Artifact pruning rebuilds its smaller body through the same
+constructor. Later edits to a step change its ownership modes or its list
+rewrite permission, never the values it defines or names; a list retention is
+the one edit that adds a use, and `LoweredBody::retain_list_source` writes the
+step and the table together. The tables are a function of the steps, so body
+identity ignores them and an equal reproduction stays equal.
 
 - `ControlEntryOrigin::Clause` is a clause body entry.
 - `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.

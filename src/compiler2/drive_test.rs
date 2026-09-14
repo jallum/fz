@@ -416,6 +416,73 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
     }
 }
 
+/// Ownership construction reads the body a fixed number of times, whatever it
+/// finds there.
+///
+/// A body of fifty nested tuple literals gives the tuple pass three hundred
+/// items to decide, and each decision asks where a value is defined and
+/// whether a later step still wants it. Answered by searching the body, those
+/// questions cost a walk apiece and the pass grows with the cube of the
+/// constructions; answered from the body's tables they cost a lookup, and the
+/// only steps the pass reads in sequence are the two scans that find the
+/// list constructions and the tuples. The pin is that count: two per step,
+/// never a multiple of the constructions.
+#[test]
+fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
+    let mut text = String::from("def main() do\n");
+    for index in 1..=50 {
+        text.push_str(&format!("  x{index} = {{{{1, 2}}, {{3, 4}}}}\n"));
+    }
+    let bindings = (1..=50).map(|index| format!("x{index}")).collect::<Vec<_>>();
+    text.push_str(&format!("  [{}]\nend\n", bindings.join(", ")));
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "compiler2", "lowered_body"]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let source = compiler.submit_code(CodeSubmission {
+        name: Some("nested_tuple_literals.fz".into()),
+        text,
+    });
+    assert_resolved(compiler.drive(), "source indexing");
+    compiler.demand(Job::ScopeCode(source));
+    assert_resolved(compiler.drive(), "function identities");
+    let main = function_id(&functions, "main", 0);
+    compiler.demand(Job::LowerFunction(main));
+    assert_resolved(compiler.drive(), "fifty nested tuple literals lower");
+
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main) else {
+        panic!("clause body")
+    };
+    let steps = entries.iter().map(|entry| entry.steps.len()).sum::<usize>();
+    assert_eq!(
+        steps, 351,
+        "fifty nested tuple literals lower to four constants and three tuples each, plus the list that uses them"
+    );
+
+    let scanned = capture
+        .events()
+        .iter()
+        .filter(|event| event.name == ["fz", "compiler2", "lowered_body", "ownership"])
+        .filter(|event| {
+            matches!(event.metadata.get("function_id"), Some(Value::U64(id)) if *id == u64::from(main.as_u32()))
+        })
+        .filter_map(|event| match event.measurements.get("steps_scanned") {
+            Some(Value::U64(scanned)) => Some(*scanned),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scanned,
+        vec![2 * steps as u64],
+        "ownership construction scans the steps twice -- once for list constructions, once for tuples"
+    );
+}
+
 #[test]
 fn compiler2_list_reconstruction_keeps_conditional_and_projected_rewrite_permission() {
     for (name, source, arity, expected) in [

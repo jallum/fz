@@ -2292,16 +2292,26 @@ end
         let first_job = Job::AnalyzeActivation(first_activation.clone());
         let second_job = Job::AnalyzeActivation(second_activation.clone());
         world.complete_job(first_job.clone(), first_effects);
-        let mut replacement = world.lowered_body(first);
-        let LoweredBody::Clauses { entries, .. } = &mut replacement else {
+        let LoweredBody::Clauses {
+            clauses,
+            entries,
+            generated,
+            ..
+        } = world.lowered_body(first)
+        else {
             panic!("the source fixture should lower first/0 to clauses");
         };
-        for entry in entries {
-            entry.steps.clear();
-            entry.tail = LoweredTail::Halt {
-                atom: "withdrawn".to_string(),
-            };
-        }
+        let withdrawn = entries
+            .into_iter()
+            .map(|entry| LoweredEntry {
+                steps: Vec::new(),
+                tail: LoweredTail::Halt {
+                    atom: "withdrawn".to_string(),
+                },
+                ..entry
+            })
+            .collect();
+        let replacement = LoweredBody::clauses(clauses, withdrawn, generated);
         assert!(world.define_lowered_body(first, replacement));
         world.complete_job(
             Job::LowerFunction(first),

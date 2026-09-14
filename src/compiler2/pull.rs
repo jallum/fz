@@ -4805,14 +4805,14 @@ mod tests {
             value_types: HashMap::new(),
             effects,
             struct_modules: Box::default(),
-            body: super::super::LoweredBody::Clauses {
-                clauses: vec![LoweredClause {
+            body: super::super::LoweredBody::clauses(
+                vec![LoweredClause {
                     span: crate::source::Span::DUMMY,
                     params: Vec::new(),
                     projections,
                     entry: ControlEntryId::from_u32(0),
                 }],
-                entries: vec![LoweredEntry {
+                vec![LoweredEntry {
                     span: crate::source::Span::DUMMY,
                     origin: ControlEntryOrigin::Clause,
                     params: Vec::new(),
@@ -4824,8 +4824,8 @@ mod tests {
                         atom: "done".to_string(),
                     },
                 }],
-                generated: Vec::new(),
-            },
+                Vec::new(),
+            ),
             call_edges: callees
                 .iter()
                 .enumerate()

@@ -646,6 +646,7 @@ fn lower_backend_body(
             clauses,
             entries,
             generated,
+            ..
         } => Ok(BackendBody::Clauses {
             clauses: clauses
                 .iter()

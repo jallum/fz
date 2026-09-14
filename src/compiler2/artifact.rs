@@ -1003,11 +1003,7 @@ impl BackendExecutable {
             value_types: HashMap::new(),
             effects: EffectSummary::default(),
             struct_modules: Box::default(),
-            body: LoweredBody::Clauses {
-                clauses: Vec::new(),
-                entries: Vec::new(),
-                generated: Vec::new(),
-            },
+            body: LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new()),
             call_edges: HashMap::new(),
         });
         let abi = Rc::new(AbiReadyExecutable {

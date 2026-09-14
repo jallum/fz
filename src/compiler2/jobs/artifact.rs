@@ -1402,6 +1402,7 @@ fn prune_lowered_body(
             clauses,
             entries,
             generated,
+            ..
         } => {
             let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
             let mut clauses = reachable_clauses
@@ -1424,11 +1425,7 @@ fn prune_lowered_body(
                 .collect::<Vec<_>>();
             reindex_entries(&mut clauses, &mut kept, &needed);
             PrunedLoweredBody {
-                body: LoweredBody::Clauses {
-                    clauses,
-                    entries: kept,
-                    generated,
-                },
+                body: LoweredBody::clauses(clauses, kept, generated),
                 original_entry_ids: kept_ids,
             }
         }
