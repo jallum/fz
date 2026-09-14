@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-acn.3"
+  ],
   "blocks": [],
   "created": "2026-09-14T17:16:16Z",
   "description": "Reproduced 2026-09-14 at main f26264572:\n\n    def f(n, \u003c\u003cx::binary-size(n), _rest::binary\u003e\u003e), do: x\n\nfz2 interp: entry dispatch pin has no runtime argument operand. The size names another parameter, so the pattern builder registers a pin (pattern.rs:825, BitstringFieldSize::Pinned) that dispatch reads at match time (ir_interp/dispatch_exec.rs:818, jobs/native.rs:3551), yet required_dispatch_input_ordinals matches Region::Bitstring(_) =\u003e {} (artifact.rs:1158-1164) and keying's mask never looks inside a bitstring shape, so n is not required and the interpreter is handed nil for it. fz-5xp.54 fixed the case where the size is bound by an EARLIER FIELD of the same bitstring (00311_binary_variable_size); the cross-parameter case is untested.\n\nClosed by construction when the graph builder charges a bitstring shape's pinned sizes as it adds the node. This ticket's commit adds fixtures2/behavior/bitstring_pinned_size (three doors, oracle twin).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A pinned bitstring size in a clause head is required by no scanner; interp refuses the call",
   "type": "bug",
-  "updated_at": "2026-09-14T17:16:16Z"
+  "updated_at": "2026-09-14T17:16:25Z"
 }
