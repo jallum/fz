@@ -1560,14 +1560,10 @@ impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
         // Checked first: it is the cheapest question, and a wrong answer makes
         // every later one moot.
         let abi = self.resolve_extern_abi()?;
-        let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
+        let contract = extern_semantic_contract(&self.surface).map_err(|error| {
             emit_job_diagnostic(
                 self.telemetry,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("`{}` is not an extern declaration", self.surface.name),
-                    self.surface.name_span,
-                ),
+                error.diagnostic(&self.surface.name, self.surface.name_span),
             )
         })?;
         let semantic_contract = self

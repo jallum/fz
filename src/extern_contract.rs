@@ -4,16 +4,20 @@
 //! the `ExternTy` lane it means, whether a declared parameter takes its lane
 //! from the spelling, and, for a wire-only spelling that names a calling
 //! convention the type system has no type for, the semantic spelling the type
-//! checker must see instead.
+//! checker must see instead. A wire-only spelling names one lane, and a lane
+//! is a whole register, so it stands only as a whole parameter or result; a
+//! contract that writes one inside a larger type is refused here by name.
 //!
 //! `ty_to_extern_ty` answers the other direction: it derives a lane from a
 //! semantic type through the type calculator, which is where every declared
 //! parameter whose spelling does not name its own lane is answered.
 
 use crate::ast::{SpecDecl, TypeExprBody};
+use crate::diag::{Diagnostic, codes};
 use crate::function_surface::CallableSurface;
 use crate::fz_ir::ExternTy;
 use crate::parser::lexer::{Tok, Token};
+use crate::source::Span;
 use crate::types::Types;
 
 /// The C symbol an extern's fz-visible name resolves to. A `lib::name`
@@ -118,30 +122,109 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     wire_spelling(name).map(|row| row.ty)
 }
 
+/// Why a declaration hands the type checker no extern contract.
+#[derive(Debug)]
+pub(crate) enum ExternContractError {
+    /// The declaration is not an extern, so it has no wire contract at all.
+    NotAnExtern,
+    /// A wire-only spelling is written inside a larger type. Such a spelling
+    /// names one calling-convention lane, and a lane is a whole register, so
+    /// it stands exactly where a whole parameter or result stands.
+    WireSpellingInsideType { spelling: &'static str, span: Span },
+}
+
+impl ExternContractError {
+    /// The refusal as every door reports it, so one declaration reads the
+    /// same however it is compiled.
+    pub(crate) fn diagnostic(&self, function: &str, name_span: Span) -> Diagnostic {
+        match self {
+            Self::NotAnExtern => Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("`{function}` is not an extern declaration"),
+                name_span,
+            ),
+            Self::WireSpellingInsideType { spelling, span } => Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!(
+                    "`{function}` writes `{spelling}` inside a larger type: a wire spelling names \
+                     one C lane, so it stands only as a whole parameter or result"
+                ),
+                *span,
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExternTy, extern_ty_from_name};
+    use super::{
+        ExternContractError, ExternTy, TypeExprBody, WIRE_SPELLINGS, extern_ty_from_name,
+        normalize_extern_semantic_body, token_for_spelling,
+    };
+    use crate::parser::lexer::{Tok, Token};
+    use crate::source::Span;
+
+    fn token(tok: Tok) -> Token {
+        Token {
+            tok,
+            span: Span::DUMMY,
+            space_before: false,
+        }
+    }
+
+    fn ident(name: &str) -> Token {
+        token(Tok::Ident(name.to_string()))
+    }
 
     #[test]
     fn boolean_is_the_extern_source_type_name() {
         assert_eq!(extern_ty_from_name("boolean"), Some(ExternTy::Bool));
     }
+
+    /// Every wire-only spelling obeys one rule, and the table is what states
+    /// it: alone it becomes the semantic type the checker has, and inside a
+    /// larger type it is refused by name.
+    #[test]
+    fn a_wire_only_spelling_stands_alone_or_is_refused_by_name() {
+        for row in WIRE_SPELLINGS.iter().filter(|row| row.semantic.is_some()) {
+            let alone = TypeExprBody(vec![ident(row.name)]);
+            let rewritten = normalize_extern_semantic_body(&alone).expect("a whole body names a lane");
+            assert_eq!(
+                rewritten.0[0].tok,
+                token_for_spelling(row.semantic.expect("a wire-only row carries a semantic spelling")),
+            );
+
+            let inside_a_tuple = TypeExprBody(vec![
+                token(Tok::LBrace),
+                ident(row.name),
+                token(Tok::Comma),
+                ident("integer"),
+                token(Tok::RBrace),
+            ]);
+            match normalize_extern_semantic_body(&inside_a_tuple) {
+                Err(ExternContractError::WireSpellingInsideType { spelling, .. }) => {
+                    assert_eq!(spelling, row.name)
+                }
+                other => panic!("`{}` inside a tuple must be refused by name: {other:?}", row.name),
+            }
+        }
+    }
 }
 
-pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
-    let mut contract = surface.extern_contract_decl()?;
+pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Result<SpecDecl, ExternContractError> {
+    let mut contract = surface.extern_contract_decl().ok_or(ExternContractError::NotAnExtern)?;
     contract.param_body_tokens = contract
         .param_body_tokens
         .iter()
         .map(normalize_extern_semantic_body)
-        .collect();
-    contract.result_body_tokens = normalize_extern_semantic_body(&contract.result_body_tokens);
+        .collect::<Result<_, _>>()?;
+    contract.result_body_tokens = normalize_extern_semantic_body(&contract.result_body_tokens)?;
     contract.constraints = contract
         .constraints
         .iter()
-        .map(|(name, body)| (name.clone(), normalize_extern_semantic_body(body)))
-        .collect();
-    Some(contract)
+        .map(|(name, body)| Ok((name.clone(), normalize_extern_semantic_body(body)?)))
+        .collect::<Result<_, _>>()?;
+    Ok(contract)
 }
 
 /// The lane a declared parameter's type tokens name outright. `None` leaves
@@ -194,16 +277,39 @@ pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
 }
 
 /// Rewrite a wire-only spelling to its semantic spelling, so the type checker
-/// sees a type it has.
-fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
+/// sees a type it has. A whole body is the only place the rewrite can reach,
+/// which is also the only place the lane it names has a register of its own,
+/// so a spelling written anywhere else is refused here by name.
+fn normalize_extern_semantic_body(body: &TypeExprBody) -> Result<TypeExprBody, ExternContractError> {
     let mut normalized = body.clone();
-    if let [token] = normalized.0.as_mut_slice()
-        && let Tok::Ident(name) = &token.tok
-        && let Some(semantic) = wire_spelling(name).and_then(|row| row.semantic)
-    {
-        token.tok = token_for_spelling(semantic);
+    if let [token] = normalized.0.as_mut_slice() {
+        if let Tok::Ident(name) = &token.tok
+            && let Some(semantic) = wire_spelling(name).and_then(|row| row.semantic)
+        {
+            token.tok = token_for_spelling(semantic);
+        }
+        return Ok(normalized);
     }
-    normalized
+    match misplaced_wire_spelling(&normalized) {
+        Some(refusal) => Err(refusal),
+        None => Ok(normalized),
+    }
+}
+
+/// The first wire-only spelling written among a compound type's tokens. A
+/// field key lexes as its own token, so only a spelling in type position is
+/// found here.
+fn misplaced_wire_spelling(body: &TypeExprBody) -> Option<ExternContractError> {
+    body.0.iter().find_map(|token| {
+        let Tok::Ident(name) = &token.tok else {
+            return None;
+        };
+        let row = wire_spelling(name).filter(|row| row.semantic.is_some())?;
+        Some(ExternContractError::WireSpellingInsideType {
+            spelling: row.name,
+            span: token.span,
+        })
+    })
 }
 
 #[cfg(test)]

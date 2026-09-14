@@ -10748,6 +10748,53 @@ def main(), do: foreign_pair({1, 2})
 }
 
 #[test]
+fn compiler2_wire_spelling_inside_a_tuple_states_the_rule_it_breaks() {
+    // A wire spelling names a calling-convention lane, and a lane is a whole
+    // register: it stands where a whole parameter or result stands. Inside a
+    // tuple it has no register of its own, so the contract is refused. The
+    // refusal must state that rule; "unknown type name `c_int`" would send the
+    // reader hunting for a typo in a spelling the language documents.
+    let telemetry = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&telemetry, &[]);
+
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("wire_spelling_inside_tuple.fz".to_string()),
+        text: r#"extern "C" defp foreign_pair() :: {c_int, integer}
+
+def main(), do: foreign_pair()
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a wire spelling inside an aggregate must stop the compile: {outcome:?}",
+    );
+
+    let errors = capture.find(&["fz", "diag", "error"]);
+    let messages: Vec<&str> = errors.iter().map(|event| metadata_str(event, "message")).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.contains("`c_int`") && message.contains("whole parameter or result") }),
+        "the diagnostic must name the spelling and state where it may stand, got: {messages:?}",
+    );
+    assert!(
+        !messages.iter().any(|message| message.contains("unknown type name")),
+        "a documented wire spelling is never reported as an unknown name, got: {messages:?}",
+    );
+}
+
+#[test]
 fn compiler2_fz_abi_is_reserved_to_the_runtime_library() {
     // The `fz` ABI names symbols that BOTH doors also claim by name in their
     // own lowerings, and the two claim sets are not the same. So a foreign

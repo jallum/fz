@@ -139,6 +139,12 @@ word.</p>
 caller ignores one field. Larger or nested aggregate results and aggregate
 arguments are not yet supported.</p>
 
+<p><code>c_int</code>, <code>cstring</code> and <code>unit</code> name a machine
+lane rather than an fz type, and a lane is a whole register, so they stand only
+as a whole parameter or result. A field of a pair has no register of its own,
+so <code>:: {c_int, integer}</code> is refused, and the message says which
+spelling is misplaced and where it may stand.</p>
+
 <h3>Why <code>integer</code> and <code>any</code> aren't the same</h3>
 
 <p>fz integers are raw payloads wherever the signature already says

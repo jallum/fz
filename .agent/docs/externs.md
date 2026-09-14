@@ -233,6 +233,14 @@ the type system has no type for, the semantic spelling the contract is
 rewritten to before the type checker sees it: `cstring` to `binary`, `c_int` to
 `integer`, `unit` to `nil`.
 
+A wire-only spelling names one lane, and a lane is a whole register, so it
+stands only as a whole parameter or result. Written inside a larger type,
+`:: {c_int, integer}`, `extern_semantic_contract` refuses the contract with
+`ExternContractError::WireSpellingInsideType` before any door resolves it, and
+the diagnostic names the spelling and states the rule rather than reporting an
+unknown type name. The sentence is built from the spelling table, so a new
+wire-only row needs no new message.
+
 The spellings, and what a declaration writes:
 
 ```text
@@ -267,7 +275,8 @@ makes each door narrow and widen it:
   both have the callee read an `int` parameter out of the low 32 bits.
 
 A pair return field rides a whole return register, so `c_int` is not one of
-the three wire types a fixed scalar-pair result is built from.
+the three wire types a fixed scalar-pair result is built from; writing it
+there is the misplaced-spelling refusal above.
 
 `behavior/c_int_negative_return` pins both signs on all three doors, and
 `compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results`
