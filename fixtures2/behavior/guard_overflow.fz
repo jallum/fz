@@ -1,0 +1,29 @@
+#---
+# purpose: "integer overflow inside a guard makes the guard false, on every door"
+# defer: "integer overflow inside a guard wraps or traps instead of making the clause false"
+#---
+#
+# # guard_overflow
+#
+# fz integers are 64-bit, so `9223372036854775807 + 1` has no answer. In a
+# body that is the `:badarith` fault. In a guard it is the same failure the
+# other arithmetic failures are: the guard is false and the clause does not
+# match. Elixir has unbounded integers and no such case, so this fixture has
+# no oracle; the rule is fz's own and is pinned here.
+defp plus_one(x) when x + 1 > 0, do: :matched
+defp plus_one(_x), do: :fell_through
+
+defp negated(x) when -x > 0, do: :matched
+defp negated(_x), do: :fell_through
+
+defp doubled(x) when x * 2 > 0, do: :matched
+defp doubled(_x), do: :fell_through
+
+def main() do
+  dbg(plus_one(9223372036854775807))
+  dbg(plus_one(9223372036854775806))
+  dbg(negated(-9223372036854775807 - 1))
+  dbg(negated(-5))
+  dbg(doubled(4611686018427387904))
+  dbg(doubled(4611686018427387903))
+end

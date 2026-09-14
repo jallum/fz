@@ -1,0 +1,19 @@
+#---
+# purpose: "a receive guard orders a float the way a body does"
+# oracle: oracle.exs
+# defer: "the receive matcher compares guard operands as integers and refuses a float"
+#---
+#
+# # receive_guard_float
+#
+# `x when x > 1.5` means the same thing in a receive clause as in a function
+# head or an expression: the total term order, where a float and an integer
+# compare by value. The message here is a float, so the first clause is the one
+# that answers, on every door.
+def main() do
+  send(self(), 2.5)
+  receive do
+    x when x > 1.5 -> dbg(:big)
+    x -> dbg({:small, x})
+  end
+end
