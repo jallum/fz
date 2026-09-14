@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T23:17:47Z",
+  "description": "The event is emitted (src/compiler2/jobs/keying.rs ~360, ~966) and counted by --emit=stats (51 on fz_f98_range_map_converges), and a JSONL handler exists (src/telemetry/jsonl.rs ~716-730), but is_public_compiler2_trace_event (jsonl.rs ~1186-1219) does not allowlist the name, so a --log-telemetry trace never shows what a body's inputs were demanded for. Now that the plan records its own input demand and keying reads it (fz-acn.3), the fact is central and should be inspectable from a trace. Fix: one allowlist arm. Signal: the public_trace_test census gains the event with a pinned count on one fixture.",
+  "id": "fz-uai",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz.compiler2.input_demand.derived never reaches the --log-telemetry stream",
+  "type": "task",
+  "updated_at": "2026-09-14T23:17:47Z"
+}
