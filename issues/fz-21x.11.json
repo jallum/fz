@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-14T01:43:57Z",
   "created": "2026-09-14T00:57:25Z",
   "description": "Step 7 of the extern door collapse (approved 2026-09-13). Probe on cranelift 0.131 / Apple AArch64 and prior art (rustc_codegen_cranelift PR 1500, merged 2024-06): a variadic C call with integer/pointer variadic arguments is a plain call on x86-64 SysV and Linux AArch64, and on Apple AArch64 a plain call after padding the argument list with dummy integer parameters until all eight integer registers are consumed, so the variadic words spill to the stack in 8-byte slots. Float variadic arguments are already refused by fz (00253 fixture); x86-64's %al only matters for floats. One lowering, in native codegen: fixed parameters by their wire lanes, variadic words as integer lanes, Apple padding by target triple, call_indirect through func_addr of the symbol declared as an ordinary import with a per-call signature. The interpreter shares it by JIT-generating a trampoline per (fixed lanes, variadic count) taking (fn_ptr, *const u64 words), memoized; it resolves the address by name as it does today. Deleted: fz_call_var_* dispatchers and their tests, both doors' shape matches, both format_extern_shape copies, the unsupported-shape refusal, emit_extern_symbol_name with its per-call-site data objects and the run-time symbol lookup on the native path. Kept: fz_extern_symbol_addr and the library list (renamed module), ExternMarshal::Auto resolution. Proof: the seven variadic fixtures and aot_variadic_open on three doors, plus one new fixture with a shape that had no dispatcher (three variadic integers).",
   "id": "fz-21x.11",
   "labels": [],
   "parent": "fz-21x",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Generate variadic C calls in one lowering shared by native codegen and the interpreter; delete the runtime dispatchers",
   "type": "task",
-  "updated_at": "2026-09-14T00:57:26Z"
+  "updated_at": "2026-09-14T01:43:57Z"
 }
