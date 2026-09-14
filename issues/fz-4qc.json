@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T11:37:46Z",
+  "description": "Found while building fz-21x.2 (2026-09-14). src/compiler2/native_codegen/driver.rs writes the mid-flight continuation's Tail signature in declare_mid_flight_conts and again in emit_mid_flight_cont_bodies. The drain entry had the same duplication and now reads one constructor at both sites; do the same here. Proof: workspace gate green.",
+  "id": "fz-4qc",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "The mid-flight continuation's Tail signature is written twice, at declare and at define",
+  "type": "task",
+  "updated_at": "2026-09-14T11:37:46Z"
+}
