@@ -10,11 +10,15 @@
     {
       "text": "Rerun of the same commit (2200b6c18) passed: test job 9m51s vs 16m9s on the failing run. Same code, same lane; only runner load differed. Confirms the guard, not the program, decided the first result.",
       "timestamp": "2026-09-14T00:11:49Z"
+    },
+    {
+      "text": "Second data point (run 34793899172, two CI runs executing concurrently): json_roundtrip run and build also exceeded 20s, plus tail_recursion interp. Locally json_roundtrip is 4.0s run / 4.1s build / 2.6s interp, identical before and after the on-demand runtime-call commit (measured both). The guard trips at roughly 5x local time under load.",
+      "timestamp": "2026-09-14T01:09:00Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] fixture_matrix wall-clock hang guard fails tail_recursion::interp on the Linux runner under contention",
   "type": "bug",
-  "updated_at": "2026-09-14T00:11:49Z"
+  "updated_at": "2026-09-14T01:09:00Z"
 }
