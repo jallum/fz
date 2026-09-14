@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-14T17:16:20Z",
+  "description": "Measured 2026-09-14 at main f26264572 with a probe that runs count(100000, 0) and prints Process.heap_alloc_stats(): reductions_executed is 400000 on fz2 run and 0 on fz2 interp; on quicksort, reductions_remaining is 4000 (the untouched quantum) on interp and 3906 on run. The cooperative back-edge yield check is emitted by native codegen only (src/compiler2/native_codegen/terminator.rs:1136-1157); the interpreter calls reset_reduction_budget (ir_interp/backend.rs:456) and never decrements.\n\nConsequence: three-path parity is broken for scheduling. An interpreted process that loops without a mailbox barrier runs until it finishes; any fixture that depends on fair interleaving between processes passes on interp for a different reason than on run and build, and the reductions counters cannot be used as an interpreter signal.\n\nFix: the interpreter charges a reduction at the same points the native doors do (call and back edge) and yields on the same budget. Signal: the probe above prints equal reductions_executed on all three doors; a two-process fairness fixture with a spinning producer and a consumer that must be scheduled, pinned by output order on three doors.",
+  "id": "fz-b58",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "The interpreter never spends reductions, so an interpreted process is never preempted",
+  "type": "bug",
+  "updated_at": "2026-09-14T17:16:20Z"
+}
