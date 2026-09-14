@@ -1,0 +1,171 @@
+#---
+# purpose: "the ordering operators themselves across kinds, in body position and through a guard"
+# oracle: oracle.exs
+#---
+#
+# # cross_kind_operators
+#
+# Erlang's term order is total, and Elixir reaches it through the OPERATORS:
+# `1 < :atom` is `true`, `{:foo, 2} > "string"` is `false`, and the same answer
+# comes back whether the comparison is written in an expression or in a `when`
+# guard. This fixture asks each operator directly. It never calls
+# `Kernel.compare/2`.
+#
+# Every operand pair below appears twice: once in body position, and once
+# through a one-line helper whose only clause head is the same operator in a
+# guard. The two halves must agree with each other and with Elixir.
+#
+# One value per printed line, so a disagreement names its own case.
+defp lt?(a, b) when a < b, do: :lt
+defp lt?(_a, _b), do: :not_lt
+defp le?(a, b) when a <= b, do: :le
+defp le?(_a, _b), do: :not_le
+defp gt?(a, b) when a > b, do: :gt
+defp gt?(_a, _b), do: :not_gt
+defp ge?(a, b) when a >= b, do: :ge
+defp ge?(_a, _b), do: :not_ge
+defp eq?(a, b) when a == b, do: :equal
+defp eq?(_a, _b), do: :different
+
+def main() do
+  # integer vs atom -- body position
+  dbg(1 < :atom)
+  dbg(1 <= :atom)
+  dbg(1 > :atom)
+  dbg(1 >= :atom)
+  # integer vs atom -- through a guard
+  dbg(lt?(1, :atom))
+  dbg(le?(1, :atom))
+  dbg(gt?(1, :atom))
+  dbg(ge?(1, :atom))
+
+  # atom vs binary -- body position
+  dbg(:atom < "bin")
+  dbg(:atom <= "bin")
+  dbg(:atom > "bin")
+  dbg(:atom >= "bin")
+  # atom vs binary -- through a guard
+  dbg(lt?(:atom, "bin"))
+  dbg(le?(:atom, "bin"))
+  dbg(gt?(:atom, "bin"))
+  dbg(ge?(:atom, "bin"))
+
+  # tuple vs binary -- body position
+  dbg({:foo, 2} < "string")
+  dbg({:foo, 2} <= "string")
+  dbg({:foo, 2} > "string")
+  dbg({:foo, 2} >= "string")
+  # tuple vs binary -- through a guard
+  dbg(lt?({:foo, 2}, "string"))
+  dbg(le?({:foo, 2}, "string"))
+  dbg(gt?({:foo, 2}, "string"))
+  dbg(ge?({:foo, 2}, "string"))
+
+  # list vs tuple -- body position
+  dbg([1, 2] < {1, 2})
+  dbg([1, 2] <= {1, 2})
+  dbg([1, 2] > {1, 2})
+  dbg([1, 2] >= {1, 2})
+  # list vs tuple -- through a guard
+  dbg(lt?([1, 2], {1, 2}))
+  dbg(le?([1, 2], {1, 2}))
+  dbg(gt?([1, 2], {1, 2}))
+  dbg(ge?([1, 2], {1, 2}))
+
+  # map vs list -- body position
+  dbg(%{"a" => 1} < [1])
+  dbg(%{"a" => 1} <= [1])
+  dbg(%{"a" => 1} > [1])
+  dbg(%{"a" => 1} >= [1])
+  # map vs list -- through a guard
+  dbg(lt?(%{"a" => 1}, [1]))
+  dbg(le?(%{"a" => 1}, [1]))
+  dbg(gt?(%{"a" => 1}, [1]))
+  dbg(ge?(%{"a" => 1}, [1]))
+
+  # float vs atom -- body position
+  dbg(1.5 < :atom)
+  dbg(1.5 <= :atom)
+  dbg(1.5 > :atom)
+  dbg(1.5 >= :atom)
+  # float vs atom -- through a guard
+  dbg(lt?(1.5, :atom))
+  dbg(le?(1.5, :atom))
+  dbg(gt?(1.5, :atom))
+  dbg(ge?(1.5, :atom))
+
+  # int vs float -- body position
+  dbg(1 < 1.5)
+  dbg(1 <= 1.5)
+  dbg(1 > 1.5)
+  dbg(1 >= 1.5)
+  # int vs float -- through a guard
+  dbg(lt?(1, 1.5))
+  dbg(le?(1, 1.5))
+  dbg(gt?(1, 1.5))
+  dbg(ge?(1, 1.5))
+
+  # float vs int -- body position
+  dbg(2.0 < 3)
+  dbg(2.0 <= 3)
+  dbg(2.0 > 3)
+  dbg(2.0 >= 3)
+  # float vs int -- through a guard
+  dbg(lt?(2.0, 3))
+  dbg(le?(2.0, 3))
+  dbg(gt?(2.0, 3))
+  dbg(ge?(2.0, 3))
+
+  # atom vs atom -- body position
+  dbg(:a < :b)
+  dbg(:a <= :b)
+  dbg(:a > :b)
+  dbg(:a >= :b)
+  # atom vs atom -- through a guard
+  dbg(lt?(:a, :b))
+  dbg(le?(:a, :b))
+  dbg(gt?(:a, :b))
+  dbg(ge?(:a, :b))
+
+  # binary vs binary -- body position
+  dbg("abc" < "abd")
+  dbg("abc" <= "abd")
+  dbg("abc" > "abd")
+  dbg("abc" >= "abd")
+  # binary vs binary -- through a guard
+  dbg(lt?("abc", "abd"))
+  dbg(le?("abc", "abd"))
+  dbg(gt?("abc", "abd"))
+  dbg(ge?("abc", "abd"))
+
+  # tuple vs tuple (arity) -- body position
+  dbg({1, 2} < {1})
+  dbg({1, 2} <= {1})
+  dbg({1, 2} > {1})
+  dbg({1, 2} >= {1})
+  # tuple vs tuple (arity) -- through a guard
+  dbg(lt?({1, 2}, {1}))
+  dbg(le?({1, 2}, {1}))
+  dbg(gt?({1, 2}, {1}))
+  dbg(ge?({1, 2}, {1}))
+
+  # list vs list -- body position
+  dbg([1, 2, 3] < [2])
+  dbg([1, 2, 3] <= [2])
+  dbg([1, 2, 3] > [2])
+  dbg([1, 2, 3] >= [2])
+  # list vs list -- through a guard
+  dbg(lt?([1, 2, 3], [2]))
+  dbg(le?([1, 2, 3], [2]))
+  dbg(gt?([1, 2, 3], [2]))
+  dbg(ge?([1, 2, 3], [2]))
+
+  # int/float equality -- body position
+  dbg(1 == 1.0)
+  dbg(1 === 1.0)
+  dbg(1 != 1.0)
+  dbg(1 !== 1.0)
+  # int/float equality -- through a guard
+  dbg(eq?(1, 1.0))
+  dbg(eq?(1, :atom))
+end

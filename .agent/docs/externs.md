@@ -119,15 +119,19 @@ here — see the JIT symbol table above.
 
 `<`, `<=`, `>`, `>=`, `==`, `!=`, `===` and `!==` are ordinary `Kernel`
 functions, and each is a typed clause family whose clause bodies call the
-matching `fz_op_*` extern declaration. An ordering has one clause per operand
-pair it can order — integer/integer, float/float, integer/float,
-float/integer, binary/binary — and nothing else. Equality and identity have
-the four numeric pairs too, on raw `extern "C"` lanes, so comparing two
-unboxed numbers boxes neither; mixed-pair identity is answered in source,
-since an integer is never the same value as a float. Because they are total,
-they each also keep a trailing `any`/`any` clause calling the ref-carrying
-`fz_op_eq`, `fz_op_neq`, `fz_op_identical` or `fz_op_not_identical`, which is
-what answers every other pair of values.
+matching `fz_op_*` extern declaration. Every one of them carries the four
+numeric pairs — integer/integer, float/float, integer/float, float/integer —
+on raw `extern "C"` lanes, so comparing two unboxed numbers boxes neither;
+mixed-pair identity is answered in source, since an integer is never the same
+value as a float. All of them are total, so each also keeps a trailing
+`any`/`any` clause: equality and identity call the ref-carrying `fz_op_eq`,
+`fz_op_neq`, `fz_op_identical` or `fz_op_not_identical`, and an ordering calls
+`Kernel.compare/2`, whose `fz_value_cmp_ref` answers by the total term order.
+The orderings' `binary`/`binary` clauses are commented out in `Kernel`, because
+the runtime test a `binary` clause compiles to proves only "bitstring" and
+cannot be seated ahead of a catch-all; the `fz_op_lt_bb`, `fz_op_lte_bb`,
+`fz_op_gt_bb` and `fz_op_gte_bb` declarations they call stay, so restoring a
+clause is the uncomment.
 
 Every one of those declarations crosses its door the same way every other
 declaration does: `lower_extern_generic` on the native doors, the ordinary FFI

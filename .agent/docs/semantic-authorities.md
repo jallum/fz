@@ -100,15 +100,19 @@ signed-zero identity; widening mode equates signed zeros.
 `fz_value_cmp_raw_const` compares a ref against an unboxed payload without
 allocating a scalar box.
 
-For the ORDERING operators `Kernel` declares a typed clause per orderable
-pair — numbers and binaries — and NO `any`/`any` clause, so `1 < :atom` is
-refused at compile time rather than answered wrongly at run time. The total
-order is reached through `Kernel.compare/2`, which `Enum.sort/1` uses. That
-split is not tidiness: giving an ordering a catch-all makes every ordering
-callsite with an unresolved operand blind to the dispatcher, which the
-blind-escape census catches as a latent miscompile. Equality and
-identity are total functions, so their `any`/`any` clause answers a real pair
-rather than standing in for a missing one.
+For the ORDERING operators `Kernel` declares a typed clause per numeric pair
+and a final `any`/`any` clause through `Kernel.compare/2`, so `1 < :atom`
+answers `true` by the total term order rather than being refused. That is the
+same shape `==` and `===` have; ordering, equality and identity are all total
+functions, so each catch-all answers a real pair rather than standing in for a
+missing one. `Enum.sort/1` calls `compare/2` directly. The ordering operators'
+`binary` clauses are commented out in `Kernel` rather than deleted: a `binary`
+clause compiles to a runtime test that proves only "bitstring", so seating one
+ahead of the catch-all would send an unresolved operand to the byte compare
+without proving the surface the clause names, and the blind-escape census
+cannot justify the seat. Binaries are ordered by the comparator's bitstring
+branch through the catch-all instead, and the clauses come back as the fast
+path when `RuntimeTestAxis::precision` stops calling `Binaries` erasing.
 
 **Arithmetic and comparison exports** — `runtime/src/ir_runtime.rs` owns the
 real C functions, and the `Kernel` extern declarations own how they are called.

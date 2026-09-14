@@ -239,7 +239,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // lowers and plans that whole family; the module and executable-fact
         // tallies do not see it because the fixture's operands stay integers
         // and each site settles on one clause.
-        (4181, 11, 19, 408),
+        // Each ordering operator's final `any`/`any` clause calls `compare/2`
+        // and compares the result: two applications in one body. This fixture
+        // reaches `<` and `>`, one application apiece, and the operands stay
+        // integers, so the module and executable-fact tallies count nothing
+        // for the catch-all.
+        (4183, 11, 19, 408),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Two consumers wait for macro definitions directly; content readiness
@@ -250,7 +255,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // publish sixteen additional non-demand changed revisions.
         // The typed `==` clauses and their externs publish non-demand changed
         // revisions of their own.
-        1464,
+        // Each ordering operator's `any`/`any` clause publishes one non-demand
+        // changed revision, and this fixture reaches `<` and `>`.
+        1466,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(

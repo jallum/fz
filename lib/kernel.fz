@@ -14,10 +14,10 @@ defmodule Kernel do
     * `dbg/1`, `to_string/1`, `byte_size/1`, `div/2`, `rem/2` and `range/3`
 
   Every arithmetic and comparison operator is a typed clause family: one
-  clause per pair of operand types it supports. Arithmetic and ordering have
-  no catch-all, so a pair outside that set is refused at compile time rather
-  than answered. Equality and identity are total, and add an `any`/`any`
-  clause for every other pair of values.
+  clause per pair of operand types it supports. Arithmetic has no catch-all,
+  so a pair outside that set is refused at compile time rather than answered.
+  Ordering, equality and identity are total, and add an `any`/`any` clause
+  for every other pair of values.
   """
 
   extern "fz" defp fz_dbg_value(any) :: any
@@ -459,21 +459,32 @@ defmodule Kernel do
   # same, so a mixed pair is answered by a typed clause on unboxed lanes
   # rather than by codegen boxing an operand and coercing it behind our back.
   # Every comparison operator is a typed clause family over those numeric
-  # pairs. Ordering is a partial function: it has a clause per pair it can
-  # order and no `any`/`any` default, so an unsupported combination has no
-  # matching clause and is refused rather than answered wrongly. Equality and
-  # identity are total, so they keep an `any`/`any` clause beside the typed
-  # ones: two numbers are answered on unboxed lanes, and every other pair
-  # falls through to the structural comparator, which widens numerics for `==`
-  # and stays strict for `===`.
+  # pairs, and every one of them is total, so each keeps an `any`/`any` clause
+  # beside the typed ones: two numbers are answered on unboxed lanes, and
+  # every other pair falls through to the structural comparator, which orders
+  # by the total term order, widens numerics for `==` and stays strict for
+  # `===`.
 
+  # NOTE/TODO: the `binary` clauses of the four ordering operators are
+  # commented out below rather than deleted.
+  #
+  # A `binary` clause compiles to a runtime test that proves only
+  # "bitstring". Seated ahead of an `any`/`any` clause, that test would send
+  # an unresolved operand to the byte compare without proving the surface the
+  # clause names, so the blind-escape census cannot justify the seat. Binaries
+  # reach the comparator's bitstring branch through the final clause instead.
+  #
+  # Each clause returns, as the fast path, once the binary axis of the runtime
+  # test is precise: see `RuntimeTestAxis::precision` in
+  # `src/runtime_type_predicate.rs`, where `Binaries` is `Erasing`. The
+  # `fz_op_lt_bb`, `fz_op_lte_bb`, `fz_op_gt_bb` and `fz_op_gte_bb`
+  # declarations stay, so restoring a clause is the uncomment.
   @doc """
   Returns whether `left` is less than `right`.
 
-  Declared per orderable pair (numbers and binaries); comparing an
-  unsupported pair, such as a number and an atom, is refused at compile
-  time rather than answered. For a total order over every value, see
-  `compare/2`.
+  Every pair of values has an answer: two numbers are compared on a typed
+  clause, and every other pair goes through `compare/2`, the total term
+  order.
 
   ## Examples
 
@@ -486,27 +497,34 @@ defmodule Kernel do
       "abc" < "abd"
       #=> true
 
+      1 < :atom
+      #=> true
+
   """
   @spec integer < integer :: boolean
   @spec float < float :: boolean
   @spec integer < float :: boolean
   @spec float < integer :: boolean
-  @spec binary < binary :: boolean
+  # @spec binary < binary :: boolean
+  @spec any < any :: boolean
   def (left :: integer) < (right :: integer), do: fz_op_lt_ii(left, right)
   def (left :: float) < (right :: float), do: fz_op_lt_ff(left, right)
   def (left :: integer) < (right :: float), do: fz_op_lt_if(left, right)
   def (left :: float) < (right :: integer), do: fz_op_lt_fi(left, right)
-  def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
+  # def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
+  def left < right, do: compare(left, right) < 0
 
   @doc """
   Returns whether `left` is less than or equal to `right`.
 
-  Declared per orderable pair, like `</2`; see its documentation for the
-  partial-ordering note.
+  Total over every pair of values, like `</2`.
 
   ## Examples
 
       1 <= 1
+      #=> true
+
+      :atom <= "bin"
       #=> true
 
   """
@@ -514,17 +532,19 @@ defmodule Kernel do
   @spec float <= float :: boolean
   @spec integer <= float :: boolean
   @spec float <= integer :: boolean
-  @spec binary <= binary :: boolean
+  # @spec binary <= binary :: boolean
+  @spec any <= any :: boolean
   def (left :: integer) <= (right :: integer), do: fz_op_lte_ii(left, right)
   def (left :: float) <= (right :: float), do: fz_op_lte_ff(left, right)
   def (left :: integer) <= (right :: float), do: fz_op_lte_if(left, right)
   def (left :: float) <= (right :: integer), do: fz_op_lte_fi(left, right)
-  def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
+  # def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
+  def left <= right, do: compare(left, right) <= 0
 
   @doc """
   Returns whether `left` is greater than `right`.
 
-  Declared per orderable pair, like `</2`.
+  Total over every pair of values, like `</2`.
 
   ## Examples
 
@@ -534,26 +554,34 @@ defmodule Kernel do
       "abc" > "abb"
       #=> true
 
+      [1] > {1}
+      #=> true
+
   """
   @spec integer > integer :: boolean
   @spec float > float :: boolean
   @spec integer > float :: boolean
   @spec float > integer :: boolean
-  @spec binary > binary :: boolean
+  # @spec binary > binary :: boolean
+  @spec any > any :: boolean
   def (left :: integer) > (right :: integer), do: fz_op_gt_ii(left, right)
   def (left :: float) > (right :: float), do: fz_op_gt_ff(left, right)
   def (left :: integer) > (right :: float), do: fz_op_gt_if(left, right)
   def (left :: float) > (right :: integer), do: fz_op_gt_fi(left, right)
-  def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
+  # def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
+  def left > right, do: compare(left, right) > 0
 
   @doc """
   Returns whether `left` is greater than or equal to `right`.
 
-  Declared per orderable pair, like `</2`.
+  Total over every pair of values, like `</2`.
 
   ## Examples
 
       1 >= 1
+      #=> true
+
+      :atom >= 1
       #=> true
 
   """
@@ -561,22 +589,15 @@ defmodule Kernel do
   @spec float >= float :: boolean
   @spec integer >= float :: boolean
   @spec float >= integer :: boolean
-  @spec binary >= binary :: boolean
+  # @spec binary >= binary :: boolean
+  @spec any >= any :: boolean
   def (left :: integer) >= (right :: integer), do: fz_op_gte_ii(left, right)
   def (left :: float) >= (right :: float), do: fz_op_gte_ff(left, right)
   def (left :: integer) >= (right :: float), do: fz_op_gte_if(left, right)
   def (left :: float) >= (right :: integer), do: fz_op_gte_fi(left, right)
-  def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
+  # def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
+  def left >= right, do: compare(left, right) >= 0
 
-  # Erlang's total term order:
-  #   number < atom < reference < fun < port < pid < tuple < map < list < bitstring
-  #
-  # This is the separate entry point the comparison operators deliberately do
-  # not become. `<` and its siblings stay declared for the operand pairs fz can
-  # prove -- numbers and binaries -- because giving them an `any`/`any` clause
-  # makes every comparison callsite with an unresolved operand blind to the
-  # dispatcher, which the blind-escape census catches as a latent miscompile.
-  # Sorting does not need the operators: it needs an order.
   @doc """
   Returns the number of bytes in `bytes`.
 
@@ -594,13 +615,13 @@ defmodule Kernel do
   @spec byte_size(binary) :: integer
   def byte_size(bytes), do: fz_bitstring_byte_size(bytes)
 
+  # `</2` and its siblings carry this order through `compare/2`.
   @doc """
   Compares `left` and `right` by the total term order, and returns a
   negative integer, `0`, or a positive integer.
 
   Unlike `===/2`, numbers compare by value across types: `1` and `1.0`
-  compare equal. Every value has a place in this order, including pairs
-  `</2` and its siblings cannot order: `compare/2` is the entry point
+  compare equal. Every value has a place in this order, which is what
   `Enum.sort/1` uses to order a mixed list.
 
   ## Examples

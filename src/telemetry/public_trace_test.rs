@@ -1667,7 +1667,12 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     // subtraction, division, and addition retain ordinary generic
     // result/status calls, so their reached component and callee work is no
     // longer inlined away.
-    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 67, 25, 129, 65),
+    // The ordering operators end in an `any`/`any` clause through `compare/2`
+    // and carry no `binary` clause; this fixture's operands stay numeric, so
+    // no `compare/2` activation is minted (its rows in `ANALYSIS_CLAIM_RATCHET`
+    // say so) and the StaticCallees evaluations and blocks count only the
+    // numeric families' callee layers.
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 67, 25, 127, 64),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -2067,7 +2072,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // into its builder is never minted, and it takes its demand edge and
         // its rebased completion with it.
         // fz-kdt.27: eliminating that cycle removes three shift wakes/rebases.
-        shifts: shifts(18, 117),
+        // Every ordering callsite here plans against clause families that end
+        // in an `any`/`any` clause through `compare/2`, and six of the rebased
+        // completions are standing completions of those families rebasing
+        // while the demand behind them climbs. The activation and callsite
+        // rows above count nothing for it: nothing is minted or withdrawn.
+        shifts: shifts(18, 123),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -2102,7 +2112,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.27: exactly those five analyses; all remaining wakes are caused.
         // fz-5xp.30: 1106 -> 1158. The ordinary arithmetic helper boundary
         // brings its own reached semantic formulas; causal work stays exact.
-        total_evaluations: 1158,
+        // The ordering families carry no `binary` clause, so the StaticCallees
+        // evaluations above are the whole of what this total counts for them;
+        // causal work stays exact.
+        total_evaluations: 1156,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -2186,7 +2199,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `==` carries a typed clause per numeric pair, so the predicates that
         // compare here reach that family's clauses and externs; analysis
         // evaluations and every claim population do not see it.
-        total_evaluations: 1535,
+        // The ordering families this fixture's predicates reach each end in an
+        // `any`/`any` body that calls `compare/2`, and that body brings its own
+        // reached formulas to this total.
+        total_evaluations: 1537,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2300,7 +2316,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // keys exist, not how often `InputDemand` moves under them.
         // fz-kdt.47: rebased completions 77 -> 76. The transient activation
         // removed above never needs its rebase.
-        shifts: shifts(25, 76),
+        // The ordering families this fixture's predicates reach end in an
+        // `any`/`any` clause through `compare/2`; three of the rebased
+        // completions are standing completions of those families.
+        shifts: shifts(25, 79),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -2365,7 +2384,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // add twelve reached analyses; equal re-derivations remain 15.
         // One analysis belongs to the typed `==` family this fixture's
         // predicates reach.
-        analyze_evaluations: 904,
+        // The ordering families carry no `binary` clause, so no analysis of
+        // one is counted here; equal reproductions stay at 15.
+        analyze_evaluations: 901,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
@@ -2380,7 +2401,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // accounts for thirty-six additional semantic evaluations.
         // The typed `==` clauses and their externs are reached formulas; the
         // activation and callsite populations do not see them.
-        total_evaluations: 2551,
+        // The ordering families' `any`/`any` clauses contribute four formulas
+        // and no `binary` clause analyses; the claim populations stay put.
+        total_evaluations: 2552,
     },
 ];
 
