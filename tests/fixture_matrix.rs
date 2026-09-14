@@ -2437,9 +2437,9 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "the public reducer bridge closure is erased on every path",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
-        "`struct_allocs = 10`",
-        "a general inliner",
-        "final list/struct/map heap headline is `400`",
+        "`struct_allocs = 0`",
+        "without rebuilding the pair",
+        "final list/struct/map heap headline is `80`",
     ] {
         assert!(
             readme.contains(needle),

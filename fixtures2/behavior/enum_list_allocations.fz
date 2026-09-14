@@ -29,11 +29,10 @@
 # - the public reducer bridge closure is erased on every path (`closure_allocs
 #   = 0`), not materialized as a heap closure;
 # - the `{:cont, acc}` envelope `Enumerable.reduce/3` still stays lane-wise;
-#   the direct C result/status carrier is unboxed. The current ordinary
-#   `Kernel.arithmetic_result/1` entry materializes its tuple solely to dispatch
-#   its source clauses, so the ten additions in this fixture add ten temporary
-#   structs (`struct_allocs = 10`, `struct_bytes = 320`); a general inliner
-#   for small ordinary wrappers is what removes that entry work;
+#   the direct C result/status carrier is unboxed, and the ordinary
+#   `Kernel.arithmetic_result/1` entry decides its clauses from those lanes
+#   without rebuilding the pair, so the ten additions in this fixture add no
+#   structs (`struct_allocs = 0`, `struct_bytes = 0`);
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;
@@ -41,7 +40,7 @@
 #   scalar. `Enum.member?/2` compares integers with `===`, whose typed
 #   integer/integer clause calls a raw C `fz_op_*` export, so the compared
 #   operands cross that door unboxed and allocate nothing;
-# - final list/struct/map heap headline is `400`.
+# - final list/struct/map heap headline is `80`.
 #
 # This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
 # a source-level merge sort that builds split/reverse/merge work lists, so it has
