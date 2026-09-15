@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-15T06:21:33Z",
   "created": "2026-09-14T00:02:06Z",
   "description": "Seen 2026-09-13 on PR #158 at 2200b6c18 (CI run 34790466804): matrix::tail_recursion::interp failed with 'fz2 exceeded 20s' while run and build passed and the same commit's lint job was green; the two previous commits passed the same lane with job times of 12m36s and 16m5s. Measured locally: the lane takes 4.4s at that commit and 4.4s before fz-21x.3, so the extern-door commits did not change its cost. CI runs the matrix with RUST_TEST_THREADS=4 (four fz2 subprocesses at once on a shared runner) against DEFAULT_FIXTURE_HANG_TIMEOUT = 20s, so a lane that is 4.4s alone can exceed the guard under contention; wall clock is corroborative, not authoritative (project priorities). Two things to fix, separately: (1) the guard must not decide correctness under parallel load: either run the matrix single-threaded in CI (the reliable gate per experience) or scale the guard by the parallelism; (2) the underlying signal: 100k iterations of count(n - 1, acc + 1) cost 44us each under interp, i.e. two Kernel operator wrapper calls, two C extern calls and two arithmetic_result calls per iteration; tiny-fixture slowness is a correctness signal and the interpreter has no inliner (fz-5xp.20 covers native).\n\n\nThird data point, 2026-09-15 (run 34916776929 on PR #168 at a54edc3be): matrix::json_roundtrip::run exceeded 20s while its interp and build lanes and every other lane passed. That commit touches only the interpreter, so the run door's cost is main's: 3.5s locally. The tail_recursion half of signal (2) is closed: fz-acn.3 deleted the interpreter's per-call plan walk and that lane passed on the previous CI run of the same PR. What remains is (1) alone, and it now decides PR results at random: a lane that is 3.5s alone trips a 20s guard under RUST_TEST_THREADS=4 on a shared runner. The reliable gate is single-threaded (the local rule already); CI should run the fixture matrix that way or scale the guard by the parallelism it runs with. Until then a red test job on a PR whose diff is not on the failing lane's path is not evidence about the PR.",
   "id": "fz-ex9",
@@ -17,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] fixture_matrix wall-clock hang guard fails tail_recursion::interp on the Linux runner under contention",
   "type": "bug",
-  "updated_at": "2026-09-15T01:37:30Z"
+  "updated_at": "2026-09-15T06:21:33Z"
 }
