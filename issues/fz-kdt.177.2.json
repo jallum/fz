@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T20:29:45Z",
+  "description": "Plan: ../recursive-denotations-proposal.html. Stack of PRs on main: PR1 reproducers+signal, PR2 fz-tfn.62 narrow, PR3 fz-kdt.48, PR4 fz-kdt.177 kernel, PR5 fz-kdt.177 semantics.\n\nPR1. sweep_corpus_for_return_widening (src/compiler2/drive_test.rs ~19614) reads fixtures2/ with a non-recursive read_dir, so fixtures2/behavior/, including json_roundtrip.fz, is never swept; an 18-revision runaway trips no gate. Make it recursive, take the red (corpus_max_return_changes \u003c= 5 and !widened will fail on behavior/), and pin the measured values with fz-kdt.177 named as the owner of the defect. Loud and proud: a pinned defect, not a raised limit.",
+  "id": "fz-kdt.177.2",
+  "labels": [],
+  "parent": "fz-kdt.177",
+  "priority": 1,
+  "status": "open",
+  "title": "The corpus widening sweep reads every fixture directory",
+  "type": "bug",
+  "updated_at": "2026-09-15T20:29:45Z"
+}
