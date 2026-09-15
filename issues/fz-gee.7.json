@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-21x.24"
+    "fz-21x.24",
+    "fz-5xp.22"
   ],
   "blocks": [],
   "created": "2026-09-15T06:08:00Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Lower the receive matcher through the fz_ir dispatch lowering; delete the third dispatch executor",
   "type": "task",
-  "updated_at": "2026-09-15T06:08:01Z"
+  "updated_at": "2026-09-15T06:08:02Z"
 }
