@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T02:54:59Z",
+  "description": "Measured 2026-09-15 on interp: two guarded clauses `when v == \"key\"` in one head, one call, bitstring_allocs delta 2; one guarded clause, three calls, delta 3. PatternGuardExpr::Const is evaluated by dispatch_const_to_value (src/ir_interp/dispatch_exec.rs), whose Utf8Binary arm builds the bytes fresh each time, while a map pattern's prepared key goes through PreparedValues::Constants and is built once per run. One question, \"what runtime word does this ground constant denote\", two implementations, one of which caches. Fold: a guard's binary constants become prepared keys of the plan (they are interned by prepare_heap_key for Float, Atom and Utf8Binary already; interp reads only the binaries today, so Constants carries dead cells for the other two by construction), or the guard evaluator reads through the same cells. Guards become code under fz-tqd; if that lands first, the constant is lowered once by the body and this closes with it. Signal: the two counts above pin at 1 and 1.",
+  "id": "fz-129",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A binary constant in a guard is copied onto the process heap on every evaluation",
+  "type": "bug",
+  "updated_at": "2026-09-15T02:54:59Z"
+}
