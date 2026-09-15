@@ -8,6 +8,7 @@
     "fz-21x.15",
     "fz-21x.17",
     "fz-21x.20",
+    "fz-gee.7",
     "fz-tqd.1"
   ],
   "created": "2026-09-14T10:58:45Z",
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "Guards are code: one guard function per clause, failure is false, one evaluator on three doors",
   "type": "task",
-  "updated_at": "2026-09-15T05:56:25Z"
+  "updated_at": "2026-09-15T06:08:01Z"
 }
