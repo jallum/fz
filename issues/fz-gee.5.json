@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T06:07:58Z",
+  "description": "native_codegen/repr.rs ~22-31 declares ArgRepr = AbiValueRepr plus one variant, with a total bridge arg_repr_from_compiler2 (~86-93) at 10 sites; ArgRepr appears in 14 files. The extra variant Condition is not a lane form (cl_type and halt_kind unreachable! on it, ~37 and ~55, four more arms elsewhere) and is already carried by CodegenValue::Condition (value.rs ~187), with from_abi_value/repr round-tripping two spellings of one thing. Also ArgRepr::abi_arity (~42-46) and MidFlightArgShape::abi_arity (~102-107) return 1 for every variant while six call sites treat them as widths (terminator.rs ~105, ~1001, ~1133, ~1179; driver.rs ~688; repr.rs ~163): every .map(abi_arity).sum() is .len(). Leftover multi-lane scaffolding contradicting abi_layout_contract, which yields exactly one repr per physical lane. Delete the type, the bridge, the six unreachable arms and the two abi_arity functions. Mechanical; medium volume.",
+  "id": "fz-gee.5",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete ArgRepr: AbiValueRepr plus CodegenValue::Condition already carry it; abi_arity returns 1 everywhere",
+  "type": "task",
+  "updated_at": "2026-09-15T06:07:58Z"
+}
