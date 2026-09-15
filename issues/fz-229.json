@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:11:05Z",
+  "description": "Research ticket, from the json_roundtrip diagnosis of 2026-09-15 (see fz-kdt.177's aggravating case). AnalyzeActivation reads a callee's ReturnType as a Current fact (src/compiler2/jobs/semantic.rs ~1782), so every revision of the return wakes the caller. Inside a recursive group that is necessary: the members co-converge and must see each other's current rung. Outside the group it is waste: main/0 is analyzed 59 times on json_roundtrip, 60 of its wakes being ReturnType revisions of Json.decode/1 and roundtrip/1, and it is not a member of the decoder's group. The fact engine distinguishes Current from Settled reads (FactUse::Settled = the upstream cone is quiescent, .agent/docs/fact-engine.md \"Content, cleanliness and finality are three questions\"), maintained edge-triggered.\n\nQuestion to answer before building: can a caller that is not in the callee's DeriveCallGraphComponent read the callee's ReturnType as Settled without a deadlock (a caller that is itself read, settled, by something the callee's cone depends on) and without delaying a diagnostic the current read would have surfaced earlier? If yes, the change is one read use at one site plus the group membership test, and the signal is AnalyzeActivation runs for main/0 on json_roundtrip dropping from 59 to single digits with the backend program byte-identical. It does not shorten the ladder itself (fz-kdt.177) and does not help members of the group; it removes the ladder's echo across the rest of the program.",
+  "id": "fz-229",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "A caller outside a recursive group is re-analyzed on every rung of the group's return ladder",
+  "type": "task",
+  "updated_at": "2026-09-15T14:11:05Z"
+}
