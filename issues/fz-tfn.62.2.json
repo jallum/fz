@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-tfn.62",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Read the retained callable at decode; delete caller-namespace re-resolution",
   "type": "task",
-  "updated_at": "2026-09-15T20:30:04Z"
+  "updated_at": "2026-09-15T20:31:32Z"
 }
