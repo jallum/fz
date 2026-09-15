@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-15T14:12:49Z",
+  "description": "fz-wof routed the two doors it named -- native_codegen/receive.rs emit_region_test and ir_interp/backend.rs AssertTuple -- through RuntimeTypePredicate::tuple_arity(n) and the shared matcher/emitter, and deleted their hand-written schema compares. src/ir_interp/dispatch_exec.rs ~348 still answers Region::TupleArity with its own chain: kind() == ValueKind::STRUCT plus struct_schema_id(p) == interp_tuple_schema_id(runtime, arity), after the lane-form fast path. It is the same question, and it answers it without the predicate.\n\nIt was left out of fz-wof because this executor does not speak RuntimeTypePredicate at all: the Region::Type arm beside it goes through type_match(runtime, module, ty, \u0026value) on a Ty, not through matches_runtime_type_predicate, and building a RuntimeValueReader here means supplying the callables/fields/list_head/list_tail closures that whole_value_matches_predicate assembles in ir_interp/backend.rs. Folding the arity reading alone would be a fragment; the concordant fold is this executor asking its region questions the way the backend interpreter does, which is also what would let the two interpreter doors share one region evaluator.\n\nCheck against fz-gee.7 before starting: that ticket deletes the NATIVE receive executor by lowering the matcher through fz_ir dispatch, and may leave this interpreter one answering fz_ir-lowered questions instead, in which case this reading disappears with it rather than needing its own fold.",
+  "id": "fz-gee.10",
+  "labels": [],
+  "parent": "fz-gee",
+  "priority": 4,
+  "status": "open",
+  "title": "Region::TupleArity has a fourth reading in the interpreter's receive dispatch executor",
+  "type": "task",
+  "updated_at": "2026-09-15T14:12:49Z"
+}
