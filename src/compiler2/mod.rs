@@ -96,6 +96,11 @@ pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };
 pub use scope::ScopeSnapshot;
+/// The widening budget is the fixpoint's own constant; nothing outside
+/// `semantic` acts on it, and only the telemetry tests read it — to check that
+/// a widening event can only appear past it.
+#[cfg(test)]
+pub(crate) use semantic::RETURN_WIDENING_BUDGET;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,

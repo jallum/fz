@@ -1082,8 +1082,15 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // creep still trips. `==` carries a typed clause per numeric pair, and
     // 00181 compares, so its stream carries that family's completions: about
     // a dozen events and eight kilobytes, with only `lib/kernel.fz` swapped.
+    // The semantic fixpoint's own ascent is public too: `return_type.defined`
+    // and `.widened`, `activation_analysis.defined` and `callsite.defined`, so
+    // the stream carries one event per round that moves a return and per claim
+    // that drove it. Adding them took 00181 from 3,012 to 3,114 events (16
+    // return revisions, 44 analyses, 42 callsite edges) and from 1,475,036 to
+    // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
+    // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_060, 1_600 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");

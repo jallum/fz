@@ -1386,6 +1386,13 @@ impl ActivationSlot {
         self.return_ty.as_ref()
     }
 
+    /// Strict ascents of the return evidence since the last rebase: which
+    /// round of the ladder the stored value came from. `RETURN_WIDENING_BUDGET`
+    /// is where the join starts widening, twice it is where it tops out.
+    pub fn return_ascents(&self) -> u32 {
+        self.ascents
+    }
+
     pub fn analysis(&self) -> Option<&ActivationAnalysis> {
         self.analysis.as_ref()
     }
