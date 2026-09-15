@@ -25,6 +25,7 @@ defmodule Distill do
     by_kind(jobs, top)
     by_subject(jobs, top)
     reruns(jobs, top)
+    return_revisions(records, names, top)
     wakes(records, jobs, names, top)
   end
 
@@ -75,14 +76,43 @@ defmodule Distill do
   defp label(meta, _names), do: {nil, inspect(meta, limit: 6)}
 
   # A job's subject, with a function named rather than numbered.
+  # The function is what a reader looks for, so it leads; the remaining keys
+  # follow in a fixed order so two rows for the same subject render alike.
   defp subject(job, names) do
-    job
-    |> Map.drop(["kind", "opaque_type"])
-    |> Enum.map(fn
-      {"function_id", id} -> Map.get(names, id, "f#{id}")
-      {k, v} -> "#{k}=#{inspect(v)}"
-    end)
-    |> Enum.join(" ")
+    fields = Map.drop(job, ["kind", "opaque_type"])
+    name = for {"function_id", id} <- fields, do: Map.get(names, id, "f#{id}")
+
+    rest =
+      fields
+      |> Map.drop(["function_id"])
+      |> Enum.sort_by(fn {k, _} -> k end)
+      |> Enum.map(fn {k, v} -> "#{k}=#{inspect(v)}" end)
+
+    Enum.join(name ++ rest, " ")
+  end
+
+  # How many rounds each activation's return type took. Every
+  # return_type.defined is one strict ascent of the fixpoint's central fact,
+  # and a return_type.widened says the ascent ran past its budget, so the
+  # answer was widened rather than found.
+  defp return_revisions(records, names, top) do
+    IO.puts("return-type revisions per activation")
+
+    widened =
+      for %{"name" => ["fz", "compiler2", "return_type", "widened"], "metadata" => %{"activation" => a}} <- records,
+          into: MapSet.new(),
+          do: subject(a, names)
+
+    defined =
+      for %{"name" => ["fz", "compiler2", "return_type", "defined"], "metadata" => %{"activation" => a}} <- records,
+          do: subject(a, names)
+
+    defined
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {activation, n} -> {-n, activation} end)
+    |> Enum.take(top)
+    |> Enum.map(fn {activation, n} -> {activation, n, if(activation in widened, do: "yes", else: "-")} end)
+    |> table(["activation", "revisions", "widened"])
   end
 
   # Why the most re-run jobs ran again: each work_graph.applied record lists

@@ -42,6 +42,9 @@ Read the sections in order, each narrower than the last:
 - **most re-run jobs**: a job that ran more than once for one subject was
   woken by a changed fact; the count is the number of climbs the fixpoint took
   there.
+- **return-type revisions per activation**: how many rounds each activation's
+  return type took and whether the widening budget ended the climb; an
+  activation at the ceiling widened its answer instead of finding it.
 - **wake causes**: for each of those, which fact changed and which completion
   changed it. This is where a ladder shows itself: one fact revised many
   times, each revision waking the same callers.

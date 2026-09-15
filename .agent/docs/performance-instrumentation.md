@@ -52,6 +52,21 @@ before/after revision and settledness, the wakes it caused with their causes,
 the full movement report, its blocked waits, and its read set. This is what an
 investigation reads: which formula ran, on what evidence, and what it moved.
 
+**Return ascents** — `fz.compiler2.return_type.defined` fires on every round
+that moves an activation's return evidence, and `fz.compiler2.return_type.widened`
+on the round where `RETURN_WIDENING_BUDGET` ended the climb instead of the
+program doing so. Both name the activation (`root_id`/`function_id`/`arrow`) and
+project the evidence standing after the round plus `ascents`, the ladder's
+own round counter since the last rebase — not a fact revision. An activation
+tops out at `2 * RETURN_WIDENING_BUDGET + 1` ascents, where the stored value
+becomes `any` and stops changing. The claims that drive the ascent ride alongside:
+`activation_analysis.defined` is the round that produced the evidence, carrying
+its reachable clauses, entries, callsites and value count, and
+`callsite.defined` is the edge that carries a callee's return back to its caller
+and wakes the next round, carrying the callsite inside its activation and its
+resolution (`unresolved` renders as itself). `tools/distill-telemetry.exs`
+counts these per activation.
+
 **Product settles** — `fz.compiler2.pull.product.settled`, carrying the
 product's full identity (kind plus the executable/position it is filed under)
 and its `ProductSettlement { generation, changed, group }`. There is no span, so
