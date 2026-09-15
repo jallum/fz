@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-15T06:07:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-gee",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Record the closure call as one three-valued edge: Direct { target, capture_count } / Seam / Dead",
   "type": "task",
-  "updated_at": "2026-09-15T06:07:53Z"
+  "updated_at": "2026-09-15T06:48:34Z"
 }
