@@ -10,6 +10,7 @@ use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
 use crate::function_surface::CallableSurface;
 use crate::source::Span;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub(crate) mod source;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
@@ -167,12 +168,15 @@ pub(crate) trait PatternResolver<TypeHandle> {
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>;
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>;
 }
 
 impl<TypeHandle, F> PatternResolver<TypeHandle> for F
 where
-    F: FnMut(&crate::ast::CallableName, usize) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError>,
+    F: FnMut(
+        &crate::ast::CallableName,
+        usize,
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError>,
 {
     fn struct_type(
         &mut self,
@@ -186,7 +190,7 @@ where
         &mut self,
         name: &crate::ast::CallableName,
         arity: usize,
-    ) -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> {
+    ) -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> {
         self(name, arity)
     }
 }
@@ -211,7 +215,11 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
         /// only by its call arguments, so the one thing it borrows from its
         /// caller is the prepared constants its plan compares against.
         prepared: Vec<PreparedKeyId>,
-        dispatch: Box<PatternGuardDispatch<TypeHandle>>,
+        /// The helper this call decides. Every reference to a helper names the
+        /// same plan, so the node shares it rather than carrying a copy. The
+        /// share is atomic because a plan travels between scheduler threads
+        /// inside `fz_ir::Term::ReceiveMatched`.
+        dispatch: Arc<PatternGuardDispatch<TypeHandle>>,
     },
 }
 
@@ -240,7 +248,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
             } => PatternGuardExpr::Dispatch {
                 inputs: inputs.iter().map(|input| input.map_type_handle(map)).collect(),
                 prepared: prepared.clone(),
-                dispatch: Box::new(dispatch.map_type_handle(map)),
+                dispatch: Arc::new(dispatch.map_type_handle(map)),
             },
         }
     }
@@ -488,7 +496,7 @@ where
             PatternGuardExpr::Dispatch {
                 inputs: args,
                 prepared,
-                dispatch: Box::new(dispatch),
+                dispatch,
             }
         }
         _ => return Err(SourcePatternError::UnsupportedGuardExpr),
@@ -500,7 +508,7 @@ pub(crate) fn pattern_dispatch_from_source<TypeHandle: Clone + PartialEq + Eq>(
 ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
     let mut resolver = |_name: &crate::ast::CallableName,
                         _arity: usize|
-     -> Result<Option<PatternGuardDispatch<TypeHandle>>, SourcePatternError> { Ok(None) };
+     -> Result<Option<Arc<PatternGuardDispatch<TypeHandle>>>, SourcePatternError> { Ok(None) };
     pattern_dispatch_from_source_with_resolver(patterns, &mut resolver)
 }
 

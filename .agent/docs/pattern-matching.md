@@ -286,8 +286,13 @@ publication rules live in [AnyValue's list ownership section](any-value.md#list-
 Guards compile into `PatternGuardExpr`. A pure helper call in a guard lowers to a
 nested `PatternGuardExpr::Dispatch` whose `PatternGuardDispatch` contains a
 full `PatternDispatchPlan` for the helper clauses plus one expression per helper
-body. Guard helper lowering tracks a call stack and rejects cycles with
-`GuardCallCycle`.
+body. That helper is shared, not copied: the node holds an
+`Arc<PatternGuardDispatch>`, so every reference to a helper — across guards,
+across clauses and across caller plans — names the one artifact
+`Job::ReifyGuardDispatch` built, and `World::guard_dispatch` hands out that same
+pointer. The share is atomic because a plan travels between scheduler threads
+inside `fz_ir::Term::ReceiveMatched`. Guard helper lowering tracks a call stack
+and rejects cycles with `GuardCallCycle`.
 
 Nested guard dispatch returns a boolean-ish guard value: no matching helper arm
 means the guard fails, not that the surrounding match halts.

@@ -1045,12 +1045,12 @@ pub enum BackendBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutableDispatch {
-    plan: PatternDispatchPlan<Ty>,
+    plan: Rc<PatternDispatchPlan<Ty>>,
     clause_ids: Vec<u32>,
 }
 
 impl ExecutableDispatch {
-    pub(crate) fn new(plan: PatternDispatchPlan<Ty>, clause_ids: Vec<u32>) -> Self {
+    pub(crate) fn new(plan: Rc<PatternDispatchPlan<Ty>>, clause_ids: Vec<u32>) -> Self {
         Self { plan, clause_ids }
     }
 

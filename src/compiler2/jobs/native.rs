@@ -5504,22 +5504,20 @@ mod tests {
         let result = ValueId::from_u32(1);
         abi.value_layouts.insert(param, tuple_layout);
         abi.value_layouts.insert(result, scalar_layout);
-        let dispatch = crate::compiler2::ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows::lexical(
-                1,
-                vec![PatternRow {
-                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
-                        crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
-                        crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
-                    ]))],
-                    preconditions: Vec::new(),
-                    guard: None,
-                    body_id: 0,
-                }],
-            ))
-            .unwrap(),
-            vec![0],
-        );
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
+                ]))],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        ))
+        .unwrap();
+        let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0]);
         assert_eq!(
             dispatch.plan().input_demand(),
             [DispatchDemand::TupleFields(BTreeMap::from([(

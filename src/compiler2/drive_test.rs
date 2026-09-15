@@ -25,6 +25,7 @@ use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
 
@@ -1130,8 +1131,8 @@ fn equal_range_closure_replacement_keeps_one_typed_occurrence_identity() {
 }
 type JobOutputMap = Rc<RefCell<HashMap<Job, Vec<OutputFacts>>>>;
 type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, DependencyKey>>>>;
-type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
-type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
+type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Rc<PatternDispatchPlan<Ty>>>>>>;
+type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Arc<PatternGuardDispatch<Ty>>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
@@ -18701,7 +18702,7 @@ impl GuardDispatchCapture {
         );
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
+    fn take(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
         let mut dispatches = self.dispatches.borrow_mut();
         let matches = dispatches.get_mut(&function)?;
         let dispatch = matches.pop();
@@ -18711,7 +18712,7 @@ impl GuardDispatchCapture {
         dispatch
     }
 
-    fn last(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
+    fn last(&self, function: FunctionId) -> Option<Arc<PatternGuardDispatch<Ty>>> {
         self.dispatches
             .borrow()
             .get(&function)
@@ -18741,7 +18742,7 @@ impl EntryDispatchCapture {
         );
     }
 
-    fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
+    fn take(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
         let mut plans = self.plans.borrow_mut();
         let matches = plans.get_mut(&function)?;
         let plan = matches.pop();
@@ -18751,7 +18752,7 @@ impl EntryDispatchCapture {
         plan
     }
 
-    fn last(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
+    fn last(&self, function: FunctionId) -> Option<Rc<PatternDispatchPlan<Ty>>> {
         self.plans
             .borrow()
             .get(&function)
@@ -18862,25 +18863,25 @@ fn assert_primary_span_contains(diagnostic: &Diagnostic, source: &str, needle: &
     );
 }
 
-fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
+fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
+fn entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
     capture
         .take(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))
 }
 
-fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {
+fn latest_guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> Arc<PatternGuardDispatch<Ty>> {
     capture
         .last(function)
         .unwrap_or_else(|| panic!("guard_dispatch.defined for {function:?}"))
 }
 
-fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> PatternDispatchPlan<Ty> {
+fn latest_entry_dispatch(capture: &EntryDispatchCapture, function: FunctionId) -> Rc<PatternDispatchPlan<Ty>> {
     capture
         .last(function)
         .unwrap_or_else(|| panic!("entry_dispatch.defined for {function:?}"))

@@ -6,6 +6,8 @@
 //! `FunctionId`.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -183,7 +185,7 @@ pub(super) fn plan_entry_dispatch(
     };
     let plan = pattern_dispatch_from_source_with_resolver(source_patterns, &mut resolver)
         .map_err(|error| emit_entry_dispatch_error(tel, world, function, fn_span, error))?;
-    let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, plan);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, Rc::new(plan));
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::EntryDispatch(function)],
@@ -244,9 +246,9 @@ fn collect_requirements(
 fn build_guard_dispatch(
     world: &mut World,
     function: FunctionId,
-    cache: &mut HashMap<FunctionId, PatternGuardDispatch<Ty>>,
+    cache: &mut HashMap<FunctionId, Arc<PatternGuardDispatch<Ty>>>,
     stack: &mut Vec<FunctionId>,
-) -> Result<PatternGuardDispatch<Ty>, SourcePatternError> {
+) -> Result<Arc<PatternGuardDispatch<Ty>>, SourcePatternError> {
     if let Some(dispatch) = cache.get(&function) {
         return Ok(dispatch.clone());
     }
@@ -271,9 +273,9 @@ fn build_guard_dispatch(
             Ok(Some(dispatch))
         },
     };
-    let dispatch = guard_dispatch_from_surface(&surface, &mut resolver)?;
+    let dispatch = Arc::new(guard_dispatch_from_surface(&surface, &mut resolver)?);
     stack.pop();
-    cache.insert(function, dispatch.clone());
+    cache.insert(function, Arc::clone(&dispatch));
     Ok(dispatch)
 }
 

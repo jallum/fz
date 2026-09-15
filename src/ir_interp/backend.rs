@@ -3351,7 +3351,7 @@ mod tests {
             ],
         ))
         .expect("a two-clause head compiles");
-        let dispatch = crate::compiler2::ExecutableDispatch::new(plan, vec![0, 1]);
+        let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0, 1]);
         let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
         runtime.current_proc = runtime.process_ptr(1).unwrap();
         let world = crate::compiler2::World::new();
@@ -4019,19 +4019,17 @@ mod tests {
             semantic_index: 0,
             layout,
         }]);
-        let dispatch = ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows::lexical(
-                1,
-                vec![PatternRow {
-                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
-                    preconditions: Vec::new(),
-                    guard: None,
-                    body_id: 0,
-                }],
-            ))
-            .unwrap(),
-            vec![0],
-        );
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard)],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        ))
+        .unwrap();
+        let dispatch = ExecutableDispatch::new(Rc::new(plan), vec![0]);
         assert_eq!(
             dispatch.plan().input_demand(),
             [DispatchDemand::Ignore],
@@ -4133,22 +4131,20 @@ mod tests {
             semantic_index: 0,
             layout,
         }]);
-        let dispatch = ExecutableDispatch::new(
-            pattern_dispatch_from_source(SourcePatternRows::lexical(
-                1,
-                vec![PatternRow {
-                    patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
-                        crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
-                        crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
-                    ]))],
-                    preconditions: Vec::new(),
-                    guard: None,
-                    body_id: 0,
-                }],
-            ))
-            .unwrap(),
-            vec![0],
-        );
+        let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+            1,
+            vec![PatternRow {
+                patterns: vec![crate::ast::Spanned::dummy(crate::ast::Pattern::Tuple(vec![
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Wildcard),
+                    crate::ast::Spanned::dummy(crate::ast::Pattern::Int(7)),
+                ]))],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: 0,
+            }],
+        ))
+        .unwrap();
+        let dispatch = ExecutableDispatch::new(Rc::new(plan), vec![0]);
         assert_eq!(
             dispatch.plan().input_demand(),
             [DispatchDemand::TupleFields(BTreeMap::from([(
